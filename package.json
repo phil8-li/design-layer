@@ -60,7 +60,7 @@
   "dependencies": {
     "@babel/parser": "^7.29.7",
     "esbuild": "^0.28.1",
-    "motion": "^13.4.0",
+    "motion": "^14.0.0",
     "motion-panels": "^0.5.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
