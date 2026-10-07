@@ -5,16 +5,29 @@
  *
  *   node desktop/mac/package.mjs [--out <dir>] [--fresh-deps] [--node-zip]
  *
- *   --out <dir>    where the zip goes (default: landing/downloads/)
+ *   --out <dir>    where the zip and install.sh go (default: landing/downloads/)
  *   --fresh-deps   build dist/ against a clean `npm ci` instead of this
  *                  checkout's node_modules (used automatically when it has none)
  *   --node-zip     write the zip with the built-in writer even if `zip` exists
  *
- * The zip holds one folder, `Design Layer/`, with two .command scripts, a
+ * The zip holds one folder, `Design Layer/`, with the install .command, a
  * README.txt and `payload/`: the files the desk server, the launcher and the
  * build read at run time, plus a prebuilt dist/. No node_modules — the
  * installer runs `npm ci --omit=dev` on the user's Mac, because the Mac app is
  * Homebrew node running this package from disk, not a compiled binary.
+ *
+ * Next to the zip it writes install.sh, the Terminal one-liner's target. A
+ * .command double-clicked from a browser download carries the quarantine
+ * flag, and macOS 15+ refuses it ("Apple could not verify … is free of
+ * malware") until the user finds Open Anyway in System Settings; right-click >
+ * Open no longer bypasses that. curl sets no quarantine flag and bash is the
+ * program macOS checks, so the one-liner installs without any prompt.
+ *
+ * The uninstaller is not in the zip's top folder for the same reason: a
+ * double-clicked copy from the download hits that dialog too. It ships as
+ * payload/uninstall.command, and the installer writes it out with `cat` as a
+ * new file, which carries no quarantine flag, to
+ * ~/Library/Application Support/Design Layer/Uninstall Design Layer.command.
  *
  * dist/ is built in a temporary copy, never in this checkout's own dist/,
  * which a running editor may be serving.
@@ -32,7 +45,11 @@ const REPO_ROOT = path.resolve(HERE, "..", "..")
 const PRODUCT = "Design Layer"
 const ZIP_NAME = "Design-Layer-for-Mac.zip"
 const SOURCE_URL = "https://github.com/phil8-li/design-layer"
-const WHY_UNSIGNED_URL = `${SOURCE_URL}/blob/main/desktop/mac/README.md#why-this-is-within-policy`
+const WHY_UNSIGNED_URL = `${SOURCE_URL}/blob/main/desktop/mac/README.md#why-it-is-built-this-way`
+const DOWNLOADS_URL = "https://phil8-li.github.io/design-layer/downloads"
+const ZIP_URL = `${DOWNLOADS_URL}/${ZIP_NAME}`
+const INSTALL_SH_NAME = "install.sh"
+const INSTALL_COMMAND = `curl -fsSL ${DOWNLOADS_URL}/${INSTALL_SH_NAME} | bash`
 
 const argv = process.argv.slice(2)
 const flag = (name) => argv.includes(name)
@@ -229,12 +246,18 @@ if [ $STATUS -ne 0 ]; then
   fail "desktop/mac/install.mjs exited with $STATUS."
 fi
 
+# Written with cat, not cp: a new file has no quarantine flag, so macOS opens
+# it on a double-click instead of refusing it as an unverified download.
+UNINSTALLER="$SUPPORT/Uninstall ${PRODUCT}.command"
+rm -f "$SUPPORT/uninstall.command"
+cat "$APP/uninstall.command" >"$UNINSTALLER" 2>>"$LOG" && chmod 755 "$UNINSTALLER"
+
 say ""
 case " $* " in
   *" --dry-run "*) say "Dry run finished: files copied to $APP, nothing loaded or launched. Logs: $LOGS" ;;
   *) say "Done. Logs: $LOGS" ;;
 esac
-say "To uninstall, double-click \"Uninstall ${PRODUCT}.command\"."
+say "To uninstall, double-click \"$UNINSTALLER\" or run: bash \"$UNINSTALLER\""
 `
 
 const UNINSTALL_SCRIPT = String.raw`#!/bin/bash
@@ -280,6 +303,7 @@ fi
 case "$ANSWER" in
   [yY]*)
     rm -rf "$APP"
+    rm -f "$SUPPORT/Uninstall ${PRODUCT}.command"
     rmdir "$SUPPORT" 2>/dev/null
     echo "  deleted"
     ;;
@@ -299,17 +323,42 @@ app window you can keep in the Dock.
 Requirements: macOS, Node.js 20.9 or newer (brew install node, or
 https://nodejs.org), and Chrome.
 
-Install: double-click "Install ${PRODUCT}.command". The first time, macOS may
-say it is from an unidentified developer. Right-click the file, choose Open,
-then Open again. Nothing here is signed, by design; why:
-${WHY_UNSIGNED_URL}
+Install, with no security prompt: open Terminal, type "bash " (with the
+space), drag "Install ${PRODUCT}.command" into the window, and press Return.
+Or paste this, which downloads and installs in one step:
+
+  ${INSTALL_COMMAND}
+
+Double-clicking "Install ${PRODUCT}.command" also works, but nothing here is
+signed, by design (why: ${WHY_UNSIGNED_URL}),
+so macOS first says "Apple could not verify" it "is free of malware". To
+allow it: click Done, open System Settings > Privacy & Security, scroll to
+Security, click Open Anyway, then Open.
+
 The files go to ~/Library/Application Support/Design Layer/app.
 
-Uninstall: double-click "Uninstall ${PRODUCT}.command".
+Uninstall: in Terminal, run
+  bash ~/Library/Application\\ Support/Design\\ Layer/Uninstall\\ Design\\ Layer.command
 
 Logs: ~/Library/Logs/DesignLayer/ (install.log, desk.log, start-screen.log)
 
 Source: ${SOURCE_URL}
+`
+
+const GET_SCRIPT = String.raw`#!/bin/bash
+# Downloads ${PRODUCT} for Mac and runs its installer:
+#   ${INSTALL_COMMAND}
+# Arguments go on to the installer: ... | bash -s -- --dry-run
+# curl sets no quarantine flag, so macOS shows no Gatekeeper prompt.
+set -eu
+URL="${"$"}{DESIGNLAYER_ZIP_URL:-${ZIP_URL}}"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+[ "$(uname -s)" = "Darwin" ] || { echo "${PRODUCT} for Mac needs macOS."; exit 1; }
+echo "Downloading $URL"
+curl -fsSL "$URL" -o "$TMP/${ZIP_NAME}"
+ditto -x -k "$TMP/${ZIP_NAME}" "$TMP"
+bash "$TMP/${PRODUCT}/Install ${PRODUCT}.command" "$@" </dev/null
 `
 
 function writeScripts() {
@@ -318,7 +367,7 @@ function writeScripts() {
     fs.chmodSync(path.join(TOP, name), mode)
   }
   write(`Install ${PRODUCT}.command`, INSTALL_SCRIPT, 0o755)
-  write(`Uninstall ${PRODUCT}.command`, UNINSTALL_SCRIPT, 0o755)
+  fs.writeFileSync(path.join(PAYLOAD, "uninstall.command"), UNINSTALL_SCRIPT, { mode: 0o755 })
   write("README.txt", README, 0o644)
 }
 
@@ -437,15 +486,16 @@ try {
   buildDist()
   writeScripts()
   fs.mkdirSync(OUT_DIR, { recursive: true })
+  fs.writeFileSync(path.join(OUT_DIR, INSTALL_SH_NAME), GET_SCRIPT, { mode: 0o755 })
   const zipFile = path.join(OUT_DIR, ZIP_NAME)
   const how = writeZip(zipFile)
   const size = fs.statSync(zipFile).size
   const shown = path.relative(process.cwd(), zipFile).startsWith("..") ? zipFile : path.relative(process.cwd(), zipFile)
   console.log(`\nWrote ${shown} (${(size / 1024 / 1024).toFixed(2)} MB, ${size} bytes, ${how})`)
   console.log(`  ${PRODUCT}/Install ${PRODUCT}.command`)
-  console.log(`  ${PRODUCT}/Uninstall ${PRODUCT}.command`)
   console.log(`  ${PRODUCT}/README.txt`)
   console.log(`  ${PRODUCT}/payload/ (${countFiles(PAYLOAD)} files, dist/ prebuilt)`)
+  console.log(`Wrote ${path.join(path.dirname(shown), INSTALL_SH_NAME)}: ${INSTALL_COMMAND}`)
 } finally {
   fs.rmSync(TEMP, { recursive: true, force: true })
 }

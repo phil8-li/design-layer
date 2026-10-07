@@ -21,6 +21,10 @@ Running the installer again is safe. It rewrites the plist, restarts the desk, a
 
 Tests: `node desktop/mac/test/desk-cases.mjs`. Icons: `icons/app-icon.svg` is the Dock icon and `runtime/favicon.svg` the tab icon. `node desktop/mac/make-icons.mjs` renders the first to the manifest's PNGs in a headless Playwright Chromium and copies the second to `icons/mark.svg`. An installed app keeps the icon it was installed with: delete `~/Applications/Chrome Apps.localized/DesignLayer.app` and run the installer again to reinstall it with the new one.
 
+## Download package
+
+`node desktop/mac/package.mjs` builds `Design-Layer-for-Mac.zip` and `install.sh` into `landing/downloads/`; CI publishes both with the landing page. The recommended install is `curl -fsSL https://phil8-li.github.io/design-layer/downloads/install.sh | bash`, which downloads the zip and runs its installer with no Gatekeeper prompt. Double-clicking `Install Design Layer.command` from a browser download makes macOS 15+ show "Apple could not verify … is free of malware": the file is quarantined and unsigned, and right-click › Open no longer bypasses that. The user must click Open Anyway in System Settings › Privacy & Security once. The zip's README.txt says so. The zip has no uninstaller to double-click, since that copy would be refused the same way. The installer writes it with `cat` (a new file has no quarantine flag) to `~/Library/Application Support/Design Layer/Uninstall Design Layer.command`, which opens on a double-click or with `bash`.
+
 ## Why it is built this way
 
 Nothing is compiled, signed, or downloaded at install time. It uses Apple's `launchctl`, `open`, `osascript` and `plutil`, your existing `node`, and the app shim Chrome writes when it installs a web app (`app_mode_loader`), which gives DesignLayer its own Dock icon and window without bundling Electron or requiring an Apple Developer certificate.

@@ -110,7 +110,7 @@ node landing/film/promo/publish.mjs t trailer    # launch.mp4, launch-720.mp4 (e
 
 ## Mac download
 
-The Download for Mac button links to the absolute GitHub Pages copy,
+The Get the ZIP link and `install.sh` point at the absolute GitHub Pages copy,
 `https://phil8-li.github.io/design-layer/downloads/Design-Layer-for-Mac.zip`,
 not a relative path. The zip is built, never committed, so a copy of this
 folder served from Vercel, Netlify or anywhere else has no `downloads/`; the
@@ -125,7 +125,16 @@ node desktop/mac/package.mjs
 ```
 
 The zip bundles Design Layer itself; users need Node 20.9+ and Chrome,
-not `npm i designlayer`. The page says so above the button.
+not `npm i designlayer`. The page says so above the command.
+
+The Mac card leads with a Terminal one-liner, not the zip:
+`curl -fsSL https://phil8-li.github.io/design-layer/downloads/install.sh | bash`.
+`package.mjs` writes `install.sh` next to the zip. A .command double-clicked
+from a browser download is quarantined, and macOS 15+ refuses to open it
+("Apple could not verify … is free of malware") until the user clicks Open
+Anyway in System Settings › Privacy & Security; right-click › Open no longer
+skips that. curl sets no quarantine flag, so the one-liner installs with no
+prompt. The zip stays as the secondary link, with that step spelled out.
 
 ## Icons
 

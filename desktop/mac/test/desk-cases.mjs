@@ -805,6 +805,28 @@ await check("quitProfileChrome stops the process that owns this exact profile", 
   }
 })
 
+// macOS 15+ refuses a quarantined, unsigned .command until the user clicks Open
+// Anyway in Privacy & Security; right-click > Open stopped bypassing that. The
+// download page leads with a curl one-liner, which sets no quarantine flag.
+await check("the download package and page offer the install with no Gatekeeper prompt", () => {
+  const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
+  const pkg = fs.readFileSync(path.join(repo, "desktop", "mac", "package.mjs"), "utf8")
+  const page = fs.readFileSync(path.join(repo, "landing", "index.html"), "utf8")
+  const readme = pkg.slice(pkg.indexOf("const README = `"), pkg.indexOf("`", pkg.indexOf("const README = `") + 16))
+  assert.doesNotMatch(readme, /right-click/i, "README.txt must not send users to right-click > Open")
+  assert.doesNotMatch(page, /right-click/i, "the page must not send users to right-click > Open")
+  assert.match(readme, /Open Anyway/, "README.txt names the Privacy & Security step for the zip")
+  assert.match(page, /Open Anyway/, "the page names the Privacy & Security step for the zip")
+  const downloads = pkg.match(/const DOWNLOADS_URL = "([^"]+)"/)[1]
+  const command = `curl -fsSL ${downloads}/install.sh | bash`
+  assert.ok(page.includes(`<code>${command}</code>`), `the page shows ${command}`)
+  assert.ok(page.includes(`${downloads}/Design-Layer-for-Mac.zip`), "the page links the zip at the same downloads URL")
+  assert.match(pkg, /writeFileSync\(path\.join\(OUT_DIR, INSTALL_SH_NAME\)/, "package.mjs publishes install.sh beside the zip")
+  // A double-clicked uninstaller from the download was refused the same way.
+  assert.doesNotMatch(pkg, /write\(`Uninstall/, "the zip's top folder has no uninstaller to double-click")
+  assert.match(pkg, /cat "\$APP\/uninstall\.command" >"\$UNINSTALLER"/, "the installer writes the uninstaller as a new, unquarantined file")
+})
+
 process.env.HOME = realHome
 fs.rmSync(tempHome, { recursive: true, force: true })
 

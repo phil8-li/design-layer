@@ -340,20 +340,22 @@ npx designlayer</code></pre>
           </section>
           <section class="path" aria-labelledby="path-mac">
             <h3 id="path-mac">As a Mac app</h3>
-            <p class="path-req">Needs Node 20.9+ and Chrome. Design Layer comes in the download; no npm install.</p>
+            <p class="path-req">Needs Node 20.9+ and Chrome. No clone or npm install.</p>
             <ol class="steps" data-steps>
-              <li>Download and unzip.</li>
-              <li>Double-click Install Design Layer.</li>
-              <li>Keep it in your Dock.</li>
+              <li>Paste this into Terminal.</li>
+              <li>Keep Design Layer in your Dock.</li>
             </ol>
-            <div class="download">
-              <img class="download-icon" src="assets/brand/icon-192.png" width="88" height="88" loading="lazy" decoding="async" alt="">
-              <div class="download-body">
-                <a class="btn btn-primary" href="https://phil8-li.github.io/design-layer/downloads/Design-Layer-for-Mac.zip" download>Download for Mac</a>
-                <p class="download-meta">ZIP for macOS</p>
+            <div class="install-card" data-copy-root>
+              <div class="install-bar">
+                <span>Terminal</span>
+                <button class="copy" type="button" data-copy aria-label="Copy the Mac install command">
+                  <svg class="icon icon-copy" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Copy"/></svg>
+                  <svg class="icon icon-check" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Check"/></svg>
+                </button>
               </div>
+<pre class="install-body is-wrap" tabindex="0" aria-label="Mac install command"><code>curl -fsSL https://phil8-li.github.io/design-layer/downloads/install.sh | bash</code></pre>
             </div>
-            <p class="path-note">It isn’t signed. The first time, right-click the installer and choose Open.</p>
+            <p class="path-note">Prefer a download? <a href="https://phil8-li.github.io/design-layer/downloads/Design-Layer-for-Mac.zip" download>Get the ZIP</a>. It isn’t signed, so macOS blocks its installer until you click Open Anyway in System Settings › Privacy &amp; Security.</p>
           </section>
         </div>
       </div>
@@ -377,7 +379,7 @@ npx designlayer</code></pre>
             <a class="way" href="https://github.com/phil8-li/design-layer/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">
               <span class="way-pin" aria-hidden="true">2</span>
               <h3>Fix it yourself</h3>
-              <p>All 73 test suites pass on a fresh clone.</p>
+              <p>All 75 test suites pass on a fresh clone.</p>
               <span class="way-cta">Read the contributing guide<svg class="icon" width="14" height="14" aria-hidden="true"><use href="assets/icons.svg#i-ArrowRight"/></svg></span>
             </a>
           </li>
