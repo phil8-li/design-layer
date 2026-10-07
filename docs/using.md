@@ -31,7 +31,7 @@ dependency; its prepare script builds the browser bundle on install.
 
    ```sh
    git clone https://github.com/phil8-li/design-layer.git
-   npm i -D ../designlayer
+   npm i -D ../design-layer
    ```
 
    To hand off one immutable artifact instead, run `npm pack` in this package
@@ -290,6 +290,15 @@ moved and resized at once is a single step, not three.
 `desktop/mac` installs DesignLayer as a Mac app, which is a nicer front door
 than a terminal for the way this is actually used: opened in the morning, left
 running, switched between apps all day.
+
+Without a clone, install it with one command. It downloads the package from
+the landing page and runs its installer, and macOS shows no security prompt:
+
+```sh
+curl -fsSL https://phil8-li.github.io/design-layer/downloads/install.sh | bash
+```
+
+From a checkout:
 
 ```sh
 node desktop/mac/install.mjs              # install and open it
