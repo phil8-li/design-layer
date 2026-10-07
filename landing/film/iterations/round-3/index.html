@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design Layer launch film: round 3</title>
+<style>
+  :root { color-scheme: dark; --line: rgba(255, 255, 255, 0.1); --text: #f5f5f7; --text-2: #a1a1a6; --text-3: #6e6e73; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: #000; color: var(--text); font: 17px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  main { max-width: 1180px; margin: 0 auto; padding: 72px 28px 120px; }
+  .back { margin-bottom: 18px; }
+  .back a { color: var(--text-2); text-decoration: none; font-size: 15px; font-weight: 500; }
+  h1 { font: 700 clamp(40px, 6vw, 64px)/1.04 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; letter-spacing: -0.035em; }
+  .lede { margin-top: 18px; max-width: 46em; color: var(--text-2); font-size: 19px; }
+  .jump { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+  .jump a { padding: 8px 16px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); color: var(--text); text-decoration: none; font-size: 15px; font-weight: 500; }
+  .jump a:hover { background: rgba(255, 255, 255, 0.14); }
+  .rules { margin-top: 36px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .rule { padding: 18px 20px; border-radius: 14px; background: rgba(255, 255, 255, 0.05); }
+  .rule b { display: block; font-weight: 600; margin-bottom: 4px; }
+  .rule span { color: var(--text-2); font-size: 15px; }
+  section { margin-top: 88px; scroll-margin-top: 24px; }
+  .kicker { font-size: 14px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-3); }
+  h2 { margin-top: 6px; font: 700 clamp(30px, 4vw, 44px)/1.08 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; letter-spacing: -0.03em; }
+  .pitch { margin-top: 8px; color: var(--text-2); font-size: 19px; max-width: 46em; }
+  video { display: block; width: 100%; aspect-ratio: 16 / 9; margin-top: 26px; border-radius: 18px; background: #050506; box-shadow: 0 0 0 1px var(--line), 0 30px 80px rgba(0, 0, 0, 0.6); }
+  dl { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 18px 28px; margin-top: 26px; }
+  dt { color: var(--text-3); font-size: 13px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+  dd { margin-top: 4px; font-size: 16px; }
+  h3 { margin-top: 96px; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  .refs { margin-top: 14px; padding-left: 20px; color: var(--text-2); max-width: 52em; }
+  .refs li { margin-top: 8px; }
+  .refs a { color: var(--text); }
+  footer { margin-top: 56px; color: var(--text-3); font-size: 14px; max-width: 52em; }
+  footer code { color: var(--text-2); font: 13px ui-monospace, "SF Mono", Menlo, monospace; }
+  @media (max-width: 760px) { .rules { grid-template-columns: 1fr; } dl { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <p class="back"><a href="../round-2/">← Round 2: One take is now the explainer</a> &nbsp;·&nbsp; <a href="../round-4/">Round 4: a real design fix →</a></p>
+  <h1>Round 3: the launch cut</h1>
+  <p class="lede">The same real session as One take (select the headline, give it a new color, leave a note, send it, see the diff), cut for a launch instead of a walkthrough. Kinetic type carries the story, and Design Layer's own tools become the motion graphics. The app itself is still never faked: every frame of it is a real capture. The cuts are silent; music comes later.</p>
+  <nav class="jump" aria-label="Cuts">
+    <a href="#g">G · Designed live</a>
+    <a href="#h">H · Color</a>
+    <a href="#i">I · Layers</a>
+  </nav>
+  <div class="rules">
+    <div class="rule"><b>The product is the graphic</b><span>Selection boxes, handles, the indigo, the note pin, and the diff are drawn big enough to act on the type and the frame.</span></div>
+    <div class="rule"><b>Words act out what they say</b><span>“Select” gets selected, “Change” changes color, “Comment” gets a pin, “Ship” gets a check.</span></div>
+    <div class="rule"><b>Bigger moves, same language</b><span>Wipes, lifts, and 3D turns on the explainer's two curves. Still no flashes, shakes, whip pans, grain, or letterbox.</span></div>
+  </div>
+
+  <section id="g">
+    <p class="kicker">Option G</p>
+    <h2>Designed live</h2>
+    <p class="pitch">The type gets edited with the product's own tools. A selection box grabs “it.” and drags it out into the app window. Then each word happens to the real app as you read it: “Select” is selected as the headline is, “Change” turns indigo as the hex is typed, the color floods the frame, and the note pops in as a pin. The edit and the note jump out of the app into the agent's window, the diff plays as giant type, and the finale edits four words.</p>
+    <video controls preload="metadata" playsinline src="option-g-designed-live.mp4" poster="option-g-designed-live.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>37.5 s</dd></div>
+      <div><dt>Lead</dt><dd>Kinetic type</dd></div>
+      <div><dt>Borrowed from</dt><dd>Figma's Config 2024 identity, which grew out of the basic shapes in Figma's own toolbar.</dd></div>
+    </dl>
+  </section>
+
+  <section id="h">
+    <p class="kicker">Option H</p>
+    <h2>Color</h2>
+    <p class="pitch">The app floats in the dark, in grey. “It works. It looks… fine. It just needs a design layer,” and those two words are the first color in the film. When the new value is entered, the color washes out from the headline across the whole editor and an indigo light comes up behind it. Then the window turns to face the agent's brief, and the change lands in code.</p>
+    <video controls preload="metadata" playsinline src="option-h-color.mp4" poster="option-h-color.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>37 s</dd></div>
+      <div><dt>Lead</dt><dd>Grey to color</dd></div>
+      <div><dt>Borrowed from</dt><dd>The black-and-white-to-color reveal, made the payoff of the color edit itself.</dd></div>
+    </dl>
+  </section>
+
+  <section id="i">
+    <p class="kicker">Option I</p>
+    <h2>Layers</h2>
+    <p class="pitch">The design layer, shown as an actual layer. The app lies flat in space, the editor's panels drop onto it, and the stack turns to face you. In the session, each tool lifts off the page while it's in use: the selection, then the picker (the color arcs out of it into the headline), then the note. The editor turns away as the agent's window arrives.</p>
+    <video controls preload="metadata" playsinline src="option-i-layers.mp4" poster="option-i-layers.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>38 s</dd></div>
+      <div><dt>Lead</dt><dd>3D planes</dd></div>
+      <div><dt>Borrowed from</dt><dd>The exploded-view diagram: one stack, pulled apart so you can see what sits on what.</dd></div>
+    </dl>
+  </section>
+
+  <h3>What I took from the references</h3>
+  <ul class="refs">
+    <li>Figma's Config 2024 identity took basic shapes from Figma's toolbar and expanded them into the whole system. Design Layer has the same kind of vocabulary (the selection, its handles and size label, the pin), so G and I use it as the graphics. (<a href="https://www.itsnicethat.com/features/figma-config-2024-identity-graphic-design-spotlight-090724">It's Nice That, on the Figma Config 2024 identity</a>)</li>
+    <li>Show the product doing one real job with one clear outcome. All three still follow a single edit from start to finish. (<a href="https://www.moonb.io/blog/software-demo-video">Moonb, “13 Software Demo Videos That Sell the Product”</a>)</li>
+    <li>Arrive fast, settle long, and let motion confirm rather than perform. The bigger moves here run on the same expo-out and in-out curves as the explainer. (<a href="https://www.designmd.co/blog/linear-vs-vercel-motion">DesignMD, “Linear vs Vercel: two approaches to minimal motion”</a>)</li>
+  </ul>
+
+  <footer>
+    Source: <code>site/film/promo/</code> (<code>cuts.js</code> holds the three edits, <code>promo.js</code> the engine and its motion-graphics nodes, <code>render.mjs</code> builds them). The session is the same capture as round 2, from <code>designlayer-demos/story/capture-story.mjs</code>.
+  </footer>
+</main>
+</body>
+</html>

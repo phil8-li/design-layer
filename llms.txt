@@ -1,0 +1,22 @@
+# DesignLayer
+
+> A visual editor for a running React or Angular dev server. It proxies the app, lets a designer select and edit elements like Figma layers, writes each change back into the component source, and serves MCP so a coding agent can receive the designer's notes.
+
+## For agents using DesignLayer
+
+- [Agent handoff (MCP)](docs/agent-handoff.md): client config, the wait_for_change / resolve_change loop, tool reference
+- [Using DesignLayer](docs/using.md): install, start screen, CLI flags, shortcuts
+- [Configuration](docs/configuration.md): designlayer.config.mjs, Tailwind, design-system manifests, icons, companions
+
+## For agents editing this repository
+
+- [AGENTS.md](AGENTS.md): commands, file map, rules, style
+- [Architecture](docs/architecture.md): what it writes, security model, performance, layout
+- [Testing](docs/testing.md): suites and host-pinned tests
+- [CONTRIBUTING.md](CONTRIBUTING.md): pull request process
+
+## Optional
+
+- [Angular hosts](docs/angular.md)
+- [Mac app](desktop/mac/README.md)
+- [Landing page module](landing/README.md)

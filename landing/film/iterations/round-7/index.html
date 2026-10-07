@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design Layer launch film: round 7, sound</title>
+<style>
+  :root { color-scheme: dark; --line: rgba(255, 255, 255, 0.1); --text: #f5f5f7; --text-2: #a1a1a6; --text-3: #6e6e73; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: #000; color: var(--text); font: 17px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  main { max-width: 1180px; margin: 0 auto; padding: 72px 28px 120px; }
+  .back a { color: var(--text-2); text-decoration: none; font-size: 15px; font-weight: 500; }
+  h1 { margin-top: 18px; font: 700 clamp(40px, 6vw, 64px)/1.04 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; letter-spacing: -0.035em; }
+  .lede { margin-top: 18px; max-width: 46em; color: var(--text-2); font-size: 19px; }
+  .listen { margin-top: 18px; display: inline-block; padding: 10px 16px; border-radius: 12px; background: rgba(255, 255, 255, 0.06); color: var(--text-2); font-size: 15px; }
+  .jump { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+  .jump a { padding: 8px 16px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); color: var(--text); text-decoration: none; font-size: 15px; font-weight: 500; }
+  .fixed { margin-top: 36px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .fix { padding: 18px 20px; border-radius: 14px; background: rgba(255, 255, 255, 0.05); }
+  .fix b { display: block; font-weight: 600; margin-bottom: 4px; }
+  .fix span { color: var(--text-2); font-size: 15px; }
+  section { margin-top: 88px; scroll-margin-top: 24px; }
+  .kicker { font-size: 14px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-3); }
+  h2 { margin-top: 6px; font: 700 clamp(30px, 4vw, 44px)/1.08 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; letter-spacing: -0.03em; }
+  .pitch { margin-top: 8px; color: var(--text-2); font-size: 19px; max-width: 46em; }
+  video { display: block; width: 100%; aspect-ratio: 16 / 9; margin-top: 26px; border-radius: 18px; background: #050506; box-shadow: 0 0 0 1px var(--line), 0 30px 80px rgba(0, 0, 0, 0.6); }
+  .spec { display: block; width: 100%; margin-top: 14px; border-radius: 12px; box-shadow: 0 0 0 1px var(--line); }
+  .cap { margin-top: 8px; font-size: 13px; color: var(--text-3); }
+  dl { display: grid; grid-template-columns: 1fr 2fr 2fr; gap: 18px 28px; margin-top: 22px; }
+  dt { color: var(--text-3); font-size: 13px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+  dd { margin-top: 4px; font-size: 16px; }
+  h3 { margin-top: 96px; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  table { width: 100%; margin-top: 18px; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-top: 1px solid var(--line); }
+  th { color: var(--text-3); font-weight: 600; font-size: 12px; letter-spacing: 0.02em; text-transform: uppercase; }
+  td:first-child { white-space: nowrap; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  td { color: var(--text-2); }
+  td b { color: var(--text); font-weight: 600; }
+  .refs { margin-top: 14px; padding-left: 20px; color: var(--text-2); max-width: 52em; }
+  .refs li { margin-top: 8px; }
+  .refs a { color: var(--text); }
+  footer { margin-top: 56px; color: var(--text-3); font-size: 14px; max-width: 52em; }
+  footer code { color: var(--text-2); font: 13px ui-monospace, "SF Mono", Menlo, monospace; }
+  @media (max-width: 760px) { .fixed { grid-template-columns: 1fr; } dl { grid-template-columns: 1fr; } table { font-size: 13px; } }
+</style>
+</head>
+<body>
+<main>
+  <p class="back"><a href="../round-6/">← Round 6: the landing page's story, told like Apple</a> &nbsp;·&nbsp; <a href="../round-8/">Round 8: Effortless, made cinematic →</a></p>
+  <h1>Round 7: One move, with sound</h1>
+  <p class="lede">The same picture, option T, with three sound designs. Each sits in one of the tempo bands from the Apple breakdown: 74 BPM, regal and cinematic; 100 BPM, smooth and effortless; 120 BPM, elite and kinetic. In all three the sound follows the story and the cuts. The music opens with the landing, holds its breath before the agent's hover and comes back on it, then resolves on the name. Every effect sits on its moment in the picture.</p>
+  <p class="listen">Listen with headphones or good speakers. I can't hear, so everything here was checked by measurement.</p>
+  <nav class="jump" aria-label="Options">
+    <a href="#keynote">1 · Keynote</a>
+    <a href="#effortless">2 · Effortless</a>
+    <a href="#kinetic">3 · Kinetic</a>
+  </nav>
+
+  <div class="fixed">
+    <div class="fix"><b>On the beat where it matters</b><span>Each tempo was chosen so the editor's landing (4.6 s) and the agent's hover (25.65 s) are a whole number of beats apart. Each track was then nudged under half a beat. A beat now falls on both, within 4 ms.</span></div>
+    <div class="fix"><b>Effects on their frames</b><span>Clicks fall on the pointer's clicks, air on the camera's moves (loudest where each move is fastest), a settle where a layer lands back, a glass tink where the token lands. A white shimmer pans with the light as it runs around the button. Measured, the effects start on their cues: under a millisecond off, on the median.</span></div>
+    <div class="fix"><b>The music follows the story</b><span>Dark and filtered while the line lights, opening as the camera flies through it, steady through the editing, a breakdown as the editor steps aside, the peak on the hover, wide for every page, then resolving. Loudness is measured section by section in each mix.</span></div>
+    <div class="fix"><b>Restraint, as Apple does it</b><span>Each effect's level was measured against the music where it plays. Anything masked was brought up, and anything that stood out was taken down. Keynote voices only the turning points; Effortless voices every interaction; Kinetic hits the drops.</span></div>
+  </div>
+
+  <section id="keynote">
+    <p class="kicker">Option 1 · 74 BPM · D major / B minor</p>
+    <h2>Keynote</h2>
+    <p class="pitch">Regal and cinematic: felt piano, warm pads and soft strings, the music leading and the effects few and soft. A low drone sits in the dark under the line, and a swell and a rush of air come as the camera flies through it. The filter opens on a downbeat with a deep impact as the editor lands. The layers breathe as they lift and settle. Air follows each move of the camera, and a glass tink marks the token landing. The note goes out with a two-note chime. Then the music holds its breath and returns on the hover, with a glassy sheen and a white shimmer. A soft D-major bloom arrives with the name.</p>
+    <video controls preload="metadata" playsinline src="one-move-keynote.mp4" poster="poster.jpg"></video>
+    <img class="spec" src="sound-keynote.png" alt="Spectrogram of the Keynote mix with the film's cues marked: quiet and dark until the landing, a dip before the hover, a bloom at the name">
+    <p class="cap">The mix as a spectrogram, with the picture's cues marked.</p>
+    <dl>
+      <div><dt>Tempo</dt><dd>74 BPM (regal, cinematic)</dd></div>
+      <div><dt>Effects</dt><dd>48, soft; only the turning points</dd></div>
+      <div><dt>Feel</dt><dd>A keynote reveal: patient, warm, a held breath before the payoff</dd></div>
+    </dl>
+  </section>
+
+  <section id="effortless">
+    <p class="kicker">Option 2 · 100 BPM · F major / D minor</p>
+    <h2>Effortless</h2>
+    <p class="pitch">Smooth and cool: a relaxed deep-house groove with Rhodes chords and round bass. Every interaction has its own small, dry sound: the clicks, the double-click, the keys as the copy is typed, the detents as the gap opens, the note's pop. The groove starts on the beat as the editor lands. It drops to a breakdown while the editor steps aside and the agent comes in, and comes back on the hover with the sheen and the shimmer. An F-major bloom, a sweep across the name and a click on the button close it.</p>
+    <video controls preload="metadata" playsinline src="one-move-effortless.mp4" poster="poster.jpg"></video>
+    <img class="spec" src="sound-effortless.png" alt="Spectrogram of the Effortless mix with the film's cues marked: a steady groove from the landing, a breakdown before the hover">
+    <p class="cap">The mix as a spectrogram, with the picture's cues marked.</p>
+    <dl>
+      <div><dt>Tempo</dt><dd>100 BPM (smooth, effortless)</dd></div>
+      <div><dt>Effects</dt><dd>101, crisp; every interaction voiced</dd></div>
+      <div><dt>Feel</dt><dd>The tool feels easy: you hear each thing you do</dd></div>
+    </dl>
+  </section>
+
+  <section id="kinetic">
+    <p class="kicker">Option 3 · 120 BPM · C major / A minor</p>
+    <h2>Kinetic</h2>
+    <p class="pitch">Elite and kinetic: a pulsing arpeggio, a tight kick and claps, glossy stabs, sophisticated rather than hype. A long riser builds through the fly-in and the beat drops with a hit as the editor lands. Typing falls on the 16th notes and clicks are crisp. The token lands with a tink and a double tick. A breakdown and a long riser lead to the second drop, on the hover, as the sheen crosses the button and the light runs around it. A hit opens the board, and the cut ends on a bloom and a sweep across the name.</p>
+    <video controls preload="metadata" playsinline src="one-move-kinetic.mp4" poster="poster.jpg"></video>
+    <img class="spec" src="sound-kinetic.png" alt="Spectrogram of the Kinetic mix with the film's cues marked: a riser into the landing, a driving beat, a breakdown and riser into the hover">
+    <p class="cap">The mix as a spectrogram, with the picture's cues marked.</p>
+    <dl>
+      <div><dt>Tempo</dt><dd>120 BPM (elite, kinetic)</dd></div>
+      <div><dt>Effects</dt><dd>75, punchy; risers into the drops</dd></div>
+      <div><dt>Feel</dt><dd>A launch: momentum, two drops, on the beat</dd></div>
+    </dl>
+  </section>
+
+  <h3>How the sound meets the picture</h3>
+  <table>
+    <thead><tr><th>Time</th><th>Picture</th><th>Keynote</th><th>Effortless</th><th>Kinetic</th></tr></thead>
+    <tbody>
+      <tr><td>0–1.9 s</td><td><b>The hero line lights in the dark</b></td><td>Low drone, sparse piano through a closed filter</td><td>Warm filtered pads, no drums</td><td>A filtered arpeggio alone</td></tr>
+      <tr><td>1.9–4.6 s</td><td><b>The camera flies through the line; the layers land</b></td><td>A swell; air rushing past as the line crosses the lens (3.1 s); soft thuds as the panels and toolbar land</td><td>The filter rises; air past the lens; a thud and the toolbar's click</td><td>A long riser; air past the lens; a hit on each landing</td></tr>
+      <tr><td>4.6 s</td><td><b>The editor lands</b></td><td>The filter opens on a downbeat; a deep impact</td><td>The groove starts on the beat</td><td>The beat drops, with a hit</td></tr>
+      <tr><td>5.4–14.9 s</td><td><b>Edit the copy, measure, open the gap</b></td><td>The music leads; air as each layer lifts, a settle as it lands; a quiet blip on the measure</td><td>Every click, key and detent voiced; air on the lifts</td><td>Crisp clicks, typing on the 16th notes, detents rising with the value</td></tr>
+      <tr><td>14.6–23.2 s</td><td><b>Orbit to the token, crane to the note, rise to Send</b></td><td>Air on each move, panned with it; a glass tink as the token lands; a two-note chime as the note goes out</td><td>The same, with a click on every press and a swoosh on Send</td><td>Punchier air; the tink with a double tick; a swoosh on Send</td></tr>
+      <tr><td>23.6–25.6 s</td><td><b>Back to the page; the editor steps aside; the agent comes</b></td><td>The music dips and closes, a held breath; air as the panels slide out; a riser into the hover</td><td>A breakdown, drums out; a short riser</td><td>A breakdown; a long riser into the drop</td></tr>
+      <tr><td>25.65 s</td><td><b>The agent's hover</b></td><td>The music returns on the beat; a soft impact; a glassy sheen; a white shimmer that pans with the light</td><td>The groove returns on the beat; sheen; shimmer</td><td>The drop, on the beat, with a hit; sheen; shimmer</td></tr>
+      <tr><td>29.05 s</td><td><b>Every page</b></td><td>Long air as the page shrinks; a low swell as the board lies back</td><td>The same, lighter; a tick for the title</td><td>A hit as the board opens; air</td></tr>
+      <tr><td>32.6 s</td><td><b>The name</b></td><td>A D-major bloom and a light sweep with the name's light</td><td>An F-major bloom, the sweep, a click on the button</td><td>A hit, a bloom and the sweep</td></tr>
+    </tbody>
+  </table>
+
+  <h3>What I took from Apple's videos, for sound</h3>
+  <ul class="refs">
+    <li>The soundtrack sets the energy, and the tempo picks the feeling: 60–80 BPM regal and cinematic, 90–110 smooth and effortless, 115–123 elite and kinetic. Above that it turns to hype. (<a href="https://x.com/leomeethewoo/status/2103529310208606701">leomeethewoo, “Make your product videos look expensive”</a>)</li>
+    <li>Intention: each option has one small palette of sounds and one key, chosen on purpose. No stock “tech” effects and no rap.</li>
+    <li>Sound design is the cherry on top. Avoid effects that don't matter, and remove any that feels too loud or out of place, or that doesn't help people follow the product. Here that was done by measuring every effect against the music.</li>
+  </ul>
+
+  <h3>Notes</h3>
+  <ul class="refs">
+    <li>The music is generated by a real-time music model steered section by section against the film's cues (prompt, density, brightness, drums).</li>
+    <li>Two takes left a narrow noise band at 12–16 kHz above the music, and one also a 14 kHz tone. Both are filtered out, to 90 dB below the music. The stream dropped out for a few tens of milliseconds twice in Effortless and once in Kinetic. Each gap is patched with the same stretch one bar earlier.</li>
+    <li>Mastered to −16 LUFS with peaks under −2.5 dB, AAC at 256 kbps. The film's audio matches the mix to the sample.</li>
+  </ul>
+
+  <footer>
+    Source: <code>site/film/promo/sound/</code>: <code>cues.mjs</code> (the picture's events, from <code>cuts-r6-t.js</code>), <code>bed.py</code> (the music bed), <code>sfx.py</code> (the effects), <code>mix.py</code>, <code>verify.py</code>, <code>audibility.py</code>, <code>picture.py</code>.
+  </footer>
+</main>
+</body>
+</html>

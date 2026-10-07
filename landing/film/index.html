@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Design Layer — launch film</title>
+<meta name="viewport" content="width=1920, height=1080">
+<link rel="stylesheet" href="film.css">
+</head>
+<body>
+<div id="film">
+  <div id="glow"></div>
+
+  <section id="title" aria-label="Bring the design layer to your vibe-coded apps. Edit it like Figma.">
+    <div class="line" id="title1"></div>
+    <div class="line" id="title2"></div>
+    <div class="line muted" id="title3"></div>
+  </section>
+
+  <div id="win">
+    <div class="chrome">
+      <span class="dots"><i></i><i></i><i></i></span>
+      <span class="url">localhost:3000</span>
+    </div>
+    <div id="vp">
+      <div class="cam" id="camMain">
+        <img id="imgApp" alt="">
+        <div class="strip" id="stripL"><img alt=""></div>
+        <div class="strip" id="stripC"><img alt=""></div>
+        <div class="strip" id="stripR"><img alt=""></div>
+        <img id="imgHero" alt="">
+        <img id="imgMeasure" alt="">
+        <img id="imgTokens" alt="">
+        <svg class="over" viewBox="0 0 1600 1000" width="1600" height="1000">
+          <rect id="selRect" fill="none" stroke="#798cff" stroke-width="2.5" vector-effect="non-scaling-stroke" rx="2"/>
+          <rect id="tokBar" fill="rgba(121,140,255,0.16)" stroke="rgba(121,140,255,0.75)" stroke-width="1.5" vector-effect="non-scaling-stroke" rx="5"/>
+        </svg>
+        <div id="selLabel"></div>
+      </div>
+      <div class="cam" id="camCanvas"><img id="imgCanvas" alt=""><div id="flyClip"><img id="appFly" alt=""></div></div>
+      <div class="cam" id="camNotes">
+        <img id="imgNotes" alt="">
+        <svg class="over" viewBox="0 0 1600 1000" width="1600" height="1000" id="pins"></svg>
+      </div>
+    </div>
+  </div>
+
+  <div id="agent">
+    <div class="card" id="changesCard">
+      <div class="crop"><img id="imgChanges" alt=""></div>
+      <div id="sendBtn"><img id="imgSend" alt=""></div>
+      <div id="sendRing"></div>
+    </div>
+    <div class="card term" id="term">
+      <div class="termBar"><span class="dots"><i></i><i></i><i></i></span><span>agent · designlayer MCP</span></div>
+      <div class="termBody"><pre id="termText"></pre></div>
+    </div>
+  </div>
+
+  <div id="code">
+    <div class="card codeCard">
+      <div class="codeBar"><span id="codeFile"></span><span id="codeStat"></span></div>
+      <div id="codeBody"></div>
+      <div id="codeSweep"></div>
+    </div>
+  </div>
+
+  <div id="end">
+    <div id="endGlow"></div>
+    <img id="endIcon" src="../assets/brand/icon-512.png" alt="">
+    <div id="endMark">Design Layer</div>
+    <div id="endSub">Bring the design layer to your vibe-coded apps.</div>
+    <div id="endUrl">github.com/phil8-li/design-layer</div>
+  </div>
+
+  <div id="keys"></div>
+  <div id="caption"></div>
+  <div id="vignette"></div>
+  <div id="black"></div>
+</div>
+<script src="film.js"></script>
+</body>
+</html>

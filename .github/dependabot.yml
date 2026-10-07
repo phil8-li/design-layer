@@ -1,0 +1,17 @@
+version: 2
+updates:
+  # react-rewrite-cli is pinned on purpose: runtime/vendor-patch.mjs splices
+  # that exact build, so a bump is a rewrite of the patches, not a PR to merge.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    ignore:
+      - dependency-name: react-rewrite-cli
+    groups:
+      dev-dependencies:
+        dependency-type: development
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

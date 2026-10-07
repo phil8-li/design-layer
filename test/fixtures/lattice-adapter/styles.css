@@ -1,0 +1,13 @@
+:root {
+  --lattice-graphite: #14161a;
+  --lattice-accent: #e5484d;
+  --lattice-radius-sm: 4px;
+  --lattice-radius-lg: 12px;
+
+  --lattice-button-bg: var(--lattice-accent);
+}
+
+@theme {
+  --color-accent: var(--lattice-accent);
+  --radius-lg: var(--lattice-radius-lg);
+}

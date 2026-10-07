@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Design Layer — Bring the design layer to your vibe-coded apps</title>
+  <meta name="description" content="Edit your running React or Angular app like a Figma file, or comment and let your coding agent make the change. Every edit lands in your source. Open source.">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0a0a0b">
+  <link rel="canonical" href="https://phil8-li.github.io/design-layer/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Design Layer">
+  <meta property="og:title" content="Design Layer — Bring the design layer to your vibe-coded apps">
+  <meta property="og:description" content="Edit your running React or Angular app like a Figma file, or comment and let your coding agent make the change. Every edit lands in your source. Open source.">
+  <meta property="og:url" content="https://phil8-li.github.io/design-layer/">
+  <meta property="og:image" content="https://phil8-li.github.io/design-layer/assets/og.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="The Design Layer editor open on a running web app, with an element selected and the inspector showing its spacing and type.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Design Layer — Bring the design layer to your vibe-coded apps">
+  <meta name="twitter:description" content="Edit your running React or Angular app like a Figma file, or comment and let your coding agent make the change. Every edit lands in your source. Open source.">
+  <link rel="icon" href="assets/brand/mark.svg" type="image/svg+xml">
+  <link rel="icon" href="assets/brand/icon-192.png" type="image/png" sizes="192x192">
+  <link rel="apple-touch-icon" href="assets/brand/icon-192.png">
+  <link rel="preload" href="assets/fonts/InterVariable-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css">
+  <script>document.documentElement.classList.add("js")</script>
+  <script type="module" src="main.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav" data-nav>
+    <div class="nav-inner">
+      <a class="brand" href="#top" aria-label="Design Layer home">
+        <img src="assets/brand/mark.svg" width="24" height="24" alt="">
+        <span>Design Layer</span>
+      </a>
+      <a class="nav-start" href="#start">Get started</a>
+      <button class="btn btn-secondary nav-film" type="button" data-film-open>Film</button>
+      <a class="btn btn-primary nav-gh" href="https://github.com/phil8-li/design-layer" target="_blank" rel="noopener" aria-label="GitHub">
+        <svg class="gh" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><use href="#gh"/></svg>
+        <span class="nav-gh-label">GitHub</span>
+        <span class="star-count" data-stars hidden></span>
+      </a>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <div class="hero-blinds" data-hero-blinds aria-hidden="true"></div>
+      <div class="hero-track" data-hero>
+        <div class="hero-stage">
+          <div class="wrap hero-copy" data-hero-copy>
+            <h1 id="hero-title">Bring the<br class="br-sm"> <span class="token"><img class="token-art" src="assets/brand/mark.svg" width="32" height="32" alt="">design layer</span> to<br class="br-lg"> your<br class="br-sm"> <button class="token" type="button" data-token aria-describedby="token-hint"><span class="token-art" aria-hidden="true"><svg class="icon" width="20" height="20"><use href="assets/icons.svg#i-Sparkles"/></svg></span><span class="token-words"><span class="token-word">vibe-coded</span></span></button> apps.</h1>
+            <p class="visually-hidden" id="token-hint">Select it for another kind of app.</p>
+          </div>
+
+          <div class="hero-film" data-hero-film>
+            <div class="stack" data-stack>
+              <!-- Bottom plane: the app, as it runs. -->
+              <div class="frame frame-hero plane-app" data-glow>
+                <div class="frame-view">
+                  <div class="frame-zoom" data-hero-zoom>
+                    <div class="strip strip-center" data-strip="center"><img data-shot="hero" src="assets/shots/midday/hero-1280.webp" srcset="assets/shots/midday/hero-1280.webp 1280w, assets/shots/midday/hero-2400.webp 2400w" sizes="(min-width: 1200px) 1120px, 94vw" width="1600" height="1000" decoding="async" alt="Design Layer open on a running app: the Layers panel on the left, the selected element outlined on the page, the inspector on the right, and the toolbar along the bottom."></div>
+                  </div>
+                </div>
+              </div>
+              <!-- Middle plane: Design Layer's panels, on a sheet of glass. -->
+              <div class="plane plane-chrome" data-plane-chrome aria-hidden="true">
+                <div class="strip strip-left" data-strip="left"><img data-shot="hero" src="assets/shots/midday/hero-1280.webp" srcset="assets/shots/midday/hero-1280.webp 1280w, assets/shots/midday/hero-2400.webp 2400w" sizes="(min-width: 1200px) 1120px, 94vw" width="1600" height="1000" decoding="async" alt=""></div>
+                <div class="strip strip-right" data-strip="right"><img data-shot="hero" src="assets/shots/midday/hero-1280.webp" srcset="assets/shots/midday/hero-1280.webp 1280w, assets/shots/midday/hero-2400.webp 2400w" sizes="(min-width: 1200px) 1120px, 94vw" width="1600" height="1000" decoding="async" alt=""></div>
+              </div>
+              <!-- Top plane: the toolbar, which lands last. -->
+              <div class="plane plane-tools" data-plane-tools aria-hidden="true">
+                <div class="shot-space" data-shot-space><div data-toolbar-slot data-tour></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-pinned" id="edit" aria-labelledby="edit-title">
+      <div class="tabs-track" data-tabs data-lead="60">
+        <div class="tabs-stage">
+          <div class="wrap">
+            <header class="section-head">
+              <h2 id="edit-title">Design like Figma. <span class="dim">On the real thing.</span></h2>
+            </header>
+            <div class="switcher" data-switcher>
+              <div class="switcher-tabs" role="tablist" aria-label="Editing tools">
+                <span class="switcher-pill" aria-hidden="true"></span>
+                <button type="button" role="tab" id="edit-tab-text" aria-selected="true" aria-controls="edit-view">Direct edit</button>
+                <button type="button" role="tab" id="edit-tab-align" aria-selected="false" aria-controls="edit-view" tabindex="-1">Align</button>
+                <button type="button" role="tab" id="edit-tab-measure" aria-selected="false" aria-controls="edit-view" tabindex="-1">Measure</button>
+                <button type="button" role="tab" id="edit-tab-hide" aria-selected="false" aria-controls="edit-view" tabindex="-1">Hide Design Layer</button>
+              </div>
+              <div class="frame switcher-frame" data-glow>
+                <div class="frame-view" id="edit-view" role="tabpanel" aria-labelledby="edit-tab-text" tabindex="-1">
+                  <div class="frame-zoom">
+                    <div class="shot is-active" role="img" aria-label="Direct edit: the headline, double-clicked and retyped in place.">
+                      <img data-shot="hero" src="assets/shots/midday/hero-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="">
+                      <img class="cue-after" style="--swap:.46" data-shot="direct-edit" src="assets/shots/midday/direct-edit-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="">
+                      <div class="shot-space" data-shot-space aria-hidden="true">
+                        <div class="te" data-type-edit>The design layer for <span class="te-span"><span data-te-word>vibe-coded</span><i class="te-caret"></i> apps</span></div>
+                        <span class="cue-hand" style="--x:700px;--y:338px;--fx:1250px;--fy:640px;--a:.06;--d:.16;--z:.42"></span>
+                        <span class="cue-ripple" style="--x:700px;--y:338px;--c:.24"></span>
+                        <span class="cue-ripple" style="--x:700px;--y:338px;--c:.3"></span>
+                        <span class="cue-key" style="--x:722px;--y:376px;--a:.12;--z:.42">Double-click</span>
+                        <span class="cue-key cue-key-center" style="--x:800px;--y:144px;--a:.44;--z:.76">Type<kbd data-te-key>R</kbd></span>
+                      </div>
+                    </div>
+                    <div class="shot" aria-hidden="true" role="img" aria-label="Align: three cards shift-selected, then centered.">
+                      <img data-shot="align" src="assets/shots/midday/align-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="">
+                      <div class="shot-space" data-shot-space aria-hidden="true">
+                        <span class="cue-hand" style="--x:452px;--y:470px;--fx:700px;--fy:760px;--a:.06;--d:.12"></span>
+                        <span class="cue-ripple" style="--x:452px;--y:470px;--c:.2"></span>
+                        <span class="cue-ripple" style="--x:682px;--y:470px;--c:.28"></span>
+                        <span class="cue-ripple" style="--x:912px;--y:470px;--c:.36"></span>
+                        <span class="cue-key" style="--x:474px;--y:494px;--a:.14"><kbd>⇧</kbd>Click</span>
+                        <span class="cue-hand" style="--x:1410px;--y:140px;--fx:912px;--fy:470px;--a:.46;--d:.16"></span>
+                        <span class="cue-ripple" style="--x:1410px;--y:140px;--c:.66"></span>
+                      </div>
+                    </div>
+                    <div class="shot" aria-hidden="true" role="img" aria-label="Measure: holding Option shows the 120 pixel gap to the button.">
+                      <img data-shot="measure" src="assets/shots/midday/measure-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="">
+                      <div class="shot-space" data-shot-space aria-hidden="true">
+                        <span class="cue-hand" style="--x:822px;--y:516px;--fx:1180px;--fy:760px;--a:.06;--d:.18"></span>
+                        <span class="cue-key" style="--x:846px;--y:540px;--a:.26"><kbd>⌥</kbd>Measure</span>
+                      </div>
+                    </div>
+                    <div class="shot shot-collapse" aria-hidden="true" data-collapse role="img" aria-label="Hide Design Layer: ⌘. slides the panels away, leaving one round button.">
+                      <img data-shot="hidden" src="assets/shots/midday/hidden-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="">
+                      <div class="strip strip-center"><img data-shot="hero" src="assets/shots/midday/hero-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt=""></div>
+                      <div class="strip strip-left"><img data-shot="hero" src="assets/shots/midday/hero-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt=""></div>
+                      <div class="strip strip-right"><img data-shot="hero" src="assets/shots/midday/hero-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt=""></div>
+                      <div class="shot-space" data-shot-space aria-hidden="true">
+                        <span class="cue-key" style="--x:866px;--y:884px;--a:.04"><kbd>⌘</kbd><kbd>.</kbd>Hide</span>
+                        <span class="cue-pulse" style="--x:1548px;--y:948px;--c:.46"></span>
+                        <span class="cue-pulse" style="--x:1548px;--y:948px;--c:.54"></span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-pinned" id="system" aria-labelledby="system-title">
+      <div class="tabs-track" data-tabs>
+        <div class="tabs-stage">
+          <div class="wrap">
+            <header class="section-head">
+              <h2 id="system-title">Bring your design system. <span class="dim">Stay consistent.</span></h2>
+            </header>
+            <div class="switcher" data-switcher>
+              <div class="switcher-tabs" role="tablist" aria-label="Design system tools">
+                <span class="switcher-pill" aria-hidden="true"></span>
+                <button type="button" role="tab" id="system-tab-libraries" aria-selected="true" aria-controls="system-view">Libraries</button>
+                <button type="button" role="tab" id="system-tab-tokens" aria-selected="false" aria-controls="system-view" tabindex="-1">Tokens</button>
+                <button type="button" role="tab" id="system-tab-audit" aria-selected="false" aria-controls="system-view" tabindex="-1">Audit</button>
+              </div>
+              <div class="frame switcher-frame" data-glow>
+                <div class="frame-view" id="system-view" role="tabpanel" aria-labelledby="system-tab-libraries" tabindex="-1">
+                  <div class="frame-zoom">
+                    <div class="shot is-active" role="img" aria-label="Libraries: the project's design system libraries, and one more added by URL." data-cam="2 1200 250">
+                      <img data-shot="system" src="assets/shots/midday/system-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="">
+                      <div class="shot-space" data-shot-space aria-hidden="true">
+                        <span class="cue-ring" style="left:1326px;top:76px;width:268px;height:123px;--a:.28"></span>
+                        <span class="cue-key cue-tag" style="--x:1196px;--y:126px;--a:.3">Design system libraries</span>
+                        <span class="cue-type" style="--x:1333px;--y:211px;--a:.46">acme.com/design-system</span>
+                        <span class="cue-hand" style="--x:1569px;--y:221px;--fx:1300px;--fy:420px;--a:.6;--d:.1"></span>
+                        <span class="cue-ripple" style="--x:1569px;--y:221px;--c:.76"></span>
+                      </div>
+                    </div>
+                    <div class="shot" aria-hidden="true" role="img" aria-label="Tokens: the fill picker lists the app's own color tokens, and one is picked." data-cam="1.6 1100 450">
+                      <img data-shot="tokens" src="assets/shots/midday/tokens-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="">
+                      <div class="shot-space" data-shot-space aria-hidden="true">
+                        <span class="cue-key cue-tag" style="--x:1190px;--y:252px;--a:.28">From your globals.css</span>
+                        <span class="cue-hand" style="--x:1404px;--y:519px;--fx:820px;--fy:520px;--a:.36;--d:.16"></span>
+                        <span class="cue-ripple" style="--x:1404px;--y:519px;--c:.6"></span>
+                        <span class="cue-ring" style="left:1336px;top:506px;width:250px;height:24px;--a:.6"></span>
+                      </div>
+                    </div>
+                    <div class="shot" aria-hidden="true" role="img" aria-label="Audit: one click runs the project's linters and lists every off-system value." data-cam="1.7 1129 380">
+                      <img data-shot="audit" src="assets/shots/midday/audit-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="">
+                      <div class="shot-space" data-shot-space aria-hidden="true">
+                        <span class="cue-hand" style="--x:1391px;--y:121px;--fx:1180px;--fy:420px;--a:.16;--d:.12"></span>
+                        <span class="cue-ripple" style="--x:1391px;--y:121px;--c:.32"></span>
+                        <span class="cue-ring" style="left:1326px;top:166px;width:250px;height:36px;--a:.4"></span>
+                        <span class="cue-key cue-tag" style="--x:1212px;--y:172px;--a:.42">shadcn/lint + ds-lint</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-pinned section-canvas" id="canvas" aria-labelledby="canvas-title">
+      <div class="canvas-track" data-canvas>
+        <div class="canvas-stage">
+          <div class="wrap">
+            <header class="section-head">
+              <h2 id="canvas-title">Every page on one board. <span class="dim">One click back to live.</span></h2>
+            </header>
+          </div>
+          <div class="canvas-film" data-canvas-film>
+            <div class="frame" data-glow>
+              <div class="frame-view" data-rest=".55" style="--t:.55">
+                <div class="frame-zoom">
+                  <img data-shot="canvas" src="assets/shots/midday/canvas-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="Canvas view: every page of the app on one board, each a live frame.">
+                  <div class="strip strip-center canvas-live" data-canvas-live aria-hidden="true"><img data-shot="hero" src="assets/shots/midday/hero-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt=""></div>
+                  <img class="canvas-page" data-shot="hero" src="assets/shots/midday/hero-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="">
+                  <div class="shot-space" data-shot-space aria-hidden="true">
+                    <span class="board-hover" data-canvas-hover></span>
+                    <span class="live-badge" data-canvas-badge><svg width="12" height="12" aria-hidden="true"><use href="assets/icons.svg#i-Play"/></svg>Live</span>
+                    <span class="cue-hand" data-canvas-hand style="--fx:900px;--fy:640px;--a:.4;--z:.62;--d:.08"></span>
+                    <span class="cue-ripple" data-canvas-ripple style="--c:.56"></span>
+                  </div>
+                </div>
+                <div class="shot-space" data-shot-space aria-hidden="true">
+                  <span class="cue-key cue-key-center" style="--x:800px;--y:900px;--a:.03;--z:.6"><kbd>⇧</kbd><kbd>1</kbd>Every page</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-pinned section-comment" id="agent" aria-labelledby="agent-title">
+      <div class="comment-track" data-comment>
+        <div class="comment-stage">
+          <div class="wrap">
+            <header class="section-head">
+              <h2 id="agent-title">Iterate with your agent. <span class="dim">Point, compare, pick.</span></h2>
+            </header>
+            <div class="switcher comment-switcher" data-comment-switcher>
+              <div class="switcher-tabs" role="tablist" aria-label="From a note to the finished change">
+                <span class="switcher-pill" aria-hidden="true"></span>
+                <button type="button" role="tab" id="agent-tab-point" aria-selected="true" aria-controls="agent-view">Point</button>
+                <button type="button" role="tab" id="agent-tab-send" aria-selected="false" aria-controls="agent-view" tabindex="-1">Send</button>
+                <button type="button" role="tab" id="agent-tab-compare" aria-selected="false" aria-controls="agent-view" tabindex="-1">Compare</button>
+                <button type="button" role="tab" id="agent-tab-pick" aria-selected="false" aria-controls="agent-view" tabindex="-1">Pick</button>
+              </div>
+            </div>
+          </div>
+          <div class="comment-film" data-comment-film>
+            <div class="frame" data-glow>
+              <div class="frame-view" id="agent-view" role="tabpanel" aria-labelledby="agent-tab-point" tabindex="-1">
+                <div class="frame-zoom" data-comment-zoom>
+                  <img class="shot is-active" data-beat="0" data-shot="hero" src="assets/shots/midday/hero-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="">
+                  <img class="shot" data-beat="1" data-shot="notes" src="assets/shots/midday/notes-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="Numbered note pins on the page, one note being written.">
+                  <img class="shot" data-beat="2" data-shot="changes" src="assets/shots/midday/changes-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="The Changes tab: notes and edits in one list, above Send to agent.">
+                  <img class="shot" data-beat="3" data-shot="options" src="assets/shots/midday/options-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="Design options: each hero option is a switch; Subtitle is off.">
+                  <img class="shot" data-beat="4" data-shot="options-alt" src="assets/shots/midday/options-alt-1280.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="Another option switched on: the hero screenshot is now tilted.">
+                  <div class="shot-space" data-shot-space aria-hidden="true">
+                    <div class="pins" data-pins></div>
+                    <span class="send-ring" data-send-ring hidden></span>
+                    <span class="option-ring" data-option-ring></span>
+                    <span class="cue-key cue-tag" style="--x:132px;--y:84px;--a:.56;--z:.76"><svg class="icon" width="20" height="20" aria-hidden="true"><use href="assets/icons.svg#i-Sparkles"/></svg>From your agent</span>
+                    <span class="cue-hand" style="--x:262px;--y:262px;--fx:760px;--fy:560px;--a:.57;--z:.76;--d:.05"></span>
+                    <span class="cue-ripple" style="--x:258px;--y:261px;--c:.645"></span>
+                    <div class="pick-note" data-pick-note>
+                      <p class="pick-bubble">Keep the tilted screenshot. Remove the other hero options.</p>
+                    </div>
+                    <div data-toolbar-slot></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <figure class="terminal terminal-float" data-comment-terminal>
+              <figcaption class="terminal-bar" data-copy-root>
+                <span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                <span>Your agent, over MCP</span>
+                <button class="copy" type="button" data-copy data-copy-text="claude mcp add --transport http designlayer http://127.0.0.1:5747/mcp" aria-label="Copy the command that connects Claude Code">
+                  <svg class="icon icon-copy" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Copy"/></svg>
+                  <svg class="icon icon-check" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Check"/></svg>
+                </button>
+              </figcaption>
+              <pre class="terminal-body" tabindex="0" aria-label="Connecting an agent, and the notes it receives over MCP"><code data-agent><span class="t-dim"># Any MCP client works. Claude Code:</span>
+$ claude mcp add --transport http designlayer \
+    http://127.0.0.1:5747/mcp
+
+<span class="t-dim">› designlayer.wait_for_change()</span>
+Loading…</code><code data-agent-close hidden></code></pre>
+            </figure>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="private" aria-labelledby="private-title">
+      <div class="wrap">
+        <header class="section-head" data-reveal>
+          <h2 id="private-title">Your machine. <span class="dim">Nothing leaves it.</span></h2>
+        </header>
+        <dl class="facts visual" data-rise>
+          <div><dt data-type>127.0.0.1</dt><dd>Servers listen on loopback only.</dd></div>
+          <div><dt data-count-from="3072" data-count-unit=" KB">0 KB</dt><dd>Editor code in your production build.</dd></div>
+          <div><dt>0</dt><dd>Accounts, API keys, analytics or model calls.</dd></div>
+          <div><dt>MIT</dt><dd>Open source, so every line is yours to read.</dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <section class="section" id="start" aria-labelledby="start-title">
+      <div class="wrap">
+        <header class="section-head" data-reveal>
+          <h2 id="start-title">Running in 2 minutes. <span class="dim">Terminal or Mac.</span></h2>
+        </header>
+        <div class="paths visual" data-reveal>
+          <section class="path" aria-labelledby="path-terminal">
+            <h3 id="path-terminal">In your terminal</h3>
+            <p class="path-req">Needs Node 20.9+ and a Next.js, Vite or Angular app.</p>
+            <div class="install-card" data-copy-root>
+              <div class="install-bar">
+                <span>Terminal</span>
+                <button class="copy" type="button" data-copy aria-label="Copy the install commands">
+                  <svg class="icon icon-copy" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Copy"/></svg>
+                  <svg class="icon icon-check" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Check"/></svg>
+                </button>
+              </div>
+<pre class="install-body" tabindex="0" aria-label="Install commands"><code><span class="t-dim"># 1. next to your app</span>
+git clone https://github.com/phil8-li/design-layer.git
+<span class="t-dim"># 2. in your app</span>
+npm i -D ../designlayer
+<span class="t-dim"># 3. run it, then pick your app</span>
+npx designlayer</code></pre>
+            </div>
+          </section>
+          <section class="path" aria-labelledby="path-mac">
+            <h3 id="path-mac">As a Mac app</h3>
+            <p class="path-req">Needs Node 20.9+ and Chrome. Design Layer comes in the download; no npm install.</p>
+            <ol class="steps" data-steps>
+              <li>Download and unzip.</li>
+              <li>Double-click Install Design Layer.</li>
+              <li>Keep it in your Dock.</li>
+            </ol>
+            <div class="download">
+              <img class="download-icon" src="assets/brand/icon-192.png" width="88" height="88" loading="lazy" decoding="async" alt="">
+              <div class="download-body">
+                <a class="btn btn-primary" href="https://phil8-li.github.io/design-layer/downloads/Design-Layer-for-Mac.zip" download>Download for Mac</a>
+                <p class="download-meta">ZIP for macOS</p>
+              </div>
+            </div>
+            <p class="path-note">It isn’t signed. The first time, right-click the installer and choose Open.</p>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-contribute" id="contribute" aria-labelledby="contribute-title">
+      <div class="wrap">
+        <header class="section-head" data-reveal>
+          <h2 id="contribute-title">It’s early. <span class="dim">Help us break it.</span></h2>
+        </header>
+        <ol class="ways visual" data-reveal>
+          <li>
+            <a class="way" href="https://github.com/phil8-li/design-layer/issues/new?template=bug_report.yml" target="_blank" rel="noopener">
+              <span class="way-pin" aria-hidden="true">1</span>
+              <h3>Report a bug</h3>
+              <p>What you did and what happened. About 2 minutes.</p>
+              <span class="way-cta">Open a bug report<svg class="icon" width="14" height="14" aria-hidden="true"><use href="assets/icons.svg#i-ArrowRight"/></svg></span>
+            </a>
+          </li>
+          <li>
+            <a class="way" href="https://github.com/phil8-li/design-layer/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">
+              <span class="way-pin" aria-hidden="true">2</span>
+              <h3>Fix it yourself</h3>
+              <p>All 73 test suites pass on a fresh clone.</p>
+              <span class="way-cta">Read the contributing guide<svg class="icon" width="14" height="14" aria-hidden="true"><use href="assets/icons.svg#i-ArrowRight"/></svg></span>
+            </a>
+          </li>
+          <li>
+            <a class="way" href="https://github.com/phil8-li/design-layer/issues/new?template=feature_request.yml" target="_blank" rel="noopener">
+              <span class="way-pin" aria-hidden="true">3</span>
+              <h3>Ask for a tool</h3>
+              <p>Missing a Figma tool you rely on? Say so.</p>
+              <span class="way-cta">Suggest a feature<svg class="icon" width="14" height="14" aria-hidden="true"><use href="assets/icons.svg#i-ArrowRight"/></svg></span>
+            </a>
+          </li>
+        </ol>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-blinds" data-blinds aria-hidden="true"></div>
+    <div class="endcard" data-endcard>
+      <div class="specimen" data-specimen aria-hidden="true">
+        <span class="specimen-tag">Wordmark</span>
+        <span class="endcard-word">Design Layer</span>
+        <i></i><i></i><i></i><i></i>
+      </div>
+      <form class="tweak" data-tweak aria-labelledby="tweak-title">
+        <p class="tweak-title" id="tweak-title">Try it on this page</p>
+        <div class="tweak-field">
+          <span class="tweak-label" id="wheel-label">Color</span>
+          <div class="wheel" data-wheel>
+            <div class="wheel-window"></div>
+            <span class="wheel-frame" aria-hidden="true"></span>
+            <input type="range" min="0" max="15" step="1" value="0" aria-labelledby="wheel-label" aria-valuetext="Indigo">
+          </div>
+        </div>
+        <label class="tweak-field"><span class="tweak-label">Weight <output>620</output></span><span class="tweak-track"><span class="tweak-fill"></span><span class="tweak-ticks" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="tweak-thumb"></span><input type="range" aria-label="Weight" name="weight" min="400" max="700" step="10" value="620"></span></label>
+        <label class="tweak-field"><span class="tweak-label">Spacing <output>-6%</output></span><span class="tweak-track"><span class="tweak-fill"></span><span class="tweak-ticks" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="tweak-thumb"></span><input type="range" aria-label="Spacing" name="spacing" min="-10" max="4" step="1" value="-6"></span></label>
+      </form>
+    </div>
+    <div class="wrap-wide footer-inner" data-blinds-text>
+      <a class="brand" href="#top" aria-label="Design Layer, back to top">
+        <img src="assets/brand/mark.svg" width="20" height="20" alt="">
+        <span>Design Layer</span>
+      </a>
+      <p class="footer-note">Made with care by <a href="https://github.com/phil8-li" target="_blank" rel="noopener">Phil Li</a>. MIT, no cookies, no analytics.</p>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="https://github.com/phil8-li/design-layer" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/phil8-li/design-layer#readme" target="_blank" rel="noopener">Docs</a>
+        <a href="https://github.com/phil8-li/design-layer/issues/new?template=bug_report.yml" target="_blank" rel="noopener">Report a bug</a>
+        <a href="https://github.com/phil8-li/design-layer/blob/main/SECURITY.md" target="_blank" rel="noopener">Security</a>
+        <a href="https://github.com/phil8-li/design-layer/blob/main/THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener">Notices</a>
+      </nav>
+    </div>
+  </footer>
+
+  <dialog class="film" data-film aria-label="Design Layer launch film">
+    <div class="film-box">
+      <video class="film-video" data-film-video preload="none" playsinline controls poster="assets/film/launch-poster.jpg" width="1920" height="1080">
+        <source src="assets/film/launch-720.mp4" type="video/mp4" media="(max-width: 900px)">
+        <source src="assets/film/launch.mp4" type="video/mp4">
+      </video>
+      <button class="film-close" type="button" data-film-close aria-label="Close the film">
+        <svg class="icon" width="18" height="18" aria-hidden="true"><use href="assets/icons.svg#i-Plus"/></svg>
+      </button>
+    </div>
+  </dialog>
+
+  <!-- The editor's toolbar, drawn at its real size (1px = 1 CSS px of the
+       1600x1000 captures) and laid over the screenshots, so it stays sharp
+       when the camera moves in. main.js clones it into [data-toolbar-slot]. -->
+  <template id="toolbar">
+    <div class="tb" data-tb>
+      <span class="tb-chip" data-tb-chip></span>
+      <span class="tb-tool is-on" data-tool="inspect" data-tip="Inspect · V"><svg class="tb-off" width="16" height="16"><use href="assets/icons.svg#i-Cursor"/></svg><svg class="tb-on" width="16" height="16"><use href="assets/icons.svg#i-Cursor-filled"/></svg></span>
+      <span class="tb-tool" data-tool="notes" data-tip="Notes · C"><svg class="tb-off" width="16" height="16"><use href="assets/icons.svg#i-MessageSquare"/></svg><svg class="tb-on" width="16" height="16"><use href="assets/icons.svg#i-MessageSquare-filled"/></svg></span>
+      <span class="tb-tool" data-tool="canvas" data-tip="Canvas view · ⇧1"><svg width="16" height="16"><use href="assets/icons.svg#i-Grid2x2"/></svg></span>
+      <span class="tb-tool is-dim" data-tip="Undo · ⌘Z"><svg width="16" height="16"><use href="assets/icons.svg#i-ToolUndo"/></svg></span>
+      <span class="tb-tool is-dim" data-tip="Redo · ⇧⌘Z"><svg width="16" height="16"><use href="assets/icons.svg#i-ToolRedo"/></svg></span>
+      <span class="tb-tool" data-tip="Switch to light mode"><svg width="16" height="16"><use href="assets/icons.svg#i-Sun"/></svg></span>
+      <span class="tb-tool" data-tip="Show or hide left panel"><svg width="16" height="16"><use href="assets/icons.svg#i-PanelLeft-filled"/></svg></span>
+      <span class="tb-tool" data-tip="Show or hide inspector"><svg width="16" height="16"><use href="assets/icons.svg#i-PanelRight-filled"/></svg></span>
+      <span class="tb-tool" data-tip="Hide editor · ⌘."><svg width="16" height="16"><use href="assets/icons.svg#i-ToolClose"/></svg></span>
+    </div>
+  </template>
+
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <symbol id="gh" viewBox="0 0 16 16"><path fill="currentColor" d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></symbol>
+  </svg>
+</body>
+</html>

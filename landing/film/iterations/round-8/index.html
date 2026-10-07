@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design Layer launch film: round 8, cinematic sound</title>
+<style>
+  :root { color-scheme: dark; --line: rgba(255, 255, 255, 0.1); --text: #f5f5f7; --text-2: #a1a1a6; --text-3: #6e6e73; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: #000; color: var(--text); font: 17px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  main { max-width: 1180px; margin: 0 auto; padding: 72px 28px 120px; }
+  .back a { color: var(--text-2); text-decoration: none; font-size: 15px; font-weight: 500; }
+  h1 { margin-top: 18px; font: 700 clamp(40px, 6vw, 64px)/1.04 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; letter-spacing: -0.035em; }
+  .lede { margin-top: 18px; max-width: 46em; color: var(--text-2); font-size: 19px; }
+  .listen { margin-top: 18px; display: inline-block; padding: 10px 16px; border-radius: 12px; background: rgba(255, 255, 255, 0.06); color: var(--text-2); font-size: 15px; }
+  .jump { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+  .jump a { padding: 8px 16px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); color: var(--text); text-decoration: none; font-size: 15px; font-weight: 500; }
+  .fixed { margin-top: 36px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .fix { padding: 18px 20px; border-radius: 14px; background: rgba(255, 255, 255, 0.05); }
+  .fix b { display: block; font-weight: 600; margin-bottom: 4px; }
+  .fix span { color: var(--text-2); font-size: 15px; }
+  section { margin-top: 88px; scroll-margin-top: 24px; }
+  .kicker { font-size: 14px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-3); }
+  h2 { margin-top: 6px; font: 700 clamp(30px, 4vw, 44px)/1.08 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; letter-spacing: -0.03em; }
+  .pitch { margin-top: 8px; color: var(--text-2); font-size: 19px; max-width: 46em; }
+  video { display: block; width: 100%; aspect-ratio: 16 / 9; margin-top: 26px; border-radius: 18px; background: #050506; box-shadow: 0 0 0 1px var(--line), 0 30px 80px rgba(0, 0, 0, 0.6); }
+  .spec { display: block; width: 100%; margin-top: 14px; border-radius: 12px; box-shadow: 0 0 0 1px var(--line); }
+  .cap { margin-top: 8px; font-size: 13px; color: var(--text-3); }
+  dl { display: grid; grid-template-columns: 1fr 2fr 2fr; gap: 18px 28px; margin-top: 22px; }
+  dt { color: var(--text-3); font-size: 13px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+  dd { margin-top: 4px; font-size: 16px; }
+  h3 { margin-top: 96px; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  table { width: 100%; margin-top: 18px; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-top: 1px solid var(--line); }
+  th { color: var(--text-3); font-weight: 600; font-size: 12px; letter-spacing: 0.02em; text-transform: uppercase; }
+  td:first-child { white-space: nowrap; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  td { color: var(--text-2); }
+  td b { color: var(--text); font-weight: 600; }
+  .refs { margin-top: 14px; padding-left: 20px; color: var(--text-2); max-width: 52em; }
+  .refs li { margin-top: 8px; }
+  .refs a { color: var(--text); }
+  footer { margin-top: 56px; color: var(--text-3); font-size: 14px; max-width: 52em; }
+  footer code { color: var(--text-2); font: 13px ui-monospace, "SF Mono", Menlo, monospace; }
+  @media (max-width: 760px) { .fixed { grid-template-columns: 1fr; } dl { grid-template-columns: 1fr; } table { font-size: 13px; } }
+</style>
+</head>
+<body>
+<main>
+  <p class="back"><a href="../round-7/">← Round 7: One move, with sound</a></p>
+  <h1>Round 8: Effortless, made cinematic</h1>
+  <p class="lede">Your note on round 7: Effortless is best, but the whooshes are too distracting, and the soundtrack should be a bit more cinematic, like a Hollywood soundtrack. Cinematic keeps Effortless's groove, its tempo band and every interface sound. It adds strings and horns in the shape of a film trailer, and turns the camera's air down to a breeze.</p>
+  <p class="listen" style="background: rgba(255, 255, 255, 0.1); color: var(--text);">Picked: Trailer. Its score and effects are now the launch film's sound.</p>
+  <p class="listen">Listen with headphones or good speakers. I can't hear, so this was checked by measurement and by a model listening pass, which is a model's opinion, not a person's.</p>
+  <nav class="jump" aria-label="Options">
+    <a href="#trailer">Trailer (your pick)</a>
+    <a href="#before">Round 7 Effortless, to compare</a>
+    <a href="#cinematic">Cinematic (restrained)</a>
+  </nav>
+
+  <div class="fixed">
+    <div class="fix"><b>Whooshes down to a breeze</b><span>17 air sounds became 11. Each sits about 11 dB under the music, where round 7's sat about 3 dB under, and the breezes have no hiss on top. Gone: the air on act one's push-in, pull-out and move to the group, the swoosh on Send, and the two swooshes as the editor steps aside.</span></div>
+    <div class="fix"><b>A score composed for the cut</b><span>The music was composed whole from a brief shaped like a trailer: a sparse open, a build, a stop-down, a lift, an ending. It was then cut to picture on its bar lines, the way a music editor works. The groove enters on the landing, the lift lands on the hover, and the final chord lands on the name.</span></div>
+    <div class="fix"><b>Trailer moves, used lightly</b><span>The music drops out for a beat as the editor steps aside, then rises into the hover through a quiet pickup and a reversed swell. A low boom sits under the lift and under the landing. The final chord rings out through a hall. No braams and no taiko: those are in Trailer, for comparison.</span></div>
+    <div class="fix"><b>Still on the beat</b><span>The music plays at 102.6 BPM, so the landing and the hover sit exactly 9 bars apart. Beats fall on both within 2 ms. Effects start on their cues, 0.1 ms off on the median.</span></div>
+  </div>
+
+  <section id="cinematic">
+    <p class="kicker">Option 1 · 102.6 BPM · F major</p>
+    <h2>Cinematic</h2>
+    <p class="pitch">Effortless with a film score's sheen. Low strings, soft pads and a few piano notes sit in the dark, opening as the camera flies through the line. The deep-house groove enters on the downbeat as the editor lands, and every click, key and detent keeps its small dry sound. Strings and horns come in through the token, the note and Send. Then the music drops out for a beat, rises quietly as the agent arrives, and the lift lands on the hover with the sheen and the shimmer. The final chord rings out under the name.</p>
+    <video controls preload="metadata" playsinline src="one-move-cinematic.mp4" poster="poster.jpg"></video>
+    <img class="spec" src="sound-cinematic.png" alt="Spectrogram of the Cinematic mix with the film's cues marked: dark until the landing, the groove from the landing, a rest after Send, a swell into the hover, the final chord ringing at the name">
+    <p class="cap">The mix as a spectrogram, with the picture's cues marked.</p>
+    <dl>
+      <div><dt>Tempo</dt><dd>102.6 BPM (smooth, effortless)</dd></div>
+      <div><dt>Air</dt><dd>11 breezes and settles, about 11 dB under the music</dd></div>
+      <div><dt>Feel</dt><dd>An elegant keynote film with a trailer's shape</dd></div>
+    </dl>
+  </section>
+
+  <section id="before">
+    <p class="kicker">Round 7 · 100 BPM · to compare</p>
+    <h2>Effortless, as you heard it</h2>
+    <p class="pitch">The round-7 mix, unchanged, so you can play the two back to back. Listen for the air on the camera moves (at 3 s, then from 14 to 25 s) and for the hover at 25.6 s.</p>
+    <video controls preload="metadata" playsinline src="../round-7/one-move-effortless.mp4" poster="poster.jpg"></video>
+  </section>
+
+  <section id="trailer">
+    <p class="kicker">Option 2 · 102.6 BPM · F major · your pick</p>
+    <h2>Trailer</h2>
+    <p class="pitch">The full Hollywood reading: the same groove under a trailer orchestra, with a brass braam on the hover, taiko and toms, and a final slam on the name. The effects and the breezes are the same as in Cinematic. The listening model rated it bombastic and cheesy, burying the interface sounds. You picked it as the best. The listening model's verdict was wrong for this film, and the soundtrack skill now says so: when a brief says cinematic, commit to the trailer treatment.</p>
+    <video controls preload="metadata" playsinline src="one-move-trailer.mp4" poster="poster.jpg"></video>
+    <img class="spec" src="sound-trailer.png" alt="Spectrogram of the Trailer mix with the film's cues marked: a half-bar stop-down before the hover, a dense climax, a slam at the name">
+    <p class="cap">The mix as a spectrogram, with the picture's cues marked.</p>
+    <dl>
+      <div><dt>Tempo</dt><dd>102.6 BPM</dd></div>
+      <div><dt>Air</dt><dd>Same as Cinematic</dd></div>
+      <div><dt>Feel</dt><dd>An action-film trailer</dd></div>
+    </dl>
+  </section>
+
+  <h3>How the sound meets the picture</h3>
+  <table>
+    <thead><tr><th>Time</th><th>Picture</th><th>Cinematic</th><th>Round 7 Effortless</th></tr></thead>
+    <tbody>
+      <tr><td>0–1.9 s</td><td><b>The hero line lights in the dark</b></td><td>Low strings, soft pads, a few piano notes, through a closed filter</td><td>Warm filtered pads and a low drone</td></tr>
+      <tr><td>1.9–4.6 s</td><td><b>The camera flies through the line; the layers land</b></td><td>The filter opens under a riser; a low breeze as the line crosses the lens; thuds as the panels and toolbar land</td><td>The filter rises; a bright rush of air past the lens</td></tr>
+      <tr><td>4.6 s</td><td><b>The editor lands</b></td><td>The groove enters on the downbeat, with a low boom</td><td>The groove starts on the beat</td></tr>
+      <tr><td>5.4–14.9 s</td><td><b>Edit the copy, measure, open the gap</b></td><td>Every click, key and detent voiced; only a faint breeze as the layers lift</td><td>The same, with air on each lift and each camera move</td></tr>
+      <tr><td>14.6–23.2 s</td><td><b>Orbit to the token, crane to the note, rise to Send</b></td><td>Strings and horns come in and build; a breeze on each big move; the glass tink and the two-note chime</td><td>Air on each move; a swoosh on Send</td></tr>
+      <tr><td>23.3–25.6 s</td><td><b>Back to the page; the editor steps aside; the agent comes</b></td><td>The music drops out for a beat; a quiet pickup and a reversed swell rise into the hover, with the agent's arrival over them</td><td>A breakdown and a short riser; two swooshes as the panels slide out</td></tr>
+      <tr><td>25.65 s</td><td><b>The agent's hover</b></td><td>The lift, on the downbeat: strings and horns open over the groove, a low boom under them; the sheen and the shimmer</td><td>The groove returns; the sheen and the shimmer</td></tr>
+      <tr><td>29.05 s</td><td><b>Every page</b></td><td>The lift holds; a low breeze as the page shrinks</td><td>Long air as the page shrinks</td></tr>
+      <tr><td>32.6 s</td><td><b>The name</b></td><td>The final chord, rung out through a hall; an F-major bloom; the sweep across the name; the button's click</td><td>An F-major bloom, the sweep, the click</td></tr>
+    </tbody>
+  </table>
+
+  <h3>What I took from Hollywood trailers</h3>
+  <ul class="refs">
+    <li>Trailers are cut in acts: a sparse open, a build, a stop-down, the drop, then a button on the title. Cinematic follows that shape on bars that line up with the cut: 2 bars of dark, 9 bars from the landing to the hover, 3 bars of lift, then the name.</li>
+    <li>The silence before the drop is what makes the drop land. Here the music drops out for a beat as the editor steps aside, then rises quietly into the hover.</li>
+    <li>Trailer music is hybrid: an orchestra plus sound design (<a href="https://en.wikipedia.org/wiki/Trailer_music">Trailer music</a>). Here the strings and horns are composed into the music, and the hits, the boom and the reversed swell are sound design, placed on their frames.</li>
+    <li>Rising tones build tension into a cut. Nolan's films use the Shepard tone, a pitch that seems to rise forever, including in Dunkirk (<a href="https://en.wikipedia.org/wiki/Shepard_tone">Shepard tone</a>). One second before the hover is too short for that, so a reversed swell does the job.</li>
+    <li>Commit when the brief says cinematic. I expected the full trailer kit, braams and taiko, to read as an action film; you picked it over the restrained Cinematic.</li>
+  </ul>
+
+  <h3>Notes</h3>
+  <ul class="refs">
+    <li>The music was composed whole from a timed brief: six takes from the same brief. Take 6 was chosen because its sections fall on clean bar lines (8 bars of groove, a 4-bar breakdown, 8 bars of lift), and it rated best in the listening pass.</li>
+    <li>The take was cut to picture on its bar lines, with two seams. One is inside the breakdown, the other between two bars of the lift, each crossfaded over the 30 ms before a beat. It plays 0.4% slower than composed. Its final chord stopped within a beat, so a hall reverb lets it ring.</li>
+    <li>In the listening pass, a multimodal model heard all three mixes five times, in five different orders. Every time, it picked Cinematic as the best answer to your note. Whoosh distraction: 2/10 for Cinematic, 9–10 for round 7. Hollywood feel: 8 against 2–3. Groove: 5–9 against 9 (7 and 8 in the two runs on the final mix). Cheesiness: 1–2. It rated Trailer 10/10 for bombast. Its timestamps were unreliable, so all timing was checked by measurement.</li>
+    <li>Mastered to −16 LUFS, with true peaks under −2.5 dB, as one fixed gain. Round 7's masters had fallen back to a mode that rides the gain and flattens the sections. Round 8 limits first, so the gain stays fixed. The film's audio matches the mix to the sample.</li>
+  </ul>
+
+  <footer>
+    Source: <code>site/film/promo/sound/</code>: <code>bed.py</code> (the composition brief, timed from the cues), <code>mix.py</code> (the cut list, effects and master), <code>sfx.py</code> (breeze, swell and boom are new), <code>verify.py</code>, <code>audibility.py</code>, <code>picture.py</code>.
+  </footer>
+</main>
+</body>
+</html>

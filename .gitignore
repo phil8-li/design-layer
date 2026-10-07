@@ -1,0 +1,42 @@
+node_modules/
+
+# Built by `npm run build` from src/; never committed, so a stale bundle can
+# never be what a host actually serves.
+dist/
+
+# Launcher state: endpoint.json, saved option sets, control defaults.
+.local/
+
+# Written by the suites that need a directory on disk.
+test/.control-default-fixture/
+test/.icon-set-fixture/
+
+.DS_Store
+
+# Per-task worktrees. Checkouts, never sources.
+.worktrees/
+
+# Scratch output of tools/panel-harness.mjs: a rendered panel, its
+# screenshots, and its measurements. Regenerate, never commit.
+.harness/
+
+# Scratch output of tools/icon-lab.mjs: the glyph bench, rendered and measured.
+# Regenerate, never commit.
+.icon-lab/
+
+# Scratch output of tools/before-after.mjs: one state per row, rendered at two
+# revisions. Both columns are built from git, so it is reproducible from the
+# repository alone. Regenerate, never commit.
+.demos/
+
+# The interface audit reports the demos were written from. Findings, not
+# sources — the ones worth keeping become tests or comments.
+.audit/
+
+# Which remote machine `launch/DesignLayer.command` opens the editor against.
+# One line naming somebody's dev box — theirs, not this repository's, and the
+# launcher refuses to run rather than falling back to a hostname baked in here.
+launch/.env
+
+# Python bytecode from the film sound tools.
+__pycache__/

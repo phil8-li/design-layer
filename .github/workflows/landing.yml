@@ -1,0 +1,61 @@
+name: Landing page
+
+on:
+  # Every push to main redeploys, because the Mac download is built from the
+  # whole package, not only from landing/.
+  push:
+    branches: [main]
+  pull_request:
+    paths: ["landing/**", "desktop/mac/**", ".github/workflows/landing.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      # LFS stays off: film/iterations is reference material, never deployed.
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      # The page links to the Mac download, so it is built before the check
+      # that every local link resolves. Never committed; rebuilt every deploy.
+      - run: node desktop/mac/package.mjs --out landing/downloads
+
+      # The static half needs no browser: markup, metadata, every local
+      # reference, and the page-weight budget. The browser half runs locally
+      # with Playwright; see landing/README.md.
+      - run: node landing/check.mjs --only static
+
+      # Publish only what the page loads, not the tools that build and check it.
+      # The leading slash anchors each pattern to landing/, so `/film` (the
+      # film's source and iterations) does not also drop assets/film/.
+      - run: rsync -a --exclude /tools --exclude /film --exclude /check.mjs --exclude /serve.mjs --exclude /README.md --exclude /AGENTS.md --exclude /DESIGN.md --exclude /package.json --exclude /.check --exclude .gitignore --exclude .gitattributes landing/ _site/
+
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: _site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # 20.19 is the floor for the suite, not for the tool: jsdom 29 declares
+        # ^20.19.0 || ^22.13.0 || >=24.0.0, because it reaches a dependency that
+        # `require()`s an ES module. The tool's own floor is checked in
+        # engines-floor below.
+        node: ["20.19", "22", "24"]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # Runs the prepare script, which bundles src/ into dist/.
+      - run: npm ci
+
+      # Proves the committed source and the built bundle agree, and that the
+      # CLI's own argv contract holds.
+      - run: npm run verify
+
+      # No host app exists on a runner, so the four host-pinned suites print a
+      # skip and exit 0 — the same green a contributor sees on a bare clone.
+      - run: npm test
+
+  engines-floor:
+    name: engines floor (node 20.9, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20.9"
+          cache: npm
+
+      - run: npm ci
+
+      # package.json promises node >=20.9.0 to the apps that install this, so
+      # the promise is kept under test: the bundle builds and the CLI contract
+      # holds on the oldest version claimed. `npm test` is deliberately not run
+      # here — its jsdom harness cannot load on 20.9, which says nothing about
+      # whether the tool works there.
+      - run: npm run verify

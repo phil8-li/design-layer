@@ -1,0 +1,27 @@
+{
+  "tool": "wait_for_change",
+  "result": {
+    "timeout": false,
+    "count": 1,
+    "changes": [
+      {
+        "id": "chg-1-u4f8d3",
+        "status": "pending",
+        "createdAt": "2026-10-05T19:42:23.370Z",
+        "origin": "prompts",
+        "page": "http://127.0.0.1:3926/",
+        "framework": "react",
+        "request": "1 note from DesignLayer",
+        "brief": "## Page Feedback: /\n**App:** @midday/website\n**Viewport:** 1600×1000\n\n### 1. image \"Design Layer open on an analyt\"\n**Location:** .relative > .absolute > .relative > .w-full\n**React:** <J> <V> <ScrollAndMaybeFocusHandler> <InnerScrollHandlerNew> <StartPage>\n**Feedback:** Keep the tilted screenshot. Remove the other hero options.",
+        "files": [],
+        "selection": null,
+        "ancestry": [],
+        "handoffFile": ".local/designlayer/requests/2026-10-05T19-42-23-366Z-1-note-from-designlayer.md"
+      }
+    ],
+    "next": "Apply these, then call resolve_change for each id, then call wait_for_change again."
+  },
+  "resolved": [
+    "chg-1-u4f8d3"
+  ]
+}

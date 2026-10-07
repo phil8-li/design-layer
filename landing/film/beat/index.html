@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Design Layer — launch film, cut to the beat</title>
+<meta name="viewport" content="width=1920, height=1080">
+<link rel="stylesheet" href="beat.css">
+</head>
+<body>
+<div id="film">
+  <div id="bg"></div>
+
+  <div id="stage">
+    <div id="world">
+      <div id="win">
+        <div class="chrome"><span class="dots"><i></i><i></i><i></i></span><span class="url">localhost:3000</span></div>
+        <div id="vp">
+          <div class="cam" id="camMain">
+            <div class="strip" id="stripL"><img alt=""></div>
+            <div class="strip" id="stripC"><img alt=""></div>
+            <div class="strip" id="stripR"><img alt=""></div>
+            <svg class="over" viewBox="0 0 1600 1000" width="1600" height="1000">
+              <rect id="selRect" fill="none" stroke="#798cff" stroke-width="2.5" vector-effect="non-scaling-stroke" rx="2" opacity="0"/>
+              <rect id="tokBar" fill="rgba(121,140,255,0.16)" stroke="rgba(121,140,255,0.75)" stroke-width="1.5" vector-effect="non-scaling-stroke" rx="5" opacity="0"/>
+            </svg>
+            <svg class="over" viewBox="0 0 1600 1000" width="1600" height="1000" id="pins"></svg>
+            <div id="selLabel"></div>
+            <div class="ripple" id="ripple"></div>
+            <div id="cursor"><svg viewBox="0 0 20 26"><path d="M2.5 2v18.2l4.6-4.3 2.9 6.8 3.3-1.4-2.9-6.7H16.6Z" fill="#fff" stroke="#111" stroke-width="1.4" stroke-linejoin="round"/></svg></div>
+          </div>
+          <div class="cam" id="camCanvas"><img id="imgCanvas" alt="" style="opacity:1"><div id="flyClip"><img id="appFly" alt=""></div></div>
+        </div>
+      </div>
+      <div id="planes">
+        <div class="plane" id="planeC"><img alt=""></div>
+        <div class="plane edge" id="planeL"><img alt=""></div>
+        <div class="plane edge" id="planeR"><img alt=""></div>
+      </div>
+      <div id="agent">
+        <div class="card" id="changesCard">
+          <div class="crop"><img id="imgChanges" alt=""></div>
+          <div id="sendBtn"><img id="imgSend" alt=""></div>
+          <div id="sendRing"></div>
+        </div>
+        <div class="card" id="term">
+          <div class="termBar"><span class="dots"><i></i><i></i><i></i></span><span>agent · designlayer MCP</span></div>
+          <div class="termBody"><pre id="termText"></pre></div>
+        </div>
+      </div>
+      <div id="code">
+        <div class="card codeCard">
+          <div class="codeBar"><span id="codeFile"></span><span id="codeStat"></span></div>
+          <div id="codeBody"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="bar" id="barTop"></div>
+    <div class="bar" id="barBot"></div>
+    <div id="logo">
+      <div id="logoGlow"></div>
+      <img id="logoIcon" src="../../assets/brand/icon-512.png" alt="">
+      <div id="logoMark">Design Layer</div>
+      <div id="logoSub">Bring the design layer to your vibe-coded apps.</div>
+      <div id="logoUrl">github.com/phil8-li/design-layer</div>
+    </div>
+    <div id="type"></div>
+    <div id="keys"></div>
+  </div>
+
+  <div id="sweep"></div>
+  <div id="flash"></div>
+  <div id="grain"></div>
+  <div id="vignette"></div>
+  <div id="black"></div>
+</div>
+<script type="module" src="beat.js"></script>
+</body>
+</html>

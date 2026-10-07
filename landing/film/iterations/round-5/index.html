@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design Layer launch film: round 5</title>
+<style>
+  :root { color-scheme: dark; --line: rgba(255, 255, 255, 0.1); --text: #f5f5f7; --text-2: #a1a1a6; --text-3: #6e6e73; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: #000; color: var(--text); font: 17px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  main { max-width: 1180px; margin: 0 auto; padding: 72px 28px 120px; }
+  .back { margin-bottom: 18px; }
+  .back a { color: var(--text-2); text-decoration: none; font-size: 15px; font-weight: 500; }
+  h1 { font: 700 clamp(40px, 6vw, 64px)/1.04 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; letter-spacing: -0.035em; }
+  .lede { margin-top: 18px; max-width: 46em; color: var(--text-2); font-size: 19px; }
+  .jump { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+  .jump a { padding: 8px 16px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); color: var(--text); text-decoration: none; font-size: 15px; font-weight: 500; }
+  .jump a:hover { background: rgba(255, 255, 255, 0.14); }
+  .steps { margin-top: 36px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; counter-reset: step; }
+  .step { padding: 18px 20px; border-radius: 14px; background: rgba(255, 255, 255, 0.05); }
+  .step b { display: block; font-weight: 600; margin-bottom: 4px; }
+  .step span { color: var(--text-2); font-size: 15px; }
+  .edit { margin-top: 28px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .edit figure { margin: 0; }
+  .edit img { display: block; width: 100%; border-radius: 14px; box-shadow: 0 0 0 1px var(--line); }
+  .edit figcaption { margin-top: 10px; font-size: 14px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-3); }
+  section { margin-top: 88px; scroll-margin-top: 24px; }
+  .kicker { font-size: 14px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-3); }
+  h2 { margin-top: 6px; font: 700 clamp(30px, 4vw, 44px)/1.08 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; letter-spacing: -0.03em; }
+  .pitch { margin-top: 8px; color: var(--text-2); font-size: 19px; max-width: 46em; }
+  video { display: block; width: 100%; aspect-ratio: 16 / 9; margin-top: 26px; border-radius: 18px; background: #050506; box-shadow: 0 0 0 1px var(--line), 0 30px 80px rgba(0, 0, 0, 0.6); }
+  dl { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 18px 28px; margin-top: 26px; }
+  dt { color: var(--text-3); font-size: 13px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+  dd { margin-top: 4px; font-size: 16px; }
+  h3 { margin-top: 96px; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  .refs { margin-top: 14px; padding-left: 20px; color: var(--text-2); max-width: 52em; }
+  .refs li { margin-top: 8px; }
+  .refs a { color: var(--text); }
+  footer { margin-top: 56px; color: var(--text-3); font-size: 14px; max-width: 52em; }
+  footer code { color: var(--text-2); font: 13px ui-monospace, "SF Mono", Menlo, monospace; }
+  @media (max-width: 760px) { .steps, .edit { grid-template-columns: 1fr; } dl { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <p class="back"><a href="../round-4/">← Round 4: a real design fix</a> &nbsp;·&nbsp; <a href="../round-6/">Round 6: the landing page's story, told like Apple →</a></p>
+  <h1>Round 5: fine-tune what you vibe coded</h1>
+  <p class="lede">Your demo script, captured live in Design Layer on the Demo app. You fine-tune the hero the way you would in Figma, hand one idea to your agent, then see every page on the canvas. Option M builds on L. N and O are new, and all three borrow from Cua's launch films. The cuts are silent; music comes later.</p>
+  <nav class="jump" aria-label="Cuts">
+    <a href="#m">M · Layers</a>
+    <a href="#n">N · Multiplayer</a>
+    <a href="#o">O · Canvas</a>
+  </nav>
+
+  <div class="steps">
+    <div class="step"><b>1 · Edit the copy</b><span>Double-click the subtitle and rewrite it in place: “Fine-tune the app you vibe coded, like a Figma file.”</span></div>
+    <div class="step"><b>2 · Measure, then space it</b><span>Hold ⌥ to measure the headline to the subtitle (24), then drag the auto-layout gap to 36 in the inspector.</span></div>
+    <div class="step"><b>3 · Use a token</b><span>Give Get started the design system's radius token (8px) from the corner radius picker.</span></div>
+    <div class="step"><b>4 · Ask the agent</b><span>Leave a note on the button, “Add a shimmer to the border on hover,” and send it with the edits.</span></div>
+    <div class="step"><b>5 · The agent's change</b><span>The button now has a light running around its border on hover, captured frame by frame.</span></div>
+    <div class="step"><b>6 · The canvas</b><span>⇧1 shows every page of the app as a live frame on one board.</span></div>
+  </div>
+
+  <div class="edit">
+    <figure><img src="before.jpg" alt="The Demo app hero before: the original two-line subtitle and a square black button"><figcaption>Before</figcaption></figure>
+    <figure><img src="after.jpg" alt="The hero after: the new one-line subtitle, more space under the headline, and a rounded button with its border light on hover"><figcaption>After, with the button hovered</figcaption></figure>
+  </div>
+
+  <section id="m">
+    <p class="kicker">Option M · from L</p>
+    <h2>Layers</h2>
+    <p class="pitch">L's opening: the app lies flat in space, the editor lands on it, and it turns to face you. Then each piece you tune lifts off the page while you work on it: the subtitle as you rewrite it, the hero as its gap opens (a redline counts 24 to 36), and the button as the radius token arcs onto it. Each lift now starts exactly where the piece sits on the page and rises on the same curve as the page's tilt, with its corners and shadow growing in, so nothing jumps. The note stays on the page. At the end, the page shrinks into its frame on the canvas, and the board lies back the way the app did at the start.</p>
+    <video controls preload="metadata" playsinline src="option-m-layers.mp4" poster="option-m-layers.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>35.8 s</dd></div>
+      <div><dt>Lead</dt><dd>3D layers</dd></div>
+      <div><dt>What changed from L</dt><dd>Smooth lifts with no pops; new story copy; the agent's change and the canvas.</dd></div>
+    </dl>
+  </section>
+
+  <section id="n">
+    <p class="kicker">Option N · new</p>
+    <h2>Multiplayer</h2>
+    <p class="pitch">After Cua's keycaps, a set of tool keys carries this cut: select, text, measure, layout, radius, note, canvas. The keys drift in depth around the opening lines, then form an arc around the editor, Cua-style captions under it. When the note goes out, they re-form as two pointers, one for you and one for your agent, and the agent's own cursor arrives to hover the button it just changed. For the canvas, the keys fly out and the page shrinks into the board.</p>
+    <video controls preload="metadata" playsinline src="option-n-multiplayer.mp4" poster="option-n-multiplayer.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>35 s</dd></div>
+      <div><dt>Lead</dt><dd>Tool keys, named cursors</dd></div>
+      <div><dt>Borrowed from</dt><dd>Cua's launch film: a physical motif that frames the screen and reshapes for each feature, calm captions, and cursors with names.</dd></div>
+    </dl>
+  </section>
+
+  <section id="o">
+    <p class="kicker">Option O · new</p>
+    <h2>Canvas</h2>
+    <p class="pitch">It opens and closes on the canvas. Every page of the app sits on the board; the camera goes into one, and it becomes the live editor. The steps are told in big words that each carry their tool, as in the Select treatment you liked: “Edit.” gets selected, “Measure.” and “Space.” get a redline that counts as the gap opens, “Tokens.” takes the radius, and “Ask.” gets a pin. After the agent's change, the camera pulls back out to the board.</p>
+    <video controls preload="metadata" playsinline src="option-o-canvas.mp4" poster="option-o-canvas.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>34.8 s</dd></div>
+      <div><dt>Lead</dt><dd>Zoom in, zoom out</dd></div>
+      <div><dt>Borrowed from</dt><dd>Cua's pull-back to a wall of desktops, played in both directions.</dd></div>
+    </dl>
+  </section>
+
+  <h3>What I took from Cua's videos</h3>
+  <ul class="refs">
+    <li>A physical motif that belongs to the product: Cua's keycaps drift with depth of field, then form an arc around the screen, pointers, and a grid. Here they are tool keys from the editor (N), and in M the layers themselves play that part. (<a href="https://x.com/trycua/status/2106057192285548763">Cua, launching Cua Spaces</a>)</li>
+    <li>The screen stays flat and centered while everything around it changes, with one short caption under it: an icon, a bold lead, the rest in regular weight.</li>
+    <li>Cursors with names make the agent a character. Here it is “Agent,” arriving to hover the button it just changed.</li>
+    <li>A pull-back for scale: Cua ends on a wall of desktops, and these cuts end on the canvas with every page. The end card mixes a sans with an italic serif, then a pill button and the address.</li>
+  </ul>
+
+  <footer>
+    Source: <code>site/film/promo/cuts-tune.js</code> (M, N and O) with the engine in <code>promo.js</code>. The session is captured by <code>designlayer-demos/story/capture-tune.mjs</code>.
+  </footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "//": "Scopes this fixture host to CommonJS so tailwind.config.js is a real v3 config file rather than an ESM module inside this package.",
+  "type": "commonjs"
+}

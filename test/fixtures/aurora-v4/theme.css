@@ -1,0 +1,30 @@
+/*
+ * Aurora's stylesheet. A Tailwind v4 host, but not this app's v4 host: its
+ * shadow scales are spelled `--text-shadow-*` and `--drop-shadow-*`, which the
+ * editor used to have no way to be told about.
+ */
+
+:root {
+  --aurora-surface-base: #101014;
+  --aurora-surface-raised: #1b1b22;
+  --aurora-ink-primary: #f4f4f6;
+  --aurora-corner-panel: 14px;
+  --aurora-elevation-lift: 0 2px 8px rgba(0, 0, 0, 0.4);
+  --aurora-elevation-halo: 0 0 24px 4px rgba(120, 180, 255, 0.35);
+  --aurora-type-headline-size: 28px;
+  --aurora-type-headline-leading: 34px;
+  --aurora-type-headline-weight: 650;
+  --aurora-type-headline-tracking: -0.4px;
+
+  /* Authored aliases, two links deep, the way a real host writes them. */
+  --panel-bg: var(--aurora-surface-raised);
+  --panel-bg-hover: var(--panel-bg);
+}
+
+@theme {
+  --color-canvas: var(--aurora-surface-base);
+  --color-panel: var(--aurora-surface-raised);
+  --radius-panel: var(--aurora-corner-panel);
+  --text-shadow-lift: var(--aurora-elevation-lift);
+  --drop-shadow-halo: var(--aurora-elevation-halo);
+}

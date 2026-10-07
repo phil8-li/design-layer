@@ -1,0 +1,109 @@
+[
+  {
+    "slug": "midday",
+    "name": "Demo app (Midday's site design)",
+    "repo": "https://github.com/midday-ai/midday",
+    "license": null,
+    "description": null,
+    "designNotes": null,
+    "missing": [],
+    "geometry": {
+      "selection": {
+        "x": 416,
+        "y": 246,
+        "w": 768,
+        "h": 120
+      },
+      "focus": {
+        "x": 312,
+        "y": 158,
+        "w": 298,
+        "h": 286
+      },
+      "pins": [
+        {
+          "x": 688,
+          "y": 489
+        },
+        {
+          "x": 593,
+          "y": 307
+        },
+        {
+          "x": 730,
+          "y": 203
+        }
+      ],
+      "seams": {
+        "left": 0.175,
+        "right": 0.825
+      },
+      "toolbar": {
+        "x": 636,
+        "y": 948,
+        "w": 328,
+        "h": 40
+      },
+      "send": {
+        "x": 1431,
+        "y": 317,
+        "w": 103,
+        "h": 23
+      },
+      "textEdit": {
+        "x": 424,
+        "y": 246,
+        "w": 753,
+        "h": 60
+      },
+      "launcher": {
+        "x": 1528,
+        "y": 928,
+        "w": 40,
+        "h": 40
+      },
+      "options": [
+        {
+          "label": "Announcement badge",
+          "on": true,
+          "x": 32,
+          "y": 121,
+          "w": 235,
+          "h": 24
+        },
+        {
+          "label": "Subtitle",
+          "on": true,
+          "x": 32,
+          "y": 153,
+          "w": 235,
+          "h": 24
+        },
+        {
+          "label": "Note under the button",
+          "on": true,
+          "x": 32,
+          "y": 185,
+          "w": 235,
+          "h": 24
+        },
+        {
+          "label": "Hero screenshot",
+          "on": true,
+          "x": 32,
+          "y": 217,
+          "w": 235,
+          "h": 24
+        },
+        {
+          "label": "Tilted hero screenshot",
+          "on": true,
+          "x": 32,
+          "y": 249,
+          "w": 235,
+          "h": 24
+        }
+      ]
+    }
+  }
+]

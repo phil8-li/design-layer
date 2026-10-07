@@ -1,0 +1,151 @@
+@font-face {
+  font-family: "InterFilm";
+  src: url("../../assets/fonts/InterVariable-latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: block;
+}
+
+/* Every animated property is written by beat.js from the beat clock; nothing transitions. */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 1920px; height: 1080px; overflow: hidden; background: #000; }
+body {
+  font-family: "InterFilm", system-ui, sans-serif;
+  color: #fafafa;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv11", "ss01";
+}
+#film { position: relative; width: 1920px; height: 1080px; overflow: hidden; background: #050506; }
+#film > * { position: absolute; }
+
+#bg { inset: 0; overflow: hidden; }
+#bg .blob { position: absolute; border-radius: 50%; filter: blur(90px); opacity: 0; }
+
+#stage { inset: 0; transform-origin: 50% 50%; }
+#stage > * { position: absolute; }
+#world { inset: 0; perspective: 2600px; perspective-origin: 50% 46%; }
+#world > * { position: absolute; }
+
+/* the browser window */
+#win {
+  left: 240px; top: 71px; width: 1440px; height: 938px;
+  border-radius: 18px; overflow: hidden; background: #111113;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 40px 120px rgba(0, 0, 0, 0.7);
+  transform-origin: 50% 50%; opacity: 0;
+}
+.chrome {
+  position: absolute; left: 0; top: 0; right: 0; height: 38px;
+  display: flex; align-items: center; justify-content: center;
+  background: #161618; border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.dots { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); display: flex; gap: 8px; }
+.dots i { width: 12px; height: 12px; border-radius: 50%; background: #3a3a3f; display: block; }
+.url {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 15px; color: #d4d4d8;
+  padding: 4px 14px; border-radius: 8px; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.08);
+}
+#vp { position: absolute; left: 0; top: 38px; width: 1440px; height: 900px; overflow: hidden; background: #0a0a0b; }
+.cam { position: absolute; left: 0; top: 0; width: 1600px; height: 1000px; transform-origin: 0 0; }
+.cam > img, .strip, .strip img { position: absolute; left: 0; top: 0; width: 1600px; height: 1000px; }
+.cam > img { opacity: 0; }
+.over { position: absolute; left: 0; top: 0; overflow: visible; }
+#selLabel {
+  position: absolute; transform-origin: 50% 0;
+  font-size: 13px; font-weight: 560; color: #fff; background: #4a5df9;
+  padding: 3px 8px; border-radius: 5px; white-space: nowrap; letter-spacing: -0.01em;
+  box-shadow: 0 4px 14px rgba(74, 93, 249, 0.45); opacity: 0;
+}
+#flyClip { position: absolute; overflow: hidden; opacity: 0; }
+#appFly { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+#cursor { position: absolute; left: 0; top: 0; width: 26px; height: 34px; transform-origin: 3px 3px; opacity: 0; }
+#cursor svg { width: 100%; height: 100%; filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.45)); }
+.ripple { position: absolute; width: 40px; height: 40px; margin: -20px 0 0 -20px; border-radius: 50%; border: 2.5px solid #798cff; opacity: 0; }
+
+/* the exploded editor: three planes cut from one screenshot */
+#planes { left: 240px; top: 109px; width: 1440px; height: 900px; transform-style: preserve-3d; transform-origin: 50% 50%; }
+.plane { position: absolute; inset: 0; overflow: hidden; border-radius: 10px; opacity: 0; }
+.plane img { position: absolute; left: 0; top: 0; width: 1440px; height: 900px; }
+.plane.edge { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16), 0 30px 80px rgba(0, 0, 0, 0.55); }
+
+/* cards for the handoff */
+.card {
+  position: absolute; border-radius: 18px; overflow: hidden; background: #111113;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 30px 90px rgba(0, 0, 0, 0.6);
+}
+#agent { inset: 0; opacity: 0; }
+#changesCard { left: 192px; top: 186px; width: 596px; height: 624px; }
+#changesCard .crop { position: absolute; inset: 0; overflow: hidden; }
+#imgChanges, #imgSend { position: absolute; max-width: none; }
+#sendBtn { position: absolute; overflow: hidden; border-radius: 8px; transform-origin: 50% 50%; }
+#sendRing { position: absolute; border-radius: 12px; border: 2px solid #798cff; opacity: 0; }
+#term { left: 828px; top: 186px; width: 900px; height: 624px; background: #0d0d0f; }
+.termBar {
+  height: 44px; display: flex; align-items: center; justify-content: center; position: relative;
+  font-size: 15px; color: #a1a1aa; border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.termBody { position: absolute; left: 0; right: 0; top: 44px; bottom: 0; overflow: hidden; }
+#termText {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 17px; line-height: 25px;
+  padding: 18px 26px; color: #e4e4e7; white-space: pre; overflow: hidden;
+}
+.tk-p { color: #71717a; } .tk-k { color: #a5b2ff; } .tk-s { color: #d9f99d; } .tk-n { color: #fcd34d; }
+.tk-c { color: #798cff; }
+.tcur { display: inline-block; width: 10px; height: 20px; background: #798cff; vertical-align: -4px; }
+
+#code { inset: 0; opacity: 0; }
+.codeCard { left: 180px; top: 300px; width: 1560px; background: #0d0d0f; }
+.codeBar {
+  height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 0 28px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 17px; color: #d4d4d8;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+#codeStat { color: #71717a; }
+#codeBody { padding: 16px 0 20px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 22px; line-height: 40px; }
+.cl { position: relative; display: flex; white-space: pre; height: 40px; }
+.cl .bg { position: absolute; inset: 0; transform-origin: 0 50%; transform: scaleX(0); }
+.cl .gut { position: relative; width: 64px; text-align: right; color: #52525b; padding-right: 14px; flex: none; }
+.cl .sg { position: relative; width: 34px; text-align: center; flex: none; }
+.cl .tx { position: relative; color: #a1a1aa; }
+.cl.hunk .tx { color: #798cff; }
+.cl.del .bg { background: rgba(248, 81, 73, 0.16); } .cl.del .sg, .cl.del .tx { color: #fca5a5; }
+.cl.add .bg { background: rgba(46, 160, 67, 0.18); } .cl.add .sg, .cl.add .tx { color: #86efac; }
+.cl .hl { border-radius: 4px; }
+
+/* kinetic type */
+#type { inset: 0; pointer-events: none; }
+.phrase { position: absolute; white-space: nowrap; line-height: 1; will-change: transform; }
+.phrase .u { display: inline-block; white-space: pre; transform-origin: 50% 60%; }
+.phrase .m { display: inline-block; overflow: hidden; vertical-align: top; padding: 0.06em 0.02em 0.14em; margin: -0.06em -0.02em -0.14em; }
+
+/* keycaps */
+#keys { left: 0; top: 0; width: 1920px; display: flex; justify-content: center; gap: 14px; }
+.key {
+  min-width: 112px; height: 112px; padding: 0 28px; border-radius: 16px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 54px; font-weight: 500; color: #fafafa;
+  background: linear-gradient(#26262b, #18181b);
+  border: 1px solid rgba(255, 255, 255, 0.16); border-bottom-width: 3px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transform-origin: 50% 100%;
+}
+
+/* end card */
+#logo { inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; opacity: 0; }
+#logoGlow {
+  position: absolute; left: 610px; top: 90px; width: 700px; height: 700px; border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(74, 93, 249, 0.55), rgba(74, 93, 249, 0));
+  filter: blur(30px); opacity: 0;
+}
+#logoIcon { position: relative; width: 190px; height: 190px; margin-bottom: 42px; filter: drop-shadow(0 18px 50px rgba(74, 93, 249, 0.45)); }
+#logoMark { position: relative; font-size: 132px; font-weight: 680; letter-spacing: -0.045em; line-height: 1; white-space: nowrap; }
+#logoSub { position: relative; margin-top: 34px; font-size: 42px; font-weight: 500; letter-spacing: -0.02em; color: #a1a1aa; white-space: nowrap; }
+#logoUrl { position: relative; margin-top: 22px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 30px; color: #798cff; }
+
+/* finishing layers */
+#sweep { inset: 0; pointer-events: none; opacity: 0; mix-blend-mode: screen; }
+#flash { inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+#grain { inset: -64px; opacity: 0; pointer-events: none; mix-blend-mode: overlay; }
+#vignette { inset: 0; background: radial-gradient(120% 90% at 50% 45%, rgba(0, 0, 0, 0) 58%, rgba(0, 0, 0, 0.5) 100%); pointer-events: none; }
+/* the letterbox sits in the stage, under the type, so captions can live in it */
+.bar { left: -40px; width: 2000px; height: 0; background: #000; }
+#barTop { top: -40px; } #barBot { bottom: -40px; }
+#black { inset: 0; background: #000; opacity: 0; pointer-events: none; }

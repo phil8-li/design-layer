@@ -1,0 +1,56 @@
+{
+  "name": "Meridian",
+  "collections": [
+    {
+      "name": "Color",
+      "tokens": [
+        {
+          "name": "Brand/500",
+          "cssVar": "--meridian-brand-500",
+          "light": "#5b8cff",
+          "dark": "#93b0ff"
+        },
+        { "name": "Surface/Base", "cssVar": "--meridian-surface-base", "light": "#ffffff" }
+      ]
+    },
+    {
+      "name": "Spacing",
+      "tokens": [{ "name": "spacing/md", "cssVar": "--meridian-space-md", "value": 16 }]
+    },
+    {
+      "name": "Radius",
+      "tokens": [{ "name": "radius/card", "cssVar": "--meridian-radius-card", "value": 12 }]
+    }
+  ],
+  "textStyles": [
+    {
+      "name": "Body/Default",
+      "cssPrefix": "--meridian-type-body",
+      "size": 16,
+      "lineHeight": 24,
+      "tracking": -0.01,
+      "weight": 400
+    }
+  ],
+  "effectStyles": [
+    {
+      "name": "Elevation/1",
+      "cssVar": "--meridian-elev-1",
+      "layers": [{ "color": "rgba(12, 16, 20, 0.16)", "x": 0, "y": 2, "blur": 8, "spread": 0 }]
+    }
+  ],
+  "iconScale": [{ "name": "action", "value": 16, "usage": "Buttons and table rows" }],
+  "motion": [{ "name": "crossfade", "visualDuration": 0.15, "bounce": 0 }],
+  "components": [
+    {
+      "name": "Button",
+      "description": "The primary action control.",
+      "snippet": "<Button variant=\"primary\">Label</Button>",
+      "props": [
+        { "name": "variant", "type": "enum", "values": ["primary", "ghost"] },
+        { "name": "disabled", "type": "boolean" }
+      ]
+    }
+  ],
+  "breakpoints": { "md": 768 }
+}

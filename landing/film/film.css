@@ -1,0 +1,155 @@
+@font-face {
+  font-family: "InterFilm";
+  src: url("../assets/fonts/InterVariable-latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: block;
+}
+
+/* Every animated property is set from film.js; nothing here transitions. */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 1920px; height: 1080px; overflow: hidden; background: #0a0a0b; }
+body {
+  font-family: "InterFilm", system-ui, sans-serif;
+  color: #fafafa;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv11", "ss01";
+}
+#film { position: relative; width: 1920px; height: 1080px; overflow: hidden; background: #0a0a0b; }
+#film > * { position: absolute; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+#glow {
+  left: 160px; top: 40px; width: 1600px; height: 980px;
+  background: radial-gradient(50% 50% at 50% 55%, rgba(74, 93, 249, 0.22), rgba(74, 93, 249, 0) 70%);
+  filter: blur(40px);
+  opacity: 0;
+}
+
+/* 1 · title */
+#title { inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
+#title .line { font-size: 104px; font-weight: 600; letter-spacing: -0.04em; line-height: 1.08; white-space: nowrap; }
+#title .muted { color: #a1a1aa; }
+#title .w { display: inline-block; white-space: pre; }
+
+/* window */
+#win {
+  left: 240px; top: 24px; width: 1440px; height: 938px;
+  border-radius: 18px; overflow: hidden;
+  background: #111113;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 30px 90px rgba(0, 0, 0, 0.6), 0 0 120px rgba(74, 93, 249, 0.14);
+  transform-origin: 50% 50%;
+  opacity: 0;
+}
+.chrome {
+  position: absolute; left: 0; top: 0; right: 0; height: 38px;
+  display: flex; align-items: center; justify-content: center;
+  background: #161618; border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.dots { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); display: flex; gap: 8px; }
+.dots i { width: 12px; height: 12px; border-radius: 50%; background: #3a3a3f; display: block; }
+.url {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 15px; color: #d4d4d8;
+  padding: 4px 14px; border-radius: 8px; background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+#vp { position: absolute; left: 0; top: 38px; width: 1440px; height: 900px; overflow: hidden; background: #0a0a0b; }
+.cam { position: absolute; left: 0; top: 0; width: 1600px; height: 1000px; transform-origin: 0 0; }
+.cam > img, .strip, .strip img { position: absolute; left: 0; top: 0; width: 1600px; height: 1000px; }
+.over { position: absolute; left: 0; top: 0; overflow: visible; }
+#selLabel {
+  position: absolute; transform-origin: 50% 0;
+  font-size: 13px; font-weight: 560; color: #fff; background: #4a5df9;
+  padding: 3px 8px; border-radius: 5px; white-space: nowrap; letter-spacing: -0.01em;
+  box-shadow: 0 4px 14px rgba(74, 93, 249, 0.45);
+}
+#flyClip { position: absolute; overflow: hidden; opacity: 0; }
+#appFly { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+
+/* cards */
+.card {
+  position: absolute; border-radius: 18px; overflow: hidden; background: #111113;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 30px 90px rgba(0, 0, 0, 0.6);
+}
+#agent { inset: 0; opacity: 0; }
+#changesCard { left: 192px; top: 186px; width: 596px; height: 624px; }
+#changesCard .crop { position: absolute; inset: 0; overflow: hidden; }
+#imgChanges, #imgSend { position: absolute; width: 3200px; height: 2000px; max-width: none; }
+#sendBtn { position: absolute; overflow: hidden; border-radius: 8px; transform-origin: 50% 50%; }
+#sendRing { position: absolute; border-radius: 12px; border: 2px solid #798cff; opacity: 0; }
+#term { left: 828px; top: 186px; width: 900px; height: 624px; background: #0d0d0f; }
+.termBar {
+  height: 44px; display: flex; align-items: center; justify-content: center;
+  font-size: 15px; color: #a1a1aa; border-bottom: 1px solid rgba(255, 255, 255, 0.07); position: relative;
+}
+.termBody { position: absolute; left: 0; right: 0; top: 44px; bottom: 0; overflow: hidden; -webkit-mask-image: linear-gradient(transparent 0, #000 22px); mask-image: linear-gradient(transparent 0, #000 22px); }
+#termText {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 17px; line-height: 25px;
+  padding: 18px 26px; color: #e4e4e7; white-space: pre; overflow: hidden;
+}
+.tk-p { color: #71717a; } .tk-k { color: #a5b2ff; } .tk-s { color: #d9f99d; } .tk-n { color: #fcd34d; }
+.tk-c { color: #798cff; } .tk-ok { color: #4ade80; } .tk-m { color: #a1a1aa; }
+.cursor { display: inline-block; width: 10px; height: 20px; background: #798cff; vertical-align: -4px; }
+
+#code { inset: 0; opacity: 0; }
+.codeCard { left: 180px; top: 270px; width: 1560px; background: #0d0d0f; }
+.codeBar {
+  height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 0 28px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 17px; color: #d4d4d8;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+#codeStat { color: #71717a; }
+#codeBody { padding: 16px 0 20px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 22px; line-height: 40px; }
+.cl { position: relative; display: flex; white-space: pre; height: 40px; }
+.cl .bg { position: absolute; inset: 0; transform-origin: 0 50%; }
+.cl .gut { position: relative; width: 64px; text-align: right; color: #52525b; padding-right: 14px; flex: none; }
+.cl .sg { position: relative; width: 34px; text-align: center; flex: none; }
+.cl .tx { position: relative; color: #a1a1aa; }
+.cl.hunk .tx { color: #798cff; }
+.cl.del .bg { background: rgba(248, 81, 73, 0.14); } .cl.del .sg, .cl.del .tx { color: #fca5a5; }
+.cl.add .bg { background: rgba(46, 160, 67, 0.16); } .cl.add .sg, .cl.add .tx { color: #86efac; }
+.cl .hl { border-radius: 4px; }
+.cl.del .hl { background: rgba(248, 81, 73, 0.38); color: #fff; }
+.cl.add .hl { background: rgba(46, 160, 67, 0.42); color: #fff; }
+#codeSweep {
+  position: absolute; top: 52px; bottom: 0; width: 260px; pointer-events: none;
+  background: linear-gradient(90deg, rgba(121, 140, 255, 0), rgba(121, 140, 255, 0.10), rgba(121, 140, 255, 0));
+  opacity: 0;
+}
+
+/* end card */
+#end { inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+#endGlow {
+  position: absolute; left: 660px; top: 120px; width: 600px; height: 600px; border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(74, 93, 249, 0.55), rgba(74, 93, 249, 0));
+  filter: blur(30px); opacity: 0;
+}
+#endIcon { position: relative; width: 176px; height: 176px; margin-bottom: 40px; opacity: 0; filter: drop-shadow(0 18px 50px rgba(74, 93, 249, 0.45)); }
+#endMark { position: relative; font-size: 120px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; opacity: 0; }
+#endSub { position: relative; margin-top: 30px; font-size: 40px; font-weight: 500; letter-spacing: -0.02em; color: #a1a1aa; opacity: 0; }
+#endUrl {
+  position: relative; margin-top: 22px; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 30px; color: #798cff; opacity: 0;
+}
+
+/* keycaps */
+#keys { left: 0; top: 760px; width: 1920px; display: flex; justify-content: center; gap: 14px; }
+.key {
+  min-width: 104px; height: 104px; padding: 0 26px; border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 50px; font-weight: 500; color: #fafafa;
+  background: linear-gradient(#232327, #18181b);
+  border: 1px solid rgba(255, 255, 255, 0.14); border-bottom-width: 2px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  transform-origin: 50% 100%;
+}
+
+/* captions */
+#caption {
+  left: 0; top: 962px; width: 1920px; height: 118px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 60px; font-weight: 560; letter-spacing: -0.035em; white-space: nowrap; opacity: 0;
+}
+#caption .m { color: #a1a1aa; }
+
+#vignette { inset: 0; background: radial-gradient(120% 90% at 50% 45%, rgba(0, 0, 0, 0) 60%, rgba(0, 0, 0, 0.45) 100%); pointer-events: none; }
+#black { inset: 0; background: #000; opacity: 0; pointer-events: none; }
