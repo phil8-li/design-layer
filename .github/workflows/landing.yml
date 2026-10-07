@@ -12,9 +12,12 @@ on:
 permissions:
   contents: read
 
+# One queue per branch, and only a superseded pull request run is cancelled. A
+# shared group let any pull request's run cancel the deploy from main, so the
+# site could stay on an old build while every check on main read green.
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: pages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
