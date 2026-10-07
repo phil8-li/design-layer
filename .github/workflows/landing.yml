@@ -44,7 +44,7 @@ jobs:
       # film's source and iterations) does not also drop assets/film/.
       - run: rsync -a --exclude /tools --exclude /film --exclude /check.mjs --exclude /serve.mjs --exclude /README.md --exclude /AGENTS.md --exclude /DESIGN.md --exclude /package.json --exclude /.check --exclude .gitignore --exclude .gitattributes landing/ _site/
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         if: github.event_name != 'pull_request'
         with:
           path: _site
