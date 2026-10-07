@@ -15,10 +15,10 @@ below.
 | Project | Version | License | Where |
 | --- | --- | --- | --- |
 | [@phosphor-icons/core](https://github.com/phosphor-icons/phosphor-core) | 2.0.3 | MIT | `src/core/icons.ts` (icon path data, from its SVG assets) |
-| [framer-motion](https://github.com/motiondivision/motion) | 13.4.0 | MIT | bundled into `dist/designlayer.js` |
-| [motion-dom](https://github.com/motiondivision/motion) | 13.3.0 | MIT | bundled into `dist/designlayer.js` |
+| [framer-motion](https://github.com/motiondivision/motion) | 14.0.0 | MIT | bundled into `dist/designlayer.js` |
+| [motion-dom](https://github.com/motiondivision/motion) | 14.0.0 | MIT | bundled into `dist/designlayer.js` |
 | [motion-panels](https://github.com/letstri/motion-panels) | 0.5.2 | MIT | bundled into `dist/designlayer.js` |
-| [motion-utils](https://github.com/motiondivision/motion) | 13.3.0 | MIT | bundled into `dist/designlayer.js` |
+| [motion-utils](https://github.com/motiondivision/motion) | 14.0.0 | MIT | bundled into `dist/designlayer.js` |
 | [react](https://github.com/react/react) | 19.3.0 | MIT | bundled into `dist/toaster.js` |
 | [react-dom](https://github.com/react/react) | 19.3.0 | MIT | bundled into `dist/toaster.js` |
 | [react-rewrite-cli](https://github.com/donghaxkim/react-rewrite) | 0.1.1 | MIT | installed from npm and pinned exactly: the dev proxy, source mapping and write-back engine. `runtime/vendor-patch.mjs` quotes short fragments of its bundle to patch the installed copy in memory |
@@ -37,7 +37,7 @@ completeness.
 | --- | --- | --- | --- |
 | [@babel/parser](https://github.com/babel/babel) | 7.29.8 | MIT | Parses component source on the local server. |
 | [esbuild](https://github.com/evanw/esbuild) | 0.28.2 | MIT | Builds `dist/` from `src/` when the package is installed (`prepare`). |
-| [motion](https://github.com/motiondivision/motion) | 13.4.0 | MIT | Umbrella package; the parts of it the editor uses are bundled as framer-motion, motion-dom and motion-utils above. |
+| [motion](https://github.com/motiondivision/motion) | 14.0.0 | MIT | Umbrella package; the parts of it the editor uses are bundled as framer-motion, motion-dom and motion-utils above. |
 | [ws](https://github.com/websockets/ws) | 8.21.3 | MIT | WebSockets for the local server and for library sign-in. |
 
 Development only, never shipped: @types/react (MIT), @types/react-dom (MIT), jsdom (MIT), typescript (Apache-2.0).
@@ -70,7 +70,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### framer-motion 13.4.0
+### framer-motion 14.0.0
 
 ```
 The MIT License (MIT)
@@ -96,7 +96,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### motion-dom 13.3.0
+### motion-dom 14.0.0
 
 ```
 The MIT License (MIT)
@@ -148,7 +148,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### motion-utils 13.3.0
+### motion-utils 14.0.0
 
 ```
 The MIT License (MIT)
