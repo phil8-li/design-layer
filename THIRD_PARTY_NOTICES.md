@@ -25,7 +25,7 @@ below.
 | [scheduler](https://github.com/react/react) | 0.28.0 | MIT | bundled into `dist/toaster.js` |
 | [sonner](https://github.com/emilkowalski/sonner) | 2.0.8 | MIT | bundled into `dist/toaster.js`; `src/core/css/sonner-css.ts` (the toast stylesheet, verbatim) |
 | [Lucide](https://lucide.dev) | 1.46.0 | ISC | `src/core/icons.ts` (path data of the glyphs kept from the pre-Phosphor set, frozen in `tools/icons/legacy-glyphs.json`) |
-| Design foundations kit | — | MIT (this repository's license) | `src/core/tokens.ts` (token values). First-party: © Haoyang Li, not a third-party project. |
+| Design foundations kit | — | MIT (this repository's license) | `src/core/tokens.ts` (token values). First-party: © Phil Li, not a third-party project. |
 
 ## Installed from npm, not redistributed
 

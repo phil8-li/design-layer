@@ -4,7 +4,7 @@
   "private": true,
   "description": "A Figma-like visual editor that attaches to your running React or Angular app and writes every change back to the component source.",
   "license": "MIT",
-  "author": "Haoyang Li",
+  "author": "Phil Li",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/phil8-li/design-layer.git"

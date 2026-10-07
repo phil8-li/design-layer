@@ -85,7 +85,7 @@
     "appRepoUrl": "https://github.com/midday-ai/midday",
     "capability": "Design system",
     "description": "The Design system tab: libraries and design-system lint findings for the page.",
-    "alt": "DesignLayer's Design system tab beside the homepage: two component libraries added from the project (src/components/sections and the integrations route components) and the DS lint section, which reports that no lint checker is installed."
+    "alt": "DesignLayer's Design system tab beside the homepage: two component libraries added from the project (src/components/sections and src/app/integrations), a field to add one more by URL, and the DS lint section with Audit, Fix all and a summary of 144 issues."
   },
   {
     "file": "audit.jpg",
@@ -115,7 +115,7 @@
     "appRepoUrl": "https://github.com/midday-ai/midday",
     "capability": "Canvas view",
     "description": "Canvas view (⇧1): every page of the app laid out as live frames on one board.",
-    "alt": "DesignLayer canvas view: six pages of the site (home, about, agents, send to agent, shortcuts and comments) laid out side by side as live, fully rendered frames on a dark board.",
+    "alt": "DesignLayer canvas view: the site's pages (home, about, agents, shortcuts, comments and more) laid out as live, fully rendered frames on a dark board, the home page tagged Current, zoomed to 29%.",
     "focus": {
       "x": 312,
       "y": 158,
@@ -195,7 +195,7 @@
     "appRepoUrl": "https://github.com/midday-ai/midday",
     "capability": "Direct edit",
     "description": "Double-clicking the headline edits its copy in place on the live page; the shot is held before the edit is committed.",
-    "alt": "TBD",
+    "alt": "The headline double-clicked and retyped in place: it now reads 'The design layer for real apps', with the edited words selected and the inspector showing their Hedvig Letters Serif type.",
     "textEdit": {
       "x": 424,
       "y": 246,
@@ -211,7 +211,7 @@
     "appRepoUrl": "https://github.com/midday-ai/midday",
     "capability": "Hide the editor",
     "description": "⌘. hides the whole editor: the app gets the full window and one round launcher button stays in the bottom-right corner.",
-    "alt": "TBD",
+    "alt": "The site on its own after ⌘.: DesignLayer's panels and toolbar are gone, leaving one round launcher button in the bottom-right corner.",
     "launcher": {
       "x": 1528,
       "y": 928,
@@ -227,7 +227,7 @@
     "appRepoUrl": "https://github.com/midday-ai/midday",
     "capability": "Design options",
     "description": "The Design options tab with a different variant switched on: the app's own display switches flipped live, no source change.",
-    "alt": "TBD",
+    "alt": "DesignLayer's Design options tab with every homepage switch on, including Tilted hero screenshot: the hero's product screenshot is now tilted in perspective.",
     "options": [
       {
         "label": "Announcement badge",

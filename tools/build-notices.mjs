@@ -197,7 +197,7 @@ ${noticed
   })
   .join("\n")}
 ${COPIED.map((c) => `| [${c.name}](${c.url}) | ${c.version} | ${c.license} | ${c.where} |`).join("\n")}
-| Design foundations kit | — | MIT (this repository's license) | \`src/core/tokens.ts\` (token values). First-party: © Haoyang Li, not a third-party project. |
+| Design foundations kit | — | MIT (this repository's license) | \`src/core/tokens.ts\` (token values). First-party: © Phil Li, not a third-party project. |
 
 ## Installed from npm, not redistributed
 

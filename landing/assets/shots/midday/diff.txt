@@ -1,8 +1,8 @@
 diff --git a/apps/website/src/components/startpage.tsx b/apps/website/src/components/startpage.tsx
-index 9a41919..ecfd382 100644
+index 89b57b1..0fba817 100644
 --- a/apps/website/src/components/startpage.tsx
 +++ b/apps/website/src/components/startpage.tsx
-@@ -266,7 +266,7 @@ export function StartPage() {
+@@ -267,7 +267,7 @@ export function StartPage() {
                  )}
                </div>
  
@@ -10,4 +10,4 @@ index 9a41919..ecfd382 100644
 +              <div className="flex flex-col items-center gap-4 pt-2">
                  <Button
                    asChild
-                   className="btn-inverse h-11 px-6 transition-colors"
+                   className="btn-inverse demo-cta h-11 px-6 rounded-full transition-colors"

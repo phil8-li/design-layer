@@ -84,7 +84,7 @@ its own README and deploy workflow.
 
 | Design like Figma, on the real thing | Running in 2 minutes |
 | --- | --- |
-| ![Landing page feature section with tabs for Align, Measure, Responsive and more](docs/images/landing-features.webp) | ![Landing page install section: terminal steps and the Mac install command](docs/images/landing-start.webp) |
+| ![Landing page "Design like Figma" section on its Measure tab, beside Direct edit, Align and Hide Design Layer](docs/images/landing-features.webp) | ![Landing page install section: terminal steps and the Mac install command](docs/images/landing-start.webp) |
 
 ## Contributing
 
@@ -95,5 +95,5 @@ Security reports go through [SECURITY.md](SECURITY.md), not public issues.
 
 ## License
 
-[MIT](LICENSE) © Haoyang Li. Third-party code is listed in
+[MIT](LICENSE) © Phil Li. Third-party code is listed in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

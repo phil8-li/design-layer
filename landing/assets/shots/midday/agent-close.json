@@ -5,9 +5,9 @@
     "count": 1,
     "changes": [
       {
-        "id": "chg-1-u4f8d3",
+        "id": "chg-2-tnc61g",
         "status": "pending",
-        "createdAt": "2026-10-05T19:42:23.370Z",
+        "createdAt": "2026-10-07T21:55:00.751Z",
         "origin": "prompts",
         "page": "http://127.0.0.1:3926/",
         "framework": "react",
@@ -16,12 +16,12 @@
         "files": [],
         "selection": null,
         "ancestry": [],
-        "handoffFile": ".local/designlayer/requests/2026-10-05T19-42-23-366Z-1-note-from-designlayer.md"
+        "handoffFile": ".local/designlayer/requests/2026-10-07T21-55-00-750Z-1-note-from-designlayer.md"
       }
     ],
     "next": "Apply these, then call resolve_change for each id, then call wait_for_change again."
   },
   "resolved": [
-    "chg-1-u4f8d3"
+    "chg-2-tnc61g"
   ]
 }
