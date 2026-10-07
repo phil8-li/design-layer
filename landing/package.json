@@ -1,0 +1,14 @@
+{
+  "name": "designlayer-landing",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Design Layer landing page and launch films. A static site with no build step.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "serve": "node serve.mjs",
+    "check": "node check.mjs",
+    "check:static": "node check.mjs --only static",
+    "film": "node film/render.mjs"
+  }
+}

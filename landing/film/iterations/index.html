@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design Layer launch film: three cuts</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #000;
+    --card: #111113;
+    --line: rgba(255, 255, 255, 0.1);
+    --text: #f5f5f7;
+    --text-2: #a1a1a6;
+    --text-3: #6e6e73;
+    --a: #8b9bff;
+    --b: #c7cbe0;
+    --c: #ff8fc4;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 17px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 1180px; margin: 0 auto; padding: 72px 28px 120px; }
+  h1 {
+    font: 700 clamp(40px, 6vw, 64px)/1.04 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+    letter-spacing: -0.035em;
+  }
+  .lede { margin-top: 18px; max-width: 46em; color: var(--text-2); font-size: 19px; }
+  .jump { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+  .jump a {
+    padding: 8px 16px; border-radius: 999px; background: rgba(255, 255, 255, 0.08);
+    color: var(--text); text-decoration: none; font-size: 15px; font-weight: 500;
+  }
+  .jump a:hover { background: rgba(255, 255, 255, 0.14); }
+  .note {
+    margin-top: 28px; padding: 16px 20px; border-radius: 14px; background: rgba(255, 255, 255, 0.05);
+    color: var(--text-2); font-size: 15px; max-width: 52em;
+  }
+  .note strong { color: var(--text); font-weight: 600; }
+  section { margin-top: 88px; scroll-margin-top: 24px; }
+  .kicker { font-size: 14px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+  #a .kicker { color: var(--a); } #b .kicker { color: var(--b); } #c .kicker { color: var(--c); }
+  h2 {
+    margin-top: 6px;
+    font: 700 clamp(30px, 4vw, 44px)/1.08 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+    letter-spacing: -0.03em;
+  }
+  .pitch { margin-top: 8px; color: var(--text-2); font-size: 19px; max-width: 44em; }
+  video {
+    display: block; width: 100%; aspect-ratio: 16 / 9; margin-top: 26px; border-radius: 18px;
+    background: #050506; box-shadow: 0 0 0 1px var(--line), 0 30px 80px rgba(0, 0, 0, 0.6);
+  }
+  dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px 28px; margin-top: 26px; }
+  dt { color: var(--text-3); font-size: 13px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+  dd { margin-top: 4px; font-size: 16px; }
+  .beats { margin-top: 26px; display: flex; gap: 3px; height: 30px; border-radius: 8px; overflow: hidden; }
+  .beats span {
+    display: flex; align-items: center; justify-content: center; min-width: 0; padding: 0 6px;
+    font-size: 11.5px; font-weight: 600; color: rgba(0, 0, 0, 0.78); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #a .beats span { background: var(--a); } #b .beats span { background: var(--b); } #c .beats span { background: var(--c); }
+  .beats span.dim { opacity: 0.55; }
+  .beats-cap { margin-top: 8px; color: var(--text-3); font-size: 13px; }
+  footer { margin-top: 96px; color: var(--text-3); font-size: 14px; max-width: 52em; }
+  footer code { color: var(--text-2); font: 13px ui-monospace, "SF Mono", Menlo, monospace; }
+  @media (max-width: 760px) { dl { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+</style>
+</head>
+<body>
+<main>
+  <p style="margin-bottom:18px"><a href="round-2/" style="color:#a1a1a6;text-decoration:none;font-size:15px;font-weight:500">Round 2: motion first, three new cuts →</a></p>
+  <h1>Three cuts of the launch film</h1>
+  <p class="lede">Each cut has its own original soundtrack, and every cut, word, and hit lands on that track's beats. All three use the same Demo app screenshots, and the kinetic type comes from Apple's launch films: one word per beat, big and tight.</p>
+  <nav class="jump" aria-label="Cuts">
+    <a href="#a">A · Bounce</a>
+    <a href="#b">B · Cinematic</a>
+    <a href="#c">C · Groove</a>
+  </nav>
+  <p class="note"><strong>Turn your sound on.</strong> The music is written in code (no samples, no licenses), so it can ship with the repo. I can't listen to audio myself, so I checked the mixes with spectrograms and level meters. Please judge the sound by ear.</p>
+
+  <section id="a">
+    <p class="kicker">Option A</p>
+    <h2>Bounce</h2>
+    <p class="pitch">Bright house-pop: four-on-the-floor kick, claps, and a synth hook. A word slams in on every beat of the cold open, then the film cuts on every bar, with a whip or zoom into each feature.</p>
+    <video controls preload="metadata" playsinline src="option-a-bounce.mp4" poster="option-a-bounce.jpg"></video>
+    <dl>
+      <div><dt>Tempo</dt><dd>124 BPM, F major</dd></div>
+      <div><dt>Length</dt><dd>34 s</dd></div>
+      <div><dt>Feels like</dt><dd>Apple's colorful launch spots: fun, fast, upbeat</dd></div>
+      <div><dt>Signature</dt><dd>“You · vibe‑coded · it.” then “Now · design · it · like Figma.”</dd></div>
+    </dl>
+    <div class="beats" aria-hidden="true">
+      <span style="flex:2">Word slams</span><span style="flex:2">Your app</span><span style="flex:1">Drop · editor</span><span style="flex:1">Click</span><span style="flex:1">Styles</span><span style="flex:1">Measure</span><span style="flex:1">Tokens</span><span style="flex:1">Pages</span><span style="flex:1">Notes</span><span style="flex:1">Send</span><span style="flex:1" class="dim">Code</span><span style="flex:1" class="dim">Build</span><span style="flex:2.4">Drop · logo</span>
+    </div>
+    <p class="beats-cap">One block per bar. The dimmed bars are the breakdown, a snare roll and a riser into the final drop.</p>
+  </section>
+
+  <section id="b">
+    <p class="kicker">Option B</p>
+    <h2>Cinematic</h2>
+    <p class="pitch">A trailer in letterbox: a low drone, braams, taiko, and a string ostinato. The editor floats apart as three layers in 3D and locks together on a hit, then the music stops for a beat of silence before the logo.</p>
+    <video controls preload="metadata" playsinline src="option-b-cinematic.mp4" poster="option-b-cinematic.jpg"></video>
+    <dl>
+      <div><dt>Tempo</dt><dd>90 BPM, D minor</dd></div>
+      <div><dt>Length</dt><dd>43 s</dd></div>
+      <div><dt>Feels like</dt><dd>Apple's Pro product films: dramatic, deliberate</dd></div>
+      <div><dt>Signature</dt><dd>“You shipped it fast. Now make it beautiful.”</dd></div>
+    </dl>
+    <div class="beats" aria-hidden="true">
+      <span style="flex:2">Opening lines</span><span style="flex:2">Braam · layers</span><span style="flex:1">Lock</span><span style="flex:1">Select</span><span style="flex:1">Measure</span><span style="flex:1">Tokens</span><span style="flex:1">Pages</span><span style="flex:1">Notes</span><span style="flex:1">Agent</span><span style="flex:2">Montage</span><span style="flex:0.4" class="dim">·</span><span style="flex:2.6">Logo</span>
+    </div>
+    <p class="beats-cap">One block per bar. The dim sliver is the breath: one beat of silence before the final hit.</p>
+  </section>
+
+  <section id="c">
+    <p class="kicker">Option C</p>
+    <h2>Groove</h2>
+    <p class="pitch">Swung funk with finger snaps, a Rhodes, a walking bass, and a whistled hook. The type bounces in word by word, the UI pops on the snare, and the drums stop dead for “That's it.” before the logo.</p>
+    <video controls preload="metadata" playsinline src="option-c-groove.mp4" poster="option-c-groove.jpg"></video>
+    <dl>
+      <div><dt>Tempo</dt><dd>100 BPM swung, C major</dd></div>
+      <div><dt>Length</dt><dd>36 s</dd></div>
+      <div><dt>Feels like</dt><dd>Apple's playful dance ads: warm, cheeky</dd></div>
+      <div><dt>Signature</dt><dd>“Your app works. Now make it pop.”</dd></div>
+    </dl>
+    <div class="beats" aria-hidden="true">
+      <span style="flex:2">Bouncy words</span><span style="flex:1">Your app</span><span style="flex:1">Click</span><span style="flex:1">Nudge</span><span style="flex:1">Measure</span><span style="flex:1">Tokens</span><span style="flex:1">Pages</span><span style="flex:1">Note</span><span style="flex:1">Send</span><span style="flex:1">Done</span><span style="flex:1" class="dim">Stop</span><span style="flex:2.4">Logo</span>
+    </div>
+    <p class="beats-cap">One block per bar. On the stop, the drums drop out and the bass slides back in.</p>
+  </section>
+
+  <footer>
+    Source: <code>site/film/beat/</code>. <code>scores.mjs</code> writes the music, <code>cuts.js</code> holds the edits, and <code>music.mjs</code> and <code>render.mjs</code> build them. Pick a cut and I'll wire it into the site as the launch film, under the page's 4 MB video budget.
+  </footer>
+</main>
+</body>
+</html>

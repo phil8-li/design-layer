@@ -1,0 +1,16 @@
+{
+  "circle": {
+    "nodes": [["circle", { "cx": "12", "cy": "12", "r": "9" }]]
+  },
+  "arrow-right": {
+    "nodes": [
+      ["path", { "d": "M5 12h14" }],
+      ["path", { "d": "m12 5 7 7-7 7" }]
+    ],
+    "rootFill": "none",
+    "rootStroke": "currentColor"
+  },
+  "empty": {
+    "nodes": []
+  }
+}

@@ -1,0 +1,284 @@
+[
+  {
+    "file": "hero.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Select and inspect",
+    "description": "Demo app (Midday's site design) running inside DesignLayer: an element selected on the live page, Layers panel on the left, Design inspector on the right.",
+    "alt": "Midday's site design, rewritten to describe Design Layer, open in DesignLayer's dark editor. The serif headline 'The design layer for vibe-coded apps' is selected with an indigo outline and resize handles; Layers on the left shows the StartPage tree and the inspector on the right shows its size, fill and Hedvig Letters Serif typography.",
+    "selection": {
+      "x": 416,
+      "y": 246,
+      "w": 768,
+      "h": 120
+    }
+  },
+  {
+    "file": "app-only.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Before / after",
+    "description": "Demo app (Midday's site design) on its own: the same page and scroll position as hero.jpg, editor collapsed with ⌘.",
+    "alt": "The site on its own: Midday's editorial design with the serif headline 'The design layer for vibe-coded apps', a black Get started button and a Design Layer screenshot below.",
+    "pairedWith": "hero.jpg",
+    "note": "Captured in the same page session right after hero.jpg. With the editor collapsed the app reflows to the full window width, so element positions differ from hero.jpg; scroll offset is unchanged."
+  },
+  {
+    "file": "light.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Light theme",
+    "description": "The hero composition with DesignLayer's own chrome in its light theme.",
+    "alt": "The hero composition with DesignLayer's own chrome in its light theme: the headline selected, Layers on the left and the inspector on the right."
+  },
+  {
+    "file": "tokens.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Design tokens",
+    "description": "A token picker open on the selection, listing Demo app (Midday's site design)'s own design tokens read from its globals.css and token manifest.",
+    "alt": "A color token picker open in DesignLayer's inspector on the site's Get started button, listing the app's own HSL tokens from @midday/ui globals.css, such as background, foreground, card, primary and secondary, with light and dark swatches."
+  },
+  {
+    "file": "measure.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Measure",
+    "description": "Holding Option/Alt over a second element draws the distances between it and the selection.",
+    "alt": "The headline selected while Option is held over the Get started button; DesignLayer draws a red guide and the pixel distance between them."
+  },
+  {
+    "file": "responsive.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Responsive breakpoints",
+    "description": "The Responsive section: each Tailwind breakpoint with the design system's note on what it means and the file that owns it.",
+    "alt": "DesignLayer's Responsive section for the headline: sm through 2xl breakpoints, each with what changes on the startpage and the file that owns it, the active breakpoint marked."
+  },
+  {
+    "file": "align.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Multi-select and align",
+    "description": "Several elements shift-selected at once, with align and distribute controls in the inspector.",
+    "alt": "Three sibling feature links in the site's feature grid (Inspector, Comments, Changes) shift-selected together, each outlined, with DesignLayer's align, distribute and arrange controls in the inspector."
+  },
+  {
+    "file": "system.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Design system",
+    "description": "The Design system tab: libraries and design-system lint findings for the page.",
+    "alt": "DesignLayer's Design system tab beside the homepage: two component libraries added from the project (src/components/sections and the integrations route components) and the DS lint section, which reports that no lint checker is installed."
+  },
+  {
+    "file": "audit.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Design-system audit",
+    "description": "The Design system tab's DS lint section after an audit: the project's own checkers' findings, grouped by rule.",
+    "alt": "DesignLayer's DS lint section after an audit of the homepage's files: findings from the project's own shadcn/lint and ds-lint grouped by rule (off-scale values, inline styles, unknown classes, raw colors), each row naming the file and line."
+  },
+  {
+    "file": "options.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Design options",
+    "description": "The left panel's Design options tab, listing the on/off and value options found in the running app.",
+    "alt": "DesignLayer's Design options tab listing the homepage's display switches (Announcement badge, Subtitle, Note under the button, Hero screenshot, Tilted hero screenshot), found in the live React tree; Subtitle is switched off and the hero now goes straight from the headline to the Get started button."
+  },
+  {
+    "file": "canvas.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Canvas view",
+    "description": "Canvas view (⇧1): every page of the app laid out as live frames on one board.",
+    "alt": "DesignLayer canvas view: six pages of the site (home, about, agents, send to agent, shortcuts and comments) laid out side by side as live, fully rendered frames on a dark board.",
+    "focus": {
+      "x": 312,
+      "y": 158,
+      "w": 298,
+      "h": 286
+    }
+  },
+  {
+    "file": "notes.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Notes",
+    "description": "Comment mode: numbered note pins on elements of the live page, with a note being written in the composer.",
+    "alt": "The homepage in DesignLayer comment mode with numbered pins on the headline and the Open source badge, and a note composer open on the Get started button reading 'Point Get started at the install step.'",
+    "pins": [
+      {
+        "x": 688,
+        "y": 489
+      },
+      {
+        "x": 593,
+        "y": 307
+      },
+      {
+        "x": 730,
+        "y": 203
+      }
+    ]
+  },
+  {
+    "file": "changes.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Changes and handoff",
+    "description": "The Changes tab: notes and style edits in one numbered list, each marked Ready or Needs the agent, above the Send to agent button.",
+    "alt": "DesignLayer's Changes tab beside the homepage, listing a gap edit on the hero call-to-action column marked Ready and three notes in one numbered list, above the Send to agent and Copy buttons, with the MCP endpoint showing a connected agent."
+  },
+  {
+    "file": "diff.txt",
+    "width": null,
+    "height": null,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Apply to code",
+    "description": "Real git diff in Demo app (Midday's site design)'s source after pressing \"Send to agent\".",
+    "alt": "Unified diff of the source change DesignLayer wrote."
+  },
+  {
+    "file": "agent.json",
+    "width": null,
+    "height": null,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Send to agent",
+    "description": "The JSON a coding agent receives from the MCP wait_for_change tool after Send to agent.",
+    "alt": "MCP tool result with the change brief."
+  },
+  {
+    "file": "shortcuts.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Keyboard shortcuts",
+    "description": "The keyboard shortcuts sheet (⌃⇧?), grouped by task, with Figma's equivalents.",
+    "alt": "DesignLayer's keyboard shortcuts sheet open over the homepage, listing tools, selection, editing and view shortcuts."
+  },
+  {
+    "file": "direct-edit.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Direct edit",
+    "description": "Double-clicking the headline edits its copy in place on the live page; the shot is held before the edit is committed.",
+    "alt": "TBD",
+    "textEdit": {
+      "x": 424,
+      "y": 246,
+      "w": 753,
+      "h": 60
+    }
+  },
+  {
+    "file": "hidden.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Hide the editor",
+    "description": "⌘. hides the whole editor: the app gets the full window and one round launcher button stays in the bottom-right corner.",
+    "alt": "TBD",
+    "launcher": {
+      "x": 1528,
+      "y": 928,
+      "w": 40,
+      "h": 40
+    }
+  },
+  {
+    "file": "options-alt.jpg",
+    "width": 3200,
+    "height": 2000,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Design options",
+    "description": "The Design options tab with a different variant switched on: the app's own display switches flipped live, no source change.",
+    "alt": "TBD",
+    "options": [
+      {
+        "label": "Announcement badge",
+        "on": true,
+        "x": 32,
+        "y": 121,
+        "w": 235,
+        "h": 24
+      },
+      {
+        "label": "Subtitle",
+        "on": true,
+        "x": 32,
+        "y": 153,
+        "w": 235,
+        "h": 24
+      },
+      {
+        "label": "Note under the button",
+        "on": true,
+        "x": 32,
+        "y": 185,
+        "w": 235,
+        "h": 24
+      },
+      {
+        "label": "Hero screenshot",
+        "on": true,
+        "x": 32,
+        "y": 217,
+        "w": 235,
+        "h": 24
+      },
+      {
+        "label": "Tilted hero screenshot",
+        "on": true,
+        "x": 32,
+        "y": 249,
+        "w": 235,
+        "h": 24
+      }
+    ]
+  },
+  {
+    "file": "agent-close.json",
+    "width": null,
+    "height": null,
+    "app": "Demo app (Midday's site design)",
+    "appRepoUrl": "https://github.com/midday-ai/midday",
+    "capability": "Send to agent",
+    "description": "The JSON a coding agent receives from the MCP wait_for_change tool after one note on the hero screenshot is sent.",
+    "alt": "MCP tool result with the change brief."
+  }
+]

@@ -1,0 +1,27 @@
+{
+  "tool": "wait_for_change",
+  "result": {
+    "timeout": false,
+    "count": 1,
+    "changes": [
+      {
+        "id": "chg-1-lfh5y1",
+        "status": "pending",
+        "createdAt": "2026-10-02T23:01:17.991Z",
+        "origin": "prompts",
+        "page": "http://127.0.0.1:3926/",
+        "framework": "react",
+        "request": "3 notes and 1 edit from DesignLayer",
+        "brief": "## Page Feedback: /\n**App:** @midday/website\n**Viewport:** 1600×1000\n\nItems marked already written are in the source files. Do not apply them again — a second application is a conflict, not a fix.\n\n### 1. flex flex\n**Location:** .flex > .flex-1 > .flex > .flex\n**React:** <StartPage>\n**Status:** Already written to source — do not apply again\n**Change:** set `gap` to `16px` (was `12px`)\n\n### 2. \"vibe-coded apps\"\n**Location:** .space-y-5 > .font-serif > .not-italic > .whitespace-nowrap\n**React:** <J> <V> <ScrollAndMaybeFocusHandler> <InnerScrollAndFocusHandlerOld> <StartPage>\n**Feedback:** Keep 'vibe-coded apps' on one line at xl.\n\n### 3. link \"Open source · MIT→\"\n**Location:** .flex-1 > .flex > .space-y-5 > .inline-flex\n**React:** <V> <ScrollAndMaybeFocusHandler> <InnerScrollAndFocusHandlerOld> <StartPage> <LinkComponent>\n**Feedback:** Link the badge to the license, not the repo.\n\n### 4. \"Get started\"\n**Location:** .flex > .flex > .inline-flex > .text-inherit\n**React:** <InnerScrollAndFocusHandlerOld> <StartPage> <Button> <Slot.Slot> <Slot.SlotClone>\n**Feedback:** Point Get started at the install step.",
+        "files": [],
+        "selection": null,
+        "ancestry": [],
+        "handoffFile": ".local/designlayer/requests/2026-10-02T23-01-17-989Z-3-notes-and-1-edit-from-designlayer.md"
+      }
+    ],
+    "next": "Apply these, then call resolve_change for each id, then call wait_for_change again."
+  },
+  "resolved": [
+    "chg-1-lfh5y1"
+  ]
+}

@@ -1,0 +1,54 @@
+/*
+ * Nimbus: a design system shipped as nothing but CSS custom properties.
+ *
+ * This is the kind of file a designer points the Libraries tab at when there is
+ * no manifest to point at — a stylesheet the app already loads. Every rule the
+ * CSS parser has is exercised here exactly once, so the file doubles as the
+ * documentation of what "a design system in CSS" means to this editor.
+ *
+ * Keep it small. A fixture that grows a second shade of every colour stops
+ * being readable as a specification and becomes a design system nobody owns.
+ */
+
+:root {
+  /* Colours: named by prefix, and one named by suffix, which is the rule that
+     lets a host spell `--border-color` and still be understood. */
+  --color-brand-500: #5b8cff;
+  --color-surface: #ffffff;
+  --border-color: #d8dce4;
+
+  /* Spacing in both units a real stylesheet mixes, because the editor works in
+     pixels and a token authored in rem is still a spacing step. */
+  --spacing-sm: 8px;
+  --spacing-md: 1rem;
+  --space-xs: 0.5rem;
+
+  --radius-card: 12px;
+
+  --shadow-card: 0 2px 8px rgba(12, 16, 20, 0.16);
+
+  /* Motion: a duration the editor's motion axis can write, and an easing it
+     cannot. Only one of these survives parsing. */
+  --duration-quick: 200ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  --icon-size-action: 16px;
+
+  /* One Tailwind v4 text style, spelled the way Tailwind spells it: a family of
+     four properties sharing a stem, which collapses into a single token. */
+  --text-lg: 18px;
+  --text-lg--line-height: 24px;
+  --text-lg--letter-spacing: -0.01em;
+  --text-lg--font-weight: 500;
+
+  /* Not a token this editor can bind to any axis, so it is dropped rather than
+     offered in a picker that could not write it. */
+  --font-family-body: "Inter", sans-serif;
+
+  /* --color-legacy-teal: #0aa8a0; retired, and must never be parsed. */
+}
+
+.dark {
+  --color-brand-500: #93b0ff;
+  --color-surface: #101319;
+}

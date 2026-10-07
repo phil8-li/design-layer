@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design Layer launch film: round 6</title>
+<style>
+  :root { color-scheme: dark; --line: rgba(255, 255, 255, 0.1); --text: #f5f5f7; --text-2: #a1a1a6; --text-3: #6e6e73; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: #000; color: var(--text); font: 17px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  main { max-width: 1180px; margin: 0 auto; padding: 72px 28px 120px; }
+  .back { margin-bottom: 18px; }
+  .back a { color: var(--text-2); text-decoration: none; font-size: 15px; font-weight: 500; }
+  h1 { font: 700 clamp(40px, 6vw, 64px)/1.04 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; letter-spacing: -0.035em; }
+  .lede { margin-top: 18px; max-width: 46em; color: var(--text-2); font-size: 19px; }
+  .jump { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+  .jump a { padding: 8px 16px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); color: var(--text); text-decoration: none; font-size: 15px; font-weight: 500; }
+  .jump a:hover { background: rgba(255, 255, 255, 0.14); }
+  .fixed { margin-top: 36px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .fix { padding: 18px 20px; border-radius: 14px; background: rgba(255, 255, 255, 0.05); }
+  .fix b { display: block; font-weight: 600; margin-bottom: 4px; }
+  .fix span { color: var(--text-2); font-size: 15px; }
+  .edit { margin-top: 28px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .edit figure { margin: 0; }
+  .edit img { display: block; width: 100%; border-radius: 14px; box-shadow: 0 0 0 1px var(--line); }
+  .edit figcaption { margin-top: 10px; font-size: 14px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-3); }
+  section { margin-top: 88px; scroll-margin-top: 24px; }
+  .kicker { font-size: 14px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-3); }
+  h2 { margin-top: 6px; font: 700 clamp(30px, 4vw, 44px)/1.08 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; letter-spacing: -0.03em; }
+  .pitch { margin-top: 8px; color: var(--text-2); font-size: 19px; max-width: 46em; }
+  video { display: block; width: 100%; aspect-ratio: 16 / 9; margin-top: 26px; border-radius: 18px; background: #050506; box-shadow: 0 0 0 1px var(--line), 0 30px 80px rgba(0, 0, 0, 0.6); }
+  dl { display: grid; grid-template-columns: 1fr 2fr 2fr; gap: 18px 28px; margin-top: 26px; }
+  dt { color: var(--text-3); font-size: 13px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+  dd { margin-top: 4px; font-size: 16px; }
+  h3 { margin-top: 96px; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  .refs { margin-top: 14px; padding-left: 20px; color: var(--text-2); max-width: 52em; }
+  .refs li { margin-top: 8px; }
+  .refs a { color: var(--text); }
+  footer { margin-top: 56px; color: var(--text-3); font-size: 14px; max-width: 52em; }
+  footer code { color: var(--text-2); font: 13px ui-monospace, "SF Mono", Menlo, monospace; }
+  @media (max-width: 760px) { .fixed, .edit { grid-template-columns: 1fr; } dl { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <p class="back"><a href="../round-5/">← Round 5: fine-tune what you vibe coded</a> &nbsp;·&nbsp; <a href="../round-7/">Round 7: One move, with sound →</a></p>
+  <h1>Round 6: the landing page's story, told like Apple</h1>
+  <p class="lede">Five options with your script in the same order: edit the copy, measure and space it, a radius token, a note to the agent, the agent's hover, the canvas. Every one opens with a new intro. Every one keeps M's first 15 seconds, where each piece lifts off the page while you tune it. After that there are no more layers: each step gets its own close-up and its own camera move. The words come from the landing page. The cuts are silent.</p>
+  <nav class="jump" aria-label="Options">
+    <a href="#p">P · Landing</a>
+    <a href="#q">Q · Keynote</a>
+    <a href="#r">R · Steps</a>
+    <a href="#s">S · Macro</a>
+    <a href="#t">T · One move</a>
+  </nav>
+
+  <div class="fixed">
+    <div class="fix"><b>The shake is gone</b><span>A rounding bug caused it. Each lifted card scaled its picture to two decimals, so the picture landed up to 5 px off, a different amount every frame. Measured frame by frame, the error went from ±5 px to under 0.01 px. Tracked on the video's own pixels, a lifted card now speeds up and settles in one smooth curve, where round 5's jumped back and forth by up to 6 px.</span></div>
+    <div class="fix"><b>A delightful, white hover</b><span>The agent's change now lifts the button, sends one sheen across it, and runs a white light around the inside of its border. The light sits inside because a white light outside it would vanish on the white page. It's captured at 4× for the close-ups.</span></div>
+    <div class="fix"><b>A clear hand-off to the agent</b><span>After Send, three steps instead of one rush: back to the whole page, the editor steps aside with the page going soft through the reflow, then the agent's pointer comes in and the camera follows it to the button.</span></div>
+    <div class="fix"><b>The landing page's story</b><span>“Bring the design layer to your vibe-coded apps.” “Design like Figma. On the real thing.” “Your design system. Not ours.” “Point at it. Your agent fixes it.” “Every page. One board.” The end card is the page's own, and the board now shows only the pages, without the editor's panels, so “Every page. One board.” reads at a glance.</span></div>
+  </div>
+
+  <div class="edit">
+    <figure><img src="before.jpg" alt="The Demo app hero before: the original two-line subtitle and a square black button"><figcaption>Before</figcaption></figure>
+    <figure><img src="after.jpg" alt="The hero after: the new one-line subtitle, more space under the headline, and the rounded button lifted on hover with a white light on its border"><figcaption>After, with the button hovered</figcaption></figure>
+  </div>
+
+  <section id="p">
+    <p class="kicker">Option P</p>
+    <h2>Landing</h2>
+    <p class="pitch">The landing page in motion. It opens the way the page does: the hero line, and under it the app, the editor's panels and its toolbar floating apart in a 3/4 view. They land one after another into the real editor, with a soft light marking the toolbar's click. M's first act follows. Then the page's section headings frame each step, with the window beside them. The token gets an orbit, the note a crane down to the button, Send a whip pan, and the agent's hover a slow push to macro. The canvas is a pull-back to the board, and the cut ends on the page's end card.</p>
+    <video controls preload="metadata" playsinline src="option-p-landing.mp4" poster="option-p-landing.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>35.9 s</dd></div>
+      <div><dt>Opening</dt><dd>The landing hero: three planes land into the editor</dd></div>
+      <div><dt>After 15 s</dt><dd>Two-tone section headings beside the window; orbit, crane, whip, macro push, pull-back</dd></div>
+    </dl>
+  </section>
+
+  <section id="q">
+    <p class="kicker">Option Q</p>
+    <h2>Keynote</h2>
+    <p class="pitch">Apple's keynote manner: a black stage, one idea per shot, the key object always centered. An object carries every scene into the next, so there are no cuts. “You vibe coded it. Now design it.” gets Design Layer's own selection, and the box grows into the editor's window. After M's act, the hero's selection flies off the page onto “Tokens.” and then shrinks onto the button. The token chip flies from the picker to the button, and the note's pin flies into Send to agent. For the agent's hover, the button is lifted out alone onto black, big and centered, with its light running around it. Then it goes back into the page, and the page goes into its frame on the board.</p>
+    <video controls preload="metadata" playsinline src="option-q-keynote.mp4" poster="option-q-keynote.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>37.9 s</dd></div>
+      <div><dt>Opening</dt><dd>A two-tone line; its selection box becomes the window</dd></div>
+      <div><dt>After 15 s</dt><dd>Objects carry each scene: selection, chip, pin, the button alone on black</dd></div>
+    </dl>
+  </section>
+
+  <section id="r">
+    <p class="kicker">Option R</p>
+    <h2>Steps</h2>
+    <p class="pitch">The combination you asked for: M's first act, then O's big step words with close-ups, each with a different camera move. It opens on a coding agent's prompt: “Build a landing page for my app.” Enter, and the prompt grows into the window with the app inside. “You vibe coded it. Now fine-tune it.” Then the editor's panels slide in. After the act, “Tokens.” wears a selection that rounds as the token lands, while the camera dollies into the picker. “Ask.” gets a pin and a crane down to the note, and “Send.” a whip pan. The agent's hover plays full frame with a slow push in, and “Every page.” pulls back to the board.</p>
+    <video controls preload="metadata" playsinline src="option-r-steps.mp4" poster="option-r-steps.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>36.4 s</dd></div>
+      <div><dt>Opening</dt><dd>A prompt types, then grows into the vibe-coded app</dd></div>
+      <div><dt>After 15 s</dt><dd>O's step words: dolly, crane, whip, full-frame push, pull-back</dd></div>
+    </dl>
+  </section>
+
+  <section id="s">
+    <p class="kicker">Option S</p>
+    <h2>Macro</h2>
+    <p class="pitch">Apple's product macros, applied to an interface: extreme close-ups, a thin plane of focus with the page soft around it, a pool of light falling off to black, slow drifts and rack focus. It opens drifting across the app's own headline. Focus racks along the line, then pulls back to reveal the editor. After M's act, every step is a macro. Focus racks from the token in the picker to the button's corner. Then the note is typed in close-up, Send is pressed in close-up, and the agent's hover gets an extreme close-up where the light runs along the edge. The canvas is one long macro-to-wide pull-back. Small two-tone supers carry the landing page's words.</p>
+    <video controls preload="metadata" playsinline src="option-s-macro.mp4" poster="option-s-macro.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>36.9 s</dd></div>
+      <div><dt>Opening</dt><dd>A macro drift across the app's headline, then a rack focus and pull-back</dd></div>
+      <div><dt>After 15 s</dt><dd>Depth of field, rack focus, slow drifts; small supers</dd></div>
+    </dl>
+  </section>
+
+  <section id="t">
+    <p class="kicker">Option T</p>
+    <h2>One move</h2>
+    <p class="pitch">The whole film is one unbroken camera move. It starts far out, with the editor as an exploded view and the hero line standing in the space. The camera flies through the line as the layers close up and land. From then on the window never stops moving: an orbit toward the inspector for the token, a crane down to the note, a rise with Send, a swing back to the button for the hover. Then it climbs away as the page becomes one frame on the board, which lies back like a landscape. The headings stand in the space beside the work, so the camera passes them like signs.</p>
+    <video controls preload="metadata" playsinline src="option-t-one-move.mp4" poster="option-t-one-move.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>36.0 s</dd></div>
+      <div><dt>Opening</dt><dd>A fly-through from far out: an exploded editor and the hero line</dd></div>
+      <div><dt>After 15 s</dt><dd>No cuts at all: the window keeps moving in 3D; words stand in the space</dd></div>
+    </dl>
+  </section>
+
+  <h3>What I took from Apple's videos</h3>
+  <ul class="refs">
+    <li>One shot, one idea, with the key object centered and room to breathe. The stage stays dark and quiet so nothing competes with the product. (<a href="https://x.com/leomeethewoo/status/2103529310208606701">leomeethewoo, “Make your product videos look expensive”</a>)</li>
+    <li>Few colors, used the same way every time: near-black, white with a dim grey, Design Layer's indigo, and teal only for the agent.</li>
+    <li>Eased, overlapping motion and no direct cuts. A selection, a chip, a pin or the camera itself carries each scene into the next.</li>
+    <li>Rhythm that changes: a calm opening, brisk steps, a held hero shot for the agent's work, a sweeping canvas, a still end card.</li>
+    <li>Two-tone lines in Apple's manner (“More personal. More powerful.”), which is also how the landing page sets its headings.</li>
+  </ul>
+
+  <footer>
+    Source: <code>site/film/promo/cuts-r6.js</code> (shared) and <code>cuts-r6-p.js</code> … <code>cuts-r6-t.js</code>, with the engine in <code>promo.js</code>. The session is captured by <code>designlayer-demos/story/capture-r6.mjs</code>, and the hover is retaken at 4× by <code>capture-r6-hover4.mjs</code>. Rendered at 2× and scaled to 1080p.
+  </footer>
+</main>
+</body>
+</html>

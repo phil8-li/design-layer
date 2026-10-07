@@ -1,0 +1,13 @@
+diff --git a/apps/website/src/components/startpage.tsx b/apps/website/src/components/startpage.tsx
+index 9a41919..ecfd382 100644
+--- a/apps/website/src/components/startpage.tsx
++++ b/apps/website/src/components/startpage.tsx
+@@ -266,7 +266,7 @@ export function StartPage() {
+                 )}
+               </div>
+ 
+-              <div className="flex flex-col items-center gap-3 pt-2">
++              <div className="flex flex-col items-center gap-4 pt-2">
+                 <Button
+                   asChild
+                   className="btn-inverse h-11 px-6 transition-colors"

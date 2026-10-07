@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design Layer launch film: round 2</title>
+<style>
+  :root { color-scheme: dark; --line: rgba(255, 255, 255, 0.1); --text: #f5f5f7; --text-2: #a1a1a6; --text-3: #6e6e73; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: #000; color: var(--text); font: 17px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  main { max-width: 1180px; margin: 0 auto; padding: 72px 28px 120px; }
+  h1 { font: 700 clamp(40px, 6vw, 64px)/1.04 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; letter-spacing: -0.035em; }
+  .lede { margin-top: 18px; max-width: 46em; color: var(--text-2); font-size: 19px; }
+  .jump { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+  .jump a { padding: 8px 16px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); color: var(--text); text-decoration: none; font-size: 15px; font-weight: 500; }
+  .jump a:hover { background: rgba(255, 255, 255, 0.14); }
+  .rules { margin-top: 36px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .rule { padding: 18px 20px; border-radius: 14px; background: rgba(255, 255, 255, 0.05); }
+  .rule b { display: block; font-weight: 600; margin-bottom: 4px; }
+  .rule span { color: var(--text-2); font-size: 15px; }
+  section { margin-top: 88px; scroll-margin-top: 24px; }
+  .kicker { font-size: 14px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-3); }
+  h2 { margin-top: 6px; font: 700 clamp(30px, 4vw, 44px)/1.08 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; letter-spacing: -0.03em; }
+  .pitch { margin-top: 8px; color: var(--text-2); font-size: 19px; max-width: 46em; }
+  video { display: block; width: 100%; aspect-ratio: 16 / 9; margin-top: 26px; border-radius: 18px; background: #050506; box-shadow: 0 0 0 1px var(--line), 0 30px 80px rgba(0, 0, 0, 0.6); }
+  dl { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 18px 28px; margin-top: 26px; }
+  dt { color: var(--text-3); font-size: 13px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+  dd { margin-top: 4px; font-size: 16px; }
+  h3 { margin-top: 96px; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  .refs { margin-top: 14px; padding-left: 20px; color: var(--text-2); max-width: 52em; }
+  .refs li { margin-top: 8px; }
+  .refs a { color: var(--text); }
+  footer { margin-top: 56px; color: var(--text-3); font-size: 14px; max-width: 52em; }
+  footer code { color: var(--text-2); font: 13px ui-monospace, "SF Mono", Menlo, monospace; }
+  @media (max-width: 760px) { .rules { grid-template-columns: 1fr; } dl { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <p style="margin-bottom:18px"><a href="../round-3/" style="color:#a1a1a6;text-decoration:none;font-size:15px;font-weight:500">Round 3: the launch cut, three marketing cuts →</a></p>
+  <h1>Round 2: motion first</h1>
+  <p class="lede">All three cuts tell the same short story: select the headline, give it a new color, leave a note for your agent, send both, and watch the change land in the code. Every frame of the app is a real capture of one continuous session in Design Layer. The film only moves the camera, the pointer, and the light. The cuts are silent; music comes later.</p>
+  <nav class="jump" aria-label="Cuts">
+    <a href="#d">D · One take</a>
+    <a href="#e">E · Spotlight</a>
+    <a href="#f">F · Close-ups</a>
+  </nav>
+  <div class="rules">
+    <div class="rule"><b>Show the real job</b><span>Every state is captured, including the typed values, the note, the agent's brief, and the diff.</span></div>
+    <div class="rule"><b>Move only to explain</b><span>The camera moves to read the next thing, then holds still. No flashes, shakes, whips, or letterbox.</span></div>
+    <div class="rule"><b>One motion language</b><span>Things arrive with a fast start and a long settle, and travel with a smooth in-out. Every payoff holds long enough to read.</span></div>
+  </div>
+
+  <section id="d">
+    <p class="kicker">Option D</p>
+    <h2>One take</h2>
+    <p class="pitch">One unbroken camera through the editor. It glides only to read what changes next: the headline, the inspector, the picker, the note. It pulls back for every result. At the end the window makes room for the agent's brief and the diff.</p>
+    <video controls preload="metadata" playsinline src="option-d-one-take.mp4" poster="option-d-one-take.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>41 s</dd></div>
+      <div><dt>Camera</dt><dd>Continuous</dd></div>
+      <div><dt>Borrowed from</dt><dd>Apple's single-take feature films, and Retool's “film it being made.”</dd></div>
+    </dl>
+  </section>
+
+  <section id="e">
+    <p class="kicker">Option E</p>
+    <h2>Spotlight</h2>
+    <p class="pitch">The camera never moves. Light leads the eye instead: everything dims except the part in use, and a numbered label names each step. The spotlight glides from one place to the next, so you always know where to look.</p>
+    <video controls preload="metadata" playsinline src="option-e-spotlight.mp4" poster="option-e-spotlight.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>35 s</dd></div>
+      <div><dt>Camera</dt><dd>Locked off</dd></div>
+      <div><dt>Borrowed from</dt><dd>The focus-and-label language of Linear's product films, and Vercel's restraint: motion that confirms rather than performs.</dd></div>
+    </dl>
+  </section>
+
+  <section id="f">
+    <p class="kicker">Option F</p>
+    <h2>Close-ups</h2>
+    <p class="pitch">An editorial layout: one sentence on the left, one magnified detail on the right. The detail card is the live editor, cropped. It morphs from the page to the picker, back to the page, then to the note and the Send button, so every step is one continuous object.</p>
+    <video controls preload="metadata" playsinline src="option-f-close-ups.mp4" poster="option-f-close-ups.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>38.5 s</dd></div>
+      <div><dt>Camera</dt><dd>Morphing crop</dd></div>
+      <div><dt>Borrowed from</dt><dd>Apple's feature pages, with one idea per frame, and shared-element transitions that keep every object in place.</dd></div>
+    </dl>
+  </section>
+
+  <h3>What I took from the references</h3>
+  <ul class="refs">
+    <li>Open on the product doing a real job, and show one clear outcome rather than a tour of features. That's why all three follow a single edit end to end. (<a href="https://www.moonb.io/blog/software-demo-video">Moonb, “13 Software Demo Videos That Sell the Product”</a>)</li>
+    <li>For a developer tool, watching the thing being built beats any animation. So the film never fakes UI; typing reveals the captured text a character at a time. (Same source, on Retool's demo)</li>
+    <li>Linear arrives fast and settles long; Vercel lets silence signal confidence; motion should confirm, not perform. Hence one expo-out curve for arrivals, a smooth in-out for travel, and nothing that moves for its own sake. (<a href="https://www.designmd.co/blog/linear-vs-vercel-motion">DesignMD, “Linear vs Vercel: two approaches to minimal motion”</a>)</li>
+  </ul>
+
+  <footer>
+    Source: <code>site/film/story/</code> (<code>cuts.js</code> holds the three edits, <code>render.mjs</code> builds them). The session itself is captured by <code>designlayer-demos/story/capture-story.mjs</code>. Round 1 is <a href="../" style="color:inherit">one page back</a>.
+  </footer>
+</main>
+</body>
+</html>

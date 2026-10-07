@@ -1,0 +1,15 @@
+/*
+ * Relay's stylesheet. This host declares no Tailwind theme block at all — on
+ * Tailwind v3 the scale lives in tailwind.config.js, which is the whole point
+ * of this fixture.
+ */
+
+:root {
+  --relay-ink: #0b0c0f;
+  --relay-paper: #ffffff;
+  --relay-teal: #0b7285;
+  --relay-radius-card: 6px;
+  --relay-radius-pill: 999px;
+
+  --relay-body-bg: var(--relay-paper);
+}

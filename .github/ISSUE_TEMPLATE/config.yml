@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or idea
+    url: https://github.com/phil8-li/design-layer/discussions
+    about: Ask how something works or float an idea before filing it.
+  - name: Security vulnerability
+    url: https://github.com/phil8-li/design-layer/security/advisories/new
+    about: Report privately, not in a public issue.

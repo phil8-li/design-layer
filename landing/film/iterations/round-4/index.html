@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design Layer launch film: round 4</title>
+<style>
+  :root { color-scheme: dark; --line: rgba(255, 255, 255, 0.1); --text: #f5f5f7; --text-2: #a1a1a6; --text-3: #6e6e73; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: #000; color: var(--text); font: 17px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  main { max-width: 1180px; margin: 0 auto; padding: 72px 28px 120px; }
+  .back { margin-bottom: 18px; }
+  .back a { color: var(--text-2); text-decoration: none; font-size: 15px; font-weight: 500; }
+  h1 { font: 700 clamp(40px, 6vw, 64px)/1.04 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; letter-spacing: -0.035em; }
+  .lede { margin-top: 18px; max-width: 46em; color: var(--text-2); font-size: 19px; }
+  .jump { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+  .jump a { padding: 8px 16px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); color: var(--text); text-decoration: none; font-size: 15px; font-weight: 500; }
+  .jump a:hover { background: rgba(255, 255, 255, 0.14); }
+  .edit { margin-top: 40px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .edit figure { margin: 0; }
+  .edit img { display: block; width: 100%; border-radius: 14px; box-shadow: 0 0 0 1px var(--line); }
+  .edit figcaption { margin-top: 10px; font-size: 14px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-3); }
+  .why { margin-top: 14px; max-width: 52em; color: var(--text-2); font-size: 16px; }
+  .rules { margin-top: 36px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .rule { padding: 18px 20px; border-radius: 14px; background: rgba(255, 255, 255, 0.05); }
+  .rule b { display: block; font-weight: 600; margin-bottom: 4px; }
+  .rule span { color: var(--text-2); font-size: 15px; }
+  section { margin-top: 88px; scroll-margin-top: 24px; }
+  .kicker { font-size: 14px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-3); }
+  h2 { margin-top: 6px; font: 700 clamp(30px, 4vw, 44px)/1.08 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; letter-spacing: -0.03em; }
+  .pitch { margin-top: 8px; color: var(--text-2); font-size: 19px; max-width: 46em; }
+  video { display: block; width: 100%; aspect-ratio: 16 / 9; margin-top: 26px; border-radius: 18px; background: #050506; box-shadow: 0 0 0 1px var(--line), 0 30px 80px rgba(0, 0, 0, 0.6); }
+  dl { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 18px 28px; margin-top: 26px; }
+  dt { color: var(--text-3); font-size: 13px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+  dd { margin-top: 4px; font-size: 16px; }
+  h3 { margin-top: 96px; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  .refs { margin-top: 14px; padding-left: 20px; color: var(--text-2); max-width: 52em; }
+  .refs li { margin-top: 8px; }
+  .refs a { color: var(--text); }
+  footer { margin-top: 56px; color: var(--text-3); font-size: 14px; max-width: 52em; }
+  footer code { color: var(--text-2); font: 13px ui-monospace, "SF Mono", Menlo, monospace; }
+  @media (max-width: 760px) { .rules, .edit { grid-template-columns: 1fr; } dl { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <p class="back"><a href="../round-3/">← Round 3: the launch cut</a> &nbsp;·&nbsp; <a href="../round-5/">Round 5: fine-tune what you vibe coded →</a></p>
+  <h1>Round 4: a real design fix</h1>
+  <p class="lede">A new session, captured live in Design Layer: the hero's one action, made to lead. Select Get started, drag its corner radius into a pill, give it the brand indigo, and ask your agent to make every primary button match. Each cut builds on your notes on round 3. The cuts are silent; music comes later.</p>
+  <nav class="jump" aria-label="Cuts">
+    <a href="#j">J · Color</a>
+    <a href="#k">K · One shape</a>
+    <a href="#l">L · Layers</a>
+  </nav>
+
+  <div class="edit">
+    <figure><img src="before.jpg" alt="The Demo app hero with a small black, square-cornered Get started button"><figcaption>Before</figcaption></figure>
+    <figure><img src="after.jpg" alt="The same hero with Get started as an indigo pill"><figcaption>After</figcaption></figure>
+  </div>
+  <p class="why">The button was the only action on the page and the least designed thing on it. Now it takes the pill shape of the badge above it and the indigo of the logo, so it leads the eye. Recoloring the headline didn't improve anything.</p>
+
+  <div class="rules">
+    <div class="rule"><b>An edit worth making</b><span>Two property changes on one button, the scrub shown frame by frame from the real drag, plus a note that asks the agent to carry the fix across the app.</span></div>
+    <div class="rule"><b>Code you can read</b><span>The agent's brief and the source change are set from the capture: three lines in, one line out. Each class is labeled with the inspector property it came from, and the real button changes beside the code as it lands.</span></div>
+    <div class="rule"><b>Transitions that mean something</b><span>No circle wipes or swoops. The camera goes through a selection, a shape becomes the button, and layers lift off and land.</span></div>
+  </div>
+
+  <section id="j">
+    <p class="kicker">Option J · from H</p>
+    <h2>Color</h2>
+    <p class="pitch">The grey app from H, played for laughs. “It looks… fine.” lands flat. “Rounder.” wears a selection that rounds along with the real scrub. “Brighter.” turns indigo as the color bursts out of the button, and “Now that's a button.” puts the word on a pill. The note is typed big, then the brief, every primary button following, and the line of code.</p>
+    <video controls preload="metadata" playsinline src="option-j-color.mp4" poster="option-j-color.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>36.5 s</dd></div>
+      <div><dt>Lead</dt><dd>Grey to color, with jokes</dd></div>
+      <div><dt>What changed</dt><dd>More fun copy and moves; the code beat now reads at a glance.</dd></div>
+    </dl>
+  </section>
+
+  <section id="k">
+    <p class="kicker">Option K · from G</p>
+    <h2>One shape</h2>
+    <p class="pitch">One Figma selection carries the film. It selects “it.”, and the camera goes through it into the app. Then it keeps the Select treatment you liked, rounds with “Round” as the real radius is scrubbed, fills with “Color” as the hex is typed, and flies down to become the real button. A named multiplayer cursor and corner-radius handles come straight from Figma, and the finale runs the same shape through Select, Round, Color, Ship.</p>
+    <video controls preload="metadata" playsinline src="option-k-one-shape.mp4" poster="option-k-one-shape.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>32 s</dd></div>
+      <div><dt>Lead</dt><dd>Figma's own vocabulary</dd></div>
+      <div><dt>What changed</dt><dd>No color flood or flying chips; every transition is the selection itself.</dd></div>
+    </dl>
+  </section>
+
+  <section id="l">
+    <p class="kicker">Option L · from I</p>
+    <h2>Layers</h2>
+    <p class="pitch">The layers opening now lands in four seconds instead of nine: the app as a plane, the editor's panels dropping onto it, the stack turning to face you. In the session the button lifts off the page and rounds up there, then the picker lifts and the color arcs from it into the button. The note stays on the page, with no layer. Then the brief and the code.</p>
+    <video controls preload="metadata" playsinline src="option-l-layers.mp4" poster="option-l-layers.jpg"></video>
+    <dl>
+      <div><dt>Length</dt><dd>30.5 s</dd></div>
+      <div><dt>Lead</dt><dd>3D planes</dd></div>
+      <div><dt>What changed</dt><dd>Opening cut from 9 s to 4 s; the comment is no longer a layer.</dd></div>
+    </dl>
+  </section>
+
+  <h3>What I took from the references</h3>
+  <ul class="refs">
+    <li>Figma's Config 2024 identity took basic shapes from Figma's toolbar and expanded them into the whole system. K takes that literally: the selection, its handles and its corner-radius dots are the film's one recurring shape. (<a href="https://www.itsnicethat.com/features/figma-config-2024-identity-graphic-design-spotlight-090724">It's Nice That, on the Figma Config 2024 identity</a>)</li>
+    <li>Show the product doing one real job with one clear outcome. Each cut follows a single edit that visibly improves the page. (<a href="https://www.moonb.io/blog/software-demo-video">Moonb, “13 Software Demo Videos That Sell the Product”</a>)</li>
+    <li>Arrive fast, settle long, and let motion confirm rather than perform. The new moves run on the same expo-out and in-out curves as the explainer. (<a href="https://www.designmd.co/blog/linear-vs-vercel-motion">DesignMD, “Linear vs Vercel: two approaches to minimal motion”</a>)</li>
+  </ul>
+
+  <footer>
+    Source: <code>site/film/promo/</code> (<code>cuts-cta.js</code> holds J, K and L, <code>promo.js</code> the engine, <code>render.mjs</code> builds them). The session is captured by <code>designlayer-demos/story/capture-cta.mjs</code>.
+  </footer>
+</main>
+</body>
+</html>
