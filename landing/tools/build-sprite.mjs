@@ -4,7 +4,7 @@
  * landing page draws the same marks the product does.
  *
  *   node landing/tools/build-sprite.mjs
- *   DESIGNLAYER_REPO=../designlayer node tools/build-sprite.mjs   (standalone)
+ *   DESIGNLAYER_REPO=../design-layer node tools/build-sprite.mjs   (standalone)
  *
  * Reads src/core/icons.ts through esbuild rather than copying path data by
  * hand, so a redrawn glyph in the editor is one re-run away from the site.
