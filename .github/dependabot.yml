@@ -8,6 +8,11 @@ updates:
       interval: monthly
     ignore:
       - dependency-name: react-rewrite-cli
+      # jsdom 30 needs Node 22.22+, so the suite could no longer load on the
+      # 20.19 leg of the CI matrix, the floor contributors are told they have.
+      # Raise that floor on purpose (CONTRIBUTING.md and ci.yml), then drop this.
+      - dependency-name: jsdom
+        update-types: ["version-update:semver-major"]
     groups:
       dev-dependencies:
         dependency-type: development
