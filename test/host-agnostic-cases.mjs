@@ -139,7 +139,11 @@ async function withInspector(helpers, markup, run) {
   const editor = helpers.createContext(bridge, {
     overlay: slot(), toolbar: slot(), left: slot(), right,
   })
-  const originalFetch = globalThis.fetch
+  // Stubbed for the life of the process, never restored: the inspector warms
+  // its lint tool list on a 1s timer, and on a slow runner that timer from an
+  // earlier fixture fires during a later one. With the real `fetch` back, the
+  // relative URL throws, and the stack — one `data:` frame per bundle, each
+  // the whole bundle — is large enough to stall the CI log for half an hour.
   globalThis.fetch = async () => ({ ok: true, json: async () => ({}) })
   const paint = () => new Promise((resolve) =>
     window.requestAnimationFrame(() => window.requestAnimationFrame(resolve))
@@ -150,7 +154,6 @@ async function withInspector(helpers, markup, run) {
     await paint()
     await run({ window, right, paint, editor })
   } finally {
-    globalThis.fetch = originalFetch
     dom.window.close()
   }
 }

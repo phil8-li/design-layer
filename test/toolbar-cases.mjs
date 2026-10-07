@@ -539,7 +539,9 @@ check("no bare letter is claimed by the bar any more", () => {
  * mount, and asserting on the store is what proves the two are joined up at all.
  */
 check("the app controls are still reached from the inspector, not the toolbar", () => {
-  const originalFetch = globalThis.fetch
+  // Stubbed for the rest of the run, never restored: the inspector warms its
+  // lint tool list on a 1s timer, and with the real `fetch` back by then the
+  // relative URL throws and prints a 6 MB stack, one `data:` frame per bundle.
   globalThis.fetch = async () => ({ ok: true, json: async () => ({}) })
   editor.setState({ selection: [], leftTab: "layers", layersOpen: false })
   editor.installInspector(context)
@@ -552,7 +554,6 @@ check("the app controls are still reached from the inspector, not the toolbar", 
   assert.equal(editor.getState().layersOpen, true, "it named a tab in a panel it left closed")
   // And the thing it used to open is not in the document at all.
   assert.equal(window.document.querySelector(".de-opt-window"), null)
-  globalThis.fetch = originalFetch
 })
 
 // ── The panel toggles ──────────────────────────────────────────────────────
