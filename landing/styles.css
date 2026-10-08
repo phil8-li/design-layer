@@ -1538,11 +1538,11 @@ h2 {
 .path-scene {
   display: grid;
   place-items: center;
-  height: 150px;
+  height: 112px;
   margin-bottom: 24px;
 }
 
-/* One width for both: the editor in a browser window, and the Dock. */
+/* One width for both: the editor in a browser tab, and the Dock. */
 .mini-window,
 .mini-dock {
   width: 250px;
@@ -1592,42 +1592,14 @@ h2 {
   font: 500 9px/1 var(--font);
 }
 
-.mini-url {
-  margin: 4px 8px;
-  padding: 3px 8px;
-  border-radius: 5px;
-  background: #1c1c1c;
-  color: var(--text-3);
-  font: 8px/1.2 var(--mono);
-}
-
 .mini-editor {
   display: grid;
-  grid-template-columns: 48px 1fr 56px;
-  height: 96px;
-  border-top: 1px solid var(--line);
+  grid-template-columns: 44px 1fr 52px;
+  height: 68px;
 }
 
 .mini-panel {
-  display: grid;
-  align-content: start;
-  gap: 7px;
-  padding: 9px 7px;
-  background: #1a1a1a;
-}
-
-.mini-panel i {
-  height: 3px;
-  border-radius: 2px;
-  background: rgb(255 255 255 / 0.18);
-}
-
-.mini-panel i:nth-child(odd) {
-  width: 70%;
-}
-
-.mini-panel i.is-on {
-  background: var(--accent);
+  background: #1c1c1c;
 }
 
 .mini-canvas {
@@ -1637,66 +1609,37 @@ h2 {
   background: #f4f4f5;
 }
 
-.mini-card {
-  display: grid;
-  justify-items: center;
-  gap: 4px;
-  width: 64px;
-  margin-bottom: 14px;
-  padding: 8px 0;
-  border-radius: 6px;
-  background: #fff;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
-}
-
-.mini-card i {
-  width: 70%;
-  height: 3px;
-  border-radius: 2px;
-  background: #d4d4d8;
-}
-
-.mini-card b {
-  width: 70%;
-  height: 8px;
-  margin-top: 3px;
-  border-radius: 4px;
-  background: var(--accent-fill);
-  outline: 1.5px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.mini-tools {
+/* The editor's floating toolbar. */
+.mini-canvas::after {
+  content: "";
   position: absolute;
-  bottom: 7px;
-  display: flex;
-  gap: 5px;
-  padding: 4px 6px;
+  bottom: 6px;
+  width: 36px;
+  height: 8px;
+  border-radius: 4px;
+  background: #1c1c1c;
+}
+
+.mini-canvas b {
+  width: 64px;
+  height: 16px;
+  margin-bottom: 10px;
   border-radius: 6px;
-  background: #1a1a1a;
+  background: var(--accent-fill);
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
-.mini-tools i {
-  width: 6px;
-  height: 6px;
-  border-radius: 2px;
-  background: rgb(255 255 255 / 0.4);
-}
-
-.mini-tools i:first-child {
-  background: var(--accent);
-}
-
-.js .scene-browser .mini-card b {
+.js .scene-browser .mini-canvas b {
   outline-color: transparent;
-  outline-offset: 6px;
+  outline-offset: 8px;
   transition: 450ms var(--ease-out) 400ms;
   transition-property: outline-color, outline-offset;
 }
 
-.scene-browser.is-in .mini-card b {
+.scene-browser.is-in .mini-canvas b {
   outline-color: var(--accent);
-  outline-offset: 2px;
+  outline-offset: 3px;
 }
 
 .mini-dock {
