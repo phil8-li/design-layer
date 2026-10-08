@@ -58,7 +58,7 @@
     "test:standalone-next": "node test/standalone-next-cases.mjs"
   },
   "dependencies": {
-    "@babel/parser": "^7.29.7",
+    "@babel/parser": "^8.0.6",
     "esbuild": "^0.28.1",
     "motion": "^13.4.0",
     "motion-panels": "^0.6.1",
