@@ -5,7 +5,7 @@
  *
  *   node desktop/mac/package.mjs [--out <dir>] [--fresh-deps] [--node-zip]
  *
- *   --out <dir>    where the zip and install.sh go (default: landing/downloads/)
+ *   --out <dir>    where the zip goes (default: landing/downloads/)
  *   --fresh-deps   build dist/ against a clean `npm ci` instead of this
  *                  checkout's node_modules (used automatically when it has none)
  *   --node-zip     write the zip with the built-in writer even if `zip` exists
@@ -16,12 +16,13 @@
  * installer runs `npm ci --omit=dev` on the user's Mac, because the Mac app is
  * Homebrew node running this package from disk, not a compiled binary.
  *
- * Next to the zip it writes install.sh, the Terminal one-liner's target. A
- * .command double-clicked from a browser download carries the quarantine
+ * A .command double-clicked from a browser download carries the quarantine
  * flag, and macOS 15+ refuses it ("Apple could not verify … is free of
  * malware") until the user finds Open Anyway in System Settings; right-click >
- * Open no longer bypasses that. curl sets no quarantine flag and bash is the
- * program macOS checks, so the one-liner installs without any prompt.
+ * Open no longer bypasses that. Running it with `bash` skips the check, so
+ * README.txt leads with that. The landing page installs from a git clone
+ * instead, which sets no quarantine flag (and no `curl | bash`, which managed
+ * Macs warn about).
  *
  * The uninstaller is not in the zip's top folder for the same reason: a
  * double-clicked copy from the download hits that dialog too. It ships as
@@ -46,10 +47,6 @@ const PRODUCT = "Design Layer"
 const ZIP_NAME = "Design-Layer-for-Mac.zip"
 const SOURCE_URL = "https://github.com/phil8-li/design-layer"
 const WHY_UNSIGNED_URL = `${SOURCE_URL}/blob/main/desktop/mac/README.md#why-it-is-built-this-way`
-const DOWNLOADS_URL = "https://phil8-li.github.io/design-layer/downloads"
-const ZIP_URL = `${DOWNLOADS_URL}/${ZIP_NAME}`
-const INSTALL_SH_NAME = "install.sh"
-const INSTALL_COMMAND = `curl -fsSL ${DOWNLOADS_URL}/${INSTALL_SH_NAME} | bash`
 
 const argv = process.argv.slice(2)
 const flag = (name) => argv.includes(name)
@@ -325,9 +322,6 @@ https://nodejs.org), and Chrome.
 
 Install, with no security prompt: open Terminal, type "bash " (with the
 space), drag "Install ${PRODUCT}.command" into the window, and press Return.
-Or paste this, which downloads and installs in one step:
-
-  ${INSTALL_COMMAND}
 
 Double-clicking "Install ${PRODUCT}.command" also works, but nothing here is
 signed, by design (why: ${WHY_UNSIGNED_URL}),
@@ -343,22 +337,6 @@ Uninstall: in Terminal, run
 Logs: ~/Library/Logs/DesignLayer/ (install.log, desk.log, start-screen.log)
 
 Source: ${SOURCE_URL}
-`
-
-const GET_SCRIPT = String.raw`#!/bin/bash
-# Downloads ${PRODUCT} for Mac and runs its installer:
-#   ${INSTALL_COMMAND}
-# Arguments go on to the installer: ... | bash -s -- --dry-run
-# curl sets no quarantine flag, so macOS shows no Gatekeeper prompt.
-set -eu
-URL="${"$"}{DESIGNLAYER_ZIP_URL:-${ZIP_URL}}"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
-[ "$(uname -s)" = "Darwin" ] || { echo "${PRODUCT} for Mac needs macOS."; exit 1; }
-echo "Downloading $URL"
-curl -fsSL "$URL" -o "$TMP/${ZIP_NAME}"
-ditto -x -k "$TMP/${ZIP_NAME}" "$TMP"
-bash "$TMP/${PRODUCT}/Install ${PRODUCT}.command" "$@" </dev/null
 `
 
 function writeScripts() {
@@ -486,7 +464,6 @@ try {
   buildDist()
   writeScripts()
   fs.mkdirSync(OUT_DIR, { recursive: true })
-  fs.writeFileSync(path.join(OUT_DIR, INSTALL_SH_NAME), GET_SCRIPT, { mode: 0o755 })
   const zipFile = path.join(OUT_DIR, ZIP_NAME)
   const how = writeZip(zipFile)
   const size = fs.statSync(zipFile).size
@@ -495,7 +472,6 @@ try {
   console.log(`  ${PRODUCT}/Install ${PRODUCT}.command`)
   console.log(`  ${PRODUCT}/README.txt`)
   console.log(`  ${PRODUCT}/payload/ (${countFiles(PAYLOAD)} files, dist/ prebuilt)`)
-  console.log(`Wrote ${path.join(path.dirname(shown), INSTALL_SH_NAME)}: ${INSTALL_COMMAND}`)
 } finally {
   fs.rmSync(TEMP, { recursive: true, force: true })
 }

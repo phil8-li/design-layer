@@ -22,8 +22,7 @@ Requires Node 20.9+ and a React (Next.js or Vite) or Angular app with a dev scri
 
 ```sh
 git clone https://github.com/phil8-li/design-layer.git
-cd your-app
-npm i -D ../design-layer
+cd design-layer && npm install
 npx designlayer
 ```
 
@@ -33,10 +32,11 @@ needed and puts the editor around your app.
 
 Already know the port? `npx designlayer --dev --open 3000`.
 
-On a Mac you can install it as a Dock app instead, with Node 20.9+ and Chrome and no clone:
+On a Mac you can keep it in your Dock instead (needs Chrome). From the same
+checkout:
 
 ```sh
-curl -fsSL https://phil8-li.github.io/design-layer/downloads/install.sh | bash
+node desktop/mac/install.mjs
 ```
 
 ## See it
@@ -84,7 +84,7 @@ its own README and deploy workflow.
 
 | Design like Figma, on the real thing | Running in 2 minutes |
 | --- | --- |
-| ![Landing page "Design like Figma" section on its Measure tab, beside Direct edit, Align and Hide Design Layer](docs/images/landing-features.webp) | ![Landing page install section: terminal steps and the Mac install command](docs/images/landing-start.webp) |
+| ![Landing page "Design like Figma" section on its Measure tab, beside Direct edit, Align and Hide Design Layer](docs/images/landing-features.webp) | ![Landing page get-started section: browser and Mac install commands](docs/images/landing-start.webp) |
 
 ## Contributing
 

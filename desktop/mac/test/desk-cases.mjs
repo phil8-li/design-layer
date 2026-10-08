@@ -806,23 +806,25 @@ await check("quitProfileChrome stops the process that owns this exact profile", 
 })
 
 // macOS 15+ refuses a quarantined, unsigned .command until the user clicks Open
-// Anyway in Privacy & Security; right-click > Open stopped bypassing that. The
-// download page leads with a curl one-liner, which sets no quarantine flag.
-await check("the download package and page offer the install with no Gatekeeper prompt", () => {
+// Anyway in Privacy & Security, and managed Macs warn on `curl | bash`. The page
+// installs from a git clone, which has neither problem, and its steps must work:
+// the clone's own `npm install` comes first, because npm installs no
+// dependencies for a folder dependency and the prepare script needs esbuild.
+await check("the get-started section installs from a clone, with no security prompt", () => {
   const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
   const pkg = fs.readFileSync(path.join(repo, "desktop", "mac", "package.mjs"), "utf8")
   const page = fs.readFileSync(path.join(repo, "landing", "index.html"), "utf8")
-  const readme = pkg.slice(pkg.indexOf("const README = `"), pkg.indexOf("`", pkg.indexOf("const README = `") + 16))
-  assert.doesNotMatch(readme, /right-click/i, "README.txt must not send users to right-click > Open")
+  const start = page.slice(page.indexOf('id="start"'), page.indexOf("</section>\n    </section>", page.indexOf('id="start"')))
+  assert.doesNotMatch(page, /\|\s*(ba)?sh\b/, "the page pipes nothing into a shell")
   assert.doesNotMatch(page, /right-click/i, "the page must not send users to right-click > Open")
+  assert.doesNotMatch(start, /\.zip|\.command/, "the section offers no quarantined download")
+  const setup = "git clone https://github.com/phil8-li/design-layer.git\ncd design-layer &amp;&amp; npm install\n"
+  assert.ok(start.includes(`<code>${setup}npx designlayer</code>`), "the browser card clones, installs, then starts")
+  assert.ok(start.includes(`<code>${setup}node desktop/mac/install.mjs</code>`), "the Mac card clones, installs, then installs the app")
+  assert.match(start, /Use it in your browser on top of your app\./)
+  const readme = pkg.slice(pkg.indexOf("const README = `"), pkg.indexOf("`", pkg.indexOf("const README = `") + 16))
+  assert.doesNotMatch(readme, /right-click|curl/i, "README.txt sends no one to right-click > Open or curl")
   assert.match(readme, /Open Anyway/, "README.txt names the Privacy & Security step for the zip")
-  assert.match(page, /Open Anyway/, "the page names the Privacy & Security step for the zip")
-  const downloads = pkg.match(/const DOWNLOADS_URL = "([^"]+)"/)[1]
-  const command = `curl -fsSL ${downloads}/install.sh | bash`
-  assert.ok(page.includes(`<code>${command}</code>`), `the page shows ${command}`)
-  assert.ok(page.includes(`${downloads}/Design-Layer-for-Mac.zip`), "the page links the zip at the same downloads URL")
-  assert.match(pkg, /writeFileSync\(path\.join\(OUT_DIR, INSTALL_SH_NAME\)/, "package.mjs publishes install.sh beside the zip")
-  // A double-clicked uninstaller from the download was refused the same way.
   assert.doesNotMatch(pkg, /write\(`Uninstall/, "the zip's top folder has no uninstaller to double-click")
   assert.match(pkg, /cat "\$APP\/uninstall\.command" >"\$UNINSTALLER"/, "the installer writes the uninstaller as a new, unquarantined file")
 })

@@ -316,46 +316,42 @@ Loading…</code><code data-agent-close hidden></code></pre>
     <section class="section" id="start" aria-labelledby="start-title">
       <div class="wrap">
         <header class="section-head" data-reveal>
-          <h2 id="start-title">Running in 2 minutes. <span class="dim">Terminal or Mac.</span></h2>
+          <h2 id="start-title">Running in 2 minutes. <span class="dim">Browser or Mac.</span></h2>
         </header>
         <div class="paths visual" data-reveal>
-          <section class="path" aria-labelledby="path-terminal">
-            <h3 id="path-terminal">In your terminal</h3>
+          <section class="path" aria-labelledby="path-browser">
+            <h3 id="path-browser">In your browser</h3>
+            <p class="path-lead">Use it in your browser on top of your app.</p>
             <p class="path-req">Needs Node 20.9+ and a Next.js, Vite or Angular app.</p>
             <div class="install-card" data-copy-root>
               <div class="install-bar">
                 <span>Terminal</span>
-                <button class="copy" type="button" data-copy aria-label="Copy the install commands">
+                <button class="copy" type="button" data-copy aria-label="Copy the commands to run it in your browser">
                   <svg class="icon icon-copy" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Copy"/></svg>
                   <svg class="icon icon-check" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Check"/></svg>
                 </button>
               </div>
-<pre class="install-body" tabindex="0" aria-label="Install commands"><code><span class="t-dim"># 1. next to your app</span>
-git clone https://github.com/phil8-li/design-layer.git
-<span class="t-dim"># 2. in your app</span>
-npm i -D ../design-layer
-<span class="t-dim"># 3. run it, then pick your app</span>
+<pre class="install-body" tabindex="0" aria-label="Commands to run it in your browser"><code>git clone https://github.com/phil8-li/design-layer.git
+cd design-layer &amp;&amp; npm install
 npx designlayer</code></pre>
             </div>
           </section>
           <section class="path" aria-labelledby="path-mac">
             <h3 id="path-mac">As a Mac app</h3>
-            <p class="path-req">Needs Node 20.9+ and Chrome. No clone or npm install.</p>
-            <ol class="steps" data-steps>
-              <li>Paste this into Terminal.</li>
-              <li>Keep Design Layer in your Dock.</li>
-            </ol>
+            <p class="path-lead">Keep it in your Dock, with each app in a tab.</p>
+            <p class="path-req">Needs Node 20.9+ and Chrome.</p>
             <div class="install-card" data-copy-root>
               <div class="install-bar">
                 <span>Terminal</span>
-                <button class="copy" type="button" data-copy aria-label="Copy the Mac install command">
+                <button class="copy" type="button" data-copy aria-label="Copy the commands to install the Mac app">
                   <svg class="icon icon-copy" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Copy"/></svg>
                   <svg class="icon icon-check" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Check"/></svg>
                 </button>
               </div>
-<pre class="install-body is-wrap" tabindex="0" aria-label="Mac install command"><code>curl -fsSL https://phil8-li.github.io/design-layer/downloads/install.sh | bash</code></pre>
+<pre class="install-body" tabindex="0" aria-label="Commands to install the Mac app"><code>git clone https://github.com/phil8-li/design-layer.git
+cd design-layer &amp;&amp; npm install
+node desktop/mac/install.mjs</code></pre>
             </div>
-            <p class="path-note">Prefer a download? <a href="https://phil8-li.github.io/design-layer/downloads/Design-Layer-for-Mac.zip" download>Get the ZIP</a>. It isn’t signed, so macOS blocks its installer until you click Open Anyway in System Settings › Privacy &amp; Security.</p>
           </section>
         </div>
       </div>

@@ -1375,16 +1375,6 @@ h2 {
   white-space: pre;
 }
 
-/* A one-line command wraps rather than scrolling sideways in a narrow column. */
-.install-body.is-wrap {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.install-body.is-wrap code {
-  min-width: 0;
-}
-
 .t-dim {
   color: var(--text-3);
 }
@@ -1529,40 +1519,6 @@ h2 {
 
 /* ---------- Install ---------- */
 
-.steps {
-  display: grid;
-  gap: 10px;
-  width: max-content;
-  max-width: 100%;
-  margin: 28px auto 0;
-  padding: 0;
-  counter-reset: step;
-  color: var(--text-2);
-  font-size: 17px;
-  text-align: left;
-}
-
-.steps li {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  counter-increment: step;
-}
-
-.steps li::before {
-  content: counter(step);
-  display: inline-grid;
-  place-items: center;
-  flex: none;
-  width: 24px;
-  height: 24px;
-  border: 1px solid var(--line-strong);
-  border-radius: 50%;
-  color: var(--text);
-  font: 500 12px/1 var(--mono);
-  transform: translateY(-1px);
-}
-
 .paths {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1586,27 +1542,22 @@ h2 {
   letter-spacing: -0.015em;
 }
 
-.path .steps {
-  width: auto;
-  margin: 16px 0 24px;
-  font-size: 15px;
-}
-
 .path .install-card {
   margin-top: auto;
 }
 
-.path-req {
-  margin: 8px 0 24px;
-  color: var(--text-2);
-  font-size: 14px;
-  line-height: 1.55;
+/* Both cards share one shape: title, what it is, what it needs, then the
+   commands pinned to the bottom so the two terminals line up. */
+.path-lead {
+  margin-top: 8px;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.5;
 }
 
-.path-note {
-  margin-top: auto;
-  padding-top: 24px;
-  color: var(--text-2);
+.path-req {
+  margin: 4px 0 24px;
+  color: var(--text-3);
   font-size: 14px;
   line-height: 1.55;
 }
@@ -2002,21 +1953,6 @@ html:not(.js) .switcher-pill {
   50% {
     opacity: 0;
   }
-}
-
-/* Get started: each step lights up as you arrive. */
-.js .steps li::before {
-  transition:
-    background-color 300ms var(--ease-out),
-    color 300ms var(--ease-out),
-    border-color 300ms var(--ease-out);
-  transition-delay: calc(var(--i, 0) * 220ms + 200ms);
-}
-
-.steps.is-in li::before {
-  border-color: var(--text);
-  background: var(--text);
-  color: var(--bg);
 }
 
 /* ---------- Cues: pointer, clicks and keys drawn on a shot ----------

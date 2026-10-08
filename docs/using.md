@@ -27,12 +27,18 @@
 The package is not on npm. Install it from source as a development
 dependency; its prepare script builds the browser bundle on install.
 
-1. Clone it beside your app and install the checkout:
+1. Clone it beside your app, install the checkout's own dependencies (npm
+   does not install them for a folder dependency, and its prepare script
+   needs them), then add it to your app:
 
    ```sh
    git clone https://github.com/phil8-li/design-layer.git
-   npm i -D ../design-layer
+   cd design-layer && npm install && cd ..
+   cd your-app && npm i -D ../design-layer
    ```
+
+   To try it without touching your app, run `npx designlayer` inside the
+   checkout and pick your app on the start screen.
 
    To hand off one immutable artifact instead, run `npm pack` in this package
    and install the resulting `.tgz` file.
@@ -291,16 +297,13 @@ moved and resized at once is a single step, not three.
 than a terminal for the way this is actually used: opened in the morning, left
 running, switched between apps all day.
 
-Without a clone, install it with one command. It downloads the package from
-the landing page and runs its installer, and macOS shows no security prompt:
+Install it from a checkout. A git clone carries no quarantine flag, so macOS
+shows no security prompt. The app runs from the checkout, so keep it where it
+is:
 
 ```sh
-curl -fsSL https://phil8-li.github.io/design-layer/downloads/install.sh | bash
-```
-
-From a checkout:
-
-```sh
+git clone https://github.com/phil8-li/design-layer.git
+cd design-layer && npm install
 node desktop/mac/install.mjs              # install and open it
 node desktop/mac/install.mjs --status     # LaunchAgent, health, start screen, app
 node desktop/mac/install.mjs --uninstall --yes

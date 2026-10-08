@@ -7,7 +7,7 @@
 //      (scroll walks the tabs), the board (out to every page and back in),
 //      the agent story, and headings brightening word by word.
 //   2. Arrivals, fired once by an IntersectionObserver: the diff playing, the
-//      agent's brief streaming, steps lighting up.
+//      agent's brief streaming.
 //   3. Interactions: tabs that scroll to their stretch, copy buttons, the
 //      film, and the hero leaning toward the pointer.
 // Reduced motion skips 1 entirely (CSS lays every scene out in its final
@@ -1143,11 +1143,6 @@ function setupArrivals() {
       if (entry.intersectionRatio >= 0.2) endcard.classList.add("is-in")
       else if (!entry.isIntersecting) endcard.classList.remove("is-in")
     }, { threshold: [0, 0.2] }).observe(endcard)
-  }
-
-  for (const steps of $$("[data-steps]")) {
-    $$("li", steps).forEach((li, i) => li.style.setProperty("--i", i))
-    onArrive(steps, () => {})
   }
 
   for (const counter of $$("[data-count-from]")) {
