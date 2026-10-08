@@ -45,7 +45,7 @@ const realHome = os.homedir()
 process.env.HOME = tempHome
 
 const { createDeskServer, createHandoff, manifest } = await import("../desk-server.mjs")
-const { GLYPHS } = await import("../shell-page.mjs")
+const { GLYPHS, isDeskTitle } = await import("../shell-page.mjs")
 const { APP_FEATURES, findMacChrome, profileChromeCommand } = await import("../chrome-pipe.mjs")
 const { buildPlist, LABEL, plistPath } = await import("../launch-agent.mjs")
 const { DEFAULT_DESK_PORT, DESK_LABEL, deskPlistPath, deskUrlFromHost } = await import("../../../runtime/mac-desk.mjs")
@@ -803,6 +803,15 @@ await check("quitProfileChrome stops the process that owns this exact profile", 
     if (alive(child.pid)) child.kill("SIGKILL")
     fs.rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// The window retitles itself "<editor> — DesignLayer" when an editor tab is
+// active, and the app reopens on its last tab, so --verify-window must accept both.
+await check("--verify-window recognizes the desk window on Home and on an editor tab", () => {
+  assert.equal(isDeskTitle("DesignLayer"), true)
+  assert.equal(isDeskTitle("gemini — DesignLayer"), true)
+  assert.equal(isDeskTitle("DesignLayer docs"), false)
+  assert.equal(isDeskTitle("New Tab"), false)
 })
 
 // macOS 15+ refuses a quarantined, unsigned .command until the user clicks Open

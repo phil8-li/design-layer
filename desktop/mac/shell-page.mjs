@@ -40,6 +40,15 @@ export function glyph(name, size) {
   return `<svg width="${size}" height="${size}" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="${GLYPHS[name]}"/></svg>`
 }
 
+/**
+ * Whether a window title is the desk's: "DesignLayer" on Home, or
+ * "<editor> — DesignLayer" while an editor tab is active (see the title line
+ * in the page script below).
+ */
+export function isDeskTitle(title) {
+  return title === "DesignLayer" || title.endsWith(" — DesignLayer")
+}
+
 export function shellPage({ repoRoot }) {
   const startCommand = `node ${repoRoot}/desktop/mac/install.mjs --start`
   return `<!doctype html>

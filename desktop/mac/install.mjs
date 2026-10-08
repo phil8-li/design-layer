@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url"
 
 import { APP_FEATURES, CHROME_BINARY, chromeProfileDir, openChrome, profileInUse, quitProfileChrome } from "./chrome-pipe.mjs"
 import { LABEL, buildPlist, logDir, plistPath } from "./launch-agent.mjs"
+import { isDeskTitle } from "./shell-page.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(HERE, "..", "..")
@@ -294,7 +295,7 @@ async function status() {
   say(`Logs: ${logDir(HOME)}`)
 }
 
-/** Launches the installed app over CDP and confirms a page at the desk URL titled DesignLayer. */
+/** Launches the installed app over CDP and confirms a page at the desk URL with the desk's title. */
 async function verifyWindow() {
   // CDP needs to start the app's Chrome itself, so an open window is closed
   // for the check and opened again after it.
@@ -325,7 +326,7 @@ async function verifyWindowOverCdp() {
     const page = await waitFor(async () => {
       const targets = await chrome.send("Target.getTargets")
       return targets.result?.targetInfos.find(
-        (t) => t.type === "page" && t.url.startsWith(DESK_URL) && t.title === "DesignLayer"
+        (t) => t.type === "page" && t.url.startsWith(DESK_URL) && isDeskTitle(t.title)
       )
     }, 20000)
     const all = (await chrome.send("Target.getTargets")).result?.targetInfos ?? []
