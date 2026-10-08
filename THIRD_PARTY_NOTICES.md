@@ -14,7 +14,7 @@ below.
 
 | Project | Version | License | Where |
 | --- | --- | --- | --- |
-| [@phosphor-icons/core](https://github.com/phosphor-icons/phosphor-core) | 2.0.3 | MIT | `src/core/icons.ts` (icon path data, from its SVG assets) |
+| [@phosphor-icons/core](https://github.com/phosphor-icons/phosphor-core) | 2.1.1 | MIT | `src/core/icons.ts` (icon path data, from its SVG assets) |
 | [framer-motion](https://github.com/motiondivision/motion) | 13.4.0 | MIT | bundled into `dist/designlayer.js` |
 | [motion-dom](https://github.com/motiondivision/motion) | 13.3.0 | MIT | bundled into `dist/designlayer.js` |
 | [motion-panels](https://github.com/letstri/motion-panels) | 0.5.2 | MIT | bundled into `dist/designlayer.js` |
@@ -44,7 +44,7 @@ Development only, never shipped: @types/react (MIT), @types/react-dom (MIT), jsd
 
 ## License texts
 
-### @phosphor-icons/core 2.0.3
+### @phosphor-icons/core 2.1.1
 
 ```
 MIT License
