@@ -131,7 +131,7 @@ async function check(name, run) {
 const frame = () =>
   new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)))
 
-/** Past the catch-up pass, which a mutation schedules as a task. */
+/** Past any pass a mutation or a load triggers. */
 const tick = () => new Promise((resolve) => setTimeout(resolve, 20))
 
 /** A stylesheet in the app's document, with an owner this can identify. */
@@ -327,6 +327,28 @@ await check("a stylesheet filled after it was appended is caught too", async () 
   const viewport = editor.installAppViewport()
   empty.textContent = "@media (max-width: 800px) { .filled { display: none; } }"
   await tick()
+  assert.deepEqual(mediaTexts(), ["(max-width: 1300px)"])
+  viewport.destroy()
+})
+
+/*
+ * Tailwind's Play CDN regenerates one `<style>` in place every time the app
+ * renders a class it has not seen, which during a prototype's scripted playback
+ * is a dozen times a minute. Each regeneration is a new sheet holding `100vw`
+ * again. A catch-up pass queued as a task let the browser paint that sheet
+ * first: measured on a live prototype, the app's `w-screen` shell drew one to
+ * three frames at the window's 1600px inside a 1100px canvas, 21 times in 40s
+ * of playback, which reads as the prototype's own motion jittering. The pass
+ * has to land before the frame, so it is checked after a microtask, not a task.
+ */
+await check("a stylesheet regenerated in place is caught up before the next frame", async () => {
+  reset()
+  const style = addSheet(".shell { width: 100vw; }")
+  insets(240, 260)
+  const viewport = editor.installAppViewport()
+  style.textContent = ".shell { width: 100vw; } .new { color: red; } @media (max-width: 800px) { .new { display: none; } }"
+  await Promise.resolve()
+  assert.equal(ruleFor(".shell").style.getPropertyValue("width"), "calc(var(--de-vw, 1vw) * 100)")
   assert.deepEqual(mediaTexts(), ["(max-width: 1300px)"])
   viewport.destroy()
 })

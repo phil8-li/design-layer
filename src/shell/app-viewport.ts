@@ -195,8 +195,6 @@ export function installAppViewport(): AppViewport {
   let importing = false
   /** The inset the queries are currently written for. */
   let shifted = 0
-  /** The scheduled catch-up pass, if one is already queued. */
-  let pending = 0
 
   /** The document-level sheet the current walk is under. */
   let sheet: CSSStyleSheet = null as unknown as CSSStyleSheet
@@ -337,39 +335,34 @@ export function installAppViewport(): AppViewport {
   }
 
   /*
-   * A timeout rather than a frame, and the difference is a hidden tab.
-   *
-   * `requestAnimationFrame` does not run in a background tab, so a stylesheet
-   * that arrived while the designer was reading something else would sit at the
-   * window's thresholds until they came back AND something else moved. A task
-   * is scheduled either way, runs before the next paint in a visible tab, and
-   * coalesces a burst of inserts into one pass because the flag is only cleared
-   * when the pass runs.
-   */
-  const schedule = (): void => {
-    if (pending) return
-    pending = setTimeout(() => {
-      pending = 0
-      rescan()
-    }, 0) as unknown as number
-  }
-
-  /*
    * A stylesheet can turn up long after boot: a route's chunk, a lazily
    * inserted `<style>`, an HMR update that rewrites the text of one already
    * there. Two observers rather than one broad one — `characterData` over the
    * whole document would wake this on every text node an app renders, and the
    * text that matters is inside `<head>`.
-   */
-  /*
+   *
    * Our own nodes are skipped: the chrome rebuilds whole panels, and the board
    * inserts its view-transition `<style>` on every open and close — a pass
    * landing inside that transition's snapshot is the last thing it needs.
+   *
+   * The pass runs in the observer's own callback, not in a task queued from
+   * it. A task does not run before the next paint: the browser may render
+   * between the microtask that reported the mutation and any task after it,
+   * and it does. Tailwind's Play CDN regenerates its whole `<style>` each time
+   * the app renders a class it has not seen, and with the pass queued as a
+   * `setTimeout` the regenerated sheet painted first — the app's `w-screen`
+   * shell drew at the window's width inside the canvas for one to three
+   * frames, 21 times in 40s of a prototype's scripted playback, which looked
+   * like the prototype's own motion jittering. An observer callback is a
+   * microtask, and microtasks drain before rendering. Nothing is lost: the
+   * observer already batches a task's records into one callback, it runs in a
+   * background tab too, and a pass over sheets it has already walked costs a
+   * length comparison each.
    */
   const onMutation = (records: MutationRecord[]): void => {
     for (const record of records) {
       if (record.type === "characterData") {
-        if (!isOurNode(record.target.parentNode)) return schedule()
+        if (!isOurNode(record.target.parentNode)) return rescan()
         continue
       }
       /*
@@ -381,7 +374,7 @@ export function installAppViewport(): AppViewport {
        * be inserted in the same batch.
        */
       if (record.target instanceof HTMLStyleElement) {
-        if (!isOurNode(record.target)) return schedule()
+        if (!isOurNode(record.target)) return rescan()
         continue
       }
       const added = record.addedNodes
@@ -390,7 +383,7 @@ export function installAppViewport(): AppViewport {
       for (let index = 0; index < added.length; index += 1) {
         const node = added[index]
         if ((node instanceof HTMLStyleElement || node instanceof HTMLLinkElement) && !isOurNode(node)) {
-          return schedule()
+          return rescan()
         }
       }
     }
@@ -407,7 +400,7 @@ export function installAppViewport(): AppViewport {
    * exact moment it is still empty, and never again.
    */
   const onLoad = (event: Event): void => {
-    if (event.target instanceof HTMLLinkElement) schedule()
+    if (event.target instanceof HTMLLinkElement) rescan()
   }
   window.addEventListener("load", onLoad, true)
 
@@ -446,7 +439,6 @@ export function installAppViewport(): AppViewport {
       window.removeEventListener("load", onLoad, true)
       headObserver.disconnect()
       bodyObserver.disconnect()
-      if (pending) clearTimeout(pending)
       if (shiftFrame) cancelAnimationFrame(shiftFrame)
       shiftFrame = 0
       dropDetached()
