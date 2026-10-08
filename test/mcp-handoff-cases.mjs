@@ -242,6 +242,7 @@ await check("a handoff request lands in the queue with its brief intact", async 
     prompt: "2 design changes from DesignLayer",
     origin: "prompts",
     brief: "### src/app/overview.component.html\n- `<button>` — set `box-shadow` to `0 1px 2px`",
+    sessionPrompt: "/goal get those done: ### src/app/overview.component.html",
     files: ["src/app/overview.component.html"],
     url: "http://127.0.0.1:3456/overview",
     selection: null,
@@ -256,6 +257,7 @@ await check("a handoff request lands in the queue with its brief intact", async 
   assert.ok(queued, "the route wrote a file and told nobody — the trigger half is missing")
   assert.equal(queued.origin, "prompts")
   assert.match(queued.brief, /box-shadow/, "the brief did not survive the route")
+  assert.match(queued.sessionPrompt, /^\/goal get those done: /, "the new-session prompt did not survive the route")
   assert.deepEqual(queued.files, ["src/app/overview.component.html"])
   assert.equal(queued.framework, "angular", "the agent is told which host it is editing")
   assert.equal(queued.handoffPath, reply.handoffPath, "the entry points at its own durable record")
@@ -454,6 +456,25 @@ await check("wait_for_change blocks, then returns what the button pushed", async
   assert.match(payload.changes[0].brief, /overview\.html/, "the brief must survive the trip verbatim")
   assert.deepEqual(payload.changes[0].files, ["src/app/overview.html"])
   assert.ok(since(start) < 3000, `returned in ${since(start)}ms`)
+})
+
+await check("a send with a session prompt tells the agent to open a new session with it", async () => {
+  drain()
+  const prompt = "/goal get those done: ### src/app/overview.html\n- make the shadow lighter"
+  queue.push({ origin: "prompts", prompt: "1 note from DesignLayer", brief: "### src/app/overview.html", sessionPrompt: prompt })
+  const { payload } = await callTool("wait_for_change", { timeoutSeconds: 2, batchWindowSeconds: 0 })
+  assert.equal(payload.changes[0].startNewSession, true)
+  assert.equal(payload.changes[0].sessionPrompt, prompt, "the prompt must reach the agent verbatim")
+  assert.match(payload.next, /new chat session/i, "the agent is not told to open a session")
+  assert.match(payload.next, /resolve_change/, "without a resolve the next wait opens a second session")
+  drain()
+
+  // A bare POST with no outbox behind it asks for no session.
+  queue.push({ prompt: "make it red" })
+  const bare = await callTool("wait_for_change", { timeoutSeconds: 2, batchWindowSeconds: 0 })
+  assert.equal(bare.payload.changes[0].startNewSession, false)
+  assert.doesNotMatch(bare.payload.next, /new chat session/i)
+  drain()
 })
 
 await check("a timeout is reported as data, not as an error", async () => {
@@ -836,7 +857,7 @@ function note(comment, target) {
 const posted = []
 let reply = {
   ok: true,
-  message: "Delivered to your coding agent — it was waiting and has just picked this up.",
+  message: "Delivered to your coding agent — it was waiting and is starting a new session for this.",
 }
 globalThis.fetch = async (url, init) => {
   if (String(url).endsWith("/mcp/status")) {
@@ -963,10 +984,24 @@ await check("what it sends is byte-for-byte what Copy writes", () => {
   assert.equal(posted[0].body.brief, ui.buildAnnotationBrief())
 })
 
-await check("Send to agent also puts the brief on the clipboard, in the click task", async () => {
+await check("Send to agent asks for a new session that opens with /goal and the brief", async () => {
+  emptyOutbox()
+  note("Start fresh", { filePath: "/app/src/w.tsx", componentName: "W", lineNumber: 3 })
+  posted.length = 0
+  sendButton().dispatchEvent(new window.MouseEvent("click", { bubbles: true }))
+  await settle()
+  const { body } = posted[0]
+  assert.equal(
+    body.sessionPrompt,
+    `/goal get those done: ${body.brief}`,
+    "the new session's first message is the prefix, then the brief verbatim"
+  )
+})
+
+await check("Send to agent also puts the session prompt on the clipboard, in the click task", async () => {
   emptyOutbox()
   note("Copy this too", { filePath: "/app/src/y.tsx", componentName: "Y", lineNumber: 9 })
-  const expected = ui.buildAnnotationBrief()
+  const expected = `/goal get those done: ${ui.buildAnnotationBrief()}`
   posted.length = 0
   toasts.length = 0
   copied = null
@@ -975,7 +1010,7 @@ await check("Send to agent also puts the brief on the clipboard, in the click ta
   // Before any settle: a copy after an await has lost the click's activation.
   assert.equal(copied, expected, "the send did not copy synchronously inside the click")
   await settle()
-  assert.equal(posted[0].body.brief, copied, "the clipboard and the agent got different briefs")
+  assert.equal(posted[0].body.sessionPrompt, copied, "the clipboard and the agent got different prompts")
   assert.match(toasts.at(-1) ?? "", /Queued.*copied to the clipboard/s, "the toast hid the copy")
 })
 
@@ -1020,7 +1055,7 @@ await check("the route's own message is what the designer is told", async () => 
   toasts.length = 0
   reply = {
     ok: true,
-    message: "Queued for your coding agent. It arrives the next time the agent calls wait_for_change.",
+    message: "Queued for your coding agent. It starts a new session for this the next time the agent calls wait_for_change.",
   }
   sendButton().dispatchEvent(new window.MouseEvent("click", { bubbles: true }))
   await settle()

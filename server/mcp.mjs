@@ -81,6 +81,19 @@ function jsonText(payload) {
  * exactly as good as the MCP path — it is the fallback when no agent is
  * attached, not a lesser mode.
  */
+/*
+ * `sessionPrompt` is a send asking for a NEW chat session. A server cannot open
+ * one in its client — nothing in MCP starts a turn, let alone a conversation —
+ * so the agent parked in `wait_for_change` is told to open it, in whatever way
+ * its own harness does. Resolving the change once the session is started is
+ * what stops the next wait from opening a second session for the same send.
+ */
+const NEW_SESSION_STEPS =
+  "For each change with startNewSession: true, open a new chat session in your harness and send its " +
+  "sessionPrompt, verbatim, as that session's first message; the new session does the work. If you " +
+  "cannot open a session, do the work here instead. Then call resolve_change for that id so the next " +
+  "wait does not start it again."
+
 function publicView(entry) {
   return {
     id: entry.id,
@@ -91,6 +104,8 @@ function publicView(entry) {
     framework: entry.framework,
     request: entry.prompt || null,
     brief: entry.brief || null,
+    startNewSession: Boolean(entry.sessionPrompt),
+    sessionPrompt: entry.sessionPrompt || null,
     files: entry.files,
     selection: entry.selection,
     ancestry: entry.ancestry,
@@ -110,6 +125,7 @@ function toolDefinitions() {
         "— that is not an error, it means the designer has not clicked yet. " +
         "Use this in a loop for hands-free work: wait, apply the changes it returns, call " +
         "resolve_change for each one, then wait again. Keep waiting until the user tells you to stop. " +
+        `${NEW_SESSION_STEPS} ` +
         "Call it once at a time: there is no claim on a change, so two callers waiting at once are " +
         "both handed the same one and will both try to apply it.",
       inputSchema: {
@@ -214,11 +230,14 @@ async function callTool(queue, name, args, signal) {
           "or stop if the user is done.",
       })
     }
+    const newSession = changes.some((entry) => entry.sessionPrompt)
     return jsonText({
       timeout: false,
       count: changes.length,
       changes: changes.map(publicView),
-      next: "Apply these, then call resolve_change for each id, then call wait_for_change again.",
+      next: newSession
+        ? `${NEW_SESSION_STEPS} Then call wait_for_change again.`
+        : "Apply these, then call resolve_change for each id, then call wait_for_change again.",
     })
   }
 
@@ -278,7 +297,8 @@ async function handleMessage(message, { queue, serverInfo, signal, onSession }) 
         instructions:
           "DesignLayer is open in a browser. When the designer presses Send to agent, " +
           "wait_for_change returns the change. Work the loop: wait_for_change, apply, " +
-          "resolve_change, wait_for_change again.",
+          "resolve_change, wait_for_change again. " +
+          NEW_SESSION_STEPS,
       },
     }
   }

@@ -138,6 +138,9 @@ async function writeHandoff(config, prompt, request) {
       origin: request?.origin === "prompts" ? "prompts" : undefined,
       prompt,
       brief: typeof request?.brief === "string" ? request.brief : "",
+      // Built by the browser, which owns the prefix. A bare POST without one
+      // gets no new session: there is no outbox behind it to open one for.
+      sessionPrompt: typeof request?.sessionPrompt === "string" ? request.sessionPrompt : "",
       url: request?.url ?? null,
       framework: config.host?.framework ?? "react",
       selection: request?.selection ?? null,
@@ -180,9 +183,9 @@ function handoffMessage({ delivered, waiting, listening }) {
     return "Queued to the handoff file — no agent is attached over MCP, so nothing was edited. Copy the brief, or point an agent at the MCP endpoint."
   }
   if (waiting > 0) {
-    return "Delivered to your coding agent — it was waiting and has just picked this up."
+    return "Delivered to your coding agent — it was waiting and is starting a new session for this."
   }
-  return "Queued for your coding agent. It arrives the next time the agent calls wait_for_change."
+  return "Queued for your coding agent. It starts a new session for this the next time the agent calls wait_for_change."
 }
 
 /** Every distinct source file this request touches, for the agent's first read. */

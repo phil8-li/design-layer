@@ -121,6 +121,7 @@ export function createHandoffQueue() {
       origin: typeof input.origin === "string" ? input.origin : "unknown",
       prompt: truncate(input.prompt ?? ""),
       brief: truncate(input.brief ?? ""),
+      sessionPrompt: truncate(input.sessionPrompt ?? ""),
       url: typeof input.url === "string" ? input.url : null,
       framework: typeof input.framework === "string" ? input.framework : null,
       selection: input.selection ?? null,

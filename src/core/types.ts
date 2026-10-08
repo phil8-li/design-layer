@@ -155,6 +155,12 @@ export interface AgentRequest {
    * second, slightly different format.
    */
   brief?: string
+  /**
+   * The first message of the new chat session the attached agent opens for
+   * this send: `brief` behind a fixed prefix. Built here, the one place that
+   * knows the prefix, so the clipboard and the agent get the same words.
+   */
+  sessionPrompt?: string
   /** Distinct source files the brief touches, for the agent's first read. */
   files?: string[]
 }

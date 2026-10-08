@@ -41,8 +41,8 @@ const EVENTS = [
     items: [
       { event: "Copy notes and edits (Changes tab Copy, or the shortcut)", message: "Copied 2 notes and 1 edit", kind: "info", source: "src/annotations/handover.ts", find: "toast(`Copied ${outboxSummary(items)}`)" },
       { event: "Copy with nothing in the outbox", message: "Nothing to copy. Pin a note or make an edit first.", kind: "info", source: "src/annotations/handover.ts", find: "Nothing to copy. Pin a note or make an edit first." },
-      { event: "Send to agent, agent was waiting", message: "Delivered to your coding agent — it was waiting and has just picked this up.", kind: "info", source: "server/agent.mjs", find: "Delivered to your coding agent" },
-      { event: "Send to agent, agent attached but busy", message: "Queued for your coding agent. It arrives the next time the agent calls wait_for_change.", kind: "info", source: "server/agent.mjs", find: "Queued for your coding agent." },
+      { event: "Send to agent, agent was waiting", message: "Delivered to your coding agent — it was waiting and is starting a new session for this.", kind: "info", source: "server/agent.mjs", find: "Delivered to your coding agent" },
+      { event: "Send to agent, agent attached but busy", message: "Queued for your coding agent. It starts a new session for this the next time the agent calls wait_for_change.", kind: "info", source: "server/agent.mjs", find: "Queued for your coding agent." },
       { event: "Send to agent, no agent attached", message: "Queued to the handoff file — no agent is attached over MCP, so nothing was edited. Copy the brief, or point an agent at the MCP endpoint.", kind: "info", source: "server/agent.mjs", find: "Queued to the handoff file" },
       { event: "Send with nothing left for the agent", message: "Nothing to send", kind: "info", source: "src/annotations/handover.ts", find: 'toast("Nothing to send")' },
       { event: "Send, server unreachable", message: "Could not reach the agent. Check that designlayer is running, then send again (Failed to fetch).", kind: "error", source: "src/ai/transport.ts", find: "Could not reach the agent. Check" },

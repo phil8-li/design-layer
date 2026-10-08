@@ -30,6 +30,20 @@ import { plural } from "../core/format"
 
 type Toast = (message: ToastMessage, kind?: "info" | "error") => void
 
+/**
+ * What "Send to agent" opens the agent's new session with, ahead of the brief.
+ *
+ * A send starts a fresh chat rather than landing in whatever conversation the
+ * agent happens to be in, and `/goal` makes that session keep going until
+ * every item is done instead of stopping after the first.
+ */
+export const SESSION_PROMPT_PREFIX = "/goal get those done: "
+
+/** The new session's first message: the prefix, then the brief verbatim. */
+export function sessionPrompt(brief: string): string {
+  return `${SESSION_PROMPT_PREFIX}${brief}`
+}
+
 /** "3 notes and 2 edits", with whichever half is zero left out. */
 export function outboxSummary(items: OutboxItem[]): string {
   const notes = items.filter((item) => item.type === "note").length
@@ -130,14 +144,14 @@ export async function handOver(options: {
   const { apiBase, committer, toast, sendToAgent = true } = options
 
   /*
-   * A send also puts the brief on the clipboard, so the designer can paste it
-   * into any agent when the queue has nobody reading it. The copy runs HERE,
-   * before the first await, because both clipboard routes need the click's
-   * transient activation, and the write below can outlast it.
+   * A send also puts the session prompt on the clipboard, so the designer can
+   * paste it into a new chat in any agent when the queue has nobody reading it.
+   * The copy runs HERE, before the first await, because both clipboard routes
+   * need the click's transient activation, and the write below can outlast it.
    */
   const before = outboxItems()
   let copy: Promise<boolean> | null =
-    sendToAgent && needsAgent(before) ? copyText(buildAnnotationBrief(before)) : null
+    sendToAgent && needsAgent(before) ? copyText(sessionPrompt(buildAnnotationBrief(before))) : null
 
   let wrote = false
   if (committer.hasPendingChanges()) {
@@ -150,7 +164,7 @@ export async function handOver(options: {
   // The write changed what the brief says ("already written, do not apply
   // again"), so copy again to keep the clipboard byte-for-byte what was sent.
   // Best effort: the activation may be spent, and then the first copy stands.
-  if (wrote && copy) copy = copy.then((first) => copyText(brief).then((again) => again || first))
+  if (wrote && copy) copy = copy.then((first) => copyText(sessionPrompt(brief)).then((again) => again || first))
 
   if (!sendToAgent) return { wrote, sent: false, ok: true }
   if (!needsAgent(items)) {
@@ -164,6 +178,7 @@ export async function handOver(options: {
     // The outbox IS the request; this line is the subject, not the ask.
     prompt: `${outboxSummary(items)} from DesignLayer`,
     brief,
+    sessionPrompt: sessionPrompt(brief),
     origin: "prompts",
     files: filesInOutbox(items),
     selection: null,

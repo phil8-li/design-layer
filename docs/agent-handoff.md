@@ -45,17 +45,30 @@ second copy with no editor attached.
 ```text
 Connect to the designlayer MCP server and work its loop until I say stop:
 1. Call wait_for_change. If it returns {timeout: true}, call it again.
-2. For each change, read its brief and the files it names, then edit the source.
+2. For each change with startNewSession: true, open a new chat session and send
+   its sessionPrompt verbatim as the first message. Otherwise read its brief and
+   the files it names, then edit the source.
 3. Call resolve_change with the id, resolution "applied" or "rejected", and a
    one-sentence summary.
 4. Go back to step 1.
 ```
 
+### Each send starts a new session
+
+**Send to agent** asks the waiting agent to open a new chat session for the
+send, rather than doing the work inside the conversation that is watching the
+queue. The change carries `startNewSession: true` and a `sessionPrompt`: the
+brief behind the prefix `/goal get those done: `, so the new session keeps
+working until every item is done. MCP gives a server no way to open a session
+itself, so the agent opens it with whatever its harness provides; an agent that
+cannot open one does the work in place. The same prompt goes on the clipboard,
+so it can be pasted into a new chat by hand.
+
 ### Tool reference
 
 | Tool | Input | Returns |
 | --- | --- | --- |
-| `wait_for_change` | `timeoutSeconds` (default and max 55), `batchWindowSeconds` (default 1.5, max 15) | Pending changes with brief, files, and selected element; or `{timeout: true}` |
+| `wait_for_change` | `timeoutSeconds` (default and max 55), `batchWindowSeconds` (default 1.5, max 15) | Pending changes with brief, `startNewSession`, `sessionPrompt`, files, and selected element; or `{timeout: true}` |
 | `list_changes` | `status`: `pending` (default), `resolved`, `rejected`, `all` | The changes, without blocking |
 | `get_change` | `id` | One full change record |
 | `resolve_change` | `id`, `resolution` (`applied` default, or `rejected`), `summary` | `{ok, id, status, resolution}` |
