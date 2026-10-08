@@ -7,7 +7,7 @@
 //      (scroll walks the tabs), the board (out to every page and back in),
 //      the agent story, and headings brightening word by word.
 //   2. Arrivals, fired once by an IntersectionObserver: the diff playing, the
-//      agent's brief streaming.
+//      agent's brief streaming, the get-started scenes.
 //   3. Interactions: tabs that scroll to their stretch, copy buttons, the
 //      film, and the hero leaning toward the pointer.
 // Reduced motion skips 1 entirely (CSS lays every scene out in its final
@@ -1145,6 +1145,9 @@ function setupArrivals() {
     }, { threshold: [0, 0.2] }).observe(endcard)
   }
 
+  // The get-started scenes play once: the selection lands, the Dock icon bounces.
+  for (const scene of $$("[data-arrive]")) onArrive(scene, () => {})
+
   for (const counter of $$("[data-count-from]")) {
     onArrive(counter, () => {
       if (reducedMotion.matches) return
@@ -1490,7 +1493,8 @@ function setupCopy() {
       const code = button.closest("[data-copy-root]")?.querySelector("code")
       if (!code && !button.dataset.copyText) return
       // Comment lines are for reading, not for pasting into a shell.
-      const text = button.dataset.copyText ?? code.textContent.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n").trim()
+      const lines = code ? $$(".t-cmd", code).map((line) => line.textContent) : []
+      const text = button.dataset.copyText ?? (lines.length ? lines.join("\n") : code.textContent.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n").trim())
       if (!(await copyText(text))) return
       button.classList.add("is-copied")
       button.setAttribute("aria-label", "Copied")

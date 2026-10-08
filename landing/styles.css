@@ -1546,8 +1546,217 @@ h2 {
   margin-top: auto;
 }
 
-/* Both cards share one shape: title, what it is, what it needs, then the
-   commands pinned to the bottom so the two terminals line up. */
+/* One shape for both cards; the terminals sit at the bottom and line up. */
+.path-scene {
+  display: grid;
+  place-items: center;
+  height: 150px;
+  margin: -4px 0 24px;
+}
+
+/* An app window with one element selected, as the editor draws it. */
+.mini-window {
+  width: min(100%, 300px);
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: #0d0d0d;
+}
+
+.mini-bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.mini-bar i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+
+.mini-url {
+  margin-left: 10px;
+  padding: 2px 10px;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 0.06);
+  color: var(--text-3);
+  font: 10px/1.4 var(--mono);
+}
+
+.mini-page {
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+  padding: 14px 16px 16px;
+}
+
+.mini-line {
+  width: 72%;
+  height: 6px;
+  border-radius: 3px;
+  background: rgb(255 255 255 / 0.1);
+}
+
+.mini-line.is-title {
+  width: 48%;
+  height: 9px;
+  background: rgb(255 255 255 / 0.22);
+}
+
+.mini-button {
+  position: relative;
+  margin-top: 6px;
+  padding: 5px 12px;
+  border-radius: 7px;
+  background: var(--accent-fill);
+  color: #fff;
+  font: 500 11px/1.3 var(--font);
+}
+
+.mini-select {
+  position: absolute;
+  inset: -4px;
+  border: 1.5px solid var(--accent);
+  border-radius: 9px;
+}
+
+.mini-select b {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border: 1.5px solid var(--accent);
+  border-radius: 2px;
+  background: #fff;
+}
+
+.mini-select b:nth-child(-n + 2) { top: -4px; }
+.mini-select b:nth-child(n + 3) { bottom: -4px; }
+.mini-select b:nth-child(odd) { left: -4px; }
+.mini-select b:nth-child(even) { right: -4px; }
+
+.mini-tag {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 10px);
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--accent);
+  color: #000;
+  font: 600 10px/1.4 var(--font);
+  white-space: nowrap;
+  transform: translateY(-50%);
+}
+
+.js .scene-browser .mini-select {
+  opacity: 0;
+  transform: scale(1.12);
+  transition: 450ms var(--ease-out) 350ms;
+  transition-property: opacity, transform;
+}
+
+.js .scene-browser .mini-tag {
+  opacity: 0;
+  transform: translate(-6px, -50%);
+  transition: 350ms var(--ease-out) 650ms;
+  transition-property: opacity, transform;
+}
+
+.scene-browser.is-in .mini-select {
+  opacity: 1;
+  transform: none;
+}
+
+.scene-browser.is-in .mini-tag {
+  opacity: 1;
+  transform: translateY(-50%);
+}
+
+/* The Dock icon bounces once, as at launch. */
+.mini-dock {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 18px;
+  background: rgb(255 255 255 / 0.05);
+  backdrop-filter: var(--frost);
+}
+
+.dock-tile {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: linear-gradient(#3a3a3e, #232326);
+}
+
+.dock-app {
+  position: relative;
+}
+
+.dock-app img {
+  display: block;
+  filter: drop-shadow(0 8px 16px rgb(74 93 249 / 0.35));
+}
+
+.dock-dot {
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 50%;
+  background: var(--text);
+}
+
+.js .scene-mac .dock-dot {
+  opacity: 0;
+  transition: opacity 300ms var(--ease-out) 1300ms;
+}
+
+.scene-mac.is-in .dock-app img {
+  animation: dock-bounce 1000ms var(--ease-out) 300ms both;
+}
+
+.scene-mac.is-in .dock-dot {
+  opacity: 1;
+}
+
+@keyframes dock-bounce {
+  0%, 100% { translate: 0 0; }
+  25% { translate: 0 -18px; }
+  50% { translate: 0 0; }
+  70% { translate: 0 -8px; }
+  85% { translate: 0 0; }
+}
+
+/* Wrap, never scroll sideways; a wrapped line hangs clear of the prompt. */
+.install-body.is-wrap {
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.install-body.is-wrap code {
+  min-width: 0;
+}
+
+.t-cmd {
+  display: block;
+  padding-left: 2ch;
+  text-indent: -2ch;
+}
+
+.t-cmd::before {
+  content: "$ ";
+  color: var(--accent-text);
+}
 .path-lead {
   margin-top: 8px;
   color: var(--text);
