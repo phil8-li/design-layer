@@ -17,7 +17,7 @@ below.
 | [@phosphor-icons/core](https://github.com/phosphor-icons/phosphor-core) | 2.1.1 | MIT | `src/core/icons.ts` (icon path data, from its SVG assets) |
 | [framer-motion](https://github.com/motiondivision/motion) | 13.4.0 | MIT | bundled into `dist/designlayer.js` |
 | [motion-dom](https://github.com/motiondivision/motion) | 13.3.0 | MIT | bundled into `dist/designlayer.js` |
-| [motion-panels](https://github.com/letstri/motion-panels) | 0.5.2 | MIT | bundled into `dist/designlayer.js` |
+| [motion-panels](https://github.com/letstri/motion-panels) | 0.6.1 | MIT | bundled into `dist/designlayer.js` |
 | [motion-utils](https://github.com/motiondivision/motion) | 13.3.0 | MIT | bundled into `dist/designlayer.js` |
 | [react](https://github.com/react/react) | 19.3.0 | MIT | bundled into `dist/toaster.js` |
 | [react-dom](https://github.com/react/react) | 19.3.0 | MIT | bundled into `dist/toaster.js` |
@@ -122,7 +122,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### motion-panels 0.5.2
+### motion-panels 0.6.1
 
 ```
 MIT License
