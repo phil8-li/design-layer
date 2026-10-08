@@ -1323,10 +1323,9 @@ h2 {
   }
 }
 
-/* ---------- Terminal and install cards ---------- */
+/* ---------- Terminal ---------- */
 
-.terminal,
-.install-card {
+.terminal {
   overflow: hidden;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-frame);
@@ -1336,8 +1335,7 @@ h2 {
     0 24px 80px -24px rgb(0 0 0 / 0.7);
 }
 
-.terminal-bar,
-.install-bar {
+.terminal-bar {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1348,8 +1346,7 @@ h2 {
   font-size: 13px;
 }
 
-.terminal-body,
-.install-body {
+.terminal-body {
   overflow: auto;
   padding: 14px 0;
   color: var(--text-2);
@@ -1359,8 +1356,7 @@ h2 {
   scrollbar-width: thin;
 }
 
-.terminal-body code,
-.install-body code {
+.terminal-body code {
   display: block;
   min-width: max-content;
 }
@@ -1369,8 +1365,7 @@ h2 {
   display: none;
 }
 
-.terminal-body,
-.install-body {
+.terminal-body {
   padding-inline: 18px;
   white-space: pre;
 }
@@ -1390,8 +1385,6 @@ h2 {
 .t-ok {
   color: var(--add);
 }
-
-/* ---------- Terminal ---------- */
 
 .terminal {
   display: flex;
@@ -1542,10 +1535,6 @@ h2 {
   letter-spacing: -0.015em;
 }
 
-.path .install-card {
-  margin-top: auto;
-}
-
 /* One shape for both cards; the terminals sit at the bottom and line up. */
 .path-scene {
   display: grid;
@@ -1688,11 +1677,11 @@ h2 {
   backdrop-filter: var(--frost);
 }
 
-.dock-tile {
+.dock-icon,
+.dock-app img {
+  display: block;
   width: 48px;
   height: 48px;
-  border-radius: 12px;
-  background: linear-gradient(#3a3a3e, #232326);
 }
 
 .dock-app {
@@ -1700,7 +1689,6 @@ h2 {
 }
 
 .dock-app img {
-  display: block;
   filter: drop-shadow(0 8px 16px rgb(74 93 249 / 0.35));
 }
 
@@ -1736,15 +1724,28 @@ h2 {
   85% { translate: 0 0; }
 }
 
-/* Wrap, never scroll sideways; a wrapped line hangs clear of the prompt. */
-.install-body.is-wrap {
-  overflow-x: hidden;
+/* The commands sit on a quiet panel at the bottom, so both cards line up.
+   They wrap, never scroll; a wrapped line hangs clear of the prompt. */
+.path-cmd {
+  position: relative;
+  margin-top: auto;
+  padding: 14px 48px 14px 16px;
+  border-radius: 12px;
+  background: rgb(255 255 255 / 0.04);
+  color: var(--text);
+  font: 13px/1.8 var(--mono);
+}
+
+.path-cmd pre {
+  font: inherit;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.install-body.is-wrap code {
-  min-width: 0;
+.path-cmd .copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
 }
 
 .t-cmd {
@@ -1755,20 +1756,21 @@ h2 {
 
 .t-cmd::before {
   content: "$ ";
-  color: var(--accent-text);
+  color: var(--text-3);
 }
+
 .path-lead {
-  margin-top: 8px;
-  color: var(--text);
+  margin: 6px 0 24px;
+  color: var(--text-2);
   font-size: 15px;
   line-height: 1.5;
 }
 
-.path-req {
-  margin: 4px 0 24px;
+.paths-note {
+  margin-top: 20px;
   color: var(--text-3);
   font-size: 14px;
-  line-height: 1.55;
+  text-align: center;
 }
 
 @media (max-width: 860px) {
@@ -1781,17 +1783,6 @@ h2 {
   .path {
     padding: 20px;
   }
-}
-
-.install-bar {
-  justify-content: space-between;
-}
-
-.install-body {
-  padding-block: 16px 18px;
-  color: var(--text);
-  font-size: 14px;
-  line-height: 1.85;
 }
 
 /* ---------- Contribute ---------- */

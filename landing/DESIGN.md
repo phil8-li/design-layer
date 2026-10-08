@@ -31,4 +31,4 @@ who set it. A newer statement replaces the older line.
 
 ## Copy
 
-- Examples on the page are generic: no product names from other vendors (no "Storybook") and no employer- or company-internal terms; say "design system library" and use example domains such as acme.com. Scope: this folder. Source: Phil, 2026-10-05.
+- Examples on the page are generic: no product names from other vendors (no "Storybook") and no employer- or company-internal terms; say "design system library" and use example domains such as acme.com. Scope: this folder. Source: Phil, 2026-10-05. One exception: the get-started Dock shows the Figma and Sketch app icons (no names in text) beside Design Layer and Terminal, to place it among a designer's tools. Scope: index.html `.scene-mac`, assets/dock/. Source: Phil, 2026-10-07.

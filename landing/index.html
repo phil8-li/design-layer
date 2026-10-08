@@ -332,42 +332,35 @@ Loading…</code><code data-agent-close hidden></code></pre>
             </div>
             <h3 id="path-browser">In your browser</h3>
             <p class="path-lead">Use it in your browser on top of your app.</p>
-            <p class="path-req">Needs Node 20.9+ and a Next.js, Vite or Angular app.</p>
-            <div class="install-card" data-copy-root>
-              <div class="install-bar">
-                <span>Terminal</span>
-                <button class="copy" type="button" data-copy aria-label="Copy the commands to run it in your browser">
-                  <svg class="icon icon-copy" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Copy"/></svg>
-                  <svg class="icon icon-check" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Check"/></svg>
-                </button>
-              </div>
-<pre class="install-body is-wrap"><code><span class="t-cmd">git clone https://github.com/phil8-li/design-layer</span><span class="t-cmd">cd design-layer &amp;&amp; npm install</span><span class="t-cmd">npx designlayer</span></code></pre>
+            <div class="path-cmd" data-copy-root>
+<pre><code><span class="t-cmd">git clone https://github.com/phil8-li/design-layer</span><span class="t-cmd">cd design-layer &amp;&amp; npm install</span><span class="t-cmd">npx designlayer</span></code></pre>
+              <button class="copy" type="button" data-copy aria-label="Copy the commands to run it in your browser">
+                <svg class="icon icon-copy" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Copy"/></svg>
+                <svg class="icon icon-check" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Check"/></svg>
+              </button>
             </div>
           </section>
           <section class="path" aria-labelledby="path-mac">
             <div class="path-scene scene-mac" data-arrive aria-hidden="true">
               <div class="mini-dock">
-                <span class="dock-tile"></span>
-                <span class="dock-tile"></span>
-                <span class="dock-app"><img src="assets/brand/icon-192.png" width="48" height="48" loading="lazy" decoding="async" alt=""><i class="dock-dot"></i></span>
-                <span class="dock-tile"></span>
+                <img class="dock-icon" src="assets/dock/figma.svg" width="48" height="48" alt="">
+                <img class="dock-icon" src="assets/dock/sketch.svg" width="48" height="48" alt="">
+                <img class="dock-icon" src="assets/dock/terminal.svg" width="48" height="48" alt="">
+                <span class="dock-icon dock-app"><img src="assets/brand/icon-192.png" width="48" height="48" alt=""><i class="dock-dot"></i></span>
               </div>
             </div>
             <h3 id="path-mac">As a Mac app</h3>
-            <p class="path-lead">Keep it in your Dock, with each app in a tab.</p>
-            <p class="path-req">Needs Node 20.9+ and Chrome.</p>
-            <div class="install-card" data-copy-root>
-              <div class="install-bar">
-                <span>Terminal</span>
-                <button class="copy" type="button" data-copy aria-label="Copy the commands to install the Mac app">
-                  <svg class="icon icon-copy" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Copy"/></svg>
-                  <svg class="icon icon-check" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Check"/></svg>
-                </button>
-              </div>
-<pre class="install-body is-wrap"><code><span class="t-cmd">git clone https://github.com/phil8-li/design-layer</span><span class="t-cmd">cd design-layer &amp;&amp; npm install</span><span class="t-cmd">node desktop/mac/install.mjs</span></code></pre>
+            <p class="path-lead">Keep it in your Dock, next to your other tools.</p>
+            <div class="path-cmd" data-copy-root>
+<pre><code><span class="t-cmd">git clone https://github.com/phil8-li/design-layer</span><span class="t-cmd">cd design-layer &amp;&amp; npm install</span><span class="t-cmd">node desktop/mac/install.mjs</span></code></pre>
+              <button class="copy" type="button" data-copy aria-label="Copy the commands to install the Mac app">
+                <svg class="icon icon-copy" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Copy"/></svg>
+                <svg class="icon icon-check" width="16" height="16" aria-hidden="true"><use href="assets/icons.svg#i-Check"/></svg>
+              </button>
             </div>
           </section>
         </div>
+        <p class="paths-note">Needs Node 20.9+ and a Next.js, Vite or Angular app. The Mac app also uses Chrome.</p>
       </div>
     </section>
 
