@@ -1538,182 +1538,55 @@ h2 {
 .path-scene {
   display: grid;
   place-items: center;
-  height: 150px;
-  margin: -4px 0 24px;
+  height: 112px;
+  margin-bottom: 24px;
 }
 
-/* Same-size frames: a browser tab with a selection, a Mac desktop's Dock. */
-.mini-window {
-  display: flex;
-  flex-direction: column;
-  width: min(100%, 300px);
-  height: 150px;
-  overflow: hidden;
-  border: 1px solid var(--line-strong);
-  border-radius: 12px;
-  background: #0d0d0d;
-}
-
-.mini-bar {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  height: 26px;
-  padding: 0 10px;
-  background: #050505;
-}
-
-.mini-bar.is-tools,
-.mini-tab {
-  background: #1a1a1a;
-}
-
-.mini-bar.is-tools {
-  gap: 10px;
-  border-bottom: 1px solid var(--line);
-}
-
-.mini-tab {
-  align-self: end;
-  margin-left: 8px;
-  padding: 4px 14px;
-  border-radius: 7px 7px 0 0;
-  color: var(--text-2);
-  font: 500 10px/1.2 var(--font);
-}
-
-.mini-nav {
-  color: var(--text-3);
-  font-size: 10px;
-  letter-spacing: 3px;
-}
-
-.mini-bar i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--line-strong);
-}
-
-.mini-url {
-  flex: 1;
-  padding: 2px 10px;
-  border-radius: 6px;
-  background: rgb(255 255 255 / 0.06);
-  color: var(--text-3);
-  font: 10px/1.4 var(--mono);
-}
-
-.mini-page {
-  display: grid;
-  justify-items: start;
-  gap: 7px;
-  padding: 14px 16px 16px;
-}
-
-.mini-line {
-  width: 72%;
-  height: 6px;
-  border-radius: 3px;
-  background: rgb(255 255 255 / 0.1);
-}
-
-.mini-line.is-title {
-  width: 48%;
-  height: 9px;
-  background: rgb(255 255 255 / 0.22);
-}
-
-.mini-button {
-  position: relative;
-  margin-top: 6px;
-  padding: 5px 12px;
-  border-radius: 7px;
-  background: var(--accent-fill);
-  color: #fff;
-  font: 500 11px/1.3 var(--font);
-}
-
-.mini-select {
-  position: absolute;
-  inset: -4px;
-  border: 1.5px solid var(--accent);
-  border-radius: 9px;
-}
-
-.mini-select b {
-  position: absolute;
-  width: 6px;
-  height: 6px;
-  border: 1.5px solid var(--accent);
-  border-radius: 2px;
-  background: #fff;
-}
-
-.mini-select b:nth-child(-n + 2) { top: -4px; }
-.mini-select b:nth-child(n + 3) { bottom: -4px; }
-.mini-select b:nth-child(odd) { left: -4px; }
-.mini-select b:nth-child(even) { right: -4px; }
-
-.js .scene-browser .mini-select {
-  opacity: 0;
-  transform: scale(1.12);
-  transition: 450ms var(--ease-out) 350ms;
-  transition-property: opacity, transform;
-}
-
-.scene-browser.is-in .mini-select {
-  opacity: 1;
-  transform: none;
-}
-
-.is-mac {
-  align-items: center;
-  background: radial-gradient(120% 90% at 50% 0%, #2a2a2e, #0d0d0d);
-}
-
-.mini-menu {
-  display: flex;
-  align-self: stretch;
-  gap: 10px;
-  height: 18px;
-  padding: 6px 12px;
-  background: rgb(255 255 255 / 0.06);
-}
-
-.mini-menu i {
-  width: 18px;
-  border-radius: 3px;
-  background: var(--line-strong);
-}
-
-.mini-menu i:first-child {
-  width: 8px;
-}
-
-/* The Dock icon bounces once, as at launch. */
+/* Two matching bars, Design Layer lit in each: a browser toolbar, where it
+   pops in beside your app's address, and the Dock, where it bounces at launch. */
+.mini-bar,
 .mini-dock {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 8px;
-  margin: auto 0 12px;
   padding: 6px 8px;
   border: 1px solid var(--line-strong);
   border-radius: 16px;
   background: rgb(255 255 255 / 0.06);
 }
 
+.bar-nav {
+  width: 22px;
+  color: var(--text-3);
+  font-size: 15px;
+  text-align: center;
+}
+
+.bar-url {
+  display: grid;
+  align-items: center;
+  width: 118px;
+  height: 44px;
+  padding: 0 10px;
+  border-radius: 12px;
+  background: rgb(255 255 255 / 0.06);
+  color: var(--text-2);
+  font: 11px var(--mono);
+}
+
 .dock-icon,
+.bar-app,
 .dock-app img {
   display: block;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
 }
 
 .dock-app {
   position: relative;
 }
 
+.bar-app,
 .dock-app img {
   filter: drop-shadow(0 8px 16px rgb(74 93 249 / 0.35));
 }
@@ -1734,6 +1607,18 @@ h2 {
   transition: opacity 300ms var(--ease-out) 1300ms;
 }
 
+.js .scene-browser .bar-app {
+  opacity: 0;
+  scale: 0.6;
+  transition: 500ms cubic-bezier(0.34, 1.56, 0.64, 1) 400ms;
+  transition-property: opacity, scale;
+}
+
+.scene-browser.is-in .bar-app {
+  opacity: 1;
+  scale: 1;
+}
+
 .scene-mac.is-in .dock-app img {
   animation: dock-bounce 1000ms var(--ease-out) 300ms both;
 }
@@ -1744,7 +1629,7 @@ h2 {
 
 @keyframes dock-bounce {
   0%, 100% { translate: 0 0; }
-  25% { translate: 0 -16px; }
+  25% { translate: 0 -18px; }
   50% { translate: 0 0; }
   70% { translate: 0 -8px; }
   85% { translate: 0 0; }
