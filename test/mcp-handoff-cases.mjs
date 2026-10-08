@@ -408,6 +408,12 @@ await check("initialize answers with a protocol version and a session", async ()
   assert.equal(response.body.result.serverInfo.name, "designlayer")
   assert.ok(response.body.result.capabilities.tools, "a server with no tools capability is never asked for tools")
   assert.ok(response.sessionId, "the spec wants a session id on the initialize response")
+  // Harnesses that defer MCP tools show only the first sentence beside the
+  // server, so the name an agent is asked for has to be in it.
+  const instructions = response.body.result.instructions
+  assert.match(instructions.split(". ")[0], /design layer/i, "the first sentence does not say what this server is")
+  assert.match(instructions, /keep calling it/, "connecting has to mean waiting, or nothing hears the button")
+  assert.match(instructions, /new chat session/, "the agent is not told what a send asks of it")
 })
 
 await check("an unknown protocol version negotiates down rather than failing", async () => {

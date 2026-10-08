@@ -89,10 +89,10 @@ function jsonText(payload) {
  * what stops the next wait from opening a second session for the same send.
  */
 const NEW_SESSION_STEPS =
-  "For each change with startNewSession: true, open a new chat session in your harness and send its " +
-  "sessionPrompt, verbatim, as that session's first message; the new session does the work. If you " +
-  "cannot open a session, do the work here instead. Then call resolve_change for that id so the next " +
-  "wait does not start it again."
+  "For each change with startNewSession: true, start a new chat session — a separate top-level " +
+  "conversation the user can see, not a subagent — and send its sessionPrompt, verbatim, as that " +
+  "session's first message; the new session does the work. If you have no way to start one, do the " +
+  "work here instead. Then call resolve_change for that id so the next wait does not start it again."
 
 function publicView(entry) {
   return {
@@ -294,10 +294,18 @@ async function handleMessage(message, { queue, serverInfo, signal, onSession }) 
         protocolVersion: negotiateProtocol(params?.protocolVersion),
         capabilities: { tools: { listChanged: false } },
         serverInfo,
+        /*
+         * The first sentence carries the name and the purpose. Harnesses that
+         * defer MCP tools show only that sentence beside the server, and an
+         * agent asked to "connect to design layer" read the old one — "DesignLayer
+         * is open in a browser." — and picked a different annotation server.
+         * Connecting means waiting: an agent that is not parked in
+         * wait_for_change cannot hear the button.
+         */
         instructions:
-          "DesignLayer is open in a browser. When the designer presses Send to agent, " +
-          "wait_for_change returns the change. Work the loop: wait_for_change, apply, " +
-          "resolve_change, wait_for_change again. " +
+          "DesignLayer (design layer) visual editor: when the designer presses Send to agent, " +
+          "wait_for_change returns their notes and edits. When the user asks you to connect, " +
+          "call wait_for_change right away and keep calling it until they say stop. " +
           NEW_SESSION_STEPS,
       },
     }
