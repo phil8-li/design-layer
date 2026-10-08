@@ -1542,8 +1542,8 @@ h2 {
   margin-bottom: 24px;
 }
 
-/* Two matching bars, Design Layer lit in each: a browser toolbar, where it
-   pops in beside your app's address, and the Dock, where it bounces at launch. */
+/* Two matching bars, Design Layer lit in each: a browser tab strip, where it
+   pops in as your app's tab icon, and the Dock, where it bounces at launch. */
 .mini-bar,
 .mini-dock {
   display: flex;
@@ -1555,27 +1555,57 @@ h2 {
   background: rgb(255 255 255 / 0.06);
 }
 
-.bar-nav {
-  width: 22px;
+.mini-bar {
+  width: 218px;
+  padding-left: 14px;
+}
+
+.bar-lights {
+  display: flex;
+  gap: 6px;
+}
+
+.bar-lights i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ff5f57;
+}
+
+.bar-lights i:nth-child(2) {
+  background: #febc2e;
+}
+
+.bar-lights i:nth-child(3) {
+  background: #28c840;
+}
+
+.bar-tab {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  margin-left: 4px;
+  padding: 0 12px;
+  border-radius: 12px;
+  background: rgb(255 255 255 / 0.1);
+  color: var(--text);
+  font: 500 13px var(--font);
+}
+
+.bar-tab img {
+  filter: drop-shadow(0 4px 10px rgb(74 93 249 / 0.5));
+}
+
+.bar-plus {
+  width: 18px;
   color: var(--text-3);
-  font-size: 15px;
+  font-size: 18px;
   text-align: center;
 }
 
-.bar-url {
-  display: grid;
-  align-items: center;
-  width: 118px;
-  height: 44px;
-  padding: 0 10px;
-  border-radius: 12px;
-  background: rgb(255 255 255 / 0.06);
-  color: var(--text-2);
-  font: 11px var(--mono);
-}
-
 .dock-icon,
-.bar-app,
 .dock-app img {
   display: block;
   width: 44px;
@@ -1586,7 +1616,6 @@ h2 {
   position: relative;
 }
 
-.bar-app,
 .dock-app img {
   filter: drop-shadow(0 8px 16px rgb(74 93 249 / 0.35));
 }
@@ -1607,14 +1636,14 @@ h2 {
   transition: opacity 300ms var(--ease-out) 1300ms;
 }
 
-.js .scene-browser .bar-app {
+.js .scene-browser .bar-tab img {
   opacity: 0;
   scale: 0.6;
   transition: 500ms cubic-bezier(0.34, 1.56, 0.64, 1) 400ms;
   transition-property: opacity, scale;
 }
 
-.scene-browser.is-in .bar-app {
+.scene-browser.is-in .bar-tab img {
   opacity: 1;
   scale: 1;
 }
