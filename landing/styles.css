@@ -1535,7 +1535,6 @@ h2 {
   letter-spacing: -0.015em;
 }
 
-/* One shape for both cards; the terminals sit at the bottom and line up. */
 .path-scene {
   display: grid;
   place-items: center;
@@ -1543,9 +1542,12 @@ h2 {
   margin: -4px 0 24px;
 }
 
-/* An app window with one element selected, as the editor draws it. */
+/* Same-size frames: a browser tab with a selection, a Mac desktop's Dock. */
 .mini-window {
+  display: flex;
+  flex-direction: column;
   width: min(100%, 300px);
+  height: 150px;
   overflow: hidden;
   border: 1px solid var(--line-strong);
   border-radius: 12px;
@@ -1558,7 +1560,32 @@ h2 {
   gap: 5px;
   height: 26px;
   padding: 0 10px;
+  background: #050505;
+}
+
+.mini-bar.is-tools,
+.mini-tab {
+  background: #1a1a1a;
+}
+
+.mini-bar.is-tools {
+  gap: 10px;
   border-bottom: 1px solid var(--line);
+}
+
+.mini-tab {
+  align-self: end;
+  margin-left: 8px;
+  padding: 4px 14px;
+  border-radius: 7px 7px 0 0;
+  color: var(--text-2);
+  font: 500 10px/1.2 var(--font);
+}
+
+.mini-nav {
+  color: var(--text-3);
+  font-size: 10px;
+  letter-spacing: 3px;
 }
 
 .mini-bar i {
@@ -1569,7 +1596,7 @@ h2 {
 }
 
 .mini-url {
-  margin-left: 10px;
+  flex: 1;
   padding: 2px 10px;
   border-radius: 6px;
   background: rgb(255 255 255 / 0.06);
@@ -1628,30 +1655,10 @@ h2 {
 .mini-select b:nth-child(odd) { left: -4px; }
 .mini-select b:nth-child(even) { right: -4px; }
 
-.mini-tag {
-  position: absolute;
-  top: 50%;
-  left: calc(100% + 10px);
-  padding: 2px 7px;
-  border-radius: 5px;
-  background: var(--accent);
-  color: #000;
-  font: 600 10px/1.4 var(--font);
-  white-space: nowrap;
-  transform: translateY(-50%);
-}
-
 .js .scene-browser .mini-select {
   opacity: 0;
   transform: scale(1.12);
   transition: 450ms var(--ease-out) 350ms;
-  transition-property: opacity, transform;
-}
-
-.js .scene-browser .mini-tag {
-  opacity: 0;
-  transform: translate(-6px, -50%);
-  transition: 350ms var(--ease-out) 650ms;
   transition-property: opacity, transform;
 }
 
@@ -1660,28 +1667,47 @@ h2 {
   transform: none;
 }
 
-.scene-browser.is-in .mini-tag {
-  opacity: 1;
-  transform: translateY(-50%);
+.is-mac {
+  align-items: center;
+  background: radial-gradient(120% 90% at 50% 0%, #2a2a2e, #0d0d0d);
+}
+
+.mini-menu {
+  display: flex;
+  align-self: stretch;
+  gap: 10px;
+  height: 18px;
+  padding: 6px 12px;
+  background: rgb(255 255 255 / 0.06);
+}
+
+.mini-menu i {
+  width: 18px;
+  border-radius: 3px;
+  background: var(--line-strong);
+}
+
+.mini-menu i:first-child {
+  width: 8px;
 }
 
 /* The Dock icon bounces once, as at launch. */
 .mini-dock {
   display: flex;
   align-items: flex-end;
-  gap: 10px;
-  padding: 8px 10px;
+  gap: 8px;
+  margin: auto 0 12px;
+  padding: 6px 8px;
   border: 1px solid var(--line-strong);
-  border-radius: 18px;
-  background: rgb(255 255 255 / 0.05);
-  backdrop-filter: var(--frost);
+  border-radius: 16px;
+  background: rgb(255 255 255 / 0.06);
 }
 
 .dock-icon,
 .dock-app img {
   display: block;
-  width: 48px;
-  height: 48px;
+  width: 40px;
+  height: 40px;
 }
 
 .dock-app {
@@ -1718,14 +1744,13 @@ h2 {
 
 @keyframes dock-bounce {
   0%, 100% { translate: 0 0; }
-  25% { translate: 0 -18px; }
+  25% { translate: 0 -16px; }
   50% { translate: 0 0; }
   70% { translate: 0 -8px; }
   85% { translate: 0 0; }
 }
 
-/* The commands sit on a quiet panel at the bottom, so both cards line up.
-   They wrap, never scroll; a wrapped line hangs clear of the prompt. */
+/* Commands wrap, never scroll; a wrapped line hangs clear of the prompt. */
 .path-cmd {
   position: relative;
   margin-top: auto;
