@@ -38,7 +38,7 @@ completeness.
 | [@babel/parser](https://github.com/babel/babel) | 7.29.8 | MIT | Parses component source on the local server. |
 | [esbuild](https://github.com/evanw/esbuild) | 0.28.2 | MIT | Builds `dist/` from `src/` when the package is installed (`prepare`). |
 | [motion](https://github.com/motiondivision/motion) | 13.4.0 | MIT | Umbrella package; the parts of it the editor uses are bundled as framer-motion, motion-dom and motion-utils above. |
-| [ws](https://github.com/websockets/ws) | 8.21.3 | MIT | WebSockets for the local server and for library sign-in. |
+| [ws](https://github.com/websockets/ws) | 8.22.0 | MIT | WebSockets for the local server and for library sign-in. |
 
 Development only, never shipped: @types/react (MIT), @types/react-dom (MIT), jsdom (MIT), typescript (Apache-2.0).
 
