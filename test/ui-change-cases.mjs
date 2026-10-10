@@ -143,6 +143,18 @@ async function translationCases() {
   check("unknown properties are refused rather than guessed", () => {
     assert.equal(toClassUpdate("mix-blend-mode", "multiply"), null)
   })
+  check("a text style's italic and axes reach source rather than staying preview only", () => {
+    assert.equal(toClassUpdate("font-style", "italic").tailwindToken, "italic")
+    assert.equal(toClassUpdate("font-style", "normal").tailwindToken, "not-italic")
+    const axes = toClassUpdate("font-variation-settings", '"wdth" 92, "wght" 400')
+    assert.equal(axes.standalone, true)
+    assert.equal(axes.tailwindToken, "[font-variation-settings:'wdth'_92,_'wght'_400]")
+    // A later pick replaces the earlier one rather than stacking beside it.
+    assert.equal(new RegExp(axes.classPattern).test("[font-variation-settings:normal]"), true)
+  })
+  check("an arbitrary value never carries a double quote into className", () => {
+    assert.equal(toClassUpdate("font-family", '"Kit Mono", monospace').value, "'Kit_Mono',_monospace")
+  })
 }
 
 // ── engine transport ───────────────────────────────────────────────────────

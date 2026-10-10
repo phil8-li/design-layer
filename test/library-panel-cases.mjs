@@ -374,7 +374,10 @@ const bundled = await build({
       export { loadVariants } from "./src/core/variants"
       export { createWriter } from "./src/core/writer"
       export { previewOnlyChanges, resetPreviewOnlyForTest } from "./src/core/change-prompt"
-      export { authoredTokenMatches, tokensForProperty } from "./src/core/design-system"
+      export {
+        authoredTokenMatches, computedTokenMatches, landedValue, textStyleSignature, tokenStyleWrites,
+        tokenSwatchCss, tokensForProperty,
+      } from "./src/core/design-system"
       export { config } from "./src/core/config"
       export { createContext } from "./src/core/context"
       export { shellCss } from "./src/core/css"
@@ -559,6 +562,237 @@ await check("an element painted with a library variable reads back as that token
     "a disabled library still claims elements in the page"
   )
   element.remove()
+})
+
+/*
+ * A library's tracking unit is not the host's, and the merged catalog can only
+ * state one.
+ *
+ * The merge carries the HOST's `trackingUnit` by reference, so a library parsed
+ * as a px system had its `-0.32` read as `-0.32em` in an em host — matched
+ * against computed styles sixteen times too wide, so an element wearing the
+ * style never read back as bound to it, and written that wide too, because a
+ * class-based style has no variable to write instead. This one has no
+ * variable, so all three halves are visible: what the merged token holds, what
+ * a pick writes, and whether an element already wearing it is recognised —
+ * by its class and by its computed values.
+ */
+await check("a library text style's tracking is restated in the host's unit", async () => {
+  const KIT = {
+    id: "kit-example-com-docs",
+    name: "Kit",
+    enabled: false,
+    source: { kind: "url", path: "https://kit.example.com/docs" },
+    addedAt: 1737000002000,
+    counts: {
+      colors: 0, spacing: 0, radii: 0, textStyles: 1, effects: 0,
+      icons: 0, motion: 0, components: 0, iconDrawings: 0,
+    },
+    catalog: {
+      ...emptyCatalog("Kit"),
+      trackingUnit: "px",
+      textStyles: [
+        {
+          id: "typography:body-m",
+          name: "body-m",
+          category: "typography",
+          cssUtility: "kit-body-m",
+          values: { default: { fontSize: 16, lineHeight: 24, letterSpacing: -0.32, fontWeight: 400 } },
+        },
+      ],
+    },
+  }
+  server.reset()
+  server.libraries = [clone(KIT)]
+  await editor.refreshLibraries(API)
+  await editor.setLibraryEnabled(API, KIT.id, true)
+
+  const [style] = editor.tokensForProperty("text-style", editor.activeDesignSystem())
+  assert.equal(editor.activeDesignSystem().trackingUnit, "em")
+  assert.equal(style.values.default.letterSpacing, -0.02, "the library's px tracking was read as em")
+  assert.equal(
+    editor.libraryList()[0].catalog.textStyles[0].values.default.letterSpacing,
+    -0.32,
+    "the restatement rewrote the cached library instead of a copy"
+  )
+
+  assert.deepEqual(editor.tokenStyleWrites("text-style", style), [
+    { property: "font-size", value: "16px" },
+    { property: "line-height", value: "24px" },
+    { property: "font-weight", value: "400" },
+    { property: "letter-spacing", value: "-0.02em" },
+  ])
+  // A literal tracking is written in the unit the catalog states, which was
+  // hard-coded to em: in a px catalog `-0.32` went out as `-0.32em`.
+  const pixels = editor.tokenStyleWrites("text-style", editor.libraryList()[0].catalog.textStyles[0], "px")
+  assert.deepEqual(pixels.at(-1), { property: "letter-spacing", value: "-0.32px" })
+
+  const byClass = editor.authoredTokenMatches("text-style", "", ["kit-body-m"])
+  assert.deepEqual(byClass.map((match) => match.token.id), [`${KIT.id}/typography:body-m`])
+  const computed = editor.textStyleSignature({ fontSize: 16, lineHeight: 24, fontWeight: 400, letterSpacing: -0.32 })
+  assert.deepEqual(
+    editor.computedTokenMatches("text-style", computed).map((match) => match.token.id),
+    [`${KIT.id}/typography:body-m`],
+    "an element rendering the style's exact values did not read back as it"
+  )
+  await editor.setLibraryEnabled(API, KIT.id, false)
+})
+
+/*
+ * Two roles with the same four numbers.
+ *
+ * A system's body style and its code style can both be 15/20/400 and differ
+ * only in family; its caption can differ from a label only in being italic.
+ * Read as four numbers, every such pair was one value with two names: picking
+ * `code` set body text, and the field could only say "could be either". A
+ * role read from a class carries its family and style, so a pick writes them
+ * and the readback uses them — while a pair that agrees on those too is still
+ * honestly ambiguous.
+ */
+await check("roles that share size, leading and weight are told apart by family and style", async () => {
+  const role = (name, extra) => ({
+    id: `typography:${name}`,
+    name,
+    category: "typography",
+    cssUtility: `kit-${name}`,
+    values: { default: { fontSize: 15, lineHeight: 20, letterSpacing: 0, fontWeight: 400, ...extra } },
+  })
+  const KIT = {
+    id: "kit-roles",
+    name: "Kit",
+    enabled: false,
+    source: { kind: "url", path: "https://kit.example.com/type" },
+    addedAt: 1737000003000,
+    counts: {
+      colors: 0, spacing: 0, radii: 0, textStyles: 4, effects: 0,
+      icons: 0, motion: 0, components: 0, iconDrawings: 0,
+    },
+    catalog: {
+      ...emptyCatalog("Kit"),
+      trackingUnit: "px",
+      textStyles: [
+        role("body-m", { fontFamily: '"Kit Sans", sans-serif' }),
+        role("code", { fontFamily: '"Kit Mono", monospace', fontStyle: "normal" }),
+        role("note", { fontFamily: '"Kit Mono", monospace', fontStyle: "italic" }),
+        role("emph-body-m", { fontFamily: '"Kit Sans", sans-serif' }),
+      ],
+    },
+  }
+  server.reset()
+  server.libraries = [clone(KIT)]
+  await editor.refreshLibraries(API)
+  await editor.setLibraryEnabled(API, KIT.id, true)
+
+  const styles = editor.tokensForProperty("text-style", editor.activeDesignSystem())
+  const code = styles.find((token) => token.name === "code")
+  assert.deepEqual(editor.tokenStyleWrites("text-style", code).slice(4), [
+    { property: "font-family", value: '"Kit Mono", monospace' },
+    { property: "font-style", value: "normal" },
+    // Unstated, so reset rather than left over from the role picked before.
+    { property: "font-variation-settings", value: "normal", reset: true },
+  ])
+  const body = styles.find((token) => token.name === "body-m")
+  assert.deepEqual(editor.tokenStyleWrites("text-style", body).slice(4), [
+    { property: "font-family", value: '"Kit Sans", sans-serif' },
+    { property: "font-style", value: "normal", reset: true },
+    { property: "font-variation-settings", value: "normal", reset: true },
+  ])
+
+  const signature = editor.textStyleSignature({ fontSize: 15, lineHeight: 20, fontWeight: 400, letterSpacing: 0 })
+  const names = (family, style) =>
+    editor
+      .computedTokenMatches("text-style", [signature, family, style].join("|"))
+      .map((match) => match.token.name)
+  assert.deepEqual(names("kit mono", "normal"), ["code"])
+  assert.deepEqual(names("kit mono", "italic"), ["note"])
+  // Same family, same style: genuinely the same values, so both stay.
+  assert.deepEqual(names("kit sans", "normal"), ["body-m", "emph-body-m"])
+  // The bare signature a caller without the evidence passes still matches all.
+  assert.equal(editor.computedTokenMatches("text-style", signature).length, 4)
+  await editor.setLibraryEnabled(API, KIT.id, false)
+})
+
+/*
+ * A LIBRARY'S VARIABLES ARE USUALLY NOT IN THE PAGE. A library is a stylesheet
+ * the app being edited does not load, so a pick written as the bare variable —
+ * `border-radius: var(--kit-corner-small)` — resolved to nothing: the element
+ * went square while the picker reported 8px applied. Measured on a real app,
+ * the library's colours happened to be declared by the page and its corners,
+ * spacing and shadows were not.
+ *
+ * So a write lands as the variable when the page declares it and as the
+ * variable with the token's literal for a fallback when it does not, and the
+ * swatch paints the same way. Channel colours write through their function, a
+ * padding picker offers no negative steps, and a library colour the page
+ * renders reads back by its value even with no variable in sight.
+ */
+await check("library tokens paint in a page that does not declare their variables", async () => {
+  const KIT = {
+    id: "kit-paints",
+    name: "Kit",
+    enabled: false,
+    source: { kind: "url", path: "https://kit.example.com/tokens" },
+    addedAt: 1737000004000,
+    counts: {
+      colors: 2, spacing: 2, radii: 1, textStyles: 0, effects: 0,
+      icons: 0, motion: 0, components: 0, iconDrawings: 0,
+    },
+    catalog: {
+      ...emptyCatalog("Kit"),
+      trackingUnit: "px",
+      colors: [
+        libraryColor("accent", "--kit-accent", "#9dd2ff"),
+        { ...libraryColor("background", "--background", "hsl(0 0% 100%)"), cssFunction: "hsl" },
+      ],
+      radii: [{ id: "radius:small", name: "small", category: "radius", cssVar: "--kit-corner-small", values: { default: 8 } }],
+      spacing: [
+        { id: "spacing:pull", name: "pull", category: "spacing", cssVar: "--kit-size-00", values: { default: -4 } },
+        { id: "spacing:m", name: "m", category: "spacing", cssVar: "--kit-spacing-m", values: { default: 12 } },
+      ],
+    },
+  }
+  server.reset()
+  server.libraries = [clone(KIT)]
+  await editor.refreshLibraries(API)
+  await editor.setLibraryEnabled(API, KIT.id, true)
+  const merged = editor.activeDesignSystem()
+
+  const [radius] = editor.tokensForProperty("corner-radius", merged)
+  const [write] = editor.tokenStyleWrites("corner-radius", radius)
+  assert.deepEqual(write, { property: "border-radius", value: "var(--kit-corner-small)", fallback: "8px" })
+
+  const bare = window.document.createElement("div")
+  window.document.body.append(bare)
+  assert.equal(
+    editor.landedValue(write, window.getComputedStyle(bare)),
+    "var(--kit-corner-small, 8px)",
+    "a variable the page lacks was written bare, and paints nothing"
+  )
+  const declared = window.document.createElement("div")
+  declared.style.setProperty("--kit-corner-small", "6px")
+  window.document.body.append(declared)
+  assert.equal(editor.landedValue(write, window.getComputedStyle(declared)), "var(--kit-corner-small)")
+
+  const background = editor.tokensForProperty("fill-color", merged).find((token) => token.name === "background")
+  assert.equal(editor.tokenStyleWrites("fill-color", background)[0].value, "hsl(var(--background))")
+  assert.equal(editor.tokenSwatchCss(background), "hsl(0 0% 100%)")
+  const accent = editor.tokensForProperty("fill-color", merged).find((token) => token.name === "accent")
+  assert.equal(editor.tokenSwatchCss(accent), "var(--kit-accent, #9dd2ff)")
+
+  assert.deepEqual(editor.tokensForProperty("padding", merged).map((token) => token.name), ["m"])
+  assert.deepEqual(editor.tokensForProperty("margin", merged).map((token) => token.name), ["pull", "m"])
+
+  const byValue = editor.computedTokenMatches(
+    "fill-color",
+    "rgb(157, 210, 255)",
+    merged,
+    () => "",
+    (literal) => (literal === "#9dd2ff" ? "rgb(157, 210, 255)" : literal)
+  )
+  assert.deepEqual(byValue.map((match) => match.token.name), ["accent"])
+  bare.remove()
+  declared.remove()
+  await editor.setLibraryEnabled(API, KIT.id, false)
 })
 
 await check("components come from enabled libraries only, stamped with their owner", async () => {

@@ -110,6 +110,50 @@ asks.
 If a site cannot be opened that way, **I have an access token** is still there,
 folded away, with the OAuth client id the refusal carried.
 
+## What a stylesheet library contributes
+
+A library read from CSS — a file in your project, or the stylesheets a pasted
+link serves — sorts each declaration by what it is for. Names are split into
+words the same way whether they are kebab-case, camelCase (`--fontSizeBody`) or
+use doubled hyphens (`--x--spacer--md`), and a stylesheet that `@import`s its
+parts is read with them.
+
+- **Text styles** come from size-and-leading families (`--text-lg` with
+  `--text-lg--line-height`, or `--body-font-size` with `--body-line-height`) and
+  from type-role classes: a single plain class that sets a fixed `font-size`, a
+  `line-height`, and nothing but type (`.x-body-m { … }`). The role can sit
+  before, after or between the type words (`--font-size-body`,
+  `--text-body-size`). A class style also carries its font family, italic and
+  variation settings, so picking it applies the whole role.
+- **Icon sizes** include an icon font's scale. A family named for an icon
+  (`--x-icon-scale-m-font-size`) is an icon size, not a text style.
+- **Colors** include bare channels such as `--primary: 220 90% 56%`, which a
+  pick writes wrapped: `hsl(var(--primary))`.
+- **Spacing** leaves out lengths that are not spacing: letter-spacing, line
+  heights, blur radii, border, outline and stroke widths, element widths and
+  heights, and container or breakpoint widths. A scale derived with `calc()`,
+  such as `calc(var(--radius) - 4px)`, is read through to its numbers. Padding
+  and gap pickers leave out negative steps.
+- **Shadows** are whole shadows. A shadow's offset, blur or color on its own is
+  left out.
+- **Motion** includes any duration (`--x-fast: 150ms`). Delays are left out.
+
+Values come from the theme a page gets by default. What the stylesheet declares
+unconditionally wins. A themed block — high contrast, print, or a theme switched
+by class (`.theme-ocean`) — only adds names the default never declares, and the
+first such block to declare a name wins, unless a later one names itself the
+default (`default`, `medium`, `100%`). Dark blocks supply each color's dark
+value.
+
+A pick writes the variable, not its value. When the page does not declare that
+variable — a library the app never loads — the write carries the value as a
+fallback, `var(--radius-3, 16px)`, so the element changes straight away.
+
+A library added from a link keeps a copy of what it read. When an update changes
+how stylesheets are read, an enabled link library is read again the first time
+the libraries are listed, and the panel waits a few seconds for it. Pasting the
+same link again re-reads it at any time.
+
 ## Tailwind aliases, v4 and v3
 
 On Tailwind v4 the theme lives in the stylesheet, so the editor reads

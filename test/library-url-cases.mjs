@@ -50,6 +50,7 @@ import path from "node:path"
 import { resolveConfig } from "../config.mjs"
 import { classifyWall } from "../server/library-auth.mjs"
 import { createLibraryStore } from "../server/libraries.mjs"
+import { CATALOG_READER_VERSION } from "../server/library-sources.mjs"
 import {
   URL_SOURCE_KIND,
   catalogProbes,
@@ -1505,6 +1506,109 @@ await checkAsync("re-adding a URL renews its catalog without adding a second row
       2,
       "a failed re-read threw away the tokens that were already there"
     )
+  } finally {
+    await context.cleanup()
+  }
+})
+
+/*
+ * A CATALOG CACHED BY OLDER READING RULES IS READ AGAIN, without anyone asking.
+ *
+ * Re-pasting the link renews a row, but nobody re-pastes a link that looks
+ * fine, and a wrong reading usually does: an icon font's scale cached as five
+ * text styles is a full, plausible picker. The row below is that row as an
+ * earlier build wrote it — no reader stamp, the scale under `textStyles` — and
+ * the first list after the upgrade has to hand back the current reading.
+ *
+ * Once per process: the second list must not go back to the network, and a
+ * row whose re-read fails keeps the catalog it had, as a failed re-paste does.
+ */
+await checkAsync("a URL catalog cached by older reading rules is re-read on the next list, once", async () => {
+  const PAGE = "https://kit.example.com/docs/icons"
+  const KIT_CSS =
+    ":root{--kit-icon-scale-s-font-size:16px;--kit-icon-scale-s-line-height:16px;" +
+    "--kit-icon-scale-m-font-size:20px;--kit-icon-scale-m-line-height:20px;" +
+    "--kit-color-ink:#101319;--kit-spacing-m:12px}"
+  let up = true
+  let requests = 0
+  const context = await project({
+    fetchImpl: async (url) => {
+      requests += 1
+      if (!up) throw new Error("getaddrinfo ENOTFOUND kit.example.com")
+      const target = String(url)
+      const body =
+        target === PAGE
+          ? '<!doctype html><html><head><title>Kit</title><link rel="stylesheet" href="/kit.css"></head><body></body></html>'
+          : target === "https://kit.example.com/kit.css"
+            ? KIT_CSS
+            : ""
+      return {
+        status: body ? 200 : 404,
+        headers: new Headers({ "content-type": target.endsWith(".css") ? "text/css" : "text/html" }),
+        text: async () => body,
+      }
+    },
+    runHelper: noHelper,
+  })
+  const staleRow = (id, enabled = true) => ({
+    id,
+    name: "Kit",
+    enabled,
+    source: { kind: URL_SOURCE_KIND, path: PAGE },
+    addedAt: 1700000000000,
+    catalog: {
+      name: "Kit",
+      trackingUnit: "px",
+      colors: [],
+      spacing: [],
+      radii: [],
+      textStyles: [
+        {
+          id: "typography:kit-icon-scale-s",
+          name: "kit-icon-scale-s",
+          category: "typography",
+          values: { default: { fontSize: 16, lineHeight: 16, letterSpacing: 0 } },
+        },
+      ],
+      uiTextStyles: [],
+      effects: [],
+      icons: [],
+      motion: [],
+      components: [],
+      iconDrawings: [],
+      iconAttribute: "",
+    },
+    detail: "1 text style",
+    error: "",
+  })
+  try {
+    await fs.mkdir(context.config.stateDir, { recursive: true })
+    await fs.writeFile(context.stateFile, JSON.stringify({ libraries: [staleRow("kit")] }), "utf8")
+
+    const [library] = (await context.store.list()).libraries
+    assert.deepEqual(library.catalog.textStyles, [], "the list answered with the stale reading")
+    assert.deepEqual(library.catalog.icons.map((token) => token.name), ["s", "m"])
+    const [stored] = await storedLibraries(context)
+    assert.equal(stored.reader, CATALOG_READER_VERSION, "the re-read was not stamped")
+    assert.equal(stored.id, "kit", "the re-read moved the row")
+
+    const sent = requests
+    await context.store.list()
+    assert.equal(requests, sent, "a current catalog went back to the network")
+
+    // A row whose re-read fails keeps what it had. Same store, so a fresh id:
+    // the once-per-process rule is keyed on the row.
+    up = false
+    await fs.writeFile(context.stateFile, JSON.stringify({ libraries: [staleRow("kit-offline")] }), "utf8")
+    const [offline] = (await context.store.list()).libraries
+    assert.equal(offline.catalog.textStyles.length, 1, "a failed re-read threw the cached catalog away")
+
+    // And a switched-off row is left alone until it is switched on.
+    up = true
+    const before = requests
+    await fs.writeFile(context.stateFile, JSON.stringify({ libraries: [staleRow("kit-off", false)] }), "utf8")
+    await context.store.list()
+    assert.equal(requests, before, "a disabled library was re-read")
   } finally {
     await context.cleanup()
   }

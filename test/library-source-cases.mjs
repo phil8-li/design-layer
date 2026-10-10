@@ -182,9 +182,9 @@ check("a token group that shares a manifest key's name is still a token file", (
  * Plain nested JSON, which is most of the JSON a designer actually has.
  *
  * A theme object exported from a component library, a Tailwind theme dumped to
- * JSON, the Material Theme Builder's `material-theme.json`, a palette package's
- * `colors.json` — none of them wrap a leaf in `{ "value": … }`, so every one of
- * them read as zero tokens.
+ * JSON, a theme generator's JSON export, a palette package's `colors.json` —
+ * none of them wrap a leaf in `{ "value": … }`, so every one of them read as
+ * zero tokens.
  *
  * The floor is what keeps that from claiming every JSON file in the project.
  * Detection counts the leaves this module would actually turn into tokens, so a
@@ -709,6 +709,565 @@ check("a framework's reserved internals are not offered as tokens", () => {
   assert.equal(catalog.spacing.length, 1)
 })
 
+/*
+ * AN ICON FONT'S SCALE IS AN ICON SIZE, and it reached the text-style picker.
+ *
+ * A system whose icons are a variable font sizes them the way it sizes text: a
+ * glyph is a character, so its size is a `font-size` and its box a
+ * `line-height`, and the scale is spelled with exactly the trailing roles a
+ * text-style family is collected by. Five such families listed as five text
+ * styles named `icon-scale-s` to `icon-scale-xxl`, each reading 16/16 to 32/32,
+ * while the icon-size picker stayed empty. The axis settings the font ships
+ * beside each size (`-opsz`, `-fill`, `-grad`) are numbers, not lengths, and
+ * must not turn up as more icon sizes on the way past.
+ */
+check("an icon font's scale is read as icon sizes, not as text styles", () => {
+  const sizes = [["s", 16, 330], ["m", 20, 320], ["l", 24, 300]]
+  const catalog = parseLibrary(
+    "css",
+    `:root {\n${sizes
+      .map(
+        ([step, px, weight]) =>
+          `  --acme-sys-icon-scale-${step}: ${weight} ${px}px/${px}px "Acme Symbols";\n` +
+          `  --acme-sys-icon-scale-${step}-font-size: ${px}px;\n` +
+          `  --acme-sys-icon-scale-${step}-line-height: ${px}px;\n` +
+          `  --acme-sys-icon-scale-${step}-font-weight: ${weight};\n` +
+          `  --acme-sys-icon-scale-${step}-opsz: ${px};\n` +
+          `  --acme-sys-icon-scale-${step}-fill: 0;\n` +
+          `  --acme-sys-icon-scale-${step}-grad: 0;\n`
+      )
+      .join("")}  --acme-sys-color-ink: #101319;\n  --acme-sys-spacing-m: 12px;\n}\n`,
+    { name: "Acme" }
+  )
+  assert.deepEqual(catalog.textStyles, [], "an icon size was offered as a text style")
+  assert.deepEqual(
+    catalog.icons.map((token) => [token.name, token.values.default, token.cssVar]),
+    [
+      ["s", 16, "--acme-sys-icon-scale-s-font-size"],
+      ["m", 20, "--acme-sys-icon-scale-m-font-size"],
+      ["l", 24, "--acme-sys-icon-scale-l-font-size"],
+    ]
+  )
+  assert.equal(catalog.icons.every((token) => token.category === "icon-size"), true)
+  // The line heights stay with their family rather than reaching spacing on
+  // their `height` word.
+  assert.deepEqual(catalog.spacing.map((token) => token.cssVar), ["--acme-sys-spacing-m"])
+})
+
+/*
+ * A TYPE RAMP WRITTEN AS CLASSES, which is how most systems outside Tailwind
+ * ship one, and which declares no custom property at all.
+ *
+ * Read as custom properties only, a stylesheet like this has no text styles,
+ * and the text-style picker is left with whatever else has a font size. The
+ * negatives are each a reason a rule with a font size is not a type role: it
+ * also paints (a component), it only applies under a condition (a variant), it
+ * leaves the leading to inheritance, it is about an icon, or it is not one
+ * plain class.
+ */
+check("a type ramp written as classes is read as text styles", () => {
+  const catalog = parseLibrary(
+    "css",
+    [
+      ":root { --acme-font: 'Acme Sans', sans-serif; --acme-color-ink: #101319; --acme-color-page: #fff; --acme-spacing-m: 12px; }",
+      "@layer components {",
+      "  .acme-display-l { font-family: var(--acme-font); letter-spacing: 0px; font-variation-settings: 'wdth' 100; font-size: 42px; font-weight: 280; line-height: 48px; }",
+      "  .acme-body-m { font-family: var(--acme-font); font-size: 15px; font-weight: 400; line-height: 20px; }",
+      "  .acme-label-s { font-size: 0.8125rem; font-weight: 500; line-height: 1.5; letter-spacing: 0.01em; }",
+      "  .acme-caption { font-size: 12px; line-height: 16px; font-style: italic; }",
+      "  .acme-card-title { font-size: 18px; line-height: 24px; color: var(--acme-color-ink); }",
+      "  .acme-icon-m { font-size: 20px; line-height: 20px; }",
+      "  .acme-lead { font-size: 20px; font-weight: 300; }",
+      "  .acme-body-m:hover { font-weight: 600; }",
+      "  .acme-prose p { font-size: 16px; line-height: 24px; }",
+      "}",
+      "@media (min-width: 900px) { .acme-display-xl { font-size: 64px; line-height: 72px; } }",
+    ].join("\n"),
+    { name: "Acme" }
+  )
+  // Named after what is left once the namespace all four share is cut, the same
+  // cut a custom property gets.
+  assert.deepEqual(
+    catalog.textStyles.map((token) => token.name),
+    ["display-l", "body-m", "label-s", "caption"],
+    "a rule that is not a type role was read as one, or a role was missed"
+  )
+  const [display, body, label, caption] = catalog.textStyles
+  assert.equal(display.cssUtility, "acme-display-l")
+  assert.equal(display.cssVars, undefined, "a class style claimed a variable it does not have")
+  // The family, the style and the variation settings are part of the role,
+  // settled to literals because the page a pick lands in may not declare the
+  // variable the role was written with.
+  assert.deepEqual(display.values.default, {
+    fontSize: 42,
+    lineHeight: 48,
+    letterSpacing: 0,
+    fontWeight: 280,
+    fontFamily: "'Acme Sans', sans-serif",
+    fontVariationSettings: "'wdth' 100",
+  })
+  assert.deepEqual(body.values.default, {
+    fontSize: 15,
+    lineHeight: 20,
+    letterSpacing: 0,
+    fontWeight: 400,
+    fontFamily: "'Acme Sans', sans-serif",
+  })
+  assert.deepEqual(caption.values.default, { fontSize: 12, lineHeight: 16, letterSpacing: 0, fontStyle: "italic" })
+  // rem resolved, a unitless leading read as a ratio, and em tracking restated
+  // in the catalog's unit through the style's own size.
+  assert.equal(catalog.trackingUnit, "px")
+  assert.deepEqual(label.values.default, { fontSize: 13, lineHeight: 19.5, letterSpacing: 0.13, fontWeight: 500 })
+  assert.deepEqual(catalog.icons, [], "a class that sizes an icon became an icon token")
+})
+
+/*
+ * A compiled Tailwind v4 sheet carries BOTH spellings of one style: the
+ * `--text-lg` family in the theme, and the `.text-lg` utility that reads it.
+ * They are one decision, so they must be one row.
+ */
+check("a utility class that reads a text-style family is that family, not a second style", () => {
+  const catalog = parseLibrary(
+    "css",
+    [
+      ":root { --text-lg: 1.125rem; --text-lg--line-height: 1.75rem; --color-a: #fff; --color-b: #000; }",
+      "@layer utilities { .text-lg { font-size: var(--text-lg); line-height: var(--tw-leading, var(--text-lg--line-height)); } }",
+    ].join("\n")
+  )
+  assert.deepEqual(catalog.textStyles.map((token) => token.cssUtility), ["text-lg"])
+  assert.deepEqual(catalog.textStyles[0].cssVars, { fontSize: "--text-lg", lineHeight: "--text-lg--line-height" })
+})
+
+/*
+ * Lengths that are not spacing. Every one of these reached the spacing picker,
+ * by a `spacing` or `height` word in its name or by the value sniffer, and
+ * measured on one real stylesheet they were eleven of its twenty-seven spacing
+ * rows. The three that stay are the boundary: a spacing word still wins over
+ * `leading` and `container` when the name has both.
+ */
+check("lengths that are not spacing never reach the spacing picker", () => {
+  const catalog = parseLibrary(
+    "css",
+    [
+      ":root {",
+      "  --tracking-tight: -0.025em;",
+      "  --letter-spacing-wide: 0.05em;",
+      "  --line-height-6: 1.5rem;",
+      "  --leading-6: 1.5rem;",
+      "  --blur-sm: 8px;",
+      "  --scrim-blur: 4px;",
+      "  --container-md: 28rem;",
+      "  --breakpoint-md: 48rem;",
+      "  --padding-leading: 8px;",
+      "  --container-gap: 24px;",
+      "  --spacing-4: 16px;",
+      "}",
+    ].join("\n")
+  )
+  assert.deepEqual(
+    catalog.spacing.map((token) => token.cssVar),
+    ["--padding-leading", "--container-gap", "--spacing-4"]
+  )
+  assert.deepEqual(allTokens(catalog).length, 3, "a non-spacing length landed on another axis instead")
+})
+
+/*
+ * A SCALE DERIVED FROM ONE BASE. shadcn writes its whole corner scale as
+ * `calc(var(--radius) ± n)`, and Tailwind writes its default leading as
+ * `calc(1 / 0.75)`; with the reference in the middle of the value, neither was
+ * followed, and the corner scale read as a lone `--radius`. What depends on a
+ * box — a viewport unit, a percentage — still cannot be settled, and is still
+ * dropped.
+ */
+check("a scale derived with calc() is read through to its numbers", () => {
+  const catalog = parseLibrary(
+    "css",
+    [
+      ":root {",
+      "  --radius: 0.625rem;",
+      "  --radius-sm: calc(var(--radius) - 4px);",
+      "  --radius-md: calc(var(--radius) - 2px);",
+      "  --radius-lg: var(--radius);",
+      "  --radius-xl: calc(var(--radius) + 4px);",
+      "  --radius-2xl: calc(var(--radius) * 1.4);",
+      "  --radius-fluid: calc(1vw + 2px);",
+      "  --radius-half: calc(50% - 1px);",
+      "  --text-xs: 0.75rem;",
+      "  --text-xs--line-height: calc(1 / 0.75);",
+      "}",
+    ].join("\n")
+  )
+  assert.deepEqual(
+    catalog.radii.map((token) => [token.cssVar, token.values.default]),
+    [
+      ["--radius", 10],
+      ["--radius-sm", 6],
+      ["--radius-md", 8],
+      ["--radius-lg", 10],
+      ["--radius-xl", 14],
+      ["--radius-2xl", 14],
+    ]
+  )
+  assert.equal(catalog.textStyles[0].values.default.lineHeight, 16)
+})
+
+/*
+ * `inherits: false` is the opposite of a token. A theme token reaches the page
+ * by inheriting from the root; a property registered as non-inheriting holds a
+ * separate value on every element — a utility's working state. Utility plugins
+ * restate those initials on `*`, which is unconditional, so they listed as
+ * tokens: four scroll-fade insets at 0px, offered by the margin row as what a
+ * 0px margin "could be". A registered property that DOES inherit is still a
+ * token.
+ */
+check("a property registered as non-inheriting is a channel, not a token", () => {
+  const catalog = parseLibrary(
+    "css",
+    [
+      '@property --fade-top { syntax: "<length-percentage>"; inherits: false; initial-value: 0; }',
+      '@property --fade-bottom { syntax: "<length-percentage>"; inherits: false; initial-value: 0; }',
+      '@property --brand { syntax: "<color>"; inherits: true; initial-value: #000; }',
+      "@layer properties { *, ::before, ::after { --fade-top: 0px; --fade-bottom: 0px; } }",
+      ":root { --brand: #3366ff; --spacing-m: 12px; --color-ink: #000; --color-page: #fff; }",
+    ].join("\n")
+  )
+  assert.deepEqual(catalog.spacing.map((token) => token.cssVar), ["--spacing-m"])
+  assert.ok(byVar(catalog.colors, "--brand"), "a registered property that inherits was dropped")
+})
+
+/*
+ * A custom property cannot carry a unitless length: `gap: var(--x)` with
+ * `--x: 16` is thrown away by the browser, so offering it writes nothing.
+ * Zero is the one bare number CSS accepts as a length — and a size is the one
+ * length zero is never a step of.
+ */
+check("a stylesheet length needs a unit, and a size needs to be more than zero", () => {
+  const catalog = parseLibrary(
+    "css",
+    ":root { --spacing-4: 16; --spacing-0: 0; --radius-none: 0; --icon-size-sm: 0; --icon-size-md: 20px; --color-ink: #000; }"
+  )
+  assert.deepEqual(catalog.spacing.map((token) => token.cssVar), ["--spacing-0"])
+  assert.deepEqual(catalog.radii.map((token) => token.cssVar), ["--radius-none"])
+  assert.deepEqual(catalog.icons.map((token) => token.cssVar), ["--icon-size-md"])
+})
+
+/*
+ * THE MIDDLE SPELLING OF A TEXT STYLE: role name, then the role, then a
+ * variant — `--text-body-size-large`, `--text-body-lineHeight-large` — with
+ * what every variant shares declared once (`--text-body-weight`). None of the
+ * three patterns that came before read it, so such a system listed each size
+ * as a style with no leading, beside its weights listed as 400px font sizes.
+ */
+check("a role, its variants and what they share collapse into one style per variant", () => {
+  const catalog = parseLibrary(
+    "css",
+    [
+      ":root {",
+      "  --text-body-size-large: 1rem;",
+      "  --text-body-lineHeight-large: 1.5;",
+      "  --text-body-size-small: 0.75rem;",
+      "  --text-body-lineHeight-small: 1.6666;",
+      "  --text-body-weight: 400;",
+      "  --text-title-size-medium: 1.25rem;",
+      "  --text-title-lineHeight-medium: 1.6;",
+      "  --text-title-weight-medium: 600;",
+      "  --text-caption-size: 0.75rem;",
+      "  --text-caption-lineHeight: 1.3333;",
+      "  --text-caption-weight: 400;",
+      "}",
+    ].join("\n")
+  )
+  assert.deepEqual(
+    catalog.textStyles.map((token) => [token.name, token.values.default]),
+    [
+      ["body-large", { fontSize: 16, lineHeight: 24, letterSpacing: 0, fontWeight: 400 }],
+      ["body-small", { fontSize: 12, lineHeight: 20, letterSpacing: 0, fontWeight: 400 }],
+      ["title-medium", { fontSize: 20, lineHeight: 32, letterSpacing: 0, fontWeight: 600 }],
+      ["caption", { fontSize: 12, lineHeight: 16, letterSpacing: 0, fontWeight: 400 }],
+    ]
+  )
+  // The shared weight is the variant's own variable, so a pick follows it.
+  assert.equal(catalog.textStyles[0].cssVars.fontWeight, "--text-body-weight")
+  assert.deepEqual(catalog.spacing, [], "a line height reached the spacing picker")
+})
+
+/*
+ * A ROLE INSIDE A CAMEL-CASED RUN. A system can spell each name as one run,
+ * `--fontSizeBase300` beside `--lineHeightBase300`. A role read only across
+ * hyphens found none there, so every size listed as a style whose leading was
+ * its own size: 14/14 where the system says 14/20.
+ */
+check("a role glued to its stem or variant by a camel hump pairs like a hyphenated one", () => {
+  const catalog = parseLibrary(
+    "css",
+    [
+      ":root {",
+      "  --fontSizeBase200: 12px;",
+      "  --fontSizeBase300: 14px;",
+      "  --lineHeightBase200: 16px;",
+      "  --lineHeightBase300: 20px;",
+      "  --fontWeightRegular: 400;",
+      "  --typographyBodyFontSize: 16px;",
+      "  --typographyBodyLineHeight: 24px;",
+      "}",
+    ].join("\n")
+  )
+  assert.deepEqual(
+    catalog.textStyles.map((token) => [token.name, token.values.default.fontSize, token.values.default.lineHeight]),
+    [
+      ["base200", 12, 16],
+      ["base300", 14, 20],
+      ["body", 16, 24],
+    ]
+  )
+  assert.equal(catalog.textStyles[1].cssVars.lineHeight, "--lineHeightBase300")
+  assert.deepEqual(catalog.spacing, [], "a line height reached the spacing picker")
+})
+
+/*
+ * A NUMBERED STEP PAIRS ONLY WITH THE SAME NUMBERING. One system numbers its
+ * sizes, leadings and trackings 1–9 alike, and step 3 is one style. Another
+ * numbers its weights 1–9 for 100–900 beside sizes numbered 00–8, and pairing
+ * `--font-weight-3` with `--font-size-3` invented a style in weight 300.
+ */
+check("numbered steps pair across roles only when the roles share their numbering", () => {
+  const steps = [1, 2, 3, 4]
+  const shared = parseLibrary(
+    "css",
+    `:root {\n${steps
+      .map((step) => `  --font-size-${step}: ${10 + step * 2}px;\n  --line-height-${step}: ${16 + step * 4}px;`)
+      .join("\n")}\n}`
+  )
+  assert.deepEqual(
+    shared.textStyles.map((token) => [token.name, token.values.default.lineHeight]),
+    [["1", 20], ["2", 24], ["3", 28], ["4", 32]]
+  )
+  const independent = parseLibrary(
+    "css",
+    [
+      ":root {",
+      "  --font-size-00: 0.5rem;",
+      "  --font-size-0: 0.75rem;",
+      "  --font-size-1: 1rem;",
+      "  --font-size-2: 1.1rem;",
+      "  --font-weight-1: 100;",
+      "  --font-weight-2: 200;",
+      "  --font-weight-3: 300;",
+      "}",
+    ].join("\n")
+  )
+  assert.deepEqual(
+    independent.textStyles.map((token) => [token.name, token.values.default.fontWeight ?? null]),
+    [["00", null], ["0", null], ["1", null], ["2", null]],
+    "a weight ramp was paired with a size ramp by step number"
+  )
+})
+
+/*
+ * Two families can shorten onto one name — a system's base `small` and its
+ * button's `small` — and the picker selects by id. Each keeps the part of its
+ * stem that tells it apart, and the namespace they all share is cut.
+ */
+check("text styles keep what tells them apart, and every id is unique", () => {
+  const catalog = parseLibrary(
+    "css",
+    [
+      ":root {",
+      "  --kit-font-size-small: 0.875rem;",
+      "  --kit-font-size-medium: 1rem;",
+      "  --kit-button-font-size-small: 0.75rem;",
+      "  --kit-button-font-size-medium: 0.875rem;",
+      "  --kit-input-font-size-small: 0.875rem;",
+      "  --kit-color-primary: #0066cc;",
+      "}",
+    ].join("\n")
+  )
+  assert.deepEqual(catalog.textStyles.map((token) => token.name), [
+    "small",
+    "medium",
+    "button-small",
+    "button-medium",
+    "input-small",
+  ])
+  const ids = catalog.textStyles.map((token) => token.id)
+  assert.equal(new Set(ids).size, ids.length, "two text styles share an id")
+})
+
+/*
+ * Lengths that are strokes and sizes, not spacing — and the colours that share
+ * their words. A border width, an outline offset, a divider thickness, a
+ * component height and a perspective all reached the spacing picker; a border
+ * COLOUR must not be thrown out on the way, which an earlier draft of this rule
+ * did to a system's whole set of subtle border colours.
+ */
+check("stroke widths, sizes and perspectives are not spacing, and border colours stay colours", () => {
+  const catalog = parseLibrary(
+    "css",
+    [
+      ":root {",
+      "  --kit-border-width: 1px;",
+      "  --kit-borderWidth-thick: 2px;",
+      "  --kit-outline-focus-offset: -2px;",
+      "  --kit-focus-ring-width: 0.25rem;",
+      "  --kit-divider-thickness-small: 1px;",
+      "  --kit-input-height-medium: 40px;",
+      "  --kit-sidebar-width: 280px;",
+      "  --kit-perspective-near: 300px;",
+      "  --kit-border: 1px;",
+      "  --kit-gap-sm: 8px;",
+      "  --kit-primary-border-subtle: #9ec5fe;",
+      "  --ring: #9dd2ff;",
+      "}",
+    ].join("\n")
+  )
+  assert.deepEqual(catalog.spacing.map((token) => token.cssVar), ["--kit-gap-sm"])
+  assert.deepEqual(
+    catalog.colors.map((token) => token.cssVar),
+    ["--kit-primary-border-subtle", "--ring"],
+    "a colour was refused for sharing a word with a stroke width"
+  )
+})
+
+/*
+ * The parts of a shadow are not shadows, and a delay is not a duration. Both
+ * used to be offered: `--x-shadow-blur-md: 8px` written as a box-shadow is an
+ * invalid declaration, and a 50ms delay written as `transition-duration` sets
+ * how long the change takes rather than when it starts. A duration with no
+ * telling word in its name is still recognised by its value.
+ */
+check("only whole shadows are shadows, a delay is not a duration, and a duration speaks for itself", () => {
+  const catalog = parseLibrary(
+    "css",
+    [
+      ":root {",
+      "  --kit-shadow-blur-md: 8px;",
+      "  --kit-shadow-x: 0px;",
+      "  --kit-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.1);",
+      "  --kit-shadow-ring: inset 0 0 0 0.125rem;",
+      "  --kit-shadow-scaled: 0 calc(0.0625rem * 2) calc(0.1875rem * 2) rgba(0, 0, 0, 0.05);",
+      "  --kit-shadow-none: none;",
+      "  --kit-delay-short: 50ms;",
+      "  --kit-transition-fast: 150ms;",
+      "  --kit-color-ink: #000;",
+      "}",
+    ].join("\n")
+  )
+  assert.deepEqual(catalog.effects.map((token) => token.cssVar), [
+    "--kit-shadow-sm",
+    "--kit-shadow-ring",
+    "--kit-shadow-scaled",
+    "--kit-shadow-none",
+  ])
+  assert.deepEqual(catalog.motion.map((token) => token.cssVar), ["--kit-transition-fast"])
+})
+
+/*
+ * A corner scale named `corner-radius` lists by its step. The cut used to land
+ * after the first matching word, so every row read `radius-100`.
+ */
+check("a token is named after the whole run of words that classified it", () => {
+  const catalog = parseLibrary(
+    "css",
+    ":root { --kit-corner-radius-100: 8px; --kit-corner-radius-200: 10px; --kit-border-radius-pill: 999px; --kit-color-ink: #000; }"
+  )
+  assert.deepEqual(catalog.radii.map((token) => token.name), ["100", "200", "pill"])
+})
+
+/*
+ * A colour stored as bare channels paints nothing written as a bare variable:
+ * `background-color: var(--background)` with `--background: 0 0% 100%` is
+ * invalid. The function the file wraps it in travels with the token, so the
+ * write can wrap it the same way.
+ */
+check("a channel colour carries the function that makes it a colour", () => {
+  const catalog = parseLibrary(
+    "css",
+    [
+      ":root { --background: 0 0% 100%; --kit-primary-rgb: 13, 110, 253; --kit-color-ink: #101010; --kit-color-page: #fff; }",
+      ".bg { background-color: hsl(var(--background)); }",
+      ".primary { background-color: rgba(var(--kit-primary-rgb), 0.5); }",
+    ].join("\n")
+  )
+  assert.equal(byVar(catalog.colors, "--background").cssFunction, "hsl")
+  assert.equal(byVar(catalog.colors, "--kit-primary-rgb").cssFunction, "rgba")
+  assert.equal(byVar(catalog.colors, "--kit-color-ink").cssFunction, undefined)
+})
+
+/*
+ * THEMES SWITCHED BY CLASS NAME. A system that names its themes after nothing
+ * in particular (`.kit--white`, `.kit--g90`) keeps its whole palette in those
+ * blocks, which read as a component's private variables and were dropped. What
+ * gives a theme away is repeating the same long vocabulary as another class;
+ * the first such class is the default, and a component's own variables are
+ * still not tokens.
+ */
+check("classes that restate one vocabulary are themes, and the first is the default", () => {
+  const names = Array.from({ length: 42 }, (_, index) => `--kit-layer-${index}`)
+  const block = (selector, shade) =>
+    `${selector} {\n${names.map((name, index) => `  ${name}: #${shade}${String(index % 10).repeat(2)};`).join("\n")}\n}`
+  const catalog = parseLibrary(
+    "css",
+    [
+      ":root { --kit-color-brand: #0f62fe; }",
+      block(".kit--white", "ffff"),
+      block(".kit--g90", "2626"),
+      ".kit--button { --kit-button-padding: 12px; --kit-button-color-hover: #0050e6; }",
+    ].join("\n")
+  )
+  assert.equal(catalog.colors.length, 1 + names.length)
+  assert.equal(byVar(catalog.colors, "--kit-layer-1").values.light, "#ffff11", "a later theme overrode the first")
+  assert.equal(byVar(catalog.colors, "--kit-button-color-hover"), null, "a component's variable became a token")
+})
+
+/*
+ * A scale shipped only as variants chosen at run time declares no default
+ * outside them. First-wins read its corners as the `none` variant — every
+ * radius 0 — and its spacing at 90%. The variant that calls itself the default
+ * is the one a page gets when nobody chose.
+ */
+check("among variant blocks, the one that names itself the default wins", () => {
+  const catalog = parseLibrary(
+    "css",
+    [
+      ":root { --kit-radius-2: calc(4px * var(--kit-radius-factor)); --kit-space-2: calc(8px * var(--kit-scaling)); --kit-color-ink: #000; --kit-color-page: #fff; }",
+      ".kit-theme[data-radius='none'] { --kit-radius-factor: 0; }",
+      ".kit-theme[data-radius='medium'] { --kit-radius-factor: 1; }",
+      ".kit-theme[data-scaling='90%'] { --kit-scaling: 0.9; }",
+      ".kit-theme[data-scaling='100%'] { --kit-scaling: 1; }",
+    ].join("\n")
+  )
+  assert.equal(byVar(catalog.radii, "--kit-radius-2").values.default, 4)
+  assert.equal(byVar(catalog.spacing, "--kit-space-2").values.default, 8)
+})
+
+/*
+ * A component's parts set type too — `accordion__title`, `breadcrumb--sm` —
+ * and read as roles they filled the text-style picker with one component's
+ * internals. A doubled hyphen right after the namespace (`kit--type-body-01`)
+ * is the one a role may carry. A leading of zero is not a style anyone sets.
+ */
+check("a component's parts and modifiers are not type roles", () => {
+  const catalog = parseLibrary(
+    "css",
+    [
+      ":root { --kit-color-ink: #000; }",
+      ".kit--accordion__title { font-size: 14px; line-height: 20px; font-weight: 400; }",
+      ".kit--breadcrumb--sm { font-size: 12px; line-height: 16px; }",
+      ".kit--pagination-nav { font-size: 14px; line-height: 0; }",
+      ".kit--type-body-01 { font-size: 14px; line-height: 20px; letter-spacing: 0.16px; }",
+    ].join("\n")
+  )
+  assert.deepEqual(catalog.textStyles.map((token) => token.cssUtility), ["kit--type-body-01"])
+})
+
+check("a spacing value past any screen is a stand-in for no limit, not a step", () => {
+  const catalog = parseLibrary(
+    "css",
+    ":root { --kit-padding-inline-max: 999999999px; --kit-padding-inline-normal: 16px; --kit-color-ink: #000; }"
+  )
+  assert.deepEqual(catalog.spacing.map((token) => token.cssVar), ["--kit-padding-inline-normal"])
+})
+
 // ── Manifest ───────────────────────────────────────────────────────────────
 
 console.log("\nA design system written as a Figma-style manifest")
@@ -1010,11 +1569,99 @@ check("a token manager's sets resolve against the stack they are written for", (
 })
 
 /*
+ * The typography composite, field by field.
+ *
+ * Each field is a token value in its own right: a reference into the file, an
+ * object dimension, a weight by name. Read raw, all three came out as nothing —
+ * and the format defines a unitless line height as a RATIO, which was read as
+ * that many pixels: a body style with `lineHeight: 1.5` had 1.5px leading.
+ */
+check("a typography composite reads its references, its ratio and its named weight", () => {
+  const catalog = parseLibrary(
+    "tokens",
+    JSON.stringify({
+      size: { body: { $type: "dimension", $value: { value: 16, unit: "px" } } },
+      type: {
+        body: {
+          $type: "typography",
+          $value: {
+            fontFamily: "Inter",
+            fontSize: "{size.body}",
+            lineHeight: 1.5,
+            fontWeight: "Semi Bold",
+            letterSpacing: { value: 0.5, unit: "px" },
+          },
+        },
+        caption: { $type: "typography", $value: { fontSize: "12px", lineHeight: "150%", fontWeight: "bold" } },
+      },
+    })
+  )
+  assert.deepEqual(byName(catalog.textStyles, "type/body").values.default, {
+    fontSize: 16,
+    lineHeight: 24,
+    letterSpacing: 0.5,
+    fontWeight: 600,
+  })
+  assert.deepEqual(byName(catalog.textStyles, "type/caption").values.default, {
+    fontSize: 12,
+    lineHeight: 18,
+    letterSpacing: 0,
+    fontWeight: 700,
+  })
+  assert.equal(catalog.trackingUnit, "px")
+})
+
+/*
+ * One catalog states one tracking unit. A file mixing em and px used to be
+ * declared an em file and read its px tracking as ems — thirty-two times too
+ * wide on a 16px style. Each style's own size converts it instead.
+ */
+check("tracking in mixed units is restated in the one unit the catalog states", () => {
+  const catalog = parseLibrary(
+    "tokens",
+    JSON.stringify({
+      type: {
+        title: { $type: "typography", $value: { fontSize: "20px", lineHeight: "28px", letterSpacing: "-0.01em" } },
+        body: { $type: "typography", $value: { fontSize: "16px", lineHeight: "24px", letterSpacing: "0.5px" } },
+      },
+    })
+  )
+  assert.equal(catalog.trackingUnit, "em")
+  assert.equal(byName(catalog.textStyles, "type/title").values.default.letterSpacing, -0.01)
+  assert.equal(byName(catalog.textStyles, "type/body").values.default.letterSpacing, 0.0313)
+})
+
+/*
+ * `dimension` says "a length" and nothing about which one. The format has no
+ * radius, icon-size or font-size type, so a corner scale and an icon scale are
+ * both `dimension` — and taking the type as the whole answer filed both under
+ * spacing, along with every line height. The path decides between the LENGTH
+ * axes only: a `stroke` width is still a width, not a colour.
+ */
+check("a dimension's path decides which length axis it belongs to", () => {
+  const catalog = parseLibrary(
+    "tokens",
+    JSON.stringify({
+      $type: "dimension",
+      radius: { sm: { $value: "4px" } },
+      icon: { size: { md: { $value: "20px" } } },
+      space: { md: { $value: "16px" } },
+      lineHeight: { body: { $value: "24px" } },
+      border: { stroke: { width: { $value: "1px" } } },
+    })
+  )
+  assert.deepEqual(catalog.radii.map((token) => token.name), ["radius/sm"])
+  assert.deepEqual(catalog.icons.map((token) => token.name), ["icon/size/md"])
+  assert.deepEqual(catalog.spacing.map((token) => token.name), ["space/md", "border/stroke/width"])
+  assert.equal(allTokens(catalog).length, 4, "a line height reached an axis")
+})
+
+/*
  * Plain nested JSON — the shape most of the JSON a designer has is written in.
  *
  * A theme object exported from a component library, a Tailwind theme dumped to
- * JSON, the Material Theme Builder's `material-theme.json`: none of them wraps
- * a leaf in `{ "value": … }`, and a leaf that was not a plain object was skipped
+ * JSON, a theme generator's JSON export: none of them wraps a leaf in
+ * `{ "value": … }`, and a leaf that was not a plain object was skipped
  * outright, so all of them read as zero tokens.
  */
 check("a plain nested theme object yields tokens named by their path", () => {

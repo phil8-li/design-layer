@@ -540,12 +540,41 @@ function sameLibraries(a: readonly Library[], b: readonly Library[]): boolean {
  * picker and it stays exactly as the library spelled it.
  */
 function stamped(library: Library, group: TokenGroup): DesignSystemToken[] {
+  const from = library.catalog.trackingUnit
+  const to = config.designSystem.trackingUnit
+  const restate = (group === "textStyles" || group === "uiTextStyles") && Boolean(from) && from !== to
   return library.catalog[group].map((token) => ({
-    ...token,
+    ...(restate ? trackedIn(token, to) : token),
     id: `${library.id}/${token.id}`,
     library: library.id,
     libraryName: library.name,
   }))
+}
+
+/**
+ * A library text style with its tracking restated in the host's unit.
+ *
+ * A catalog states ONE tracking unit, and the merged catalog carries the
+ * host's — the spread in `mergeCatalog` takes it by reference. A library
+ * parsed as a px system and merged into an em host therefore had its `-0.2`
+ * read as `-0.2em`: matched against computed styles sixteen times too wide, so
+ * an element wearing the style never read back as bound to it, and written that
+ * wide when the style had no variable to write instead. Converting through the
+ * style's own size is exact, and the copy leaves the cached library as sent.
+ */
+function trackedIn(token: DesignSystemToken, to: "em" | "px"): DesignSystemToken {
+  const shape = token.values.default
+  if (!shape || typeof shape !== "object") return token
+  const { fontSize, letterSpacing } = shape as Record<string, unknown>
+  if (typeof fontSize !== "number" || fontSize <= 0 || typeof letterSpacing !== "number") return token
+  const converted = to === "em" ? letterSpacing / fontSize : letterSpacing * fontSize
+  return {
+    ...token,
+    values: {
+      ...token.values,
+      default: { ...(shape as Record<string, unknown>), letterSpacing: Math.round(converted * 10000) / 10000 },
+    },
+  }
 }
 
 function mergeCatalog(enabled: readonly Library[]): DesignSystemCatalog {

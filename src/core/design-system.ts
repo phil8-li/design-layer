@@ -38,7 +38,14 @@ export type DesignSystemMatch = {
   ambiguous: boolean
 }
 
-export type TokenStyleWrite = { property: string; value: string }
+export type TokenStyleWrite = {
+  property: string
+  value: string
+  /** A neutral value restoring what the style leaves unsaid; see `textStyleExtras`. */
+  reset?: true
+  /** The literal a variable write stands for, for a page that lacks the variable; see `landedValue`. */
+  fallback?: string
+}
 
 const PROPERTY_CATEGORY: Record<DesignTokenProperty, keyof DesignSystemCatalog> = {
   "fill-color": "colors", "text-color": "colors", "stroke-color": "colors",
@@ -172,9 +179,14 @@ export function tokenDisplayName(token: DesignSystemToken): string {
  * for a `style` attribute, never a string anyone reads.
  */
 export function tokenSwatchCss(token: DesignSystemToken): string | null {
-  if (token.cssVar) return `var(${token.cssVar})`
-  const literal = Object.values(token.values).find((entry): entry is string => typeof entry === "string")
-  return literal ?? null
+  const literal = Object.values(token.values).find((entry): entry is string => typeof entry === "string") ?? null
+  // A channel variable is not a colour on its own, so its swatch is the colour
+  // it makes; and a variable the page does not declare paints nothing, so the
+  // literal rides along as its fallback — a library's palette is usually not
+  // loaded by the app it is being tried on.
+  if (token.cssFunction) return literal
+  if (token.cssVar) return literal ? `var(${token.cssVar}, ${literal})` : `var(${token.cssVar})`
+  return literal
 }
 
 /** `16/20` — the size and leading pair a text style is recognised by. */
@@ -315,7 +327,27 @@ export function tokensForProperty(
   registry: DesignSystemCatalog = activeDesignSystem()
 ): DesignSystemToken[] {
   if (property === "text-style") return [...registry.textStyles, ...registry.uiTextStyles]
-  return registry[PROPERTY_CATEGORY[property]] as DesignSystemToken[]
+  const tokens = registry[PROPERTY_CATEGORY[property]] as DesignSystemToken[]
+  // A negative step exists for pulling a margin in; as a padding or a gap it is
+  // an invalid declaration the browser drops, so those pickers do not offer it.
+  if (NO_NEGATIVE.test(property)) {
+    return negativeFree(tokens)
+  }
+  return tokens
+}
+
+const NO_NEGATIVE = /^(padding|gap|row-gap|column-gap)/
+const negativeCache = new WeakMap<DesignSystemToken[], DesignSystemToken[]>()
+
+/** The same list without its negative steps, kept per list so a picker's identity holds. */
+function negativeFree(tokens: DesignSystemToken[]): DesignSystemToken[] {
+  const cached = negativeCache.get(tokens)
+  if (cached) return cached
+  const kept = tokens.some((token) => (scalar(token.values.default) ?? 0) < 0)
+    ? tokens.filter((token) => (scalar(token.values.default) ?? 0) >= 0)
+    : tokens
+  negativeCache.set(tokens, kept)
+  return kept
 }
 
 /**
@@ -549,6 +581,68 @@ export function textStyleSignature(value: {
 }
 
 /**
+ * The parts of a text style beyond its four numbers, when the style states
+ * them: a style read from a class carries the whole role, and these are what
+ * tell two roles with the same size, leading, weight and tracking apart.
+ */
+const TEXT_STYLE_EXTRAS = [
+  ["font-family", "fontFamily", null],
+  ["font-style", "fontStyle", "normal"],
+  ["font-variation-settings", "fontVariationSettings", "normal"],
+] as const
+
+/**
+ * The extra declarations a whole-role style writes.
+ *
+ * A style that states any of them is a whole role, and a role does not leave
+ * the last one's italic or axis settings behind: picked after an italic
+ * caption, a headline that says nothing about `font-style` stayed italic, and a
+ * body role's `"wght" 400` overrode the weight of the bold role picked after
+ * it. So the two with a neutral value are reset to it when the role is silent,
+ * marked `reset` so the caller can skip a reset the element does not need. The
+ * family has no neutral value — `inherit` would discard the element's own
+ * classes — so a role that does not name one leaves it alone.
+ */
+function textStyleExtras(shape: Record<string, unknown>): TokenStyleWrite[] {
+  const stated = TEXT_STYLE_EXTRAS.filter(([, key]) => typeof shape[key] === "string" && shape[key])
+  if (!stated.length) return []
+  return TEXT_STYLE_EXTRAS.flatMap(([property, key, neutral]): TokenStyleWrite[] => {
+    const value = shape[key]
+    if (typeof value === "string" && value) return [{ property, value }]
+    return neutral ? [{ property, value: neutral, reset: true }] : []
+  })
+}
+
+/** The family a font stack asks for first, as a comparable name. */
+export function primaryFontFamily(stack: string): string {
+  return (stack.split(",")[0] ?? "").trim().replace(/^["']|["']$/g, "").toLowerCase()
+}
+
+/**
+ * A text style's computed evidence: the signature, then — optionally — the
+ * element's primary family and its font style, `|`-joined after it. The four
+ * leading fields are exactly `textStyleSignature`, so a caller that only has
+ * those still matches as before.
+ */
+function textEvidence(value: string): { signature: string; family: string; style: string } {
+  const parts = value.split("|")
+  return { signature: parts.slice(0, 4).join("|"), family: parts[4] ?? "", style: parts[5] ?? "" }
+}
+
+/**
+ * Whether a candidate style contradicts what the element renders in. Only a
+ * style that STATES a family or a font style can: one that leaves them to
+ * inheritance agrees with any.
+ */
+function contradictsEvidence(token: DesignSystemToken, family: string, style: string): boolean {
+  const shape = token.values.default
+  if (!shape || typeof shape !== "object") return false
+  const { fontFamily, fontStyle } = shape as Record<string, unknown>
+  if (family && typeof fontFamily === "string" && primaryFontFamily(fontFamily) !== family) return true
+  return Boolean(style && typeof fontStyle === "string" && fontStyle.trim().toLowerCase() !== style)
+}
+
+/**
  * A text token as the px signature a computed style can be compared against.
  *
  * The unit is DECLARED by the host, never inferred. This used to read the unit
@@ -658,21 +752,28 @@ export function computedTokenMatches(
   property: DesignTokenProperty,
   computedValue: string,
   registry: DesignSystemCatalog = activeDesignSystem(),
-  resolveCssVar: (name: string) => string = (name) => `var(${name})`
+  resolveCssVar: (name: string) => string = (name) => `var(${name})`,
+  normalizeLiteral: (literal: string) => string = (literal) => literal
 ): DesignSystemMatch[] {
-  const targetNumber = scalar(computedValue)
+  const evidence = property === "text-style" ? textEvidence(computedValue) : null
+  const target = evidence ? evidence.signature : computedValue
+  const targetNumber = scalar(target)
   const trackingUnit = registry.trackingUnit ?? "em"
+  const colors = PROPERTY_CATEGORY[property] === "colors"
   return tokensForProperty(property, registry).flatMap((token) => {
+    if (evidence && contradictsEvidence(token, evidence.family, evidence.style)) return []
+    const literals = rawTokenValues(property, token, trackingUnit)
     const candidates = [
       ...tokenVariables(token).map((name) => resolveCssVar(name)),
-      ...rawTokenValues(property, token, trackingUnit),
+      ...literals,
+      ...(colors ? literals.map(normalizeLiteral) : []),
     ].filter(Boolean)
     const equal = candidates.some((candidate) => {
       const candidateNumber = scalar(candidate)
       if (targetNumber !== null && candidateNumber !== null) {
         return Math.abs(targetNumber - candidateNumber) < 0.01
       }
-      return normalized(candidate) === normalized(computedValue)
+      return normalized(candidate) === normalized(target)
     })
     return equal
       ? [{ token, via: "computed" as const, source: unique(candidates).join(" · "), ambiguous: false }]
@@ -714,19 +815,37 @@ function motionDurationWrites(token: DesignSystemToken): TokenStyleWrite[] {
   return [{ property: "transition-duration", value: `${Math.round(curve.visualDuration * 1000)}ms` }]
 }
 
-export function tokenStyleWrites(property: DesignTokenProperty, token: DesignSystemToken): TokenStyleWrite[] {
-  const variable = token.cssVar ? `var(${token.cssVar})` : null
+/**
+ * The declarations a token writes on this axis; empty when it cannot be written.
+ *
+ * `trackingUnit` is the unit a text style's literal `letterSpacing` is in, which
+ * is the catalog's to say (see `textTokenSignature`). It was always written as
+ * `em`, so a style tracked at `-0.2px` in a px system went out as `-0.2em` —
+ * sixteen times the tracking at a 16px size. A style with a variable for its
+ * tracking writes the variable and is unaffected.
+ */
+export function tokenStyleWrites(
+  property: DesignTokenProperty,
+  token: DesignSystemToken,
+  trackingUnit: TrackingUnit = activeDesignSystem().trackingUnit ?? "em"
+): TokenStyleWrite[] {
   const value = token.values.default
   if (property === "text-style") {
     const shape = value && typeof value === "object" ? (value as Record<string, unknown>) : {}
     const css = token.cssVars ?? {}
-    const write = (name: string, key: string, fallback: string | null) =>
-      css[key] ? { property: name, value: `var(${css[key]})` } : fallback ? { property: name, value: fallback } : null
+    const write = (name: string, key: string, literal: string | null): TokenStyleWrite | null =>
+      css[key]
+        ? { property: name, value: `var(${css[key]})`, ...(literal ? { fallback: literal } : {}) }
+        : literal
+          ? { property: name, value: literal }
+          : null
+    const tracking = scalar(shape.letterSpacing)
     return [
       write("font-size", "fontSize", scalar(shape.fontSize) === null ? null : `${scalar(shape.fontSize)}px`),
       write("line-height", "lineHeight", scalar(shape.lineHeight) === null ? null : `${scalar(shape.lineHeight)}px`),
       write("font-weight", "fontWeight", scalar(shape.fontWeight) === null ? null : String(scalar(shape.fontWeight))),
-      write("letter-spacing", "letterSpacing", scalar(shape.letterSpacing) === null ? null : `${scalar(shape.letterSpacing)}em`),
+      write("letter-spacing", "letterSpacing", tracking === null ? null : `${tracking}${trackingUnit}`),
+      ...textStyleExtras(shape),
     ].filter((entry): entry is TokenStyleWrite => entry !== null)
   }
   if (property === "icon-size") {
@@ -735,12 +854,32 @@ export function tokenStyleWrites(property: DesignTokenProperty, token: DesignSys
   }
   if (property === "motion-duration") return motionDurationWrites(token)
   const category = PROPERTY_CATEGORY[property]
-  let next = variable
-  if (!next && (category === "radii" || category === "spacing")) {
+  let literal: string | null = null
+  if (category === "radii" || category === "spacing") {
     const px = scalar(value)
-    next = px === null ? null : `${px}px`
+    literal = px === null ? null : `${px}px`
   }
-  if (!next && property === "shadow") next = shadowValue(value)
-  if (!next) next = Object.values(token.values).find((entry): entry is string => typeof entry === "string") ?? null
-  return next ? [{ property: CSS_PROPERTY[property], value: next }] : []
+  if (!literal && property === "shadow") literal = shadowValue(value)
+  if (!literal) literal = Object.values(token.values).find((entry): entry is string => typeof entry === "string") ?? null
+  if (!token.cssVar) return literal ? [{ property: CSS_PROPERTY[property], value: literal }] : []
+  const variable = token.cssFunction ? `${token.cssFunction}(var(${token.cssVar}))` : `var(${token.cssVar})`
+  return [{ property: CSS_PROPERTY[property], value: variable, ...(literal ? { fallback: literal } : {}) }]
+}
+
+/**
+ * The value a write lands as on `element`: the variable when the page declares
+ * it, else the variable with the token's literal as its fallback.
+ *
+ * A library's tokens are variables its own stylesheet declares, and the app it
+ * is tried on usually does not load that stylesheet. Written bare, a picked
+ * radius was `border-radius: var(--x-corner-small)` in a page with no such
+ * variable — the button went square instead of to 8px, while the picker said
+ * the radius was applied. With the fallback the pick paints the token's value,
+ * still names the token, and follows the variable the moment the page declares
+ * it.
+ */
+export function landedValue(write: TokenStyleWrite, computed: CSSStyleDeclaration): string {
+  const name = extractCssVarNames(write.value)[0]
+  if (!write.fallback || !name || computed.getPropertyValue(name).trim()) return write.value
+  return `var(${name}, ${write.fallback})`
 }

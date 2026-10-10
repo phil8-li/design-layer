@@ -155,6 +155,31 @@ await withProject("a CSS file becomes a library with its tokens counted", async 
   assert.deepEqual(libraries.map((entry) => entry.id), ["src-styles-theme-css"])
 })
 
+/*
+ * A design system's published entry is often nothing but `@import`s over its
+ * parts. Read alone it declares no custom properties, and the library was
+ * refused as "carries no tokens" with the tokens one file away. Imports are
+ * followed one level, inside the project, and editing an imported file is
+ * picked up like editing the entry.
+ */
+await withProject("a stylesheet that imports its parts is read with them", async ({ store, write }) => {
+  await write(
+    "vendor/kit/index.css",
+    '@import "./colors.css";\n@import url("./scale.css");\n@import "../../../outside.css";\n'
+  )
+  await write("vendor/kit/colors.css", ":root { --kit-color-ink: #101010; --kit-color-page: #ffffff; }\n")
+  await write("vendor/kit/scale.css", ":root { --kit-space-sm: 8px; --kit-space-md: 16px; }\n")
+
+  const { library } = await store.add({ path: "vendor/kit/index.css" })
+  assert.equal(library.error, undefined, library.error)
+  assert.equal(library.counts.colors, 2)
+  assert.equal(library.counts.spacing, 2)
+
+  await write("vendor/kit/scale.css", ":root { --kit-space-sm: 8px; --kit-space-md: 16px; --kit-space-lg: 24px; }\n")
+  const [listed] = (await store.list()).libraries
+  assert.equal(listed.counts.spacing, 3, "an edit to an imported file was not picked up")
+})
+
 await withProject("enabled is a flag the store remembers, both ways", async ({ store }) => {
   const { library } = await store.add({ path: "src/styles/theme.css" })
   const off = await store.update(library.id, { enabled: false })

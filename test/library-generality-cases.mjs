@@ -313,7 +313,7 @@ check("no file under server/ or src/ names a design system's vocabulary", () => 
 })
 
 /* ------------------------------------------------------------------------- */
-/* Four house styles, one parser                                              */
+/* Seven house styles, one parser                                             */
 /* ------------------------------------------------------------------------- */
 
 /**
@@ -388,17 +388,76 @@ const ALIAS_HEAVY = `
 }
 `
 
+/**
+ * (e) Camel humps inside a segment. The type word is still there, glued to its
+ * neighbour (`borderRadius`, `stackGap`), and a classifier that splits on
+ * hyphens alone read a whole corner scale as spacing.
+ */
+const CAMEL_CASED = `
+:root {
+  --fgColor-default: #1f2328;
+  --bgColor-muted: #f6f8fa;
+  --borderRadius-small: 3px;
+  --borderRadius-medium: 6px;
+  --stackGap-condensed: 8px;
+  --stackGap-normal: 16px;
+  --boxShadow-resting: 0 1px 1px #1f23280f;
+  --motionDuration-fast: 80ms;
+}
+`
+
+/**
+ * (f) A doubled hyphen as the separator between every segment. It looks like a
+ * fragment of something else, and skipping it read a system written this way
+ * as having no tokens at all.
+ */
+const DOUBLE_HYPHENED = `
+:root {
+  --acme-t--color--surface--default: #ffffff;
+  --acme-t--color--text--default: #151515;
+  --acme-t--spacer--sm: 8px;
+  --acme-t--spacer--md: 16px;
+  --acme-t--border--radius--small: 6px;
+  --acme-t--box-shadow--md: 0 4px 8px 0 rgba(0, 0, 0, 0.15);
+  --acme-t--duration--short: 100ms;
+}
+`
+
+/**
+ * (g) Every name one camel-cased run, with no hyphen at all. The type word is
+ * found the same way as in (e), but nothing follows its segment, so a cut made
+ * only at hyphens named every token by its whole name.
+ */
+const CAMEL_RUN = `
+:root {
+  --colorTextDefault: #1f2328;
+  --colorSurfaceRaised: #ffffff;
+  --borderRadiusSmall: 2px;
+  --borderRadiusMedium: 4px;
+  --spacingInlineS: 8px;
+  --spacingInlineM: 12px;
+  --shadow4: 0 0 2px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.14);
+  --durationFast: 150ms;
+}
+`
+
 const HOUSE_STYLES = [
   { label: "prefix-typed", css: PREFIX_TYPED },
   { label: "mid-name-typed", css: MID_NAME_TYPED },
   { label: "untyped", css: UNTYPED },
   { label: "alias-heavy", css: ALIAS_HEAVY },
+  { label: "camel-cased", css: CAMEL_CASED },
+  { label: "double-hyphened", css: DOUBLE_HYPHENED },
+  { label: "camel-run", css: CAMEL_RUN },
 ]
 
 const prefixTyped = parseLibrary("css", PREFIX_TYPED, { name: "Prefix" })
 const midNameTyped = parseLibrary("css", MID_NAME_TYPED, { name: "Midname" })
 const untyped = parseLibrary("css", UNTYPED, { name: "Untyped" })
 const aliasHeavy = parseLibrary("css", ALIAS_HEAVY, { name: "Aliased" })
+const camelCased = parseLibrary("css", CAMEL_CASED, { name: "Camel" })
+const doubleHyphened = parseLibrary("css", DOUBLE_HYPHENED, { name: "Doubled" })
+const camelRun = parseLibrary("css", CAMEL_RUN, { name: "Run" })
 
 /** Every token in a catalog, whichever group it landed in. */
 const allTokens = (catalog) => [
@@ -415,7 +474,7 @@ const allTokens = (catalog) => [
 const byVar = (group, cssVar) => group.find((token) => token.cssVar === cssVar) ?? null
 const declarationCount = (css) => css.match(/--[a-zA-Z0-9_-]+\s*:/g).length
 
-console.log("\nFour house styles, none of them privileged")
+console.log("\nSeven house styles, none of them privileged")
 
 check("(a) the type word leads, and every axis is found", () => {
   assert.deepEqual(
@@ -531,6 +590,33 @@ check("(d) an aliased token is named and identified like any other", () => {
   assert.deepEqual(accent.values, { light: "#2f6bff" })
 })
 
+check("(e) a type word glued to its neighbour by a camel hump still decides the group", () => {
+  assert.deepEqual(camelCased.radii.map((token) => token.name), ["small", "medium"])
+  assert.deepEqual(camelCased.spacing.map((token) => token.name), ["condensed", "normal"])
+  assert.deepEqual(camelCased.colors.map((token) => token.name), ["default", "muted"])
+  assert.deepEqual(camelCased.effects.map((token) => token.cssVar), ["--boxShadow-resting"])
+  assert.deepEqual(camelCased.motion.map((token) => token.cssVar), ["--motionDuration-fast"])
+  // The name a designer reads is cut out of the name as written.
+  assert.equal(byVar(camelCased.radii, "--borderRadius-medium").values.default, 6)
+})
+
+check("(f) a doubled hyphen is a separator, and its segments name the token", () => {
+  assert.deepEqual(doubleHyphened.colors.map((token) => token.name), ["surface-default", "text-default"])
+  assert.deepEqual(doubleHyphened.spacing.map((token) => token.name), ["sm", "md"])
+  assert.deepEqual(doubleHyphened.radii.map((token) => token.name), ["small"])
+  assert.deepEqual(doubleHyphened.effects.map((token) => token.name), ["md"])
+  assert.equal(byVar(doubleHyphened.motion, "--acme-t--duration--short").values.default.visualDuration, 0.1)
+})
+
+check("(g) a name with no hyphen is cut at the hump after its type word", () => {
+  assert.deepEqual(camelRun.colors.map((token) => token.name), ["textDefault", "surfaceRaised"])
+  assert.deepEqual(camelRun.radii.map((token) => token.name), ["small", "medium"])
+  assert.deepEqual(camelRun.spacing.map((token) => token.name), ["inlineS", "inlineM"])
+  assert.deepEqual(camelRun.effects.map((token) => token.name), ["4"])
+  assert.deepEqual(camelRun.motion.map((token) => token.name), ["fast"])
+  assert.equal(byVar(camelRun.radii, "--borderRadiusMedium").id, "radius:medium")
+})
+
 /*
  * The comparative claim, which is the whole point of the group.
  *
@@ -541,7 +627,7 @@ check("(d) an aliased token is named and identified like any other", () => {
  * a count that no longer matches, in whichever sheet lost tokens — which is a
  * failing number rather than a picker somebody has to open and squint at.
  */
-check("all four conventions are read, and none of them loses tokens the others keep", () => {
+check("all seven conventions are read, and none of them loses tokens the others keep", () => {
   const read = HOUSE_STYLES.map(({ label, css }) => {
     const catalog = parseLibrary("css", css, { name: label })
     return { label, declared: declarationCount(css), found: allTokens(catalog).length }
@@ -561,6 +647,9 @@ check("every convention fills more than one axis, so no picker is empty", () => 
     ["mid-name-typed", midNameTyped],
     ["untyped", untyped],
     ["alias-heavy", aliasHeavy],
+    ["camel-cased", camelCased],
+    ["double-hyphened", doubleHyphened],
+    ["camel-run", camelRun],
   ]) {
     const populated = ["colors", "spacing", "radii", "effects", "motion"].filter(
       (group) => catalog[group].length > 0

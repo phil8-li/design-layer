@@ -106,7 +106,19 @@ const KEYWORDS: Record<string, Record<string, string>> = {
     "800": "font-extrabold",
     "900": "font-black",
   },
+  "font-style": {
+    italic: "italic",
+    normal: "not-italic",
+  },
 }
+
+/**
+ * Properties Tailwind has no utility for, written as an arbitrary-property
+ * class (`[font-variation-settings:'wdth'_92]`). A text style read from a
+ * stylesheet carries its variable-font axes, and without this every pick of
+ * one reported its axes as preview only.
+ */
+const ARBITRARY_PROPERTIES = new Set(["font-variation-settings", "font-feature-settings"])
 
 const FONT_WEIGHT_PATTERN =
   "^font-(thin|extralight|light|normal|medium|semibold|bold|extrabold|black|\\[(?:[1-9]\\d{0,2}|1000|number:var\\(--[\\w-]+\\))\\])$"
@@ -201,9 +213,13 @@ function colorClass(stem: string): string {
   return `^${stem}-(\\[(#|rgb|hsl|oklch|var).*\\]|${colorWords()})$`
 }
 
-/** Tailwind arbitrary values may not contain spaces; underscores stand in. */
+/**
+ * Tailwind arbitrary values may not contain spaces; underscores stand in. Nor
+ * may they carry a double quote, which would end the `className="…"` it is
+ * written into: CSS reads a single-quoted family name or axis tag the same.
+ */
 function toArbitrary(value: string): string {
-  return value.trim().replace(/\s+/g, "_")
+  return value.trim().replace(/\s+/g, "_").replace(/"/g, "'")
 }
 
 /** Resolves a px length onto the spacing scale when it lands exactly on a step. */
@@ -227,6 +243,17 @@ export function propertyKey(property: string): string {
 export function toClassUpdate(property: string, rawValue: string): ClassUpdate | null {
   const value = rawValue.trim()
   if (!value) return null
+
+  if (ARBITRARY_PROPERTIES.has(property)) {
+    const className = `[${property}:${toArbitrary(value)}]`
+    return {
+      tailwindPrefix: className,
+      tailwindToken: className,
+      value: className,
+      standalone: true,
+      classPattern: `^\\[${property}:.+\\]$`,
+    }
+  }
 
   const keywords = KEYWORDS[property]
   if (keywords) {

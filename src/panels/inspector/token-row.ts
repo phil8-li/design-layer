@@ -60,8 +60,10 @@ import type { DesignSystemToken } from "../../core/config"
 import {
   authoredTokenMatches,
   computedTokenMatches,
+  landedValue,
   normalizedCssValue,
   plainValue,
+  primaryFontFamily,
   textStyleSignature,
   tokenCssProperty,
   tokenDetail,
@@ -254,10 +256,20 @@ function matchFor(spec: RowSpec): DesignSystemMatch[] {
   // token listed as an option while the closed field, sitting on exactly its
   // value through a plain class or Angular CSS, read back as a raw colour.
   const style = getComputedStyle(spec.target.element)
-  return computedTokenMatches(spec.property, reportedValue(spec), activeDesignSystem(), (variable) => {
-    const raw = style.getPropertyValue(variable).trim()
-    return raw ? normalizedCssValue(spec.property, raw) : ""
-  })
+  return computedTokenMatches(
+    spec.property,
+    reportedValue(spec),
+    activeDesignSystem(),
+    (variable) => {
+      const raw = style.getPropertyValue(variable).trim()
+      return raw ? normalizedCssValue(spec.property, raw) : ""
+    },
+    // A token's own literal, spelled the way the browser computes it: a
+    // library's `#9dd2ff` against a computed `rgb(157, 210, 255)` never matched,
+    // so an element painted with a library colour in a page that does not
+    // declare the library's variables read back as a bare hex.
+    (literal) => normalizedCssValue(spec.property, literal)
+  )
 }
 
 /** A token's own preview, in the one shape the picker knows how to draw. */
@@ -355,7 +367,13 @@ function build(context: SectionContext, spec: RowSpec, hidePreview = false): Bui
       const token = tokens.find((entry) => entry.id === id)
       const styles = writes.get(id)
       if (!token || !styles?.length) return
-      context.writer.applyStyles(spec.target, styles, `Apply ${tokenDisplayName(token)}`)
+      // A reset the element already satisfies is left out, so picking a role
+      // on plain text does not write `font-style: normal` into its source.
+      const computed = getComputedStyle(spec.target.element)
+      const needed = styles
+        .filter((write) => !write.reset || computed.getPropertyValue(write.property).trim() !== write.value)
+        .map((write) => ({ property: write.property, value: landedValue(write, computed) }))
+      context.writer.applyStyles(spec.target, needed, `Apply ${tokenDisplayName(token)}`)
       context.invalidate()
     },
     // The one declaration this axis owns, written straight. The Tailwind layer
@@ -542,12 +560,18 @@ export function textStyleEvidence(
     inlineValue: ["font-size", "line-height", "font-weight", "letter-spacing"]
       .map((property) => (element as HTMLElement).style.getPropertyValue(property))
       .join(" "),
-    computedValue: textStyleSignature({
-      fontSize: number(computed.fontSize),
-      lineHeight: number(computed.lineHeight),
-      fontWeight: number(computed.fontWeight),
-      letterSpacing: Number.isFinite(letterSpacing) ? letterSpacing : 0,
-    }),
+    // The family and style ride after the signature: they are what separate
+    // two styles sharing all four numbers, such as a body and a code style.
+    computedValue: [
+      textStyleSignature({
+        fontSize: number(computed.fontSize),
+        lineHeight: number(computed.lineHeight),
+        fontWeight: number(computed.fontWeight),
+        letterSpacing: Number.isFinite(letterSpacing) ? letterSpacing : 0,
+      }),
+      primaryFontFamily(computed.fontFamily ?? ""),
+      (computed.fontStyle ?? "").trim().toLowerCase(),
+    ].join("|"),
   }
 }
 

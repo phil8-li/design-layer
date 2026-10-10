@@ -52,8 +52,10 @@ import { createHash } from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
 
+import { importedStylesheets } from "./design-system-detect.mjs"
 import { looksLikeComponentLibrary, scanComponentLibrary } from "./library-components.mjs"
 import {
+  CATALOG_READER_VERSION,
   LIBRARY_SOURCE_KINDS,
   describeLibrary,
   detectLibraryKind,
@@ -65,6 +67,8 @@ import { URL_SOURCE_KIND, isLibraryUrl, libraryNameFromUrl, parseUrlLibrary } fr
 
 /** A ceiling on the panel rather than a product limit: twenty cards is already a scroll. */
 const MAX_LIBRARIES = 20
+/** How long a list waits for an out-of-date URL catalog to be re-read before answering. */
+const REREAD_WAIT_MS = 6000
 const MAX_NAME = 120
 const MAX_PATH = 400
 /**
@@ -466,6 +470,9 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
             catalog: isPlainObject(value.catalog) ? value.catalog : null,
             detail: typeof value.detail === "string" ? value.detail : "",
             error: typeof value.error === "string" ? value.error : "",
+            // Which reading rules produced `catalog`. No stamp means the row was
+            // cached before there were stamps — see `CATALOG_READER_VERSION`.
+            reader: Number.isFinite(value.reader) ? value.reader : 1,
           }
         : {}),
     }
@@ -530,14 +537,60 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
       throw new Error(`${source.path} is too large to read as a design system`)
     }
     // The same file under the same kind and name parses to the same catalog
-    // until its stat changes, and `list()` runs on every panel repaint. Callers
-    // copy what they hand out (`libraryView`), so sharing the object is safe.
+    // until its stat changes — or the stat of a stylesheet it imports — and
+    // `list()` runs on every panel repaint. Callers copy what they hand out
+    // (`libraryView`), so sharing the object is safe.
     const key = `${source.kind}\0${absolute}\0${fallbackName}`
     const cached = parsedCatalogs.get(key)
-    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.catalog
-    const catalog = parseLibrary(source.kind, await fs.readFile(absolute, "utf8"), { name: fallbackName })
-    parsedCatalogs.set(key, { mtimeMs: stat.mtimeMs, size: stat.size, catalog })
+    if (cached && cached.stamp === (await stampOf([absolute, ...cached.imports]))) return cached.catalog
+    let text = await fs.readFile(absolute, "utf8")
+    let imports = []
+    if (source.kind === "css") {
+      const parts = await importedInProject(absolute, text)
+      imports = parts.map((part) => part.absolute)
+      // Imports first, which is where the cascade puts them: a name the file
+      // itself redeclares is the file's.
+      text = [...parts.map((part) => part.text), text].join("\n")
+    }
+    const catalog = parseLibrary(source.kind, text, { name: fallbackName })
+    parsedCatalogs.set(key, { stamp: await stampOf([absolute, ...imports]), imports, catalog })
     return catalog
+  }
+
+  /** `mtimeMs:size` for every path, so a change to any of them is a new stamp. */
+  async function stampOf(paths) {
+    const parts = await Promise.all(
+      paths.map((file) =>
+        fs.stat(file).then(
+          (stat) => `${stat.mtimeMs}:${stat.size}`,
+          () => "missing"
+        )
+      )
+    )
+    return parts.join("|")
+  }
+
+  /**
+   * The stylesheets a library stylesheet `@import`s, one level down, kept to
+   * this project.
+   *
+   * A design system's published entry is often nothing but imports — an
+   * `index.css` over its global, colour and scale files — and read alone it
+   * declared no custom properties: the library was refused as "carries no
+   * tokens" while the tokens sat one file away. The same rule the host's own
+   * detection follows (`importedStylesheets`), plus the symlink check every
+   * other path here goes through, because an import is a path too.
+   */
+  async function importedInProject(absolute, text) {
+    const realRoot = (await canonical(projectRoot)) ?? projectRoot
+    const parts = importedStylesheets(absolute, text, projectRoot)
+    const kept = []
+    for (const part of parts) {
+      const real = await canonical(part.absolute)
+      const contained = real === null ? null : path.relative(realRoot, real)
+      if (contained && !contained.startsWith("..") && !path.isAbsolute(contained)) kept.push(part)
+    }
+    return kept
   }
 
   /** `kind\0absolute\0name` -> `{ mtimeMs, size, catalog }`; see `readCatalog`. */
@@ -641,6 +694,53 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
   }
 
   /**
+   * Re-reading a URL catalog that older reading rules produced.
+   *
+   * Re-pasting the link already re-reads it (see `addUrl`), but nobody re-pastes
+   * a link that looks fine, and a wrong reading usually does: an icon scale
+   * listed as text styles is a full, plausible picker. So `list()` does it for
+   * them, once per process per row — a site that is down or walled is not asked
+   * again on every repaint, and keeps the reading it had, exactly as a failed
+   * re-paste does. Only enabled rows: a switched-off library's tokens are in no
+   * picker, and its first list after being switched on catches it.
+   */
+  const rereads = new Map()
+
+  function readByOlderRules(entry) {
+    return (
+      entry.source.kind === URL_SOURCE_KIND &&
+      entry.enabled &&
+      isPlainObject(entry.catalog) &&
+      (entry.reader ?? 1) < CATALOG_READER_VERSION
+    )
+  }
+
+  function reread(entry) {
+    const pending = rereads.get(entry.id)
+    if (pending) return pending
+    const run = fetchUrlCatalog(entry.source.path, entry.name)
+      .then((fresh) => {
+        if (fresh.auth || fresh.error) return
+        return serial(async () => {
+          const entries = await readEntries()
+          const index = entries.findIndex((row) => row.id === entry.id)
+          if (index === -1) return
+          entries[index] = {
+            ...entries[index],
+            catalog: fresh.catalog,
+            detail: fresh.detail,
+            error: "",
+            reader: CATALOG_READER_VERSION,
+          }
+          await writeEntries(entries)
+        })
+      })
+      .catch(() => undefined)
+    rereads.set(entry.id, run)
+    return run
+  }
+
+  /**
    * A URL's library id: the same slug every other source gets, cut to the
    * ceiling `LIBRARY_ID_PATTERN` enforces.
    *
@@ -725,7 +825,13 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
         const entries = await readEntries()
         const index = entries.findIndex((entry) => entry.id === installed.id)
         if (index === -1) return { library: await loadLibrary(installed) }
-        const entry = { ...entries[index], catalog: fresh.catalog, detail: fresh.detail, error: "" }
+        const entry = {
+          ...entries[index],
+          catalog: fresh.catalog,
+          detail: fresh.detail,
+          error: "",
+          reader: CATALOG_READER_VERSION,
+        }
         entries[index] = entry
         await writeEntries(entries)
         return { library: await loadLibrary(entry) }
@@ -794,6 +900,7 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
         catalog: fetched.catalog,
         detail: fetched.detail,
         error: fetched.error,
+        reader: CATALOG_READER_VERSION,
       }
       await writeEntries([...entries, entry])
       return { library: await loadLibrary(entry) }
@@ -829,7 +936,14 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
     if (stat.size > MAX_SOURCE_BYTES) {
       throw badRequest(`"${source.relative}" is too large to read as a design system`)
     }
-    const detected = detectLibraryKind(source.relative, await fs.readFile(source.absolute, "utf8"))
+    let text = await fs.readFile(source.absolute, "utf8")
+    // Judged with its imports, as it will be read: an entry made of nothing but
+    // `@import`s carries its tokens in the files it names.
+    if (/\.s?css$/i.test(source.relative)) {
+      const parts = await importedInProject(source.absolute, text)
+      text = [...parts.map((part) => part.text), text].join("\n")
+    }
+    const detected = detectLibraryKind(source.relative, text)
     if (!detected) {
       throw badRequest(
         `"${source.relative}" is not a design system this editor recognises. It reads one of: ` +
@@ -866,6 +980,11 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
         const stat = await fs.stat(absolute)
         if (!stat.isFile() || stat.size > MAX_SOURCE_BYTES) return null
         text = await fs.readFile(absolute, "utf8")
+        // Offered as it would be read once added: with what it imports.
+        if (extension === ".css" && /@import\b/.test(text)) {
+          const parts = await importedInProject(absolute, text)
+          text = [...parts.map((part) => part.text), text].join("\n")
+        }
       } catch {
         return null
       }
@@ -1052,7 +1171,27 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
           if (kept.length !== current.length) await writeEntries(kept)
         })
       }
-      const live = entries.filter((entry) => !isWalledEntry(entry))
+      let live = entries.filter((entry) => !isWalledEntry(entry))
+      /*
+       * Waited for, up to a bound. The list this answers is the one the pickers
+       * are built from, so answering before the re-read lands would show the old
+       * reading for the whole of the first session after an upgrade. A site
+       * slower than the bound is answered with what is cached, and the re-read
+       * still lands for the next list.
+       */
+      const stale = live.filter(readByOlderRules)
+      if (stale.length) {
+        let timer = null
+        await Promise.race([
+          Promise.all(stale.map(reread)),
+          new Promise((resolve) => {
+            timer = setTimeout(resolve, REREAD_WAIT_MS)
+            timer.unref?.()
+          }),
+        ])
+        clearTimeout(timer)
+        live = (await serial(readEntries)).filter((entry) => !isWalledEntry(entry))
+      }
       return { libraries: await Promise.all(live.map(loadLibrary)) }
     },
 
@@ -1163,6 +1302,7 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
           entry.catalog = refreshed.catalog
           entry.detail = refreshed.detail
           entry.error = refreshed.error
+          entry.reader = CATALOG_READER_VERSION
         }
 
         entries[index] = entry

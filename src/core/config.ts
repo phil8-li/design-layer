@@ -41,6 +41,12 @@ export interface DesignSystemToken {
   cssVar?: string
   cssVars?: Record<string, string>
   cssUtility?: string
+  /**
+   * The colour function `cssVar` is an argument list of, when the variable
+   * holds bare channels (`0 0% 100%`) rather than a colour: a write wraps the
+   * variable in it, because the bare variable paints nothing.
+   */
+  cssFunction?: string
   scope?: string[]
   codeSyntax?: Record<string, unknown> | null
   usage?: string
