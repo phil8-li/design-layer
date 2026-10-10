@@ -14,7 +14,7 @@ import { createAgent } from "./agent.mjs"
 import { createAngularSource } from "./angular-source.mjs"
 import { createAppSwitcher } from "./apps.mjs"
 import { createComponentUsage } from "./component-usage.mjs"
-import { handoffQueue } from "./handoff.mjs"
+import { mcpControl } from "./mcp-control.mjs"
 import { createControlDefaults } from "./control-defaults.mjs"
 import { createDesignLint } from "./design-lint.mjs"
 import { createIconSet } from "./icon-set.mjs"
@@ -619,29 +619,29 @@ async function route(store, defaults, agent, icons, libraries, auth, signin, lin
    * designer's agent at the FIRST editor's project.
    */
   if (rest === "/mcp/status" && req.method === "GET") {
-    const queue = handoffQueue()
-    // Passed in rather than read off a `config` in scope: this function takes
-    // its dependencies as arguments, and the free reference this replaces threw
-    // a ReferenceError on every call — the route answered 500 for its whole
-    // life, so the panel could only ever report the endpoint as unreachable.
-    const port = queue.endpointListening ? (mcpPort ?? null) : null
-    sendJson(res, 200, {
-      url: port ? `http://127.0.0.1:${port}/mcp` : null,
-      port,
-      // THREE facts, not one, because they fail independently and a designer
-      // needs to know which one is missing.
-      //
-      // `listening` is our own port: false means nothing can ever connect, and
-      // the address is not worth copying. `agents` is how many have actually
-      // completed an MCP handshake — the fact the panel used to get wrong, by
-      // reading `listening` and calling it "connected", which was true from
-      // startup and told every user they were set up when they were not.
-      // `waiting` is how many are parked in `wait_for_change` right now.
-      listening: queue.endpointListening,
-      agents: queue.attachedAgents ?? 0,
-      waiting: queue.waiting,
-      pending: queue.list("pending").length,
-    })
+    // `mcpPort` is passed in rather than read off a `config` in scope: this
+    // function takes its dependencies as arguments, and the free reference it
+    // replaces threw a ReferenceError on every call — the route answered 500
+    // for its whole life, so the panel could only ever report it unreachable.
+    //
+    // THREE facts, not one, because they fail independently and a designer
+    // needs to know which one is missing. `listening` is the endpoint's port:
+    // false means nothing can ever connect, and the address is not worth
+    // copying. `agents` is how many have actually completed an MCP handshake —
+    // the fact the panel used to get wrong, by reading `listening` and calling
+    // it "connected", which was true from startup and told every user they
+    // were set up when they were not. `waiting` is how many are parked in
+    // `wait_for_change` right now. `stay` says whether the start screen serves
+    // the endpoint, and `canStay` whether this editor has one to ask.
+    sendJson(res, 200, await mcpControl().status(mcpPort ?? null))
+    return
+  }
+
+  // "Stay on between apps": move the endpoint to the start screen, or back.
+  if (rest === "/mcp/stay" && req.method === "POST") {
+    const body = (await readJsonBody(req)) ?? {}
+    await mcpControl().setStay(body.on === true)
+    sendJson(res, 200, await mcpControl().status(mcpPort ?? null))
     return
   }
 

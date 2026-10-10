@@ -32,7 +32,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 
-import { handoffQueue } from "./handoff.mjs"
+import { mcpControl } from "./mcp-control.mjs"
 
 /**
  * The selected element, in the host's own vocabulary.
@@ -85,7 +85,6 @@ function slugify(value) {
 }
 
 async function writeHandoff(config, prompt, request) {
-  const queue = handoffQueue()
   const requestsDir = path.join(config.stateDir, "requests")
   await fs.mkdir(requestsDir, { recursive: true })
   const stamp = new Date().toISOString().replace(/[:.]/g, "-")
@@ -119,38 +118,30 @@ async function writeHandoff(config, prompt, request) {
   await fs.writeFile(file, body, "utf8")
   const handoffPath = path.relative(config.projectRoot, file)
 
-  // Read BEFORE the push: pushing wakes every waiter, so asking afterwards
-  // always reports zero and the message could never say an agent was there.
-  const waiting = queue.waiting
-  const listening = queue.endpointListening
-
   // The queue is in-memory and the push is the optional half of the handoff: a
-  // failure here must not cost the designer the brief already written to disk.
-  let delivered = null
-  try {
-    delivered = queue.push({
-      // "prompts" is the only surface that files these, and saying so is not a
-      // formality: it tells the agent the intent is already written in `brief`
-      // rather than something it has to ask about. Anything else reaching this
-      // route is a bare POST with no outbox behind it, and `handoffQueue` calls
-      // that "unknown" — which is the true answer, and better than inheriting
-      // the name of a panel that no longer exists.
-      origin: request?.origin === "prompts" ? "prompts" : undefined,
-      prompt,
-      brief: typeof request?.brief === "string" ? request.brief : "",
-      // Built by the browser, which owns the prefix. A bare POST without one
-      // gets no new session: there is no outbox behind it to open one for.
-      sessionPrompt: typeof request?.sessionPrompt === "string" ? request.sessionPrompt : "",
-      url: request?.url ?? null,
-      framework: config.host?.framework ?? "react",
-      selection: request?.selection ?? null,
-      ancestry: Array.isArray(request?.ancestry) ? request.ancestry : [],
-      files: filesIn(request),
-      handoffPath,
-    })
-  } catch {
-    delivered = null
-  }
+  // failure there must not cost the designer the brief already written to disk.
+  // Whichever process serves MCP holds the queue — this editor, or the start
+  // screen when MCP stays on between apps — and `deliver` asks the right one.
+  const { delivered, waiting, listening } = await mcpControl().deliver({
+    // "prompts" is the only surface that files these, and saying so is not a
+    // formality: it tells the agent the intent is already written in `brief`
+    // rather than something it has to ask about. Anything else reaching this
+    // route is a bare POST with no outbox behind it, and `handoffQueue` calls
+    // that "unknown" — which is the true answer, and better than inheriting
+    // the name of a panel that no longer exists.
+    origin: request?.origin === "prompts" ? "prompts" : undefined,
+    prompt,
+    brief: typeof request?.brief === "string" ? request.brief : "",
+    // Built by the browser, which owns the prefix. A bare POST without one
+    // gets no new session: there is no outbox behind it to open one for.
+    sessionPrompt: typeof request?.sessionPrompt === "string" ? request.sessionPrompt : "",
+    url: request?.url ?? null,
+    framework: config.host?.framework ?? "react",
+    selection: request?.selection ?? null,
+    ancestry: Array.isArray(request?.ancestry) ? request.ancestry : [],
+    files: filesIn(request),
+    handoffPath,
+  })
 
   return {
     ok: true,

@@ -201,6 +201,41 @@ await check("resolving an unknown id reports rather than throws", () => {
   assert.equal(queue.get("chg-nope"), null)
 })
 
+await check("a parked wait ends empty on release, so the agent reads a timeout", async () => {
+  const q = createHandoffQueue()
+  const parked = q.wait({ timeoutMs: 10_000, batchMs: 0 })
+  q.release()
+  assert.deepEqual(await parked, [])
+  assert.equal(q.waiting, 0)
+})
+
+await check("a wait asked for while the endpoint moves answers at once, until it listens again", async () => {
+  const q = createHandoffQueue()
+  q.push({ prompt: "moving with the port" })
+  q.release()
+  let start = Date.now()
+  // Empty even with a change pending: that change goes to the other process,
+  // and handing it out here as well would deliver it twice.
+  assert.deepEqual(await q.wait({ timeoutMs: 10_000 }), [])
+  assert.ok(since(start) < 1000, "a wait during the move parked on a closing server")
+  q.clear()
+  q.markEndpointListening()
+  start = Date.now()
+  assert.deepEqual(await q.wait({ timeoutMs: 80 }), [])
+  assert.ok(since(start) >= 60, "listening again, a wait should wait")
+})
+
+await check("adopted changes keep their ids, so an agent can still resolve them", () => {
+  const from = createHandoffQueue()
+  const entry = from.push({ prompt: "move me", brief: "b" })
+  const to = createHandoffQueue()
+  to.adopt(from.pending())
+  from.remove([entry.id])
+  assert.equal(from.pending().length, 0)
+  assert.equal(to.get(entry.id)?.brief, "b")
+  assert.ok(to.resolve(entry.id), "the id the agent was handed resolves on the new side")
+})
+
 await check("handoffQueue() is one queue, not one per caller", () => {
   assert.equal(handoffQueue(), handoffQueue(), "two queues means the button fills one and the agent reads the other")
 })
@@ -631,15 +666,21 @@ await check("an unsupported MCP-Protocol-Version is a 400", async () => {
   assert.equal(absent.status, 200, "an absent header means the default version, which is supported")
 })
 
-await check("a session id this server never issued is a 404", async () => {
+await check("a session id this process never issued is adopted, so a restart keeps the agent", async () => {
   const response = await rpc(
     { jsonrpc: "2.0", id: 43, method: "tools/list" },
     { headers: { "mcp-session-id": "00000000-0000-4000-8000-000000000000" } }
   )
-  // 404 is the signal that tells a client to re-initialize. Answering 200 left
-  // a client reconnecting after an editor restart talking to a session that
-  // does not exist, and never finding out.
-  assert.equal(response.status, 404)
+  // It used to be a 404. A client in daily use marked the server failed on it
+  // and dropped the tools until restarted — after every editor restart, and
+  // every time the endpoint moved to or from the start screen.
+  assert.equal(response.status, 200)
+  assert.ok(response.body.result.tools.length > 0)
+  const garbage = await rpc(
+    { jsonrpc: "2.0", id: 43, method: "tools/list" },
+    { headers: { "mcp-session-id": "has spaces in it" } }
+  )
+  assert.equal(garbage.status, 404, "an id outside the spec's alphabet is not one")
 })
 
 await check("a terminated session stops working", async () => {

@@ -349,7 +349,9 @@ async function supervise(options) {
   // would otherwise parse before binding anything, for a screen only this
   // role serves.
   const { createStartScreen } = await import("./runtime/start-screen.mjs")
-  const screen = await createStartScreen({ port: options.startScreenPort })
+  // `mcp: {}` lets this screen serve MCP between apps when the designer turns
+  // that on. It is the only screen that outlives its editors.
+  const screen = await createStartScreen({ port: options.startScreenPort, mcp: {} })
   holdUntilExit(screen.close)
 
   let running = null
@@ -430,7 +432,11 @@ function startEditor(options, choice, screen) {
     // fourth stream is the IPC channel `onReady` answers on.
     stdio: ["inherit", "inherit", "inherit", "ipc"],
     // Deliberately no `cwd`. See `--project-root`.
-    env: { ...process.env, DESIGNLAYER_CHOOSER_URL: screen.url },
+    env: {
+      ...process.env,
+      DESIGNLAYER_CHOOSER_URL: screen.url,
+      ...(screen.mcpToken ? { DESIGNLAYER_MCP_TOKEN: screen.mcpToken } : {}),
+    },
   })
 
   const running = { child, replaced: false }

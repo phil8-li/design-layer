@@ -799,6 +799,56 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
     [mcpMark.node, "Copy"]
   )
 
+  /*
+   * STAY ON BETWEEN APPS, optional and off by default.
+   *
+   * The editor serves MCP itself, so switching or restarting apps shuts the
+   * port for a few seconds, and some agents drop the server's tools after one
+   * failed call. On, the start screen serves the same address and keeps it up
+   * while editors come and go. The row exists only when a start screen is
+   * behind this editor: anywhere else the switch could do nothing.
+   *
+   * The same row as every setting below it, in the section it governs — no
+   * heading, no sentence under it. The hint rides on the label's hover.
+   */
+  const STAY_HINT = "Your agent stays connected when you switch or restart apps."
+  let staySwitching = false
+  const stay = switchRow("Stay on between apps", STAY_HINT, (value) => void setStay(value))
+  stay.row.hidden = true
+
+  /**
+   * Flips at once and settles on the server's answer. The switch is held while
+   * the endpoint moves, so a second press cannot start a second move.
+   */
+  async function setStay(on: boolean): Promise<void> {
+    if (staySwitching) return
+    staySwitching = true
+    stay.toggle.setAttribute("aria-checked", String(on))
+    stay.toggle.disabled = true
+    try {
+      const response = await fetch(`${editor.apiBase}/mcp/stay`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ on }),
+      })
+      const payload = (await response.json().catch(() => null)) as { message?: string } | null
+      if (!response.ok) throw new Error(payload?.message ?? "The editor didn’t answer.")
+    } catch (error) {
+      stay.toggle.setAttribute("aria-checked", String(!on))
+      editor.toast(
+        {
+          title: on ? "Couldn’t keep MCP on between apps" : "MCP is still on between apps",
+          description: error instanceof Error ? error.message : String(error),
+        },
+        "error"
+      )
+    } finally {
+      staySwitching = false
+      stay.toggle.disabled = false
+      void refreshMcp()
+    }
+  }
+
   /**
    * Ask the server where it is and whether anybody arrived.
    *
@@ -821,8 +871,12 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
         listening: boolean
         agents: number
         waiting: number
+        stay?: boolean
+        canStay?: boolean
       }
       mcpAddress.textContent = status.url ?? "not running"
+      stay.row.hidden = status.canStay !== true
+      if (!staySwitching) stay.toggle.setAttribute("aria-checked", String(status.stay === true))
 
       /*
        * THREE FACTS, AND THEY FAIL INDEPENDENTLY.
@@ -875,6 +929,7 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
     // A field-and-action pair: Copy sits beside the address at its height, and
     // wraps under it only when the panel cannot fit the whole address.
     el("div", { class: "de-mcp-row" }, [mcpAddress, mcpCopy]),
+    stay.row,
   ])
 
   settingsBody.append(

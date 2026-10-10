@@ -628,5 +628,73 @@ await check("a row that was already written is not queued, and says so", async (
   assert.equal(ui.isEditQueued(id), false, "a committed edit is still owed")
 })
 
+/** The Stay on between apps row in the MCP section, or null. */
+const stayRow = () =>
+  [...tab.node.querySelectorAll(".de-mcp .de-ann-setting")].find((row) =>
+    row.textContent.includes("Stay on between apps")
+  ) ?? null
+
+await check("Stay on between apps is offered only when a start screen is behind the editor", async () => {
+  try {
+    mcpStatus = { ...AGENT_ATTACHED, canStay: false, stay: false }
+    reset()
+    await settle()
+    assert.equal(stayRow()?.hidden, true, "the switch showed for an editor it can do nothing for")
+
+    mcpStatus = { ...AGENT_ATTACHED, canStay: true, stay: false }
+    reset()
+    await settle()
+    assert.equal(stayRow().hidden, false)
+    const toggle = stayRow().querySelector('[role="switch"]')
+    assert.equal(toggle.getAttribute("aria-checked"), "false", "it is optional, so it starts off")
+    assert.equal(toggle.getAttribute("aria-label"), "Stay on between apps")
+    assert.equal(
+      toggle.getAttribute("aria-description"),
+      "Your agent stays connected when you switch or restart apps."
+    )
+  } finally {
+    mcpStatus = AGENT_ATTACHED
+  }
+})
+
+await check("pressing it moves MCP, and a refusal puts the switch back with the reason", async () => {
+  const real = globalThis.fetch
+  const posts = []
+  let refuse = null
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/mcp/stay")) {
+      const body = JSON.parse(init.body)
+      posts.push(body)
+      if (refuse) return { ok: false, status: 409, json: async () => ({ ok: false, message: refuse }) }
+      mcpStatus = { ...mcpStatus, stay: body.on }
+      return { ok: true, status: 200, json: async () => mcpStatus }
+    }
+    return real(input, init)
+  }
+  try {
+    mcpStatus = { ...AGENT_ATTACHED, canStay: true, stay: false }
+    reset()
+    await settle()
+    const toggle = stayRow().querySelector('[role="switch"]')
+    toggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }))
+    await settle()
+    assert.deepEqual(posts, [{ on: true }])
+    assert.equal(toggle.getAttribute("aria-checked"), "true")
+
+    refuse = "Another program is using port 5747."
+    toggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }))
+    await settle()
+    assert.deepEqual(posts.at(-1), { on: false })
+    assert.equal(toggle.getAttribute("aria-checked"), "true", "the switch showed a state the server refused")
+    const [message, kind] = toasts.at(-1)
+    assert.equal(kind, "error")
+    assert.equal(message.title, "MCP is still on between apps")
+    assert.equal(message.description, "Another program is using port 5747.")
+  } finally {
+    globalThis.fetch = real
+    mcpStatus = AGENT_ATTACHED
+  }
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)

@@ -879,6 +879,8 @@ export const annotationsCss = `/* ---------- annotation overlay ---------- */
  * into another program, so it keeps its full width rather than an ellipsis.
  * Mono, selectable, and still allowed to break mid-URL at the narrowest.
  */
+/* The address row, then the Stay on switch: the Settings rows' rhythm. */
+.de-mcp { display: flex; flex-direction: column; gap: ${t.space["2xs"]}px; }
 .de-mcp-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: ${t.space["2xs"]}px; }
 .de-mcp-url {
   flex: 1 1 auto; min-width: 0;

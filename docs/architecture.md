@@ -100,6 +100,7 @@ runtime/start-screen.mjs    the loopback server behind the no-arguments flow
 runtime/start-screen-page.mjs   its document, and the script that drives it
 runtime/start-screen-style.mjs  its stylesheet, built from the editor's tokens
 runtime/local-apps.mjs      port scan, project inspection, folder listing
+runtime/mcp-hub.mjs         the start screen's MCP endpoint, for "Stay on between apps"
 runtime/launcher.mjs        vendor resolution, monkey-patches, route mount, the cached overlay
 runtime/bundle-stamp.mjs    what the last build compiled from, so a launch can skip the check
 runtime/vendor-patch.mjs    the 30 splices against react-rewrite-cli 0.1.1
@@ -114,6 +115,7 @@ server/routes.mjs           loopback-guarded HTTP routes
 server/options-store.mjs    saved option sets
 server/control-defaults.mjs configured literal default reader/writer
 server/agent.mjs            AI edit transport
+server/mcp-control.mjs      where the editor's MCP endpoint runs: here, or relayed to the start screen
 src/core/angular.ts         the Angular resolver, edit queue and commit
 src/core/element-target.ts  how the browser describes an element to a source writer
 src/core/removal.ts         the delete queue, one for both hosts

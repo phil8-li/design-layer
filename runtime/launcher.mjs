@@ -548,34 +548,48 @@ async function loadRoutes(config) {
  * agent's config file by hand and has to survive a restart. A busy port is a
  * warning and nothing more — the editor's whole job is unaffected, and the
  * clipboard path in the Prompts tab still works.
+ *
+ * When the start screen this editor came from already serves it ("Stay on
+ * between apps"), nothing binds here; `server/mcp-control.mjs` relays instead.
  */
 async function startMcpEndpoint(config, runtime) {
-  const port = config.ports?.mcp
-  if (typeof port !== "number") return null
+  const port = typeof config.ports?.mcp === "number" ? config.ports.mcp : null
   try {
-    const [{ createMcpEndpoint }, { handoffQueue }, { isLocalRequest }] = await Promise.all([
-      import("../server/mcp.mjs"),
-      import("../server/handoff.mjs"),
+    const [{ configureMcpControl }, { isLocalRequest }, { chooserUrlFromEnv }] = await Promise.all([
+      import("../server/mcp-control.mjs"),
       import("../server/routes.mjs"),
+      import("./chooser-url.mjs"),
     ])
-    const queue = handoffQueue()
-    const endpoint = createMcpEndpoint({ queue, isLocalRequest })
-    await endpoint.listen(port, LOOPBACK)
-    // Only after the bind. The route that records a click reads this to decide
-    // whether to promise the designer a delivery or only a queued file, and a
-    // flag set optimistically would promise one on the exact runs — port taken,
-    // endpoint disabled — where nothing can ever arrive.
-    queue.markEndpointListening()
-    runtime.mcpPort = port
+    const control = configureMcpControl({
+      port,
+      hubUrl: chooserUrlFromEnv(process.env),
+      token: process.env.DESIGNLAYER_MCP_TOKEN || null,
+      isLocalRequest,
+    })
+    // Bound (or relayed) before anything reads it: the route that records a
+    // click decides from it whether to promise a delivery or only a queued
+    // file, and an optimistic answer would promise one on the exact runs —
+    // port taken, endpoint disabled — where nothing can ever arrive.
+    const state = await control.boot()
+    if (state.mode === "off") {
+      if (state.error) {
+        console.warn(
+          `[designlayer] MCP endpoint not started (${state.error}) — "Send to agent" still queues to ${config.apiPrefix}`
+        )
+      }
+      return
+    }
+    runtime.mcpPort = state.port
     writeEndpointFile(config, runtime)
-    console.log(`[designlayer] MCP http://${LOOPBACK}:${port}/mcp — point your agent at it`)
-    return endpoint
-  } catch (error) {
-    const reason = error?.code === "EADDRINUSE" ? `port ${port} is in use` : error.message
-    console.warn(
-      `[designlayer] MCP endpoint not started (${reason}) — "Send to agent" still queues to ${config.apiPrefix}`
+    console.log(
+      state.mode === "hub"
+        ? `[designlayer] MCP http://${LOOPBACK}:${state.port}/mcp — served by the start screen, on between apps`
+        : `[designlayer] MCP http://${LOOPBACK}:${state.port}/mcp — point your agent at it`
     )
-    return null
+  } catch (error) {
+    console.warn(
+      `[designlayer] MCP endpoint not started (${error.message}) — "Send to agent" still queues to ${config.apiPrefix}`
+    )
   }
 }
 

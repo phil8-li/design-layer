@@ -327,8 +327,31 @@ export async function createStartScreen({
   host = LOOPBACK,
   port = PREFERRED_START_SCREEN_PORT,
   log = console.log,
+  /*
+   * Options for the MCP endpoint this screen can serve between apps, or null
+   * for none. Only the supervisor passes it: it is the one caller whose screen
+   * outlives its editors, which is the whole reason to serve MCP from here.
+   */
+  mcp = null,
 } = {}) {
   if (!isLoopbackHost(host)) throw new Error(`The start screen is loopback-only and cannot bind ${host}`)
+
+  // Imported only when asked for: it brings the MCP server and the config
+  // defaults with it, which no other caller of this screen needs.
+  const mcpHub = mcp ? (await import("./mcp-hub.mjs")).createMcpHub({ ...mcp, isLocalRequest, log }) : null
+
+  /**
+   * The hub's routes answer only an editor this screen started. The token
+   * arrives in the child's environment; a page in the browser has no way to
+   * learn it, and a custom header makes any cross-origin attempt preflight,
+   * which this server never answers.
+   */
+  function hubFor(req) {
+    if (!mcpHub || req.headers["x-designlayer-token"] !== mcpHub.token) {
+      throw badRequest("Only an editor this start screen started can use its MCP endpoint.", 403)
+    }
+    return mcpHub
+  }
 
   let endpointFile = null
   let readyUrl = null
@@ -389,7 +412,8 @@ export async function createStartScreen({
   // on the first ask, rather than as ~73KB of template on every load.
   let page = null
 
-  // Read-only and stateless, all of them, except the last — which is the point.
+  // Read-only and stateless, all of them, except `/api/start` — which is the
+  // point — and the MCP routes at the end, which only an editor can call.
   const routes = {
     "GET /": (_req, res) => send(res, 200, "text/html; charset=utf-8", (page ??= startScreenPage())),
     "GET /api/apps": async (_req, res) => sendJson(res, 200, { apps: await scanApps() }),
@@ -441,6 +465,18 @@ export async function createStartScreen({
       pending = openRound()
       round.resolve(choice)
       sendJson(res, 200, { ok: true })
+    },
+    // "Stay on between apps": where the endpoint is, a send to record on it,
+    // and the switch itself. See runtime/mcp-hub.mjs.
+    "GET /api/mcp": (req, res) => sendJson(res, 200, hubFor(req).status()),
+    "POST /api/mcp/push": async (req, res) => {
+      const hub = hubFor(req)
+      sendJson(res, 200, hub.push((await readJsonBody(req)) ?? {}))
+    },
+    "POST /api/mcp/stay": async (req, res) => {
+      const hub = hubFor(req)
+      const body = (await readJsonBody(req)) ?? {}
+      sendJson(res, 200, await hub.stay(body.on === true, Array.isArray(body.pending) ? body.pending : []))
     },
   }
 
@@ -495,9 +531,13 @@ export async function createStartScreen({
     await listenOn(0)
   }
 
+  await mcpHub?.boot()
+
   return {
     url: `http://${host}:${server.address().port}`,
     chosen,
+    /** Handed to each editor this screen starts, so it can reach the routes above. */
+    mcpToken: mcpHub?.token ?? null,
 
     /**
      * The next choice the user makes, whenever they make it.
@@ -560,6 +600,7 @@ export async function createStartScreen({
       // looking at any more.
       server.closeAllConnections()
       server.close()
+      void mcpHub?.close()
     },
   }
 }

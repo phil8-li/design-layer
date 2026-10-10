@@ -138,6 +138,13 @@ an agent's config by hand. It prints the URL at startup:
 Set `ports.mcp` to `null` to turn the endpoint off. A port already in use is a
 warning and nothing more — the editor starts, and Copy still works.
 
+The endpoint normally lives in the editor, so switching or restarting apps
+closes it for a few seconds. Some agents drop the server's tools after one
+failed call and need a restart to get them back. When the editor was started
+from the start screen, the MCP section of the Changes tab offers **Stay on
+between apps**: the start screen then serves the same address and keeps it up
+while editors come and go. It is off by default and saved for the next session.
+
 ## The loop
 
 Four tools, which together are a workflow rather than a verb:

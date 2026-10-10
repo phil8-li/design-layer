@@ -382,13 +382,17 @@ function sendJson(res, statusCode, payload, extraHeaders = {}) {
  */
 /** A session heard from this recently counts as an attached agent. */
 const SESSION_ACTIVE_MS = 10 * 60 * 1000
-/** A session silent this long is forgotten; its client re-initializes on the 404. */
+/** A session silent this long is forgotten; it is adopted again if it comes back. */
 const SESSION_FORGET_MS = 24 * 60 * 60 * 1000
+/** How many ended session ids are remembered, so a reused one is still refused. */
+const MAX_TERMINATED = 1000
 
 export function createMcpEndpoint({ queue, isLocalRequest, version = "0.1.0", path: mcpPath = "/mcp" }) {
   const serverInfo = { name: "designlayer", title: "DesignLayer", version }
-  /** session id -> `{ lastSeen, inFlight }`, issued on `initialize`. */
+  /** session id -> `{ lastSeen, inFlight }`, issued on `initialize` or adopted. */
   const sessions = new Map()
+  /** Ids the client ended with DELETE. The one case still answered 404. */
+  const terminated = new Set()
 
   /**
    * How many agents are attached, counted when asked rather than when a session
@@ -400,8 +404,8 @@ export function createMcpEndpoint({ queue, isLocalRequest, version = "0.1.0", pa
    * while it has a request in flight — an agent parked in `wait_for_change`
    * holds one for up to a minute and then asks again — or was heard from within
    * `SESSION_ACTIVE_MS`. A session silent for `SESSION_FORGET_MS` is forgotten
-   * outright, which bounds the map; a client returning after that is answered
-   * 404 and re-initializes, as the transport spec intends.
+   * outright, which bounds the map; a client returning after that is adopted
+   * again, like any id this process has not seen.
    */
   const attachedAgents = () => {
     const now = Date.now()
@@ -453,7 +457,12 @@ export function createMcpEndpoint({ queue, isLocalRequest, version = "0.1.0", pa
 
     if (req.method === "DELETE") {
       const sessionId = req.headers["mcp-session-id"]
-      if (typeof sessionId === "string") sessions.delete(sessionId)
+      if (typeof sessionId === "string") {
+        sessions.delete(sessionId)
+        terminated.add(sessionId)
+        // Bounded like the session map: the oldest ended id goes first.
+        if (terminated.size > MAX_TERMINATED) terminated.delete(terminated.values().next().value)
+      }
       res.writeHead(204)
       res.end()
       return true
@@ -513,22 +522,34 @@ export function createMcpEndpoint({ queue, isLocalRequest, version = "0.1.0", pa
     }
 
     /*
-     * A session id this server never issued, or one it has already deleted,
-     * MUST be a 404 — that is the signal telling the client to re-initialize.
-     * Answering 200 instead leaves a client reconnecting after a restart
-     * talking to a session that does not exist and never learning.
+     * A session id this process has not seen is ADOPTED, not refused.
+     *
+     * It used to be a 404, which the spec reserves for a terminated session so
+     * the client re-initializes. Clients do not all do that: one in daily use
+     * marks the server failed on the 404 and drops its tools until it is
+     * restarted. And an unseen id is the normal case here, not a stale one: the
+     * endpoint moves between the editor and the start screen, and an editor
+     * restart is a new process. A session holds nothing but its last-seen
+     * time, so adopting one costs nothing and keeps the agent connected.
+     *
+     * A session the client ended with DELETE is still a 404: that one is
+     * terminated in exactly the spec's sense.
      *
      * A request with no session id still passes: a client may decline to track
      * one, and refusing those would be refusing conformant clients.
      */
     const declaredSession = req.headers["mcp-session-id"]
     if (typeof declaredSession === "string" && !sessions.has(declaredSession)) {
-      sendJson(res, 404, {
-        jsonrpc: "2.0",
-        id: null,
-        error: { code: JSONRPC_INVALID_REQUEST, message: "Unknown or terminated session" },
-      })
-      return true
+      // The spec's alphabet for an id: visible ASCII. Anything else is not one.
+      if (terminated.has(declaredSession) || !/^[\x21-\x7e]{1,128}$/.test(declaredSession)) {
+        sendJson(res, 404, {
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: JSONRPC_INVALID_REQUEST, message: "Unknown or terminated session" },
+        })
+        return true
+      }
+      sessions.set(declaredSession, { lastSeen: Date.now(), inFlight: 0 })
     }
 
     let raw
@@ -654,4 +675,44 @@ export function createMcpEndpoint({ queue, isLocalRequest, version = "0.1.0", pa
   }
 
   return { handle, tryHandle, listen, toolDefinitions }
+}
+
+/**
+ * Binds an endpoint for `queue` on `port`.
+ *
+ * `retryMs` covers the moment the endpoint moves between processes: the one it
+ * comes from may still be letting the port go when this one asks for it.
+ */
+export async function openEndpoint({ queue, isLocalRequest, port, retryMs = 0 }) {
+  const endpoint = createMcpEndpoint({ queue, isLocalRequest })
+  const deadline = Date.now() + retryMs
+  for (;;) {
+    try {
+      const server = await endpoint.listen(port, "127.0.0.1")
+      queue.markEndpointListening()
+      return server
+    } catch (error) {
+      if (error?.code !== "EADDRINUSE" || Date.now() >= deadline) throw error
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+  }
+}
+
+/**
+ * Closes an endpoint so its port can move, without failing anybody's call.
+ *
+ * Parked waits end first as ordinary timeouts, then the server stops taking
+ * connections and closes each one once its last answer is written. A socket
+ * cut mid-request is what a client reads as the server failing.
+ */
+export function closeEndpoint(server, queue, graceMs = 1000) {
+  queue.release()
+  queue.markEndpointStopped()
+  return new Promise((resolve) => {
+    const force = setTimeout(() => server.closeAllConnections(), graceMs)
+    server.close(() => {
+      clearTimeout(force)
+      resolve()
+    })
+  })
 }

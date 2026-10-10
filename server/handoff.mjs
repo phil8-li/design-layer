@@ -43,7 +43,15 @@ export function createHandoffQueue() {
   const entries = new Map()
   /** @type {Set<() => void>} */
   const waiters = new Set()
+  /** Ends one parked wait with nothing in it; see `release`. */
+  const releasers = new Set()
   let endpointListening = false
+  /**
+   * Set while the endpoint is moving to another process. A wait asked for in
+   * that window answers at once, empty, rather than parking on a queue whose
+   * server is about to close under it.
+   */
+  let draining = false
   /**
    * How many MCP sessions are open right now.
    *
@@ -173,6 +181,39 @@ export function createHandoffQueue() {
   }
 
   /**
+   * Takes changes queued in another process, keeping their ids.
+   *
+   * The endpoint moves between the editor and the start screen, and a change
+   * an agent was already handed must still resolve by the id it was given.
+   */
+  function adopt(incoming = []) {
+    for (const entry of incoming) {
+      if (!entry || typeof entry !== "object" || typeof entry.id !== "string") continue
+      entries.set(entry.id, { ...entry })
+    }
+    prune()
+    if (incoming.length > 0) wake()
+  }
+
+  /** Drops changes another process now holds, so they are not delivered twice. */
+  function remove(ids = []) {
+    for (const id of ids) entries.delete(id)
+  }
+
+  /**
+   * Ends every parked wait with nothing, as if each had timed out.
+   *
+   * Used when the endpoint is about to close. An agent sees an ordinary
+   * `{timeout: true}` and calls again, which reaches whichever process holds
+   * the port by then. Cutting the request instead reads as a failed call, and
+   * some clients drop a server's tools after a single one.
+   */
+  function release() {
+    draining = true
+    for (const end of [...releasers]) end()
+  }
+
+  /**
    * Drain first, then block.
    *
    * Going straight to the blocking wait loses every click that landed while the
@@ -197,6 +238,7 @@ export function createHandoffQueue() {
    * `wait_for_change` does not advertise itself as safe to call speculatively.
    */
   function wait({ timeoutMs = 45_000, batchMs = 1500, signal } = {}) {
+    if (draining) return Promise.resolve([])
     const drained = pending()
     if (drained.length > 0) return Promise.resolve(drained)
 
@@ -214,11 +256,12 @@ export function createHandoffQueue() {
        * its client gave up. Nothing reachable throws there today; the ordering
        * is what makes that not matter.
        */
-      const finish = () => {
+      const finish = (deliver = true) => {
         if (settled) return
         settled = true
-        resolveWait(pending())
+        resolveWait(deliver ? pending() : [])
         waiters.delete(onPush)
+        releasers.delete(end)
         clearTimeout(timer)
         if (batchTimer) clearTimeout(batchTimer)
         try {
@@ -239,9 +282,11 @@ export function createHandoffQueue() {
         batchTimer = setTimeout(finish, batchMs)
       }
       const onAbort = () => finish()
+      const end = () => finish(false)
       const timer = setTimeout(finish, Math.max(0, timeoutMs))
 
       waiters.add(onPush)
+      releasers.add(end)
       signal?.addEventListener("abort", onAbort, { once: true })
     })
   }
@@ -253,6 +298,9 @@ export function createHandoffQueue() {
     pending,
     resolve,
     clear,
+    adopt,
+    remove,
+    release,
     wait,
     get size() {
       return entries.size
@@ -281,6 +329,11 @@ export function createHandoffQueue() {
      */
     markEndpointListening() {
       endpointListening = true
+      draining = false
+    },
+    /** The endpoint closed, because it moved to another process. */
+    markEndpointStopped() {
+      endpointListening = false
     },
     get endpointListening() {
       return endpointListening
