@@ -708,7 +708,7 @@ export function createAngularSource(config) {
   const scans = new Map()
   /**
    * raw name -> when it last missed a just-verified index. A component that is
-   * not the project's — Angular Material's `MatButton`, anything from the CDK —
+   * not the project's — a button from an installed component library —
    * misses on every selection, and each miss used to rebuild the whole index.
    * Cleared whenever a rebuild sees any file change (the index generation), and
    * short-lived besides, so a class added by an edit is never hidden for long.

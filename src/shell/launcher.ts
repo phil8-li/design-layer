@@ -669,8 +669,8 @@ export function createLauncher(onActivate: () => void): Launcher {
      * It stayed at 24 when the disc came down to the toolbar's 40, and the
      * proportion is better for it: 24 in 40 leaves 8 of ground on every side —
      * the same `space.sm` the chrome uses between controls everywhere else — and
-     * is the exact pairing Material gives a small FAB. 24 in 44 left 10, which
-     * is not a step on the scale at all.
+     * is the usual pairing in a small floating action button. 24 in 44 left 10,
+     * which is not a step on the scale at all.
      */
     [icon("Cursor", tokens.icon.feature, "filled")]
   ) as HTMLButtonElement

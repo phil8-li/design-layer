@@ -18,8 +18,8 @@ import { TOOLBAR_HEIGHT } from "./toolbar"
  * wants — it sits over someone else's product doing nothing until it is needed.
  *
  * It stays a comfortable target: 40px clears the 24px minimum of WCAG 2.2
- * Target Size (Minimum) with room to spare, and is the size Material gives a
- * small FAB, which is the same object under another name.
+ * Target Size (Minimum) with room to spare, and is the usual size of a small
+ * floating action button, which is the same object under another name.
  *
  * Imported rather than restated, so a change to the bar's padding or its
  * squares carries here instead of leaving a disc that used to match.

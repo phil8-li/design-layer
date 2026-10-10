@@ -809,7 +809,7 @@ await check("quitProfileChrome stops the process that owns this exact profile", 
 // active, and the app reopens on its last tab, so --verify-window must accept both.
 await check("--verify-window recognizes the desk window on Home and on an editor tab", () => {
   assert.equal(isDeskTitle("DesignLayer"), true)
-  assert.equal(isDeskTitle("gemini — DesignLayer"), true)
+  assert.equal(isDeskTitle("storefront — DesignLayer"), true)
   assert.equal(isDeskTitle("DesignLayer docs"), false)
   assert.equal(isDeskTitle("New Tab"), false)
 })
