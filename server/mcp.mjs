@@ -94,11 +94,21 @@ const NEW_SESSION_STEPS =
   "session's first message; the new session does the work. If you have no way to start one, do the " +
   "work here instead. Then call resolve_change for that id so the next wait does not start it again."
 
+/*
+ * One endpoint can serve several editors, each on its own project, so every
+ * change names its repo. `files` and `handoffFile` are relative to it.
+ */
+const PROJECT_STEPS =
+  "Each change names its projectRoot (an absolute folder) and app: do the work in that folder; " +
+  "its files and handoffFile are relative to it."
+
 function publicView(entry) {
   return {
     id: entry.id,
     status: entry.status,
     createdAt: entry.createdAt,
+    app: entry.app ?? null,
+    projectRoot: entry.projectRoot ?? null,
     origin: entry.origin,
     page: entry.url,
     framework: entry.framework,
@@ -125,6 +135,7 @@ function toolDefinitions() {
         "— that is not an error, it means the designer has not clicked yet. " +
         "Use this in a loop for hands-free work: wait, apply the changes it returns, call " +
         "resolve_change for each one, then wait again. Keep waiting until the user tells you to stop. " +
+        `${PROJECT_STEPS} ` +
         `${NEW_SESSION_STEPS} ` +
         "Call it once at a time: there is no claim on a change, so two callers waiting at once are " +
         "both handed the same one and will both try to apply it.",
@@ -237,7 +248,7 @@ async function callTool(queue, name, args, signal) {
       changes: changes.map(publicView),
       next: newSession
         ? `${NEW_SESSION_STEPS} Then call wait_for_change again.`
-        : "Apply these, then call resolve_change for each id, then call wait_for_change again.",
+        : "Apply each one in its projectRoot, then call resolve_change for each id, then call wait_for_change again.",
     })
   }
 
@@ -306,6 +317,7 @@ async function handleMessage(message, { queue, serverInfo, signal, onSession }) 
           "DesignLayer (design layer) visual editor: when the designer presses Send to agent, " +
           "wait_for_change returns their notes and edits. When the user asks you to connect, " +
           "call wait_for_change right away and keep calling it until they say stop. " +
+          `${PROJECT_STEPS} ` +
           NEW_SESSION_STEPS,
       },
     }

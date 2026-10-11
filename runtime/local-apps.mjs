@@ -17,6 +17,7 @@
 import { execFile } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 
 import { LOOPBACK_ADDRESSES, urlHost } from "./dev-server.mjs"
 
@@ -220,6 +221,30 @@ function listenerTable() {
 }
 
 /**
+ * The same table from `lsof`, for where `netstat` names no process: Linux, and
+ * older macOS. Slower, and it sees only this user's own processes, which are
+ * the only dev servers this screen could edit anyway.
+ */
+async function listenerTableFromLsof() {
+  const output = await lsof(["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"])
+  if (output === null) return null
+  const table = new Map()
+  let pid = null
+  for (const line of output.split("\n")) {
+    if (line.startsWith("p")) pid = line.slice(1).trim()
+    else if (line.startsWith("n") && pid !== null) {
+      const port = Number(line.slice(line.lastIndexOf(":") + 1))
+      if (!Number.isInteger(port)) continue
+      const pids = table.get(port) ?? []
+      if (!pids.includes(pid)) pids.push(pid)
+      table.set(port, pids)
+    }
+  }
+  for (const pids of table.values()) pids.sort((a, b) => a - b)
+  return table
+}
+
+/**
  * Working directories on macOS, via BSD `lsof`: pid -> cwd (null when denied)
  * for every pid `lsof` can see at all. One fork for any number of pids — each
  * fork is ~40ms of the scan, and several untitled apps used to pay it each.
@@ -279,10 +304,54 @@ async function cwdsOf(pids) {
  * probes then rule out — a database, a JSON API — costs a line in the one
  * `lsof` that was running anyway.
  */
-async function lookAhead(ports) {
-  const table = await listenerTable()
-  const asked = [...new Set(ports.flatMap((port) => table?.get(port) ?? []))]
-  return { table, asked: new Set(asked), cwds: await cwdsOf(asked) }
+async function lookAhead(ports, skip = null) {
+  const table = (await listenerTable()) ?? (skip ? await listenerTableFromLsof() : null)
+  const extra = skip && table ? unlistedPorts(table, ports, skip) : []
+  const asked = [...new Set([...ports, ...extra].flatMap((port) => table?.get(port) ?? []))]
+  return { table, asked: new Set(asked), cwds: await cwdsOf(asked), extra }
+}
+
+/**
+ * The folder this package is installed in. Its own processes — the Mac app's
+ * desk server, a start screen run from a checkout — sit in it, and its
+ * package.json names React, so it would otherwise pass for an app.
+ */
+const OWN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
+
+/**
+ * Listening ports the fixed list does not name, minus the ones `discover` says
+ * belong to the editor itself. A dev server can be on any port: a project that
+ * pins `--port 3041` is as common as one that takes the default, and a fixed
+ * list left such an app off the start screen and out of the editor's chooser
+ * while it was running and answering.
+ */
+function unlistedPorts(table, ports, skip) {
+  return [...table.keys()]
+    .filter((port) => port >= 1024 && !ports.includes(port) && !isOwnPort(table, port, skip))
+    .sort((a, b) => a - b)
+}
+
+/** Whether `port` is the editor's own: one `skip` names, or held by a pid it names. */
+function isOwnPort(table, port, skip) {
+  if (!skip) return false
+  return skip.ports.has(port) || (table?.get(port) ?? []).some((pid) => skip.pids.has(pid))
+}
+
+/**
+ * Whether the process on an unlisted port runs from a project the editor can
+ * open. This is the filter that keeps the list to dev servers: every desktop
+ * app, sync client and language server on the machine listens somewhere too,
+ * and some of them serve HTML. A cwd inside a React or Angular project is what
+ * a dev server has and they do not.
+ */
+function editableProjectOn(port, { table, cwds }) {
+  const pid = table?.get(port)?.find((candidate) => cwds.get(candidate))
+  const cwd = pid === undefined ? null : cwds.get(pid)
+  if (!cwd) return false
+  const root = nearestProjectRoot(isDirectory(cwd) ? cwd : path.dirname(cwd))
+  if (!root || path.resolve(root) === OWN_ROOT) return false
+  const project = describeProject(root)
+  return project.hasReact || project.framework === "angular"
 }
 
 /**
@@ -451,12 +520,23 @@ export async function scanLocalApps({
   // case and the cold one still lists, labelled by its address. Probes run
   // concurrently, so it is the whole scan's ceiling, not a cost per port.
   timeoutMs = 1500,
+  /**
+   * Also look past `ports`, at every port something on this machine listens
+   * on, and keep the ones served from a React or Angular project. Null for the
+   * fixed list alone. `{ pids, ports }` names the editor's own processes and
+   * ports, which run from the project they edit and would pass for its app.
+   */
+  discover = null,
 } = {}) {
   // Which processes listen on these ports, and where each was started, looked
   // up beside the probes rather than after them. See `lookAhead`.
-  const known = lookAhead(ports)
-  const probed = await Promise.all(
-    ports.map(async (port) => {
+  const skip = discover && {
+    pids: new Set([...(discover.pids ?? [])].map(String)),
+    ports: new Set(discover.ports ?? []),
+  }
+  const known = lookAhead(ports, skip)
+  const probe = (list) => Promise.all(
+    list.map(async (port) => {
       // First address that answers wins, and the row carries THAT address — it
       // is what the editor will proxy, so a row naming the other one would send
       // the launch somewhere nothing is listening.
@@ -476,6 +556,14 @@ export async function scanLocalApps({
       return null
     })
   )
+  // The fixed list is probed at once, as before. Unlisted ports wait for the
+  // look-ahead, because only a process's folder says whether it is worth a probe.
+  const [listed, unlisted] = await Promise.all([
+    probe(ports),
+    known.then(async (look) => probe(look.extra.filter((port) => editableProjectOn(port, look)))),
+  ])
+  const { table } = await known
+  const probed = [...listed, ...unlisted].filter((hit) => hit === null || !isOwnPort(table, hit.port, skip))
 
   // Folders are resolved only for apps whose page named none, all of them from
   // the one look-ahead: no fork per port, dead or alive.

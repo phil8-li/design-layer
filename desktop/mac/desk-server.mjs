@@ -27,6 +27,8 @@ import { fileURLToPath } from "node:url"
 import { listEditors } from "../../runtime/editor-registry.mjs"
 import { DEFAULT_DESK_PORT } from "../../runtime/mac-desk.mjs"
 import { PREFERRED_START_SCREEN_PORT } from "../../runtime/start-screen.mjs"
+import { appName } from "../../runtime/app-name.mjs"
+import { lastPage } from "../../runtime/last-pages.mjs"
 import { APP_FEATURES, CHROME_BINARY, chromeProfileDir, profileChromeCommand, quitProfileChrome } from "./chrome-pipe.mjs"
 import { offlinePage, shellPage } from "./shell-page.mjs"
 
@@ -34,6 +36,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 export const REPO_ROOT = path.resolve(HERE, "..", "..")
 export { DEFAULT_DESK_PORT }
 const LOOPBACK = "127.0.0.1"
+// The host name the window is served on, while the server binds LOOPBACK: the
+// editors it frames are on localhost (runtime/launcher.mjs, BROWSER_HOST), and
+// a frame on another site gets no SameSite=Lax cookie and partitioned storage.
+const DESK_HOST = "localhost"
 const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"])
 const ICONS = new Map([
   ["/icons/icon-192.png", ["icon-192.png", "image/png"]],
@@ -99,10 +105,16 @@ self.addEventListener("fetch", (event) => {
 /** Registry entries in the shape the shell uses. The registry already swept dead pids. */
 export function normalizeEditors(entries) {
   return entries.map((entry) => ({
-    name: entry.packageName ?? (entry.projectRoot ? path.basename(entry.projectRoot) : `Editor on ${entry.proxyPort}`),
-    url: entry.url ?? `http://${LOOPBACK}:${entry.proxyPort}`,
+    // The folder first: copies of one template share a package name, and the
+    // folder is the name a person gave each copy.
+    name: appName(entry) ?? `Editor on ${entry.proxyPort}`,
+    // Editors are opened on localhost (runtime/launcher.mjs, BROWSER_HOST); an
+    // entry from an older editor may still say 127.0.0.1.
+    url: entry.url ? entry.url.replace(/^http:\/\/127\.0\.0\.1:/, "http://localhost:") : `http://localhost:${entry.proxyPort}`,
     projectRoot: entry.projectRoot ?? null,
     appUrl: entry.appUrl ?? null,
+    // The page that app was last used on, so a tab opened here lands there.
+    page: lastPage({ port: entry.appPort, projectRoot: entry.projectRoot ?? null }),
     pid: entry.pid,
     startedAt: entry.startedAt ?? null,
     alive: true,
@@ -141,6 +153,7 @@ export function createSupervisor({ repoRoot = REPO_ROOT, port = PREFERRED_START_
     restarts: 0,
     detail: null,
     editing: null,
+    editors: [],
   }
   let child = null
   let spawnedUrl = null
@@ -159,12 +172,21 @@ export function createSupervisor({ repoRoot = REPO_ROOT, port = PREFERRED_START_
       state.ready = true
       state.editing =
         answer.body.ready && answer.body.url
-          ? { url: answer.body.url, projectRoot: answer.body.editing?.projectRoot ?? null, packageName: answer.body.editing?.packageName ?? null }
+          ? {
+              url: answer.body.url,
+              projectRoot: answer.body.editing?.projectRoot ?? null,
+              packageName: answer.body.editing?.packageName ?? null,
+              name: answer.body.editing?.name ?? null,
+            }
           : null
+      // Every editor the start screen runs; `editing` above is only the most
+      // recent choice, kept for callers that knew one editor.
+      state.editors = Array.isArray(answer.body.editors) ? answer.body.editors : []
       return true
     }
     state.ready = false
     state.editing = null
+    state.editors = []
     return false
   }
 
@@ -273,15 +295,15 @@ export function openableUrl(value, deskPort) {
   try {
     url = new URL(String(value ?? ""))
   } catch {
-    return { error: "Open needs a full URL, like http://127.0.0.1:3466/studio" }
+    return { error: "Open needs a full URL, like http://localhost:3466/studio" }
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return { error: "Only http pages can open in the Mac app" }
   if (!isLoopbackHost(url.host)) return { error: "Only pages on this Mac (127.0.0.1 or localhost) can open in the Mac app" }
   if (Number(url.port) === Number(deskPort)) return { error: "That is the Mac app's own page" }
-  // One spelling of this machine. The desk and every editor it lists are on
-  // 127.0.0.1, and a frame on `localhost` would be a different site from the
-  // page around it, with its storage partitioned away from theirs.
-  if (url.hostname === "localhost") url.hostname = LOOPBACK
+  // One spelling of this machine: localhost, the host name editors register
+  // under and apps treat as their dev host. On 127.0.0.1 an app can show its
+  // signed-out screen instead of itself.
+  if (url.hostname === LOOPBACK) url.hostname = "localhost"
   return { url: url.href }
 }
 
@@ -444,12 +466,55 @@ function pickFolder() {
   return picking
 }
 
+/**
+ * The window's saved tabs, kept by the desk as well as in the page's storage.
+ *
+ * The page's storage belongs to its origin, and the window moved from
+ * 127.0.0.1 to localhost: the page on the new origin cannot read what the old
+ * one saved. So every page mirrors its tabs here, and a page whose storage is
+ * empty takes them from here once. The file sits beside the app's Chrome
+ * profile, in the app's own folder, not in any project.
+ */
+export function createTabStore(file) {
+  return {
+    read() {
+      try {
+        const saved = JSON.parse(fs.readFileSync(file, "utf8"))
+        return saved && Array.isArray(saved.tabs) ? saved : null
+      } catch {
+        return null
+      }
+    },
+    write(saved) {
+      if (!saved || typeof saved !== "object" || !Array.isArray(saved.tabs) || saved.tabs.length > 100) {
+        throw Object.assign(new Error("Saved tabs need a tabs list"), { status: 400 })
+      }
+      const tabs = saved.tabs.filter((t) => t && typeof t === "object" && typeof t.id === "string" && (t.kind === "home" || t.kind === "editor"))
+      const clean = {
+        tabs: tabs.map(({ id, kind, url, src, name, key }) => ({ id, kind, url, src, name, key })),
+        active: typeof saved.active === "string" ? saved.active : null,
+        dismissed: Array.isArray(saved.dismissed) ? saved.dismissed.filter((k) => typeof k === "string").slice(-50) : [],
+        // When the page saved this copy, so a page whose own storage lost its
+        // last write can tell this copy is newer (see the page's restore).
+        savedAt: Number.isFinite(saved.savedAt) ? saved.savedAt : 0,
+      }
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      // Written whole, then renamed: a desk stopped mid-write leaves the last copy.
+      fs.writeFileSync(`${file}.tmp`, JSON.stringify(clean))
+      fs.renameSync(`${file}.tmp`, file)
+      return clean
+    },
+  }
+}
+
 export async function createDeskServer({
   port = DEFAULT_DESK_PORT,
   repoRoot = REPO_ROOT,
   supervise = true,
   startScreenPort = PREFERRED_START_SCREEN_PORT,
   logDir = path.join(os.homedir(), "Library", "Logs", "DesignLayer"),
+  // The app's folder, which also holds its Chrome profile (chrome-pipe.mjs).
+  stateDir = path.dirname(chromeProfileDir()),
   log = (line) => console.log(`${new Date().toISOString()} ${line}`),
   pickFolder: picker = pickFolder,
   activate = activateApp,
@@ -460,9 +525,21 @@ export async function createDeskServer({
 } = {}) {
   const supervisor = createSupervisor({ repoRoot, port: startScreenPort, logDir, enabled: supervise, log })
   const handoff = createHandoff()
+  const tabStore = createTabStore(path.join(stateDir, "desk-tabs.json"))
   const startedAt = Date.now()
   const iconsDir = path.join(HERE, "icons")
-  const origin = () => `http://${LOOPBACK}:${server.address().port}`
+  const origin = () => `http://${DESK_HOST}:${server.address().port}`
+  // The desk page itself, on either host name: an editor is a loopback origin
+  // too, and has no business writing the window's tabs.
+  const fromDeskPage = (req) => {
+    const from = req.headers.origin
+    if (from === undefined) return true
+    try {
+      return Number(new URL(from).port) === server.address().port
+    } catch {
+      return false
+    }
+  }
 
   /*
    * The Dock icon runs the shim with no arguments, so an app opened from the
@@ -520,11 +597,17 @@ export async function createDeskServer({
           restarts: s.restarts,
           detail: s.detail,
           editing: s.editing,
+          editors: s.editors,
         },
         app: { installed: shimInstalled(), windows: handoff.listening },
       })
     },
     "GET /api/editors": (_req, res) => sendJson(res, 200, { editors: normalizeEditors(listEditors()) }),
+    "GET /api/tabs": (_req, res) => sendJson(res, 200, tabStore.read() ?? {}),
+    "PUT /api/tabs": async (req, res) => {
+      if (!fromDeskPage(req)) return sendJson(res, 403, { error: "Only the desk page saves its tabs" })
+      sendJson(res, 200, tabStore.write(await readBody(req, 64 * 1024)))
+    },
     "POST /api/pick-folder": async (_req, res) => {
       const result = await picker()
       sendJson(res, result.error ? 500 : 200, result)
@@ -610,7 +693,7 @@ export async function createDeskServer({
   supervisor.start()
 
   return {
-    url: `http://${LOOPBACK}:${server.address().port}`,
+    url: origin(),
     port: server.address().port,
     supervisor,
     close() {

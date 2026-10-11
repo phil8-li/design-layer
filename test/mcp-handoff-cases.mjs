@@ -296,6 +296,11 @@ await check("a handoff request lands in the queue with its brief intact", async 
   assert.deepEqual(queued.files, ["src/app/overview.component.html"])
   assert.equal(queued.framework, "angular", "the agent is told which host it is editing")
   assert.equal(queued.handoffPath, reply.handoffPath, "the entry points at its own durable record")
+  // One endpoint serves every editor the start screen runs, so a change has to
+  // say which repo its relative paths belong to.
+  assert.equal(queued.projectRoot, nodePath.resolve(root), "the agent cannot tell which project this is for")
+  assert.ok(nodePath.isAbsolute(queued.projectRoot))
+  assert.equal(queued.app, nodePath.basename(root), "the app is named by its project folder")
 
   await fsp.rm(root, { recursive: true, force: true })
   shared.clear()
@@ -497,6 +502,29 @@ await check("wait_for_change blocks, then returns what the button pushed", async
   assert.match(payload.changes[0].brief, /overview\.html/, "the brief must survive the trip verbatim")
   assert.deepEqual(payload.changes[0].files, ["src/app/overview.html"])
   assert.ok(since(start) < 3000, `returned in ${since(start)}ms`)
+})
+
+await check("each change tells the agent which project folder it is for", async () => {
+  drain()
+  queue.push({ origin: "prompts", prompt: "1 note", brief: "### a.tsx", files: ["src/a.tsx"], projectRoot: "/work/shop", app: "shop" })
+  queue.push({ origin: "prompts", prompt: "1 note", brief: "### b.tsx", files: ["src/b.tsx"], projectRoot: "/work/docs", app: "docs" })
+  const { payload } = await callTool("wait_for_change", { timeoutSeconds: 2, batchWindowSeconds: 0 })
+  assert.deepEqual(
+    payload.changes.map((change) => [change.app, change.projectRoot]),
+    [["shop", "/work/shop"], ["docs", "/work/docs"]],
+    "two projects in one batch could not be told apart"
+  )
+  assert.match(payload.next, /projectRoot/, "the agent is not told to work in each change's folder")
+  const tools = (await rpc({ jsonrpc: "2.0", id: 4, method: "tools/list" })).body.result.tools
+  assert.match(tools.find((tool) => tool.name === "wait_for_change").description, /projectRoot/)
+  drain()
+
+  // A change from an older editor with no root still reads, as null.
+  queue.push({ prompt: "make it red" })
+  const bare = await callTool("list_changes")
+  assert.equal(bare.payload.changes[0].projectRoot, null)
+  assert.equal(bare.payload.changes[0].app, null)
+  drain()
 })
 
 await check("a send with a session prompt tells the agent to open a new session with it", async () => {

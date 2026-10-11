@@ -23,6 +23,7 @@ import {
   resolveDesignSystemConfig,
 } from "./server/design-system-config.mjs"
 import { resolveIconSetConfig } from "./server/icon-set.mjs"
+import { appName } from "./runtime/app-name.mjs"
 import { findConfigFile } from "./runtime/config-file.mjs"
 
 export { CONFIG_FILE_NAMES, findConfigFile } from "./runtime/config-file.mjs"
@@ -598,19 +599,15 @@ export async function loadConfig({ configPath, cwd = process.cwd(), overrides = 
 }
 
 /**
- * What the host project calls itself, for the chrome that has to name the app
- * on screen before it has asked the server anything.
- *
- * A name and not the folder it lives in. The prelude has never carried a source
- * path and this is not the reason to start: a package name is what a person
- * calls the project, while the path is a fact about this machine that the page
- * has no use for and no business holding. A project with no package.json, or
- * none with a name in it, gets null rather than the folder's basename — that is
- * the path again, one hop shorter.
+ * What the chrome calls the host project before it has asked the server
+ * anything: its folder, by the one rule every surface uses
+ * (runtime/app-name.mjs). Copies of one template share a package name, so the
+ * package name named the wrong app as often as the right one. The prelude
+ * still carries no path: only the last segment travels.
  */
-function hostPackageName(projectRoot) {
+function hostAppName(projectRoot) {
   const name = readManifest(projectRoot)?.name
-  return typeof name === "string" && name.length > 0 ? name : null
+  return appName({ projectRoot, packageName: typeof name === "string" ? name : null })
 }
 
 /**
@@ -685,7 +682,7 @@ export function browserPrelude(config, runtime = {}) {
     // a path is a fact about the machine the page is not owed.
     app: {
       url: Number.isFinite(runtime.appPort) ? `http://127.0.0.1:${runtime.appPort}` : null,
-      name: hostPackageName(config.projectRoot),
+      name: hostAppName(config.projectRoot),
     },
   }
 

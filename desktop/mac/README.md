@@ -2,7 +2,7 @@
 
 A Dock app for DesignLayer that installs on macOS without compiling or signing anything.
 
-- **Desk server** (`desk-server.mjs`): runs on `127.0.0.1:3454`, loopback only. A user LaunchAgent (`dev.designlayer.desk`) starts it at login. It keeps the start screen (`cli.mjs --start --no-open`, port 3455) running and restarts it with backoff if it dies. If a start screen is already running on 3455, the desk uses that one and never kills it.
+- **Desk server** (`desk-server.mjs`): listens on `127.0.0.1:3454`, loopback only, and the window loads it as `http://localhost:3454`. A user LaunchAgent (`dev.designlayer.desk`) starts it at login. It keeps the start screen (`cli.mjs --start --no-open`, port 3455) running and restarts it with backoff if it dies. If a start screen is already running on 3455, the desk uses that one and never kills it.
 - **Window**: a Chrome-installed web app (PWA) named DesignLayer, kept in its own Chrome profile. It shows a tab strip in the title bar: Home (the start screen), your open editors, a dashed offer for each other running editor (from `runtime/editor-registry.mjs`), and `+`.
 
 ## Install, status, uninstall
@@ -17,7 +17,7 @@ node desktop/mac/install.mjs --app-window      # fallback window, see below
 node desktop/mac/install.mjs --uninstall --yes # remove the LaunchAgent, the app and its Chrome profile
 ```
 
-Running the installer again is safe. It rewrites the plist, restarts the desk, and keeps the existing app registration. If the app is open, the installer and `--uninstall` quit it first: they stop only the Chrome instance whose command line names the app's own profile, never your browser.
+Running the installer again is safe. It rewrites the plist, restarts the desk, and keeps the existing app registration. An app installed from `http://127.0.0.1:3454/` (before the window moved to localhost) is a different app to Chrome: the installer removes it and installs the one from `http://localhost:3454/`, and the window's tabs come back from the desk's copy. If the app is open, the installer and `--uninstall` quit it first: they stop only the Chrome instance whose command line names the app's own profile, never your browser.
 
 Tests: `node desktop/mac/test/desk-cases.mjs`. Icons: `icons/app-icon.svg` is the Dock icon and `runtime/favicon.svg` the tab icon. `node desktop/mac/make-icons.mjs` renders the first to the manifest's PNGs in a headless Playwright Chromium and copies the second to `icons/mark.svg`. An installed app keeps the icon it was installed with: delete `~/Applications/Chrome Apps.localized/DesignLayer.app` and run the installer again to reinstall it with the new one.
 
@@ -33,8 +33,11 @@ The PWA is installed over Chrome's DevTools pipe (`--remote-debugging-pipe --ena
 
 ## How the window works
 
-- The start screen and the editor proxies send no `X-Frame-Options` or `frame-ancestors` header (checked in `runtime/`, `server/` and `react-rewrite-cli`), so each one loads directly in an iframe. No reverse proxy is needed. They are all on 127.0.0.1, so they are same-site with the desk and keep the same storage they have in a normal tab.
-- Pressing Start in a Home tab turns that tab into the editor, the same way it does in a browser. The desk renames the tab to the editor's name rather than opening a second copy.
+- The start screen and the editor proxies send no `X-Frame-Options` or `frame-ancestors` header (checked in `runtime/`, `server/` and `react-rewrite-cli`), so each one loads directly in an iframe. No reverse proxy is needed. They are all framed on localhost, the host name apps treat as their dev host, and the desk page is on localhost too. That makes every frame same-site with the desk, so an app's `SameSite=Lax` sign-in cookie reaches it. While the page was on 127.0.0.1 the frames were cross-site, and such apps showed as signed out.
+- Choosing an app in a Home tab selects the tab already showing that app's editor and closes the Home tab. When no tab shows it, the Home tab becomes that editor's tab.
+- Choosing another app inside an editor never replaces that editor, which could lose its unapplied edits. The desk selects the tab already showing the other app, or opens it in a new tab beside this one.
+- Each editor has one tab. As the window opens, an editor tab loads once, on the page its app was last used on: it waits up to 1.5 s for the desk's editor list before it loads anything.
+- Tabs are saved in the page's storage and mirrored to the desk (`GET`/`PUT /api/tabs`, in `~/Library/Application Support/DesignLayer/desk-tabs.json`). Storage belongs to an origin, so a window that opens with nothing saved, such as the first one on localhost, takes the desk's copy once.
 - Any editor already running appears as a dashed "offer" tab. Click it to open it. Offered editors are never opened for you, because an editor's socket takes one client: opening it here disconnects any other window showing it.
 - Shortcuts: ⌘1–9 switch tabs, ⌘T opens a new Home tab, ⌘W closes a tab. They only work when focus is on the tab strip or the desk page, because a cross-origin frame keeps its own keystrokes. Chrome can also reserve ⌘T and ⌘W for itself.
 - Title bar: the tabs always sit in the title bar (Window Controls Overlay), with no Chrome toggle to move them out, and Extensions lives in the ⋮ menu instead of beside it. That takes the app's Chrome running with `--enable-features=DesktopPWAsWindowControlsOverlayWithNoToggle,DesktopPWAsElidedExtensionsMenu`, which Chrome reads only at launch. The installer and the desk pass it whenever they open the app (`open <shim> --args …`; the shim hands `--enable-features` on to the Chrome it starts). The Dock icon passes nothing, so when the app was opened from the Dock the desk restarts it once with the flag as its window connects: the window closes and reopens with its tabs. The ⋮ menu stays: Chrome draws it for every installed app on the Mac.
@@ -45,7 +48,7 @@ The PWA is installed over Chrome's DevTools pipe (`--remote-debugging-pipe --ena
 
 An editor in an ordinary browser tab shows an **Open in Mac app** banner at the bottom of its left panel. Clicking it moves that page into the app:
 
-1. The editor POSTs its URL to `http://127.0.0.1:3454/api/open`. The body is JSON sent as `text/plain`, so the cross-origin request needs no preflight. The desk echoes CORS only to loopback origins and refuses anything that is not an http page on this Mac.
+1. The editor POSTs its URL to `http://localhost:3454/api/open`. The body is JSON sent as `text/plain`, so the cross-origin request needs no preflight. The desk echoes CORS only to loopback origins and refuses anything that is not an http page on this Mac.
 2. The desk passes the URL to the app window over `GET /api/events` (server-sent events). If the window is closed, the desk holds the URL for up to 60 seconds and gives it to the first window that connects. A desk page open in an ordinary browser tab only gets a URL when no app window is open.
 3. The desk runs `open` on the app shim to bring the window forward, or to launch it. With the `--app-window` fallback there is no shim, so it starts that Chrome window only when none is open.
 4. The window opens the page in the tab that already shows that editor, or in a new tab. Taking the editor's socket disconnects the browser tab.
@@ -57,7 +60,7 @@ The banner appears only when both of these are true:
 
 ## Limits and fallback
 
-- **If the Chrome app shim cannot be created or opened**, use `install.mjs --app-window` instead: it opens `Chrome --app=http://127.0.0.1:3454/ --user-data-dir=<the same profile>`, which runs Chrome directly and needs no shim.
+- **If the Chrome app shim cannot be created or opened**, use `install.mjs --app-window` instead: it opens `Chrome --app=http://localhost:3454/ --user-data-dir=<the same profile>`, which runs Chrome directly and needs no shim.
 - **Homebrew node upgrades**: the plist uses the stable `/opt/homebrew/bin/node` symlink rather than the versioned Cellar path, so `brew upgrade node` needs no reinstall.
 - The window needs the desk server. When the server is down, the service worker shows an offline page with the command to start it.
 

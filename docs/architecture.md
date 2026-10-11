@@ -93,13 +93,15 @@ saves a run and `--compare <name>` prints the speedup against a saved one.
 ## Layout
 
 ```
-cli.mjs                     argv contract, entry point, and the app supervisor
+cli.mjs                     argv contract, entry point, and the app supervisor (one editor per app)
 config.mjs                  defaults, discovery, resolution, browser prelude, host detection
 build.mjs                   bundles src/ into dist/designlayer.js, dist/toaster.js and dist/tokens.mjs
-runtime/start-screen.mjs    the loopback server behind the no-arguments flow
+runtime/start-screen.mjs    the loopback server behind the no-arguments flow, and its editors by id
 runtime/start-screen-page.mjs   its document, and the script that drives it
 runtime/start-screen-style.mjs  its stylesheet, built from the editor's tokens
 runtime/local-apps.mjs      port scan, project inspection, folder listing
+runtime/editor-ports.mjs    each app's proxy and socket ports, remembered across restarts
+runtime/last-pages.mjs      the page each app was last used on, one file per app
 runtime/mcp-hub.mjs         the start screen's MCP endpoint, for "Stay on between apps"
 runtime/launcher.mjs        vendor resolution, monkey-patches, route mount, the cached overlay
 runtime/bundle-stamp.mjs    what the last build compiled from, so a launch can skip the check

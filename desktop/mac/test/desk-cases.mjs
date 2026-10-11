@@ -125,10 +125,12 @@ function stream(port, query = "") {
 
 let pickerCalls = 0
 const activations = []
+const stateDir = path.join(tempHome, "state")
 const desk = await createDeskServer({
   port: 0,
   supervise: false,
   logDir: path.join(tempHome, "logs"),
+  stateDir,
   log: () => {},
   pickFolder: async () => {
     pickerCalls += 1
@@ -288,8 +290,10 @@ await check("editors: live entries are normalized, dead ones swept", async () =>
   assert.deepEqual(
     res.json.editors.map(({ name, url, projectRoot, pid, alive }) => ({ name, url, projectRoot, pid, alive })),
     [
-      { name: "demo-app", url: "http://127.0.0.1:4100", projectRoot: "/tmp/demo-app", pid: process.pid, alive: true },
-      { name: "no-name", url: "http://127.0.0.1:4200", projectRoot: "/tmp/no-name", pid: process.pid, alive: true },
+      // On localhost, the host name editors are opened on, whichever spelling
+      // the registry entry used.
+      { name: "demo-app", url: "http://localhost:4100", projectRoot: "/tmp/demo-app", pid: process.pid, alive: true },
+      { name: "no-name", url: "http://localhost:4200", projectRoot: "/tmp/no-name", pid: process.pid, alive: true },
     ]
   )
   assert.equal(fs.existsSync(path.join(dir, "4300.json")), false, "dead entry should be swept")
@@ -312,6 +316,31 @@ await check("pick-folder POST reports a cancelled dialog", async () => {
   assert.equal(res.status, 200)
   assert.deepEqual(res.json, { cancelled: true })
   assert.equal(pickerCalls, 1)
+})
+
+await check("the desk keeps a copy of the window's tabs, written only by the desk page on either host name", async () => {
+  const empty = await request(port, { pathname: "/api/tabs" })
+  assert.equal(empty.status, 200)
+  assert.deepEqual(empty.json, {})
+  const tabs = { tabs: [{ id: "h1", kind: "home" }, { id: "a", kind: "editor", url: "http://localhost:4101", junk: 1 }], active: "a", dismissed: [] }
+  const put = (body, origin) =>
+    request(port, { method: "PUT", pathname: "/api/tabs", headers: origin ? { origin } : {}, body: JSON.stringify(body) })
+  assert.equal((await put(tabs, "http://localhost:4101")).status, 403, "an editor rewrote the window's tabs")
+  assert.equal((await put({ nope: 1 }, `http://localhost:${port}`)).status, 400)
+  assert.equal((await put(tabs, `http://127.0.0.1:${port}`)).status, 200, "the page on its old origin could not save")
+  assert.equal((await put(tabs, `http://localhost:${port}`)).status, 200)
+  const back = (await request(port, { pathname: "/api/tabs" })).json
+  assert.deepEqual(back.tabs.map((t) => t.id), ["h1", "a"])
+  assert.equal(back.tabs[1].junk, undefined)
+  assert.equal(back.active, "a")
+  // In the app's own folder, not in a project.
+  assert.ok(fs.existsSync(path.join(stateDir, "desk-tabs.json")))
+})
+
+await check("the desk answers on localhost and hands out a localhost address", async () => {
+  assert.equal(desk.url, `http://localhost:${port}`)
+  const res = await request(port, { pathname: "/api/health", headers: { host: `localhost:${port}` } })
+  assert.equal(res.status, 200)
 })
 
 await check("unknown routes are 404", async () => {
@@ -379,13 +408,14 @@ await check("with no window up, the page is held, the app is raised, and the fir
   assert.equal(res.json.ok, true)
   assert.equal(res.json.delivered, 0)
   assert.equal(res.json.launched, true)
-  // One spelling of this machine, so the frame is same-site with the desk.
-  assert.equal(res.json.url, "http://127.0.0.1:3466/studio?tab=agents")
-  assert.deepEqual(activations, [{ deskUrl: `http://127.0.0.1:${port}`, listening: 0 }])
+  // One spelling of this machine: localhost, which apps treat as their dev host.
+  assert.equal(res.json.url, "http://localhost:3466/studio?tab=agents")
+  // The window is on localhost, the site of the editors it frames.
+  assert.deepEqual(activations, [{ deskUrl: `http://localhost:${port}`, listening: 0 }])
   const first = await stream(port, "?window=app")
   await until(() => first.events.length === 1)
   assert.equal(first.events[0].event, "open-url")
-  assert.equal(first.events[0].data.url, "http://127.0.0.1:3466/studio?tab=agents")
+  assert.equal(first.events[0].data.url, "http://localhost:3466/studio?tab=agents")
   const second = await stream(port, "?window=app")
   await sleep(50)
   assert.equal(second.events.length, 0, "a held page was handed out twice")
@@ -402,10 +432,10 @@ await check("a window that is up gets the page at once, and activate:false raise
   assert.equal(quiet.json.launched, false)
   assert.equal(activations.length, before)
   await until(() => window.events.length === 1)
-  assert.equal(window.events[0].data.url, `${EDITOR}/studio`)
+  assert.equal(window.events[0].data.url, "http://localhost:3466/studio")
   // Raising is the default, and it is told a window is already listening.
   await post({ url: `${EDITOR}/other` })
-  assert.deepEqual(activations.at(-1), { deskUrl: `http://127.0.0.1:${port}`, listening: 1 })
+  assert.deepEqual(activations.at(-1), { deskUrl: `http://localhost:${port}`, listening: 1 })
   window.close()
   await until(async () => (await health()).app.windows === 0)
 })
@@ -438,6 +468,35 @@ await check("a held page expires instead of ambushing a later launch", async () 
   assert.match(writes[0], /^event: open-url\ndata: \{.*"url":"http:\/\/127\.0\.0\.1:3466\/new"/)
   assert.doesNotMatch(writes[0], /\/old/)
   off()
+})
+
+// The start screen runs an editor per app; `editing` names only the latest.
+await check("health lists every editor the start screen runs, and keeps editing", async () => {
+  const running = [
+    { id: "a", state: "ready", name: "shop", appUrl: "http://localhost:5173", appPort: 5173, projectRoot: "/p/shop", packageName: "web", url: "http://localhost:3456/cart" },
+    { id: "b", state: "starting", name: "docs", appUrl: "http://localhost:5174", appPort: 5174, projectRoot: "/p/docs", packageName: "web", url: null },
+  ]
+  const screen = http.createServer((_req, res) => {
+    res.setHeader("content-type", "application/json")
+    res.end(JSON.stringify({ ready: false, url: null, editing: null, stopped: null, editors: running }))
+  })
+  await new Promise((resolve) => screen.listen(0, "127.0.0.1", resolve))
+  const supervised = await createDeskServer({
+    port: 0,
+    startScreenPort: screen.address().port,
+    logDir: path.join(tempHome, "logs"),
+    log: () => {},
+    activate: () => true,
+  })
+  try {
+    const res = await request(supervised.port, { pathname: "/api/health" })
+    assert.equal(res.json.startScreen.ready, true)
+    assert.deepEqual(res.json.startScreen.editors, running)
+    assert.equal(res.json.startScreen.editing, null, "the most recent choice is still starting")
+  } finally {
+    await supervised.close()
+    await new Promise((resolve) => screen.close(resolve))
+  }
 })
 
 await desk.close()
@@ -546,7 +605,8 @@ await check("a handed-over page opens in a named frame, and the next one for tha
     const hand = (url) => streams[0].listeners["open-url"]({ data: JSON.stringify({ id: 1, url }) })
 
     hand("http://127.0.0.1:4100/studio")
-    const frame = [...doc.querySelectorAll("iframe")].find((f) => f.src === "http://127.0.0.1:4100/studio")
+    // Framed on localhost, whichever spelling the page was handed with.
+    const frame = [...doc.querySelectorAll("iframe")].find((f) => f.src === "http://localhost:4100/studio")
     assert.ok(frame, "no frame loaded the handed-over page")
     assert.match(frame.name, /^designlayer-desk:/, "the editor inside cannot tell it is in the app")
     assert.equal(frame.hidden, false, "the new tab is not the one showing")
@@ -556,11 +616,669 @@ await check("a handed-over page opens in a named frame, and the next one for tha
 
     hand("http://127.0.0.1:4100/settings")
     assert.equal(doc.querySelectorAll("iframe").length, frames, "the same editor got a second tab")
-    assert.equal(frame.src, "http://127.0.0.1:4100/settings")
+    assert.equal(frame.src, "http://localhost:4100/settings")
     const saved = JSON.parse(dom.window.localStorage.getItem("designlayer.desk.tabs.v1"))
-    assert.equal(saved.tabs.find((t) => t.url === "http://127.0.0.1:4100").src, "http://127.0.0.1:4100/settings")
+    assert.equal(saved.tabs.find((t) => t.url === "http://localhost:4100").src, "http://localhost:4100/settings")
   } finally {
     dom.window.close()
+  }
+})
+
+// Copies of one template share a home page, so an editor tab opened on the
+// root looks like a different app. It opens on the page that app was last on.
+await check("an offered editor opens on the page its app was last used on", async () => {
+  const { JSDOM } = await import("jsdom")
+  const { shellPage } = await import("../shell-page.mjs")
+  const dom = new JSDOM(shellPage({ repoRoot: "/r" }), {
+    url: "http://127.0.0.1:3454/",
+    runScripts: "dangerously",
+    beforeParse(window) {
+      window.fetch = async (url) => ({
+        json: async () =>
+          String(url).includes("/api/editors")
+            ? { editors: [{ name: "shop-web", url: "http://127.0.0.1:4100", page: "/#/cart?step=2", pid: 7, projectRoot: "/p" }] }
+            : { ok: true, startScreen: { ready: true, url: "http://127.0.0.1:3455" } },
+      })
+      window.matchMedia = () => ({ matches: false })
+      window.EventSource = class {
+        addEventListener() {}
+      }
+    },
+  })
+  try {
+    const doc = dom.window.document
+    await sleep(30)
+    doc.querySelector(".tab.offer").click()
+    const srcs = [...doc.querySelectorAll("iframe")].map((f) => f.src)
+    assert.ok(srcs.includes("http://localhost:4100/#/cart?step=2"), `no frame on the remembered page: ${srcs}`)
+  } finally {
+    dom.window.close()
+  }
+})
+
+// A switch made in one tab starts a new editor on the same port. Another tab
+// on that port still showed the app just left, or a refused connection.
+await check("a background tab on a restarted editor loads the new app's page when opened", async () => {
+  const { JSDOM } = await import("jsdom")
+  const { shellPage } = await import("../shell-page.mjs")
+  const dom = new JSDOM(shellPage({ repoRoot: "/r" }), {
+    url: "http://127.0.0.1:3454/",
+    runScripts: "dangerously",
+    beforeParse(window) {
+      window.localStorage.setItem(
+        "designlayer.desk.tabs.v1",
+        JSON.stringify({
+          tabs: [{ id: "h1", kind: "home" }, { id: "e1", kind: "editor", url: "http://127.0.0.1:4100", name: "old", key: "http://localhost:4100#6" }],
+          active: "h1",
+        })
+      )
+      window.fetch = async (url) => ({
+        json: async () =>
+          String(url).includes("/api/editors")
+            ? { editors: [{ name: "pinned", url: "http://localhost:4100", page: "/#/agents/a1", pid: 7, projectRoot: "/p/pinned" }] }
+            : { ok: true, startScreen: { ready: true, url: "http://127.0.0.1:3455" } },
+      })
+      window.matchMedia = () => ({ matches: false })
+      window.EventSource = class {
+        addEventListener() {}
+      }
+    },
+  })
+  try {
+    await sleep(30)
+    const frame = dom.window.document.querySelector('iframe[data-id="e1"]')
+    // Emptied while hidden: loading it would take the editor's one socket
+    // from the tab in use.
+    assert.equal(frame.src, "about:blank")
+    const tab = dom.window.document.querySelectorAll(".tab")[1]
+    assert.equal(tab.querySelector(".label").textContent, "pinned")
+    tab.click()
+    assert.equal(frame.src, "http://localhost:4100/#/agents/a1")
+  } finally {
+    dom.window.close()
+  }
+})
+
+// A tab saved on the editor's bare root reopens on its app's last page: the
+// root is the home page every copy of a template shares.
+await check("a tab reopens on its app's last page, over the page saved with it", async () => {
+  const { JSDOM } = await import("jsdom")
+  const { shellPage } = await import("../shell-page.mjs")
+  const dom = new JSDOM(shellPage({ repoRoot: "/r" }), {
+    url: "http://127.0.0.1:3454/",
+    runScripts: "dangerously",
+    beforeParse(window) {
+      window.localStorage.setItem(
+        "designlayer.desk.tabs.v1",
+        JSON.stringify({
+          // Saved on another app's page by a window that quit before its storage
+          // caught up.
+          tabs: [{ id: "e1", kind: "editor", url: "http://localhost:4100", src: "http://localhost:4100/#/models", name: "vision", key: "http://localhost:4100#7" }],
+          active: "e1",
+        })
+      )
+      window.fetch = async (url) => ({
+        json: async () =>
+          String(url).includes("/api/editors")
+            ? { editors: [{ name: "pinned", url: "http://localhost:4100", page: "/#/agents/a1", pid: 7, projectRoot: "/p/pinned" }] }
+            : { ok: true, startScreen: { ready: true, url: "http://127.0.0.1:3455" } },
+      })
+      window.matchMedia = () => ({ matches: false })
+      window.EventSource = class {
+        addEventListener() {}
+      }
+    },
+  })
+  try {
+    await sleep(30)
+    assert.equal(dom.window.document.querySelector('iframe[data-id="e1"]').src, "http://localhost:4100/#/agents/a1")
+    // The first list only: later lists leave a tab the person moved alone.
+    const saved = JSON.parse(dom.window.localStorage.getItem("designlayer.desk.tabs.v1"))
+    assert.equal(saved.tabs[0].src, "http://localhost:4100/#/agents/a1")
+  } finally {
+    dom.window.close()
+  }
+})
+
+/*
+ * The frame says which app it shows. A Home tab that started an editor used to
+ * keep the name "Home" whenever the window lacked focus or another tab was on
+ * the same editor, and an editor tab kept the name of the app before a switch.
+ */
+await check("a tab is named by the app its frame says it shows", async () => {
+  const { JSDOM } = await import("jsdom")
+  const { shellPage } = await import("../shell-page.mjs")
+  const dom = new JSDOM(shellPage({ repoRoot: "/r" }), {
+    url: "http://127.0.0.1:3454/",
+    runScripts: "dangerously",
+    beforeParse(window) {
+      window.localStorage.setItem(
+        "designlayer.desk.tabs.v1",
+        JSON.stringify({
+          tabs: [
+            { id: "h1", kind: "home" },
+            { id: "e1", kind: "editor", url: "http://localhost:4100", name: "old-app", key: "http://localhost:4100#7" },
+          ],
+          active: "h1",
+        })
+      )
+      window.fetch = async (url) => ({
+        json: async () =>
+          String(url).includes("/api/editors")
+            ? { editors: [{ name: "pinned", url: "http://localhost:4100", pid: 7, projectRoot: "/p/pinned" }] }
+            : { ok: true, startScreen: { ready: true, url: "http://127.0.0.1:3455" } },
+      })
+      window.matchMedia = () => ({ matches: false })
+      window.EventSource = class {
+        addEventListener() {}
+      }
+    },
+  })
+  try {
+    const win = dom.window
+    await sleep(30)
+    const say = (id, data, origin = "http://localhost:4100") =>
+      win.dispatchEvent(
+        new win.MessageEvent("message", {
+          data: { type: "designlayer-desk:showing", ...data },
+          origin,
+          source: win.document.querySelector(`iframe[data-id="${id}"]`).contentWindow,
+        })
+      )
+    // The Home tab pressed Start: it is now that editor's tab, under the app's
+    // name, on the page it shows, and the older tab on the same editor is gone.
+    say("h1", { name: "pinned", page: "/#/agents/a1" })
+    const labels = () => [...win.document.querySelectorAll(".tab .label")].map((node) => node.textContent)
+    assert.deepEqual(labels(), ["pinned"])
+    const saved = JSON.parse(win.localStorage.getItem("designlayer.desk.tabs.v1"))
+    assert.deepEqual(
+      saved.tabs.map(({ id, kind, url, src, name }) => ({ id, kind, url, src, name })),
+      [{ id: "h1", kind: "editor", url: "http://localhost:4100", src: "http://localhost:4100/#/agents/a1", name: "pinned" }]
+    )
+    assert.equal(win.document.title, "pinned — DesignLayer")
+
+    // A switch made inside the frame renames the tab.
+    say("h1", { name: "docs", page: "/guide" })
+    assert.deepEqual(labels(), ["docs"])
+
+    // A message from anywhere but this machine, or from no tab's frame, is ignored.
+    say("h1", { name: "evil", page: "/" }, "https://example.test")
+    assert.deepEqual(labels(), ["docs"])
+    win.dispatchEvent(new win.MessageEvent("message", { data: { type: "designlayer-desk:showing", name: "stray", page: "/" }, origin: "http://localhost:4100" }))
+    assert.deepEqual(labels(), ["docs"])
+  } finally {
+    dom.window.close()
+  }
+})
+
+/**
+ * The desk page with an editor per app, each on its own port. `lists` are the
+ * editor lists the desk answers, one per poll, the last repeating; null is a
+ * desk that refuses the connection, "hang" one that never answers. The page
+ * polls when a case calls poll(), not on its 2 s timer. `remote` is the copy
+ * of the tabs the desk keeps (GET /api/tabs), and `puts` what the page saved
+ * there. `url` is the desk page's own address: localhost since the window
+ * moved there, 127.0.0.1 for a window installed before.
+ */
+async function multiDesk({ tabs, active, lists, remote, url: pageUrl = "http://127.0.0.1:3454/", setup }) {
+  const { JSDOM } = await import("jsdom")
+  const { shellPage } = await import("../shell-page.mjs")
+  let polls = 0
+  let poller = null
+  const streams = []
+  const puts = []
+  const dom = new JSDOM(shellPage({ repoRoot: "/r" }), {
+    url: pageUrl,
+    runScripts: "dangerously",
+    beforeParse(window) {
+      if (tabs) window.localStorage.setItem("designlayer.desk.tabs.v1", JSON.stringify({ tabs, active }))
+      setup?.(window)
+      window.fetch = async (url, init) => {
+        const list = lists[Math.min(polls, lists.length - 1)]
+        if (String(url).includes("/api/tabs")) {
+          if (init?.method === "PUT") {
+            puts.push(JSON.parse(init.body))
+            return { json: async () => ({}) }
+          }
+          if (list === null) throw new Error("connection refused")
+          return { json: async () => remote ?? {} }
+        }
+        // The page asks for health and then the list in one turn: one poll.
+        if (String(url).includes("/api/editors")) polls += 1
+        if (list === null) throw new Error("connection refused")
+        if (list === "hang") return new Promise(() => {})
+        return {
+          json: async () =>
+            String(url).includes("/api/editors") ? { editors: list } : { ok: true, startScreen: { ready: true, url: "http://127.0.0.1:3455" } },
+        }
+      }
+      const every = window.setInterval.bind(window)
+      window.setInterval = (fn, ms) => (ms === 2000 ? ((poller = fn), 0) : every(fn, ms))
+      window.matchMedia = () => ({ matches: false })
+      window.EventSource = class {
+        constructor() {
+          streams.push(this)
+        }
+        addEventListener(type, fn) {
+          this[type] = fn
+        }
+      }
+    },
+  })
+  const win = dom.window
+  const doc = win.document
+  await sleep(30)
+  const frame = (id) => doc.querySelector(`iframe[data-id="${id}"]`)
+  return {
+    win,
+    doc,
+    frame,
+    srcs: () => Object.fromEntries([...doc.querySelectorAll("iframe")].map((f) => [f.dataset.id, f.src])),
+    labels: () => [...doc.querySelectorAll(".tab:not(.offer) .label")].map((node) => node.textContent),
+    offered: () => [...doc.querySelectorAll(".tab.offer .label")].map((node) => node.textContent),
+    selected: () => doc.querySelector('.tab[aria-selected="true"] .label').textContent,
+    saved: () => JSON.parse(win.localStorage.getItem("designlayer.desk.tabs.v1")),
+    puts,
+    booting: () => !doc.getElementById("boot").hidden,
+    async poll() {
+      poller()
+      await sleep(10)
+    },
+    say(id, data, origin) {
+      win.dispatchEvent(new win.MessageEvent("message", { data, origin, source: id ? frame(id).contentWindow : null }))
+    },
+    hand: (url) => streams[0]["open-url"]({ data: JSON.stringify({ id: 1, url }) }),
+    press: (init) => win.dispatchEvent(new win.KeyboardEvent("keydown", { bubbles: true, cancelable: true, metaKey: true, ...init })),
+    close: () => win.close(),
+  }
+}
+
+const SHOP = { name: "shop", url: "http://localhost:4101", pid: 1, projectRoot: "/p/shop" }
+const DOCS = { name: "docs", url: "http://localhost:4102", pid: 2, projectRoot: "/p/docs" }
+const STUDIO = { name: "studio", url: "http://localhost:4103", pid: 3, projectRoot: "/p/studio" }
+const tabOn = (id, e, extra = {}) => ({ id, kind: "editor", url: e.url, name: e.name, key: `${e.url}#${e.pid}`, ...extra })
+
+/*
+ * Every app has its own editor, so a frame that chose an app is shown that
+ * app's tab. Navigating itself instead left the editor it showed with no tab,
+ * or put a second tab on an editor whose socket takes one client.
+ */
+await check("go from a Home tab: an app with a tab is selected and the Home tab closes, one without loads in the Home tab", async () => {
+  const d = await multiDesk({
+    tabs: [{ id: "h1", kind: "home" }, tabOn("a", SHOP), tabOn("b", DOCS), { id: "h2", kind: "home" }],
+    active: "h1",
+    lists: [[SHOP, DOCS, STUDIO]],
+    url: "http://localhost:3454/",
+  })
+  try {
+    // The start screen is framed on localhost like the page, whatever address
+    // the desk reaches it on: one site, so its cookies and storage are its own.
+    assert.equal(d.frame("h1").src, "http://localhost:3455/")
+    assert.deepEqual(d.offered(), ["studio"])
+    const before = d.srcs()
+    d.say("h1", { type: "designlayer-desk:go", url: "http://localhost:4102/guide" }, "http://localhost:3455")
+    assert.equal(d.selected(), "docs")
+    assert.deepEqual(d.labels(), ["shop", "docs", "Home"])
+    assert.deepEqual(d.srcs(), { a: before.a, b: before.b, h2: before.h2 }, "a tab was reloaded")
+
+    // The old spelling of the start screen is the same sender.
+    d.say("h2", { type: "designlayer-desk:go", url: "http://127.0.0.1:4103/#/canvas" }, "http://127.0.0.1:3455")
+    assert.equal(d.selected(), "studio")
+    assert.deepEqual(d.labels(), ["shop", "docs", "studio"])
+    assert.deepEqual(d.srcs(), { a: before.a, b: before.b, h2: "http://localhost:4103/#/canvas" })
+    assert.deepEqual(d.offered(), [], "the editor that now has a tab is still offered")
+    assert.equal(d.saved().tabs[2].url, "http://localhost:4103")
+  } finally {
+    d.close()
+  }
+})
+
+/*
+ * Found in the real app: a tab whose editor had stopped still showed the
+ * refused connection, and the Home tab's go selected it before the next list
+ * said the port was back. The tab stayed on the error page.
+ */
+await check("go onto a stopped editor's tab loads the page it was sent, even before the next list", async () => {
+  const d = await multiDesk({
+    tabs: [tabOn("a", SHOP), tabOn("b", DOCS, { src: "http://localhost:4102/old" }), { id: "h1", kind: "home" }],
+    active: "h1",
+    // The list still names only shop: docs stopped and its new editor is not listed yet.
+    lists: [[SHOP]],
+    url: "http://localhost:3454/",
+  })
+  try {
+    const before = d.srcs()
+    d.say("h1", { type: "designlayer-desk:go", url: "http://localhost:4102/#/guide" }, "http://localhost:3455")
+    assert.equal(d.selected(), "docs")
+    assert.equal(d.frame("b").src, "http://localhost:4102/#/guide", "the stopped tab kept its error page")
+    assert.equal(d.frame("a").src, before.a, "a live tab was reloaded")
+    assert.deepEqual(d.labels(), ["shop", "docs"])
+
+    // A tab already on the running editor is selected as it is.
+    const live = await multiDesk({
+      tabs: [tabOn("a", SHOP), tabOn("b", DOCS, { src: "http://localhost:4102/old" }), { id: "h1", kind: "home" }],
+      active: "h1",
+      lists: [[SHOP, DOCS]],
+      url: "http://localhost:3454/",
+    })
+    try {
+      const was = live.srcs().b
+      live.say("h1", { type: "designlayer-desk:go", url: "http://localhost:4102/#/guide" }, "http://localhost:3455")
+      assert.equal(live.selected(), "docs")
+      assert.equal(live.frame("b").src, was, "a live tab was reloaded")
+    } finally {
+      live.close()
+    }
+  } finally {
+    d.close()
+  }
+})
+
+// An editor tab replaced by another editor lost its unapplied edits, and its
+// own editor came back only as an offer.
+await check("go from an editor tab never replaces its editor: an app with a tab is selected, one without opens beside it", async () => {
+  const d = await multiDesk({
+    tabs: [tabOn("a", SHOP), tabOn("b", DOCS)],
+    active: "a",
+    lists: [[SHOP, DOCS]],
+  })
+  try {
+    const before = d.srcs()
+    d.say("a", { type: "designlayer-desk:go", url: "http://localhost:4102/guide" }, "http://localhost:4101")
+    assert.equal(d.selected(), "docs")
+    assert.deepEqual(d.srcs(), before, "a tab was reloaded")
+
+    // One the list does not name yet: a new tab, drawn new rather than stopped.
+    d.say("a", { type: "designlayer-desk:go", url: "http://127.0.0.1:4104/" }, "http://localhost:4101")
+    assert.deepEqual(d.labels(), ["shop", "localhost:4104", "docs"])
+    assert.equal(d.selected(), "localhost:4104")
+    assert.equal(d.frame("a").src, before.a, "the asking editor was navigated away")
+    assert.ok(Object.values(d.srcs()).includes("http://localhost:4104/"), "the new tab has no frame on the page")
+    assert.equal(d.doc.querySelectorAll(".tab")[1].classList.contains("dead"), false, "a tab not yet listed is drawn stopped")
+    await d.poll()
+    assert.deepEqual(d.offered(), [], "the asking editor lost its tab")
+
+    const settled = JSON.stringify([d.srcs(), d.labels(), d.selected()])
+    d.say(null, { type: "designlayer-desk:go", url: "http://localhost:4101/" }, "http://localhost:4102")
+    d.say("b", { type: "designlayer-desk:go", url: "http://localhost:4101/" }, "https://example.test")
+    d.say("b", { type: "designlayer-desk:go", url: "https://example.test/" }, "http://localhost:4102")
+    d.say("b", { type: "designlayer-desk:go", url: "javascript:alert(1)" }, "http://localhost:4102")
+    d.say("b", { type: "designlayer-desk:go", url: "http://127.0.0.1:3454/" }, "http://localhost:4102")
+    d.say("b", { type: "designlayer-desk:go", url: "http://localhost:3454/" }, "http://localhost:4102")
+    d.say("b", { type: "designlayer-desk:go", url: "http://localhost:3455/" }, "http://localhost:4102")
+    // The start screen speaks only from a Home tab.
+    d.say("b", { type: "designlayer-desk:go", url: "http://localhost:4101/" }, "http://localhost:3455")
+    assert.equal(JSON.stringify([d.srcs(), d.labels(), d.selected()]), settled, "a refused go changed the tabs")
+  } finally {
+    d.close()
+  }
+})
+
+await check("a Home tab that pressed Start becomes that editor's tab, and tabs on other editors are untouched", async () => {
+  const d = await multiDesk({
+    tabs: [tabOn("a", SHOP), { id: "h1", kind: "home" }, tabOn("b", DOCS), tabOn("c", STUDIO)],
+    active: "h1",
+    lists: [[SHOP, DOCS, STUDIO]],
+  })
+  try {
+    const before = d.srcs()
+    d.say("h1", { type: "designlayer-desk:showing", name: "studio", page: "/#/canvas" }, "http://localhost:4103")
+    // Only the older tab on the same editor merges away.
+    assert.deepEqual(d.labels(), ["shop", "studio", "docs"])
+    assert.deepEqual(d.srcs(), { a: before.a, h1: before.h1, b: before.b })
+    assert.equal(d.selected(), "studio")
+  } finally {
+    d.close()
+  }
+})
+
+// The tab kept the key of the editor it left, so the next list took the new
+// editor for a restart of that one and emptied the tab once it was hidden.
+await check("a tab that moved to another editor is not emptied by the next list", async () => {
+  const d = await multiDesk({
+    tabs: [{ id: "h1", kind: "home" }, tabOn("a", SHOP)],
+    active: "a",
+    lists: [[SHOP], [SHOP, DOCS]],
+  })
+  try {
+    d.say("a", { type: "designlayer-desk:showing", name: "docs", page: "/guide" }, "http://localhost:4102")
+    d.doc.querySelectorAll(".tab")[0].click()
+    await d.poll()
+    assert.notEqual(d.frame("a").src, "about:blank")
+    assert.deepEqual(d.labels(), ["Home", "docs"])
+    assert.deepEqual(d.offered(), ["shop"])
+  } finally {
+    d.close()
+  }
+})
+
+// A desk still coming up answers nothing; the first list that does arrive is
+// the one that moves each saved tab to its app's last page.
+await check("the first editor list that arrives moves every saved tab to its own app's last page", async () => {
+  const d = await multiDesk({
+    tabs: [tabOn("a", SHOP, { src: "http://localhost:4101/" }), tabOn("b", DOCS, { src: "http://127.0.0.1:4102/old" })],
+    active: "a",
+    lists: [null, [{ ...SHOP, page: "/#/cart" }, { ...DOCS, page: "/guide" }, STUDIO]],
+  })
+  try {
+    assert.deepEqual(d.srcs(), { a: "http://localhost:4101/", b: "http://localhost:4102/old" })
+    await d.poll()
+    assert.deepEqual(d.srcs(), { a: "http://localhost:4101/#/cart", b: "http://localhost:4102/guide" })
+    assert.deepEqual(d.offered(), ["studio"])
+  } finally {
+    d.close()
+  }
+})
+
+// The first render loaded each saved page, and the first list then loaded the
+// app's last page in the same frame.
+await check("each saved editor tab loads once as the window opens, on its app's last page", async () => {
+  const loads = []
+  const d = await multiDesk({
+    tabs: [{ id: "h1", kind: "home" }, tabOn("a", SHOP, { src: "http://localhost:4101/" }), tabOn("b", DOCS)],
+    active: "a",
+    lists: [[{ ...SHOP, page: "/#/cart" }, { ...DOCS, page: "/guide" }]],
+    setup(window) {
+      const proto = window.HTMLIFrameElement.prototype
+      const src = Object.getOwnPropertyDescriptor(proto, "src")
+      Object.defineProperty(proto, "src", {
+        configurable: true,
+        get: src.get,
+        set(value) {
+          loads.push([this.dataset.id, value])
+          src.set.call(this, value)
+        },
+      })
+    },
+  })
+  try {
+    assert.deepEqual(
+      loads.filter(([id]) => id !== "h1"),
+      [["a", "http://localhost:4101/#/cart"], ["b", "http://localhost:4102/guide"]]
+    )
+  } finally {
+    d.close()
+  }
+})
+
+await check("a desk that never answers holds the saved editor tabs back 1.5 s, then loads their saved pages", async () => {
+  const d = await multiDesk({
+    tabs: [tabOn("a", SHOP, { src: "http://localhost:4101/cart" })],
+    active: "a",
+    lists: ["hang"],
+  })
+  try {
+    assert.deepEqual(d.srcs(), {})
+    assert.equal(d.booting(), true, "an empty window with no word of what it waits for")
+    await sleep(1600)
+    assert.deepEqual(d.srcs(), { a: "http://localhost:4101/cart" })
+    assert.equal(d.booting(), false)
+  } finally {
+    d.close()
+  }
+})
+
+// The window moved from 127.0.0.1 to localhost, and storage belongs to an
+// origin: without the desk's copy the new window opened with one Home tab.
+await check("saved tabs survive the move to localhost: the old page mirrors them, the new one restores them once", async () => {
+  const old = await multiDesk({
+    tabs: [{ id: "h1", kind: "home" }, tabOn("a", SHOP, { src: "http://127.0.0.1:4101/old" })],
+    active: "a",
+    lists: [[SHOP]],
+  })
+  let copy
+  try {
+    assert.ok(old.puts.length >= 1, "the old page kept its tabs to itself")
+    copy = old.puts.at(-1)
+    assert.deepEqual(copy.tabs.map((t) => t.id), ["h1", "a"])
+    assert.equal(copy.active, "a")
+  } finally {
+    old.close()
+  }
+
+  const fresh = await multiDesk({ lists: [[{ ...SHOP, page: "/#/cart" }]], remote: copy, url: "http://localhost:3454/" })
+  try {
+    assert.deepEqual(fresh.labels(), ["Home", "shop"])
+    assert.equal(fresh.selected(), "shop")
+    assert.equal(fresh.frame("a").src, "http://localhost:4101/#/cart")
+    assert.deepEqual(fresh.saved().tabs.map((t) => t.id), ["h1", "a"])
+    assert.ok(fresh.puts.every((p) => p.tabs.some((t) => t.id === "a")), "a lone Home tab replaced the desk's copy")
+  } finally {
+    fresh.close()
+  }
+
+  // A desk that is down when the window opens: nothing is written until it answers.
+  const late = await multiDesk({ lists: [null, [SHOP]], remote: copy, url: "http://localhost:3454/" })
+  try {
+    assert.deepEqual(late.puts, [])
+    assert.equal(late.saved(), null)
+    await late.poll()
+    assert.deepEqual(late.labels(), ["Home", "shop"])
+    assert.ok(late.puts.every((p) => p.tabs.some((t) => t.id === "a")), "a lone Home tab replaced the desk's copy")
+  } finally {
+    late.close()
+  }
+})
+
+/*
+ * Measured in the real app: tabs closed a moment before quitting came back,
+ * because Chrome quit before it wrote the page's last change, and the page
+ * that opened next pushed that older copy over the desk's newer one.
+ */
+await check("a newer copy on the desk wins over older storage, and an older one does not", async () => {
+  const older = { tabs: [tabOn("a", SHOP), tabOn("b", DOCS), { id: "h1", kind: "home" }], active: "h1", savedAt: 100 }
+  const newer = { tabs: [tabOn("a", SHOP)], active: "a", savedAt: 200 }
+  const lost = await multiDesk({
+    url: "http://localhost:3454/",
+    lists: [[SHOP, DOCS]],
+    remote: newer,
+    setup: (window) => window.localStorage.setItem("designlayer.desk.tabs.v1", JSON.stringify(older)),
+  })
+  try {
+    // Only the shop tab, plus the offer for docs, which has no tab any more.
+    assert.equal(lost.doc.querySelectorAll(".tab:not(.offer)").length, 1)
+    assert.deepEqual(lost.saved().tabs.map((t) => t.id), ["a"], "the older storage won over the desk's newer copy")
+    assert.ok(lost.puts.every((p) => p.tabs.length === 1), "the older copy was pushed over the newer one")
+  } finally {
+    lost.close()
+  }
+
+  const kept = await multiDesk({
+    url: "http://localhost:3454/",
+    lists: [[SHOP, DOCS]],
+    remote: older,
+    setup: (window) => window.localStorage.setItem("designlayer.desk.tabs.v1", JSON.stringify(newer)),
+  })
+  try {
+    assert.deepEqual(kept.saved().tabs.map((t) => t.id), ["a"], "an older desk copy replaced newer storage")
+  } finally {
+    kept.close()
+  }
+})
+
+// Found in the real app after a restart: the tab in front showed the refused
+// connection, its editor came back, and the tab stayed on the error page.
+await check("the tab in front loads its editor when that editor comes back, once", async () => {
+  const back = { ...SHOP, pid: 9, page: "/#/cart" }
+  const d = await multiDesk({
+    tabs: [tabOn("a", SHOP), tabOn("b", DOCS)],
+    active: "a",
+    lists: [[DOCS], [DOCS], [back, DOCS], [back, DOCS]],
+    url: "http://localhost:3454/",
+  })
+  try {
+    const stopped = d.frame("a").src
+    await d.poll()
+    assert.equal(d.frame("a").src, stopped, "a tab with no editor was reloaded")
+    await d.poll()
+    assert.equal(d.frame("a").src, "http://localhost:4101/#/cart", "the tab in front stayed on the refused connection")
+    const loaded = d.frame("a").src
+    await d.poll()
+    assert.equal(d.frame("a").src, loaded, "the tab loaded twice")
+    assert.equal(d.frame("b").src.startsWith("http://localhost:4102"), true)
+  } finally {
+    d.close()
+  }
+})
+
+await check("a stopped editor's tab is drawn stopped while the others stay live, and ⌘1–9, ⌘W, ⌘T act on tabs", async () => {
+  const d = await multiDesk({
+    tabs: [{ id: "h1", kind: "home" }, tabOn("a", SHOP), tabOn("b", DOCS)],
+    active: "a",
+    lists: [[SHOP, DOCS], [DOCS]],
+  })
+  try {
+    await d.poll()
+    const [, a, b] = d.doc.querySelectorAll(".tab")
+    assert.equal(a.classList.contains("dead"), true)
+    assert.match(a.title, /\(stopped\)$/)
+    assert.equal(b.classList.contains("dead"), false)
+    assert.deepEqual(d.offered(), [])
+
+    d.press({ key: "3" })
+    assert.equal(d.selected(), "docs")
+    d.press({ key: "1" })
+    assert.equal(d.selected(), "Home")
+    d.press({ key: "9" })
+    assert.equal(d.selected(), "docs")
+    d.press({ key: "2" })
+    d.press({ key: "w" })
+    assert.deepEqual(d.labels(), ["Home", "docs"])
+    assert.equal(d.selected(), "docs")
+    d.press({ key: "t" })
+    assert.deepEqual(d.labels(), ["Home", "docs", "Home"])
+    assert.equal(d.doc.querySelectorAll(".tab")[2].getAttribute("aria-selected"), "true")
+  } finally {
+    d.close()
+  }
+})
+
+await check("Open in Mac app for a second editor opens its own tab, and a tab emptied in the background loads once", async () => {
+  const d = await multiDesk({
+    tabs: [{ id: "h1", kind: "home" }, tabOn("a", SHOP)],
+    active: "h1",
+    lists: [[SHOP, DOCS], [{ ...SHOP, pid: 9 }, DOCS]],
+  })
+  try {
+    const shopSrc = d.frame("a").src
+    d.hand("http://127.0.0.1:4102/guide")
+    assert.deepEqual(d.labels(), ["Home", "shop", "docs"])
+    assert.equal(d.selected(), "docs")
+    assert.equal(d.frame("a").src, shopSrc)
+
+    // Restarted while hidden: emptied, to load when next opened.
+    d.doc.querySelectorAll(".tab")[0].click()
+    await d.poll()
+    const frame = d.frame("a")
+    assert.equal(frame.src, "about:blank")
+    const sets = []
+    Object.defineProperty(frame, "src", { configurable: true, get: () => sets.at(-1), set: (v) => sets.push(v) })
+    d.hand("http://127.0.0.1:4101/cart")
+    d.doc.querySelectorAll(".tab")[0].click()
+    d.doc.querySelectorAll(".tab")[1].click()
+    assert.deepEqual(sets, ["http://localhost:4101/cart"], "the tab loaded more than once")
+  } finally {
+    d.close()
   }
 })
 
@@ -611,7 +1329,7 @@ await check("⌘. typed in the shell is handed to the editor in the active tab, 
     assert.deepEqual(posted, [
       [
         { type: "designlayer-desk:key", key: ".", code: "Period", metaKey: true, ctrlKey: false, shiftKey: false, altKey: false },
-        "http://127.0.0.1:4100",
+        "http://localhost:4100",
       ],
     ])
     const editorSide = fs.readFileSync(path.join(MAC, "..", "..", "src", "shell", "desk.ts"), "utf8")
@@ -650,9 +1368,10 @@ await check("the launcher finds the desk by its plist and reads a non-default po
     }
     fs.mkdirSync(path.dirname(deskPlistPath(home)), { recursive: true })
     fs.writeFileSync(deskPlistPath(home), buildPlist(agent))
-    assert.equal(deskUrlFromHost({ home, platform: "darwin" }), `http://127.0.0.1:${DEFAULT_DESK_PORT}`)
+    // On localhost: the desk page and the editors it frames are one site.
+    assert.equal(deskUrlFromHost({ home, platform: "darwin" }), `http://localhost:${DEFAULT_DESK_PORT}`)
     fs.writeFileSync(deskPlistPath(home), buildPlist({ ...agent, port: 4999 }))
-    assert.equal(deskUrlFromHost({ home, platform: "darwin" }), "http://127.0.0.1:4999")
+    assert.equal(deskUrlFromHost({ home, platform: "darwin" }), "http://localhost:4999")
     assert.equal(deskUrlFromHost({ home, platform: "linux" }), null, "only a Mac has the app")
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
@@ -710,6 +1429,9 @@ await check("install.mjs --dry-run prints the plan and writes nothing", () => {
   assert.match(out, /\[1\/5\] Preflight/)
   assert.match(out, /dev\.designlayer\.desk/)
   assert.match(out, /PWA\.install/)
+  // Installed from localhost, and the app installed from 127.0.0.1 removed, so one app remains.
+  assert.ok(out.includes('PWA.install {manifestId: "http://localhost:3454/", installUrlOrBundleUrl: "http://localhost:3454/"}'), out)
+  assert.ok(out.includes('PWA.uninstall {manifestId: "http://127.0.0.1:3454/"}'), out)
   assert.ok(out.includes(`--args ${APP_FEATURES}`), "the app would open without the title-bar features")
   assert.match(out, /Dry run: nothing was written/)
   const written = fs.readdirSync(dryHome, { recursive: true })

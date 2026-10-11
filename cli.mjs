@@ -21,6 +21,7 @@ import path from "node:path"
 import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
 
+import { appName } from "./runtime/app-name.mjs"
 import { findConfigFile } from "./runtime/config-file.mjs"
 
 /*
@@ -70,6 +71,9 @@ const CLI_PATH = fileURLToPath(import.meta.url)
  * guess for a config object that carries no framework at all.
  */
 const DEFAULT_APP_PORT = 3000
+
+/** How long a child asked to stop gets before SIGKILL. See `runEditors`. */
+const STOP_GRACE_MS = 5000
 
 export function parseArgs(argv) {
   const options = {
@@ -342,6 +346,8 @@ export async function main(argv = process.argv.slice(2)) {
  * There is no in-process way to point it at a second app, so switching apps
  * means a second process — and the only honest way to have a chooser that
  * outlives the choice is for the chooser not to be in that process at all.
+ *
+ * Many children at once, one per app. See `runEditors`.
  */
 async function supervise(options) {
   // Imported here, not at the top: the screen's page and styles are ~1,700
@@ -354,10 +360,11 @@ async function supervise(options) {
   const screen = await createStartScreen({ port: options.startScreenPort, mcp: {} })
   holdUntilExit(screen.close)
 
-  let running = null
-  // Ctrl+C here is Ctrl+C for the editor too. The child is a process of its
-  // own, so nothing takes it down on the way out unless this line does.
-  holdUntilExit(() => running?.child.kill("SIGTERM"))
+  const { allocatePorts } = await import("./runtime/editor-ports.mjs")
+  const editors = runEditors(screen, { options, allocatePorts })
+  // Ctrl+C here is Ctrl+C for every editor too. Each child is a process of its
+  // own, so nothing takes them down on the way out unless this line does.
+  holdUntilExit(editors.killAll)
 
   console.log(`[designlayer] open ${screen.url} to choose an app`)
   if (options.open !== false) {
@@ -365,29 +372,126 @@ async function supervise(options) {
     openBrowser(screen.url)
   }
 
-  for (;;) {
-    let choice
-    try {
-      choice = await screen.nextChoice()
-    } catch {
-      // `close()` rejects the round nobody answered — the process is exiting.
-      return
-    }
+  await editors.done
+}
 
-    if (running) {
-      // The editor that is up is about to be replaced, so its exit is expected
-      // and must not be reported to the page as a failure. Waiting for it also
-      // frees 3456 before the next one asks for it.
-      running.replaced = true
-      running.child.kill("SIGTERM")
-      await running.exited
+/**
+ * The supervisor's loops over a start screen, apart from the process plumbing
+ * so a test can drive them with fake children (`spawnEditor`) and fake ports
+ * (`allocatePorts`).
+ *
+ * It used to run one editor and kill it on every choice. In the Mac app, a tab
+ * per editor, that meant opening a second app in a new tab killed the first
+ * app's editor under the tab still showing it. Now each choice is a child of
+ * its own, on its own proxy and socket ports, and a child ends only when:
+ * Stop asks for it (`screen.nextStop()`), it exits by itself, a choice
+ * replaces it (`choice.replaces`: same app port, another folder), or the
+ * supervisor exits (`killAll`).
+ *
+ * Choices are handled one at a time, so two arriving together cannot be given
+ * the same ports before either child has bound them.
+ */
+export function runEditors(
+  screen,
+  { options = {}, spawnEditor = spawnChild, allocatePorts, log = console.log, stopGraceMs = STOP_GRACE_MS } = {}
+) {
+  const running = new Map()
+  const cancelled = new Set()
+  // The flag pair beats the first editor's remembered pair, and only the
+  // first's. See `allocatePorts`.
+  let flagsSpent = false
+
+  /*
+   * An exit asked for is not news: the screen already holds the reason, or
+   * the replacement already took the editor's place.
+   *
+   * Every later start waits on this, so a child that ignores SIGTERM (a stuck
+   * dev server, a busy event loop) would hold every app behind it. It gets a
+   * few seconds to close its servers, then SIGKILL.
+   */
+  async function stop(entry) {
+    entry.quiet = true
+    entry.child.kill("SIGTERM")
+    const escalate = setTimeout(() => entry.child.kill("SIGKILL"), stopGraceMs)
+    try {
+      await entry.exited
+    } finally {
+      clearTimeout(escalate)
     }
-    running = startEditor(options, choice, screen)
+  }
+
+  async function start(choice) {
+    // Stopped or replaced from the screen while still in the queue.
+    if (cancelled.delete(choice.id)) return
+    const displaced = choice.replaces ? running.get(choice.replaces) : null
+    // Waiting frees the app's old ports and its source writes before the
+    // replacement comes up.
+    if (displaced) await stop(displaced)
+    const taken = [...running.values()].flatMap((entry) => [entry.ports.proxyPort, entry.ports.wsPort])
+    const preferred = options.proxyPort
+      ? { proxyPort: options.proxyPort, wsPort: options.wsPort ?? options.proxyPort + 1 }
+      : null
+    const explicit = preferred !== null && !flagsSpent
+    flagsSpent = true
+    const ports = await allocatePorts({ projectRoot: choice.projectRoot, appPort: choice.appPort, taken, preferred, explicit })
+    // Stopped from the screen before it ever had a process.
+    if (cancelled.delete(choice.id)) return
+    const entry = startEditor(options, choice, screen, { ports, spawnEditor, log })
+    running.set(choice.id, entry)
+    entry.exited.then(() => {
+      if (running.get(choice.id) === entry) running.delete(choice.id)
+    })
+  }
+
+  async function choiceLoop() {
+    for (;;) {
+      let choice
+      try {
+        choice = await screen.nextChoice()
+      } catch {
+        // `close()` rejects the ask nobody answered — the process is exiting.
+        return
+      }
+      try {
+        await start(choice)
+      } catch (error) {
+        screen.reportStopped(
+          `The editor for ${appName(choice)} could not start (${error.message}). Pick an app below to try again.`,
+          choice.id
+        )
+      }
+    }
+  }
+
+  async function stopLoop() {
+    for (;;) {
+      let request
+      try {
+        request = await screen.nextStop()
+      } catch {
+        return
+      }
+      const entry = running.get(request.id)
+      if (entry) void stop(entry)
+      else cancelled.add(request.id)
+    }
+  }
+
+  return {
+    running,
+    done: Promise.all([choiceLoop(), stopLoop()]).then(() => {}),
+    /** Synchronous, because it runs from the process's `exit` handler. */
+    killAll() {
+      for (const entry of running.values()) {
+        entry.quiet = true
+        entry.child.kill("SIGTERM")
+      }
+    },
   }
 }
 
 /** The argv that turns this command into the single-app child of a supervisor. */
-function childArgv(options, choice) {
+export function childArgv(options, choice, ports = {}) {
   return [
     CLI_PATH,
     "--project-root",
@@ -399,8 +503,11 @@ function childArgv(options, choice) {
     "--no-open",
     String(choice.appPort),
     ...(choice.devScript ? ["--dev-script", choice.devScript] : []),
-    ...(options.proxyPort ? ["--proxy-port", String(options.proxyPort)] : []),
-    ...(options.wsPort ? ["--ws-port", String(options.wsPort)] : []),
+    // Every child is told its pair. Left to the vendor, each would take
+    // 3456/3457 or wander to whatever was next, and an app's notes live under
+    // its proxy's origin. A supervisor's own flags are only the first pair.
+    ...(ports.proxyPort ?? options.proxyPort ? ["--proxy-port", String(ports.proxyPort ?? options.proxyPort)] : []),
+    ...(ports.wsPort ?? options.wsPort ? ["--ws-port", String(ports.wsPort ?? options.wsPort)] : []),
     ...(options.host ? ["--host", options.host] : []),
     ...(options.configPath ? ["--config", options.configPath] : []),
     ...(options.verbose ? ["--verbose"] : []),
@@ -416,7 +523,7 @@ function childArgv(options, choice) {
  * works, because the other two are things they did on purpose and this is not.
  */
 function farewell(choice, code, signal) {
-  const name = choice.packageName ?? path.basename(choice.projectRoot)
+  const name = appName(choice)
   if (signal) return `The editor for ${name} was stopped (${signal}). Choose an app to start again.`
   if (code === 0) return `The editor for ${name} closed. Choose an app to start again.`
   return (
@@ -425,29 +532,39 @@ function farewell(choice, code, signal) {
   )
 }
 
-function startEditor(options, choice, screen) {
-  const child = spawn(process.execPath, childArgv(options, choice), {
+/** The production `spawnEditor`: this same file, re-run as one app's editor. */
+function spawnChild(argv, env) {
+  return spawn(process.execPath, argv, {
     // The child's banner and the app's compile output are what the person in
     // the terminal came to read, so they stay on the terminal unedited. The
     // fourth stream is the IPC channel `onReady` answers on.
     stdio: ["inherit", "inherit", "inherit", "ipc"],
     // Deliberately no `cwd`. See `--project-root`.
-    env: {
-      ...process.env,
-      DESIGNLAYER_CHOOSER_URL: screen.url,
-      ...(screen.mcpToken ? { DESIGNLAYER_MCP_TOKEN: screen.mcpToken } : {}),
-    },
+    env,
+  })
+}
+
+function startEditor(options, choice, screen, { ports, spawnEditor = spawnChild, log = console.log } = {}) {
+  const child = spawnEditor(childArgv(options, choice, ports), {
+    ...process.env,
+    DESIGNLAYER_CHOOSER_URL: screen.url,
+    ...(screen.mcpToken ? { DESIGNLAYER_MCP_TOKEN: screen.mcpToken } : {}),
   })
 
-  const running = { child, replaced: false }
+  const running = { child, ports, quiet: false }
   child.on("message", (message) => {
     if (message?.type !== "ready") return
-    screen.reportReady(message.url, {
-      appUrl: choice.appUrl,
-      projectRoot: choice.projectRoot,
-      packageName: choice.packageName,
-    })
-    console.log(`[designlayer] editing at ${message.url} — ${screen.url} to switch apps`)
+    screen.reportReady(
+      message.url,
+      {
+        appUrl: choice.appUrl,
+        projectRoot: choice.projectRoot,
+        packageName: choice.packageName,
+        name: appName(choice),
+      },
+      choice.id
+    )
+    log(`[designlayer] editing ${appName(choice)} at ${message.url} — ${screen.url} to open another app`)
   })
 
   // A child that dies on its own — a crash, a port clash, a project the vendor
@@ -458,9 +575,9 @@ function startEditor(options, choice, screen) {
     const report = (reason) => {
       if (settled) return
       settled = true
-      if (!running.replaced) {
-        screen.reportStopped(reason)
-        console.log(`[designlayer] ${reason}`)
+      if (!running.quiet) {
+        screen.reportStopped(reason, choice.id)
+        log(`[designlayer] ${reason}`)
       }
       resolve()
     }
@@ -469,7 +586,7 @@ function startEditor(options, choice, screen) {
     // `error` and may never emit `exit`; with no listener the event throws and
     // takes the supervisor down — the one outcome the comment above rules out.
     child.once("error", (error) => {
-      const name = choice.packageName ?? path.basename(choice.projectRoot)
+      const name = appName(choice)
       report(`The editor for ${name} could not start (${error.message}). Pick an app below to try again.`)
     })
   })

@@ -39,9 +39,9 @@ const el = {
   scriptRow: $("script-row"), script: $("script"),
   submit: $("submit"), hint: $("hint"), submitError: $("submit-error"),
   waiting: $("waiting"), progress: $("progress"), progressText: $("progress-text"),
-  waitingNote: $("waiting-note"), waitingBack: $("waiting-back"),
-  current: $("current"), currentName: $("current-name"), currentWhere: $("current-where"),
-  currentOpen: $("current-open"), currentChange: $("current-change"),
+  waitingNote: $("waiting-note"), waitingBack: $("waiting-back"), waitingStop: $("waiting-stop"),
+  current: $("current"), currentName: $("current-name"), editors: $("editors"),
+  currentChange: $("current-change"),
   chooseTitle: $("choose-title"), stopped: $("stopped"),
 }
 
@@ -52,15 +52,60 @@ const el = {
  * \`render()\` can put it back after taking it away.
  */
 const FOLDER_HELP = el.folderHelp.textContent
+// The same, for the compile advice under the wait: an editor that is already
+// running compiles nothing, so that wait says none of it.
+const WAITING_NOTE = el.waitingNote.textContent
 
 let apps = []
 let root = null   // { path, info } — the folder the editor will write source into
 let devScript = null
 let busy = false
 let typing = 0
-// The editor this tab knows is up, if any. Only ever read to decide whether a
-// press is a start or a switch — the server is the authority on what is running.
-let runningUrl = null
+let addressTyping = 0
+// Who put the folder in the field: the address it was looked up for, or null
+// when the user typed it. Only a looked-up folder follows the address.
+let rootFor = null
+// The card's poll while an editor on it is still starting.
+let currentTimer = 0
+// Which wait is current. Every face but the wait bumps it, so a poll left over
+// from a wait the user walked away from can never move the tab later.
+let waitId = 0
+// A Stop on the wait is in flight: an editor that turns ready meanwhile is not
+// opened, because the user just asked for it to go away.
+let stopping = false
+
+/*
+ * INSIDE THE MAC APP THIS PAGE IS A HOME TAB, one frame among tabs that each
+ * show an editor. The vendor's socket takes one client, so this frame loading
+ * an editor that another tab shows would disconnect that tab and lose its
+ * unapplied edits. The desk knows which tab shows what, so the page asks it to
+ * go rather than going itself. Only a loopback parent is told: the message
+ * names a local editor, and no other origin has a use for it.
+ */
+const DESK_FRAME_PREFIX = "designlayer-desk:"
+
+function deskOrigin() {
+  if (!window.name.startsWith(DESK_FRAME_PREFIX)) return null
+  const ancestors = window.location.ancestorOrigins
+  const origin = ancestors && ancestors.length ? ancestors[0] : null
+  if (!origin) return null
+  try {
+    const parent = new URL(origin)
+    const web = parent.protocol === "http:" || parent.protocol === "https:"
+    const loopback = parent.hostname === "localhost" || parent.hostname === "127.0.0.1"
+    return web && loopback ? parent.origin : null
+  } catch {
+    return null
+  }
+}
+
+/** Asks the desk to show \`url\`. False outside the desk; the caller navigates. */
+function handToDesk(url) {
+  const target = deskOrigin()
+  if (!target) return false
+  window.parent.postMessage({ type: "designlayer-desk:go", url }, target)
+  return true
+}
 
 /*
  * The browser is never told the server's home directory and the API contract is
@@ -162,9 +207,18 @@ const matchedApp = () => {
  * fallback chain (packageName, then title, then url) and would lose a rung.
  */
 function appName(app) {
+  const folder = folderOf(app)
+  if (folder) return folder
   const address = app.url.replace(/^https?:\\/\\//, "")
   return !app.title || app.title === address ? "Untitled app" : app.title
 }
+
+/*
+ * The project folder names a row before its page title does, by the rule every
+ * surface uses (runtime/app-name.mjs). Copies of one template share a title, so
+ * four rows read "Studio" and only the port told them apart.
+ */
+const folderOf = (app) => (app.projectRoot ? app.projectRoot.split(/[\\\\/]+/).filter(Boolean).pop() ?? null : null)
 
 /*
  * The same app, named in PROSE rather than in the row.
@@ -184,6 +238,7 @@ function appName(app) {
  * its title, unchanged.
  */
 function appLabel(app) {
+  if (folderOf(app)) return folderOf(app)
   return app.title && app.title !== app.url.replace(/^https?:\\/\\//, "")
     ? app.title
     : "the untitled app on port " + app.port
@@ -395,7 +450,19 @@ function appRow(app) {
   const port = document.createElement("span")
   port.className = "app-port"
   port.textContent = ":" + app.port
-  row.append(check, name, port)
+  row.append(check, name)
+  /*
+   * An app that already has an editor says so in words, not in a tint: Start
+   * on this row opens that editor rather than a second one. It is part of the
+   * row's accessible name on purpose, so a screen reader hears it too.
+   */
+  if (app.editor) {
+    const open = document.createElement("span")
+    open.className = "app-open"
+    open.textContent = "Editing"
+    row.append(open)
+  }
+  row.append(port)
   row.addEventListener("click", () => chooseApp(app))
   return row
 }
@@ -468,10 +535,35 @@ async function chooseApp(app) {
   // keep as long as it is a page of the app being clicked. Row to row it is a
   // page of the app they just left, so it goes with the origin.
   if (matchedApp() !== app) el.url.value = app.url
+  rootFor = portOf(app.url)
   if (app.projectRoot) {
     const data = await askServer("/api/project?path=" + encodeURIComponent(app.projectRoot), el.folderError)
     if (data) adoptProject(data.project)
   } else forgetProject(app)
+  render()
+}
+
+/*
+ * The folder follows the address, unless the user typed the folder.
+ *
+ * Only a row click used to fill the folder in. The screen clicks the first row
+ * on its own at boot, so typing or pasting the address of a different app left
+ * THAT row's folder in the field: Start then proxied the typed app and wrote
+ * its edits into the other project. A folder the user typed is theirs and stays.
+ */
+async function followAddress() {
+  const typed = el.url.value.trim()
+  const port = portOf(typed)
+  if (port === null || port === rootFor) return
+  if (rootFor === null && el.path.value.trim() !== "") return
+  const app = matchedApp()
+  if (app) return chooseApp(app)
+  const data = await askServer("/api/app-folder?url=" + encodeURIComponent(typed), el.folderError)
+  // Typed on while that was in flight; the later keystroke owns the field.
+  if (!data || el.url.value.trim() !== typed) return
+  rootFor = port
+  if (data.project) adoptProject(data.project)
+  else forgetProject({ port, url: "http://127.0.0.1:" + port, title: "" })
   render()
 }
 
@@ -518,6 +610,7 @@ el.path.addEventListener("input", () => {
   // screen goes back to asking for a folder rather than starting the wrong one.
   root = null
   devScript = null
+  rootFor = null
   render()
   clearTimeout(typing)
   typing = setTimeout(resolveTyped, ${TYPING_MS})
@@ -526,57 +619,227 @@ el.path.addEventListener("input", () => {
 el.url.addEventListener("input", () => {
   clearErrors()
   render()
+  clearTimeout(addressTyping)
+  addressTyping = setTimeout(followAddress, ${TYPING_MS})
 })
 el.script.addEventListener("change", () => {
   devScript = el.script.value
   render()
 })
 
-/** What the server says is running right now, or null if it would not say. */
-async function readStatus() {
-  const response = await fetch("/api/status").catch(() => null)
+/**
+ * What the server says is running right now, or null if it would not say.
+ * With an id, what it says about that one editor.
+ */
+async function readStatus(id) {
+  const path = id ? "/api/status?id=" + encodeURIComponent(id) : "/api/status"
+  const response = await fetch(path).catch(() => null)
   return response && response.ok ? await response.json().catch(() => null) : null
+}
+
+/*
+ * Every editor the server is running. A server that predates the list still
+ * reports its one ready editor in \`editing\`, so that answer becomes a list of
+ * one with no id, which shows a Continue and no Stop.
+ */
+function editorsOf(status) {
+  if (!status) return []
+  if (Array.isArray(status.editors)) return status.editors
+  if (!status.ready) return []
+  const editing = status.editing || {}
+  return [{ id: null, state: "ready", url: status.url, ...editing, name: editing.name || editing.packageName || null }]
+}
+
+/*
+ * Where an editor's app lives, as one line: its address and its folder.
+ * \`projectRoot\` is guarded on its own, because \`tilde(undefined)\` throws inside
+ * \`boot()\` before \`/api/apps\` is ever requested, which used to leave the page
+ * stuck on "Looking for dev servers…" with no error anywhere.
+ */
+function whereOf(editor) {
+  const address = editor.appUrl ? editor.appUrl.replace(/^https?:\\/\\//, "") : ""
+  if (!editor.projectRoot) return address
+  return address ? address + " · " + tilde(editor.projectRoot) : tilde(editor.projectRoot)
+}
+
+/*
+ * One running editor: its name (only when the heading does not already say
+ * it), where it lives, and its two actions. Several entries means several
+ * Continue links on one screen, so each control's accessible name carries the
+ * app's name as well as its visible verb.
+ */
+function editorEntry(editor, named) {
+  const item = document.createElement("li")
+  item.className = "editor"
+  item.dataset.id = editor.id ?? ""
+  const label = editor.name || "this app"
+  const text = document.createElement("div")
+  text.className = "editor-text"
+  if (named) {
+    const name = document.createElement("span")
+    name.className = "editor-name"
+    name.textContent = editor.name || "Untitled app"
+    name.title = name.textContent
+    text.append(name)
+  }
+  const where = document.createElement("p")
+  where.className = "note"
+  where.textContent = whereOf(editor)
+  if (where.textContent) text.append(where)
+  const actions = document.createElement("div")
+  actions.className = "editor-actions"
+  if (editor.state === "ready" && editor.url) {
+    const go = document.createElement("a")
+    go.className = "primary"
+    go.href = editor.url
+    go.textContent = "Continue"
+    go.dataset.action = "continue"
+    go.setAttribute("aria-label", "Continue editing " + label)
+    // A real link, so a browser tab can still open it in another tab or copy
+    // it. Only a plain click inside the desk becomes a request to the desk.
+    go.addEventListener("click", (event) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+      if (handToDesk(editor.url)) event.preventDefault()
+    })
+    actions.append(go)
+  } else {
+    // Said where Continue will be, so the entry does not change shape when it
+    // arrives. The card polls until it does.
+    const starting = document.createElement("span")
+    starting.className = "editor-starting"
+    starting.textContent = "Starting…"
+    actions.append(starting)
+  }
+  if (editor.id) {
+    const stop = document.createElement("button")
+    stop.type = "button"
+    stop.className = "ghost"
+    stop.textContent = "Stop"
+    stop.dataset.action = "stop"
+    stop.setAttribute("aria-label", "Stop " + label)
+    stop.addEventListener("click", () => stopEditor(editor.id, stop))
+    actions.append(stop)
+  }
+  item.append(text, actions)
+  return item
 }
 
 /*
  * The two faces of this card. Only one is ever up: what is running, or the form
  * for choosing what should be. The form stays built underneath either way, so
- * "Switch app" is one click rather than a second boot.
+ * "Open another app" is one click rather than a second boot.
+ *
+ * Redrawn on every poll, so the focused control is found again by the entry it
+ * belongs to and what it does.
  */
 function showCurrent(status) {
-  runningUrl = status.url
-  const editing = status.editing
-  // The question the two buttons answer. Without a package name it asks
-  // without one rather than putting the address in a heading: the address is
-  // on the line underneath either way.
+  const editors = editorsOf(status)
+  const one = editors.length === 1
   el.currentName.textContent =
-    editing && editing.packageName ? "Continue editing " + editing.packageName + "?" : "Continue editing?"
-  /*
-   * \`projectRoot\` is guarded as well as \`editing\` now, and the old line guarded
-   * only the outer one. \`tilde(undefined)\` throws — inside \`boot()\`, before
-   * \`/api/apps\` is ever requested — so a status payload carrying an \`appUrl\`
-   * and no root left the page stuck on "Looking for dev servers…" forever with
-   * no error anywhere. The shipping supervisor always sends the whole object,
-   * but the route accepts any shape and the suite already builds the short one.
-   */
-  const address = editing?.appUrl ? editing.appUrl.replace(/^https?:\\/\\//, "") : ""
-  const where = editing?.projectRoot
-    ? address + " · " + tilde(editing.projectRoot)
-    : address
-  show(el.currentWhere, where)
-  el.currentOpen.href = status.url
+    one && editors[0].name ? "Continue editing " + editors[0].name + "?" : "Continue editing?"
+  const focused = document.activeElement
+  const keep = el.editors.contains(focused)
+    ? { id: focused.closest("li").dataset.id, action: focused.dataset.action }
+    : null
+  el.editors.replaceChildren(...editors.map((editor) => editorEntry(editor, !one)))
+  if (keep) {
+    const item = [...el.editors.children].find((node) => node.dataset.id === keep.id)
+    const again = item && [...item.querySelectorAll("[data-action]")].find((node) => node.dataset.action === keep.action)
+    ;(again || el.currentName).focus()
+  }
+  waitId += 1
   el.chooseTitle.hidden = true
   el.form.hidden = true
   el.waiting.hidden = true
   el.current.hidden = false
+  clearTimeout(currentTimer)
+  if (editors.some((editor) => editor.state !== "ready")) currentTimer = setTimeout(refreshCurrent, 1000)
+}
+
+/** The card again, from the server, while it is the face that is up. */
+async function refreshCurrent() {
+  if (el.current.hidden) return
+  const status = await readStatus()
+  if (!status || el.current.hidden) return
+  if (editorsOf(status).length) showCurrent(status)
+  else showChooser()
+}
+
+/*
+ * Stop is the one way an editor ends on purpose. It acts at once, with no
+ * confirmation: the app's own dev server keeps running and its notes stay in
+ * the browser, so starting it again from the list below loses nothing.
+ */
+/** Asks the server to stop one editor: "" when it is gone, else what went wrong. */
+async function askStop(id) {
+  const response = await fetch("/api/stop", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id }),
+  }).catch(() => null)
+  if (!response) return LOST_CONTACT
+  // A 404 is an editor that had already gone, which is what Stop asked for.
+  if (response.ok || response.status === 404) return ""
+  const data = await response.json().catch(() => null)
+  return (data && data.error) || "Could not stop that editor (HTTP " + response.status + "). Reload this page and try again."
+}
+
+async function stopEditor(id, button) {
+  button.disabled = true
+  show(el.stopped, "")
+  show(el.stopped, await askStop(id))
+  // The list's markers are about editors, so the stopped one loses its own.
+  apps = apps.map((app) => (app.editor && app.editor.id === id ? { ...app, editor: null } : app))
+  el.apps.replaceChildren(...apps.map(appRow))
+  render()
+  const status = await readStatus()
+  if (editorsOf(status).length) {
+    showCurrent(status)
+    // The control that had focus went with its entry.
+    if (!el.editors.contains(document.activeElement)) el.currentName.focus()
+  } else showChooser()
 }
 
 function showChooser() {
+  waitId += 1
+  clearTimeout(currentTimer)
   el.current.hidden = true
   el.waiting.hidden = true
   el.chooseTitle.hidden = false
   el.form.hidden = false
   el.url.focus()
+}
+
+/*
+ * The card when anything is running, else the chooser. False when it fell back
+ * to the chooser. Focus goes to the card's heading because the control that had
+ * it was on the face just hidden.
+ */
+async function showRunning() {
+  const status = await readStatus()
+  if (!editorsOf(status).length) {
+    showChooser()
+    return false
+  }
+  showCurrent(status)
+  el.currentName.focus()
+  return true
+}
+
+/*
+ * Where a Start ends. A browser tab becomes the editor. A desk tab asks the
+ * desk, which either turns this tab into the editor or selects the tab that
+ * already shows it; in case it does neither, the card is left up with a
+ * Continue for the same editor.
+ */
+function openEditor(url) {
+  if (!handToDesk(url)) {
+    location.replace(url)
+    return
+  }
+  busy = false
+  render()
+  showRunning()
 }
 
 el.currentChange.addEventListener("click", () => {
@@ -603,6 +866,9 @@ el.form.addEventListener("submit", async (event) => {
   event.preventDefault()
   if (busy) return
   clearErrors()
+  // An address pasted and submitted at once has not had its folder looked up.
+  clearTimeout(addressTyping)
+  await followAddress()
 
   /*
    * The field takes the focus and the tint, so the sentence no longer has to
@@ -655,7 +921,16 @@ el.form.addEventListener("submit", async (event) => {
     )
     return
   }
-  waitForEditor(script, runningUrl !== null)
+  // An editor started outside this screen has no id here to ask about, and
+  // needs no wait: it is already up at the address the answer carries.
+  if (data && data.existing && !data.id && data.url) {
+    openEditor(data.url)
+    return
+  }
+  // An app whose editor already runs gets that editor back, not a second one,
+  // and the wait below is then only as long as one status read.
+  const name = (app && appLabel(app)) || folderOf({ projectRoot: root.path }) || "your app"
+  waitForEditor(data && data.id, name, Boolean(data && data.existing), script)
 })
 
 /*
@@ -665,19 +940,33 @@ el.form.addEventListener("submit", async (event) => {
  *
  * This is also the one path that still moves the tab by itself, and it should:
  * whoever pressed Start asked to go there. A tab that merely loaded this URL
- * gets the card above instead.
+ * gets the card above instead. Inside the desk it asks the desk instead; see
+ * \`openEditor\`.
  */
-function waitForEditor(script, switching) {
+function waitForEditor(id, name, existing, script) {
+  clearTimeout(currentTimer)
   el.chooseTitle.hidden = true
   el.form.hidden = true
   el.current.hidden = true
   show(el.stopped, "")
   el.waiting.hidden = false
-  el.progressText.textContent = switching
-    ? "Switching…"
+  el.progressText.textContent = existing
+    ? "Opening " + name + "…"
     : script
       ? "Starting your app…"
       : "Starting the editor…"
+  show(el.waitingNote, existing ? "" : WAITING_NOTE)
+  /*
+   * Stop is for the editor this press is starting. An editor that was already
+   * running may be open in another tab, and opening it is no reason to end it;
+   * a server that gave no id has nothing to name in the request.
+   */
+  el.waitingStop.hidden = existing || !id
+  el.waitingStop.disabled = false
+  el.waitingStop.dataset.id = id || ""
+  el.waitingStop.setAttribute("aria-label", "Stop " + name)
+  stopping = false
+  const wait = ++waitId
   /*
    * Focus follows the content, because the node that HAD it is now hidden.
    *
@@ -694,19 +983,23 @@ function waitForEditor(script, switching) {
   // one. Said once, and not repeated over itself on every subsequent poll.
   let misses = 0
   const poll = async () => {
-    const data = await readStatus()
-    // The editor that was up is cleared the moment a choice is accepted, so
-    // a ready answer here can only be the one this press asked for, which matters
-    // because a switch usually lands back on the very same port.
+    // Asked about this press's editor by id: other editors are running too,
+    // and their readiness says nothing about this one.
+    if (wait !== waitId) return
+    const data = await readStatus(id)
+    if (wait !== waitId) return
+    if (stopping) {
+      setTimeout(poll, 500)
+      return
+    }
     if (data && data.ready) {
-      location.replace(data.url)
+      openEditor(data.url)
       return
     }
     // It died on the way up. The chooser is still here, so this is a sentence
     // to read and another go, not a page that polls for a process nobody runs.
     if (data && data.stopped) {
       busy = false
-      runningUrl = null
       render()
       showChooser()
       show(el.stopped, data.stopped)
@@ -746,23 +1039,44 @@ function waitForEditor(script, switching) {
 }
 
 /*
- * The way out of the wait, which did not exist.
+ * The two ways out of the wait.
  *
- * It does not cancel the START — the server is already spawning a process and
- * this page has no route to call it back. What it cancels is the WAITING: the
- * chooser comes back, and if the app does come up the poll is no longer there
- * to move the tab, which is correct, because the person pressing this said they
- * wanted to do something else. The sentence says exactly that, so nobody reads
- * it as a kill switch it is not.
+ * Back ends the WAITING and leaves the start alone: the card comes up with the
+ * editor still starting on it, and it gains its Continue there when it is
+ * ready. The tab no longer moves by itself, because the person pressing this
+ * said they wanted to do something else. A server with no editor list cannot
+ * show that card, so the chooser comes back with a sentence saying the app may
+ * still be starting.
  */
-el.waitingBack.addEventListener("click", () => {
+el.waitingBack.addEventListener("click", async () => {
+  waitId += 1
   busy = false
   render()
-  showChooser()
-  show(
-    el.stopped,
-    "Stopped waiting. Your app may still be starting. Check your terminal."
-  )
+  show(el.stopped, "")
+  if (!(await showRunning())) show(el.stopped, "Stopped waiting. Your app may still be starting. Check your terminal.")
+})
+
+/*
+ * Stop ends the START: the server stops the editor this press asked for, and
+ * the chooser comes back with nothing to report. If the server will not stop
+ * it, the wait goes on and says why.
+ */
+el.waitingStop.addEventListener("click", async () => {
+  stopping = true
+  el.waitingStop.disabled = true
+  show(el.stopped, "")
+  const problem = await askStop(el.waitingStop.dataset.id)
+  stopping = false
+  el.waitingStop.disabled = false
+  if (problem === "") {
+    busy = false
+    render()
+    showChooser()
+    return
+  }
+  show(el.stopped, problem)
+  // Disabling the button may have dropped focus on <body>.
+  el.waitingStop.focus()
 })
 
 async function boot() {
@@ -773,7 +1087,7 @@ async function boot() {
   // constrain. A throw here used to take the app scan down with it and leave
   // the page on "Looking for dev servers…" with no error anywhere on screen.
   try {
-    if (status && status.ready) showCurrent(status)
+    if (editorsOf(status).length) showCurrent(status)
     else if (status && status.stopped) show(el.stopped, status.stopped)
   } catch {
     show(el.stopped, "Could not read what is running. Pick an app below to start one.")
@@ -827,12 +1141,19 @@ async function boot() {
    * as well was the screen reading itself out.
    */
   if (apps.length && el.url.value.trim() === "") {
-    await chooseApp(apps[0])
+    /*
+     * The first app with no editor yet. Several apps run at once now, so a
+     * person who reaches this list past the card is adding another one, and
+     * an app already open is a Continue away on the card. When every app is
+     * open there is nothing to add, and the first row is as good as any.
+     */
+    const first = apps.find((app) => !app.editor) ?? apps[0]
+    await chooseApp(first)
     // "Choose another row if that is not the one" used to follow this, and the
     // rows it refers to are directly above it, each one a control that says so
     // by being one. What is NOT visible is that the screen chose, so that is
     // all this says.
-    if (apps.length > 1) show(el.appsNote, "Picked " + appLabel(apps[0]) + " for you.")
+    if (apps.length > 1) show(el.appsNote, "Picked " + appLabel(first) + " for you.")
   } else render()
 }
 
@@ -868,18 +1189,15 @@ export function startScreenPage() {
     Start. This used to be a redirect, which is why there was no way back to the
     chooser at all: the URL bounced to the editor and the session was over.
 
-    One question and its two answers. It was a "Now editing" label, the name,
-    and "Open the editor" — three slots saying the same thing — under a
-    wordmark saying a fourth.
+    One question, then one entry per running editor: several apps can be open
+    at once, one editor each, so each entry carries its own Continue and Stop.
+    "Open another app" adds to the list and stops nothing.
   -->
   <div class="section" id="current" hidden>
-    <div class="current-app">
-      <h1 class="title" id="current-name"></h1>
-      <p class="note" id="current-where"></p>
-    </div>
+    <h1 class="title" id="current-name" tabindex="-1"></h1>
+    <ul class="editors" id="editors" aria-labelledby="current-name"></ul>
     <div class="actions">
-      <a class="primary" id="current-open">Continue</a>
-      <button type="button" class="ghost" id="current-change">Switch app</button>
+      <button type="button" class="ghost" id="current-change">Open another app</button>
     </div>
   </div>
 
@@ -990,7 +1308,14 @@ export function startScreenPage() {
       <span class="pulse" aria-hidden="true"></span><span id="progress-text"></span>
     </h2>
     <p class="note" id="waiting-note">A first compile can take a minute. Progress shows in your terminal.</p>
-    <button type="button" class="ghost" id="waiting-back">Cancel</button>
+    <!--
+      Back stops the waiting and Stop stops the editor. They were one "Cancel"
+      that only ever did the first, which read as the second.
+    -->
+    <div class="actions">
+      <button type="button" class="ghost" id="waiting-back">Back</button>
+      <button type="button" class="ghost" id="waiting-stop" hidden>Stop</button>
+    </div>
   </div>
 </main>
 <script type="module">${CLIENT}</script>

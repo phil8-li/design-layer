@@ -10,6 +10,7 @@
  */
 
 import { resolveConfig } from "../config.mjs"
+import { mergeEntries as mergeStorageEntries, readEntries as readStorageEntries } from "../runtime/app-storage.mjs"
 import { createAgent } from "./agent.mjs"
 import { createAngularSource } from "./angular-source.mjs"
 import { createAppSwitcher } from "./apps.mjs"
@@ -663,8 +664,41 @@ async function route(store, defaults, agent, icons, libraries, auth, signin, lin
     return
   }
 
+  // Where this app's page is, so a switch back to it lands there from any
+  // surface. See runtime/last-pages.mjs.
+  if (rest === "/apps/page" && req.method === "POST") {
+    sendJson(res, 200, apps.rememberPage((await readJsonBody(req)) ?? {}))
+    return
+  }
+
   if (rest === "/apps/switch" && req.method === "POST") {
     sendJson(res, 200, await apps.switchTo((await readJsonBody(req)) ?? {}))
+    return
+  }
+
+  // The editor a switch started runs beside this one, so the page polls here
+  // until it is ready and then goes to it.
+  if (rest === "/apps/started" && req.method === "GET") {
+    sendJson(res, 200, await apps.started(url.searchParams.get("id")))
+    return
+  }
+
+  // The editor's notes and ledger, kept for the machine rather than for one
+  // browser origin. See runtime/app-storage.mjs. The POST demands a JSON
+  // content type, as the MCP endpoint does, so a page on another origin cannot
+  // send one without a preflight this server never answers.
+  if (rest === "/storage" && req.method === "GET") {
+    sendJson(res, 200, { entries: readStorageEntries() })
+    return
+  }
+
+  if (rest === "/storage" && req.method === "POST") {
+    if (!String(req.headers["content-type"] ?? "").toLowerCase().includes("application/json")) {
+      throw badRequest("Content-Type must be application/json", 415)
+    }
+    const body = await readJsonBody(req)
+    if (!body || !Array.isArray(body.entries)) throw badRequest("Storage POST needs entries")
+    sendJson(res, 200, { ok: true, ...mergeStorageEntries(body.entries) })
     return
   }
 

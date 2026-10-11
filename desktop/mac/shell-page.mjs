@@ -8,9 +8,12 @@
  * Framing was checked, not assumed: neither runtime/start-screen.mjs, the
  * editor proxy (runtime/launcher.mjs, react-rewrite-cli) nor server/routes.mjs
  * sends X-Frame-Options or a CSP frame-ancestors, so the start screen and every
- * editor proxy load directly in an iframe. All of them are on 127.0.0.1, so the
- * frames are same-site with this page and keep the storage they have in a
- * normal tab (storage partitioning keys on site, not port).
+ * editor proxy load directly in an iframe. Every frame is on localhost, the
+ * host name apps treat as their dev host (an app on 127.0.0.1 can show its
+ * signed-out screen instead of itself), and so is this page
+ * (runtime/mac-desk.mjs). A frame on another site than its parent gets no
+ * SameSite=Lax cookie and partitioned storage, so an app with cookie sign-in
+ * showed as signed out here while the page was on 127.0.0.1.
  */
 
 import fs from "node:fs"
@@ -48,6 +51,9 @@ export function glyph(name, size) {
 export function isDeskTitle(title) {
   return title === "DesignLayer" || title.endsWith(" — DesignLayer")
 }
+
+/** Where the page saves its tabs in its own storage; install.mjs reads it too. */
+export const TABS_KEY = "designlayer.desk.tabs.v1"
 
 export function shellPage({ repoRoot }) {
   const startCommand = `node ${repoRoot}/desktop/mac/install.mjs --start`
@@ -181,31 +187,83 @@ export function shellPage({ repoRoot }) {
 <div class="toast" id="toast" role="status" hidden></div>
 <script>
 (() => {
-  const KEY = "designlayer.desk.tabs.v1"
+  const KEY = ${JSON.stringify(TABS_KEY)}
   const $ = (id) => document.getElementById(id)
   const tabsEl = $("tabs"), framesEl = $("frames")
   let health = null, editors = [], offers = [], homeUrl = null, deskDown = false
-  // undefined until the first poll, so an editor already running at load is not
-  // mistaken for one the current Home tab just started.
-  let lastEditingKey = undefined, lastActiveHome = null
-
-  const saved = (() => { try { return JSON.parse(localStorage.getItem(KEY)) } catch { return null } })()
-  let tabs = Array.isArray(saved?.tabs) && saved.tabs.length ? saved.tabs : [{ id: uid(), kind: "home" }]
-  let active = tabs.some((t) => t.id === saved?.active) ? saved.active : tabs[0].id
-  const dismissed = new Set(saved?.dismissed ?? [])
+  let tabs, active, dismissed
 
   function uid() { return Math.random().toString(36).slice(2, 9) }
-  function persist() {
-    localStorage.setItem(KEY, JSON.stringify({
-      tabs: tabs.map(({ id, kind, url, src, name, key }) => ({ id, kind, url, src, name, key })),
-      active, dismissed: [...dismissed].slice(-50),
-    }))
-  }
   const editorKey = (e) => e.url + "#" + e.pid
   // An editor tab is addressed by its editor's origin (url); src is the page in
   // it to load, when one was asked for — "Open in Mac app" hands over a path.
   const tabUrl = (t) => (t.kind === "home" ? homeUrl : t.src || t.url)
   const originOf = (u) => { try { return new URL(u).origin } catch { return null } }
+  // Every editor is framed on localhost, the host name apps treat as their dev
+  // host (runtime/launcher.mjs, BROWSER_HOST). Older registry entries, saved
+  // tabs and handed pages may say 127.0.0.1; they are the same editor.
+  const onLocalhost = (u) => {
+    if (typeof u !== "string") return u
+    try {
+      const origin = new URL(u).origin
+      const x = new URL(u)
+      if (x.hostname !== "127.0.0.1" || !u.startsWith(origin)) return u
+      x.hostname = "localhost"
+      return x.origin + u.slice(origin.length)
+    } catch { return u }
+  }
+
+  function adopt(s) {
+    tabs = Array.isArray(s?.tabs) && s.tabs.length ? s.tabs : [{ id: uid(), kind: "home" }]
+    active = tabs.some((t) => t.id === s?.active) ? s.active : tabs[0].id
+    dismissed = new Set(s?.dismissed ?? [])
+    for (const t of tabs) { t.url = onLocalhost(t.url); t.src = onLocalhost(t.src) }
+  }
+  const saved = (() => { try { return JSON.parse(localStorage.getItem(KEY)) } catch { return null } })()
+  adopt(saved)
+  // The desk keeps a copy of the tabs (PUT /api/tabs, below), stamped with
+  // when it was saved. The page's own storage can be older than that copy: the
+  // window moved from 127.0.0.1 to localhost and opened with nothing, or
+  // Chrome quit before it wrote the page's last change (measured: tabs closed
+  // a moment before quitting came back). So a page takes the desk's copy when
+  // it is newer than its own, and writes nothing until the desk has answered:
+  // its stale or lone-Home tabs would replace the newer copy.
+  let restoring = true
+  async function restore() {
+    const ask = new AbortController(), timer = setTimeout(() => ask.abort(), 1500)
+    try {
+      const s = await fetch("/api/tabs", { cache: "no-store", signal: ask.signal }).then((r) => r.json())
+      const mine = Array.isArray(saved?.tabs) && saved.tabs.length ? saved.savedAt || 0 : -1
+      if (Array.isArray(s?.tabs) && s.tabs.length && (s.savedAt || 0) > mine) adopt(s)
+      restoring = false
+    } catch {
+      // No desk to ask: the page's own copy is the best there is.
+      if (Array.isArray(saved?.tabs) && saved.tabs.length) restoring = false
+    }
+    clearTimeout(timer)
+  }
+
+  let mirrored = null
+  function persist() {
+    if (restoring) return
+    const state = {
+      tabs: tabs.map(({ id, kind, url, src, name, key }) => ({ id, kind, url, src, name, key })),
+      active, dismissed: [...dismissed].slice(-50),
+    }
+    // Stamped only when something changed: render runs on every poll.
+    const body = JSON.stringify(state)
+    if (body === mirrored) return
+    mirrored = body
+    const json = JSON.stringify({ ...state, savedAt: Date.now() })
+    localStorage.setItem(KEY, json)
+    fetch("/api/tabs", { method: "PUT", body: json, keepalive: true }).catch(() => { mirrored = null })
+  }
+
+  // An editor tab gets no frame until the first editor list names its app's
+  // last page: given its saved page first, every editor tab loaded twice as the
+  // window opened. A desk that does not answer holds them back 1.5 s at most.
+  let listed = false
+  setTimeout(() => { if (!listed) { listed = true; render() } }, 1500)
 
   function toast(text, ms = 3200) {
     const el = $("toast"); el.textContent = text; el.hidden = false
@@ -222,7 +280,9 @@ export function shellPage({ repoRoot }) {
       const b = document.createElement("div")
       b.className = "tab"; b.setAttribute("role", "tab"); b.tabIndex = t.id === active ? 0 : -1
       b.setAttribute("aria-selected", String(t.id === active))
-      const dead = t.kind === "editor" && !editors.some((e) => e.url === t.url)
+      // A tab with no key yet was just sent to an editor the next list will
+      // name; until then it is new, not stopped.
+      const dead = t.kind === "editor" && t.key !== null && !editors.some((e) => e.url === t.url)
       if (dead && health) b.classList.add("dead")
       const name = t.kind === "home" ? "Home" : t.name || t.url
       b.title = t.kind === "home" ? "Start screen — choose an app" : (t.projectRoot || name) + (dead ? " (stopped)" : "")
@@ -259,7 +319,8 @@ export function shellPage({ repoRoot }) {
     for (const f of framesEl.querySelectorAll("iframe")) if (!live.has(f.dataset.id)) f.remove()
     for (const t of tabs) {
       let f = framesEl.querySelector('iframe[data-id="' + t.id + '"]')
-      const url = tabUrl(t)
+      // A stale tab is made empty, for the same reason applyEditors empties one.
+      const url = t.kind === "editor" && !listed ? null : t.stale ? "about:blank" : tabUrl(t)
       if (!f && url) {
         f = document.createElement("iframe")
         f.dataset.id = t.id
@@ -274,13 +335,21 @@ export function shellPage({ repoRoot }) {
       if (f) f.hidden = t.id !== active
     }
     const cur = tabs.find((t) => t.id === active)
-    const waiting = !cur || (cur.kind === "home" && !homeUrl) || deskDown
+    const waiting = !cur || (cur.kind === "home" && !homeUrl) || (cur.kind === "editor" && !listed) || deskDown
     $("boot").hidden = !waiting
-    if (cur?.kind === "home") lastActiveHome = cur.id
     document.title = cur && cur.kind === "editor" ? (cur.name || "Editor") + " — DesignLayer" : "DesignLayer"
   }
 
-  function select(id) { active = id; render() }
+  function select(id) {
+    active = id
+    const t = tabs.find((x) => x.id === id)
+    if (t?.stale) {
+      t.stale = false
+      const f = framesEl.querySelector('iframe[data-id="' + t.id + '"]')
+      if (f) f.src = tabUrl(t)
+    }
+    render()
+  }
   function newHome() { const t = { id: uid(), kind: "home" }; tabs.push(t); select(t.id) }
   function close(id) {
     const i = tabs.findIndex((t) => t.id === id); if (i < 0) return
@@ -294,7 +363,10 @@ export function shellPage({ repoRoot }) {
   function openEditor(e, focus) {
     const existing = tabs.find((t) => t.kind === "editor" && t.url === e.url)
     if (existing) { if (focus) select(existing.id); return }
-    const t = { id: uid(), kind: "editor", url: e.url, name: e.name, key: editorKey(e), projectRoot: e.projectRoot }
+    // On the page that app was last used on: copies of one template share a
+    // home page, so the root alone looks like a different app.
+    const src = e.page ? onLocalhost(originOf(e.url) + e.page) : undefined
+    const t = { id: uid(), kind: "editor", url: e.url, src, name: e.name, key: editorKey(e), projectRoot: e.projectRoot }
     tabs.push(t)
     if (focus) active = t.id
     render()
@@ -304,6 +376,7 @@ export function shellPage({ repoRoot }) {
   // the page here, and it opens in the tab already showing that editor, or in
   // a new one.
   function openUrl(href) {
+    href = onLocalhost(href)
     const origin = originOf(href)
     if (!origin) return
     const e = editors.find((x) => originOf(x.url) === origin)
@@ -314,7 +387,8 @@ export function shellPage({ repoRoot }) {
         key: e ? editorKey(e) : null, projectRoot: e ? e.projectRoot : null }
       tabs.push(t)
     }
-    t.src = href
+    // Loaded now, so not again when the tab is next selected.
+    t.src = href; t.stale = false
     offers = offers.filter((o) => originOf(o.url) !== origin)
     active = t.id
     render()
@@ -331,12 +405,18 @@ export function shellPage({ repoRoot }) {
         fetch("/api/health", { cache: "no-store" }).then((r) => r.json()),
         fetch("/api/editors", { cache: "no-store" }).then((r) => r.json()),
       ])
-      deskDown = false; health = h; editors = list.editors || []
+      deskDown = false; health = h; editors = (list.editors || []).map((e) => ({ ...e, url: onLocalhost(e.url) }))
+      if (restoring) await restore()
     } catch {
       deskDown = true
+      // No desk to compare with: a page that has its own tabs keeps saving them.
+      if (restoring && Array.isArray(saved?.tabs) && saved.tabs.length) restoring = false
     }
     applyHealth()
     applyEditors()
+    // A desk that refused the connection is one that does not answer: the
+    // tabs load their saved pages now, and the first list to arrive moves them.
+    listed = true
     render()
   }
 
@@ -351,9 +431,11 @@ export function shellPage({ repoRoot }) {
     }
     $("bootText").hidden = true; $("bootCmd").hidden = true; $("bootSpin").hidden = false
     if (ss?.ready && ss.url) {
-      if (homeUrl !== ss.url) {
+      // On localhost like this page, whatever address the desk reaches it on.
+      const url = onLocalhost(ss.url)
+      if (homeUrl !== url) {
         // The start screen came up on a different port (or for the first time): repoint Home tabs.
-        const was = homeUrl; homeUrl = ss.url
+        const was = homeUrl; homeUrl = url
         if (was) for (const f of framesEl.querySelectorAll("iframe")) {
           const t = tabs.find((x) => x.id === f.dataset.id); if (t?.kind === "home") f.src = homeUrl
         }
@@ -364,26 +446,116 @@ export function shellPage({ repoRoot }) {
       // The restart reason and log path stay in the desk log; the window only says what is happening.
       $("bootTitle").textContent = ss?.state === "backoff" ? "Restarting…" : "Starting…"
     }
-    // A Home tab that pressed Start has navigated itself into the editor. Relabel
-    // that tab rather than opening the same editor a second time.
-    const ed = ss?.editing
-    const key = ed?.url ? ed.url + "|" + (ed.projectRoot || "") : null
-    if (key && key !== lastEditingKey && lastEditingKey !== undefined) {
-      // Only when this window is the one in use: a start screen pressed in some
-      // other browser tab must not relabel ours.
-      const home = document.hasFocus() && tabs.find((t) => t.id === active && t.id === lastActiveHome && t.kind === "home")
-      const origin = new URL(ed.url).origin
-      if (home && !tabs.some((t) => t.kind === "editor" && t.url === origin)) {
-        const e = editors.find((x) => x.url === origin)
-        Object.assign(home, { kind: "editor", url: origin, name: e?.name || ed.packageName || "Editor",
-          projectRoot: ed.projectRoot, key: e ? editorKey(e) : null })
-        // The iframe already shows the editor; keep it, just re-key what it is.
-      }
-    }
-    lastEditingKey = key
   }
 
+  // The tab whose frame posted a message, or nothing for a message from any
+  // other window.
+  const tabOfSource = (source) => {
+    const f = [...framesEl.querySelectorAll("iframe")].find((x) => x.contentWindow === source)
+    return f ? tabs.find((x) => x.id === f.dataset.id) : undefined
+  }
+  // A URL's origin, spelled on localhost, when it is a page on this Mac.
+  const localOrigin = (u) => {
+    try {
+      const x = new URL(u)
+      if (x.protocol !== "http:" && x.protocol !== "https:") return null
+      if (x.hostname !== "localhost" && x.hostname !== "127.0.0.1") return null
+      return onLocalhost(x.origin)
+    } catch { return null }
+  }
+
+  // Each editor frame says which app it shows and on which page
+  // (src/shell/desk.ts, DESK_SHOWING_MESSAGE): on load and on every page
+  // change. That is what names the tab, whatever kind it was: a Home tab that
+  // pressed Start, or a tab sent to another editor by "designlayer-desk:go".
+  // It replaces a guess from the start screen's status that skipped any tab
+  // without focus and any editor that already had a tab.
+  addEventListener("message", (ev) => {
+    const data = ev.data
+    if (!data || data.type !== "designlayer-desk:showing") return
+    const t = tabOfSource(ev.source)
+    const origin = t && localOrigin(ev.origin)
+    if (!origin) return
+    const page = typeof data.page === "string" && data.page.startsWith("/") && !data.page.startsWith("//") ? data.page : "/"
+    const e = editors.find((x) => x.url === origin)
+    const name = (typeof data.name === "string" && data.name.trim()) || e?.name || t.name || "Editor"
+    // A tab now on another editor keeps nothing of the one it left: with that
+    // editor's key, the next list would take it for a restart and empty it.
+    const same = t.kind === "editor" && t.url === origin
+    Object.assign(t, { kind: "editor", url: origin, src: origin + page, name: name.slice(0, 80), stale: false,
+      key: e ? editorKey(e) : same ? t.key : null, projectRoot: e?.projectRoot ?? (same ? t.projectRoot : null) })
+    // One editor, one tab. Its socket takes one client, so a second tab on the
+    // same editor could only ever show it disconnected.
+    for (const other of tabs.filter((x) => x !== t && x.kind === "editor" && x.url === origin)) {
+      tabs.splice(tabs.indexOf(other), 1)
+      if (active === other.id) active = t.id
+    }
+    offers = offers.filter((o) => o.url !== origin)
+    render()
+  })
+
+  // "Show this editor", from a frame that chose an app: the start screen in a
+  // Home tab, or the app chooser inside an editor. Every app has its own
+  // editor on its own port, so the answer is a tab: the one already showing
+  // that editor, untouched, when there is one. The frame never navigates
+  // itself here; doing so left the editor it showed without a tab.
+  addEventListener("message", (ev) => {
+    const data = ev.data
+    if (!data || data.type !== "designlayer-desk:go" || typeof data.url !== "string") return
+    const t = tabOfSource(ev.source)
+    const sender = t && localOrigin(ev.origin)
+    const origin = sender && localOrigin(data.url)
+    if (!origin) return
+    const startScreen = homeUrl && localOrigin(homeUrl)
+    // Never the desk itself or the start screen: neither is an editor.
+    if (origin === onLocalhost(location.origin) || origin === startScreen) return
+    // The start screen speaks only from a Home tab: anywhere else it is a
+    // frame that left the start screen's page, not a Home tab choosing an app.
+    const fromHome = t.kind === "home" && sender === startScreen
+    if (sender === startScreen && !fromHome) return
+    const url = onLocalhost(data.url)
+    const e = editors.find((x) => x.url === origin)
+    offers = offers.filter((o) => o.url !== origin)
+    const shown = tabs.find((x) => x.kind === "editor" && x.url === origin)
+    if (shown) {
+      // The Home tab did its job; a second one left behind is clutter.
+      if (fromHome) tabs.splice(tabs.indexOf(t), 1)
+      // A tab whose editor stopped still shows the refused connection, and a go
+      // can arrive before the next editor list says the port is back. A tab not
+      // on the running editor's key loads the page it was sent, once, here.
+      const live = e && shown.key === editorKey(e)
+      if (!live) {
+        Object.assign(shown, { src: url, stale: false, key: e ? editorKey(e) : null })
+        const f = framesEl.querySelector('iframe[data-id="' + shown.id + '"]')
+        if (f) f.src = url
+      }
+      select(shown.id)
+      return
+    }
+    // The key is the next list's to fill in: the list may still hold an editor
+    // that was just replaced on this port.
+    const target = { kind: "editor", url: origin, src: url, stale: false, key: null,
+      name: e ? e.name : new URL(url).host, projectRoot: e ? e.projectRoot : null }
+    if (fromHome) {
+      Object.assign(t, target)
+      const f = framesEl.querySelector('iframe[data-id="' + t.id + '"]')
+      if (f) f.src = url
+      active = t.id
+    } else {
+      // From an editor, never in its own tab: its unapplied edits would go, and
+      // its editor would come back only as an offer. A new tab beside it.
+      const n = { id: uid(), ...target }
+      tabs.splice(tabs.indexOf(t) + 1, 0, n)
+      active = n.id
+    }
+    render()
+  })
+
+  let firstList = true
+  // The editors the last list named, to see a stopped editor come back.
+  let listedBefore = null
   function applyEditors() {
+    const was = listedBefore
     const open = new Set(tabs.filter((t) => t.kind === "editor").map((t) => t.url))
     const fresh = editors.filter((e) => !open.has(e.url) && !dismissed.has(editorKey(e)))
     // Editors that were already running are offered, never opened unasked: the
@@ -392,7 +564,46 @@ export function shellPage({ repoRoot }) {
     offers = fresh
     for (const t of tabs) {
       const e = t.kind === "editor" && editors.find((x) => x.url === t.url)
-      if (e) { t.name = e.name; t.projectRoot = e.projectRoot; t.key = editorKey(e) }
+      if (!e) continue
+      const key = editorKey(e)
+      // A new editor on this tab's port is the app restarted, or another app
+      // given the port after this one's editor stopped. A tab in the background
+      // still shows the page it loaded before: a refused connection, or the
+      // app that left. It is emptied now and loads the new editor's page when
+      // it is opened. Loading it while hidden would take the editor's one
+      // socket from whoever uses it now. The active tab is left for the person
+      // in it to reload, for the same reason.
+      if (t.key && t.key !== key && t.id !== active) {
+        t.src = e.page ? onLocalhost(originOf(e.url) + e.page) : undefined
+        t.stale = true
+        const f = framesEl.querySelector('iframe[data-id="' + t.id + '"]')
+        if (f) f.src = "about:blank"
+      } else if (t.key && t.key !== key && was && !was.has(t.url)) {
+        // The active tab's editor had stopped, so the tab shows a refused
+        // connection and nobody is using it there; its editor is back, so the
+        // tab loads it now rather than waiting for a reload by hand.
+        if (e.page) t.src = onLocalhost(originOf(e.url) + e.page)
+        const f = framesEl.querySelector('iframe[data-id="' + t.id + '"]')
+        if (f) f.src = tabUrl(t)
+      }
+      // When the window opens, an editor tab goes to the page its app was last
+      // used on, from the server, over the page saved with the tab. The saved
+      // page can be the bare root, which opens the home page every copy of a
+      // template shares; or a page of the app the editor ran before, saved by
+      // a window that quit before its storage was written.
+      const wanted = e.page ? onLocalhost(originOf(t.url) + e.page) : null
+      if (firstList && wanted && wanted !== t.src && !t.stale) {
+        t.src = wanted
+        const f = framesEl.querySelector('iframe[data-id="' + t.id + '"]')
+        if (f) f.src = tabUrl(t)
+      }
+      t.name = e.name; t.projectRoot = e.projectRoot; t.key = key
+    }
+    // Only a list that arrived counts as the first: a desk still coming up
+    // answers nothing, and the saved tabs would then keep their saved pages.
+    if (!deskDown) {
+      firstList = false
+      listedBefore = new Set(editors.map((x) => x.url))
     }
   }
 
@@ -452,17 +663,19 @@ export function shellPage({ repoRoot }) {
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {})
 
   render()
-  poll()
   setInterval(poll, 2000)
   // Pages handed over by "Open in Mac app". The window says whether it is the
   // app or this page in an ordinary browser tab, because the desk sends a page
-  // to the app's windows first.
-  if ("EventSource" in window) {
+  // to the app's windows first. It listens after the first poll: a page held
+  // for the launch arrives at once, and the tabs restored or moved by that
+  // poll would otherwise replace it.
+  poll().then(() => {
+    if (!("EventSource" in window)) return
     const kind = matchMedia("(display-mode: browser)").matches ? "tab" : "app"
     new EventSource("/api/events?window=" + kind).addEventListener("open-url", (ev) => {
       try { openUrl(JSON.parse(ev.data).url) } catch {}
     })
-  }
+  })
 })()
 </script>
 </body>

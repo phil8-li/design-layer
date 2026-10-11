@@ -32,6 +32,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 
+import { appName } from "../runtime/app-name.mjs"
 import { mcpControl } from "./mcp-control.mjs"
 
 /**
@@ -141,6 +142,10 @@ async function writeHandoff(config, prompt, request) {
     ancestry: Array.isArray(request?.ancestry) ? request.ancestry : [],
     files: filesIn(request),
     handoffPath,
+    // An agent may hear from several editors through one endpoint, so each
+    // change says which repo it is for; the paths above are relative to it.
+    projectRoot: path.resolve(config.projectRoot),
+    app: appName({ projectRoot: config.projectRoot }),
   })
 
   return {

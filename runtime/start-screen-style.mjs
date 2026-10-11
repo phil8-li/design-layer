@@ -104,8 +104,8 @@ export function startScreenStyle() {
 
   /*
    * ONE CONTROL HEIGHT, for every box on the card: the two fields, the script
-   * select, the app rows and all three buttons. The primary used to be 40 and
-   * the ghost 32, so Continue and Switch app sat side by side at two heights
+   * select, the app rows and every button. The primary used to be 40 and
+   * the ghost 32, so Continue and its neighbour sat side by side at two heights
    * with their text on two baselines.
    */
   --control-height: 36px;
@@ -247,9 +247,42 @@ body {
 
 form { display: contents; }
 .section { display: flex; flex-direction: column; gap: 8px; }
-/* The name and where it lives read as one fact, so they sit tighter than the
-   section's rhythm. */
-.current-app { display: flex; flex-direction: column; gap: 2px; }
+/* Focused after a Stop takes the control that had focus with it; a heading
+   that took focus should not draw a ring as if it were a control. */
+.title:focus { outline: none; }
+
+/*
+ * ONE ENTRY PER RUNNING EDITOR. The name and where it lives read as one fact,
+ * so they sit tighter than the section's rhythm; the entry's two actions sit
+ * at its trailing edge and wrap under the text when the card is narrow.
+ */
+.editors {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 306px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.editor-text { flex: 1 1 12rem; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.editor-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--weight-value); }
+.editor-actions { flex: none; display: flex; align-items: center; gap: 8px; }
+.editor-starting {
+  display: inline-flex;
+  align-items: center;
+  height: var(--control-height);
+  font-size: var(--size-label);
+  color: var(--text-muted);
+}
 /*
  * SENTENCE CASE, LIKE EVERY OTHER FIELD LABEL IN THE PRODUCT.
  *
@@ -522,6 +555,15 @@ button:focus-visible, a.primary:focus-visible, .app:focus-visible {
 .app[aria-checked="true"] .app-check { visibility: visible; }
 .app-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .app-port { font-family: var(--mono); font-size: var(--size-label); color: var(--text-muted); }
+/* An app that already has an editor: a word, so it does not rest on colour. */
+.app-open {
+  flex: none;
+  padding: 0 6px;
+  font-size: var(--size-label);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-row);
+}
 
 /*
  * A field rather than a label, because typing or pasting a path is the way a
@@ -630,8 +672,8 @@ select {
 .primary:disabled { background: var(--field); color: var(--text-dim); cursor: default; }
 
 /*
- * Continue and Switch app: go to what is running, or go and pick something
- * else. The first is an anchor rather than a button because it goes to a URL,
+ * Continue goes to a running editor, and "Open another app" goes to the list
+ * beside it. Continue is an anchor rather than a button because it goes to a URL,
  * and an anchor is the control a browser already knows how to open in a new tab
  * — which is exactly what someone with two apps in flight will want to do.
  */
@@ -643,12 +685,15 @@ select {
  * translation touched it.
  */
 .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-/* Equal halves: the same basis and the same grow, so the two buttons are one
-   size side by side and one size stacked. */
+/* The same basis and the same grow, so buttons in this row are one size side
+   by side and one size stacked. */
 .actions > * { flex: 1 1 10rem; white-space: nowrap; }
 a.primary { text-decoration: none; }
 
 .waiting { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+/* Back and Stop take the card's full width, as Continue and Stop do on the
+   card, so the two faces' action rows are one shape. */
+.waiting > .actions { align-self: stretch; }
 .progress {
   margin: 0;
   display: flex;

@@ -48,11 +48,44 @@ import { deferVendorTransform } from "./vendor-lazy.mjs"
 const http = createRequire(import.meta.url)("node:http")
 
 const LOOPBACK = "127.0.0.1"
+/**
+ * The host name a browser is sent to, as opposed to the address this process
+ * dials. Apps treat `localhost` as their dev host: a sign-in bypass, an
+ * auth-provider allowlist and a cookie domain are usually written against that
+ * name, and on `127.0.0.1` such an app showed its signed-out screen inside the
+ * editor. The proxy listens on 127.0.0.1, which `localhost` reaches in every
+ * browser.
+ */
+const BROWSER_HOST = "localhost"
 
 // The pinned vendor probes upward from these two constants and never exposes
 // them as options, so a configured port is applied by remapping the probe.
 const VENDOR_WS_PORT = 3457
 const VENDOR_PROXY_PORT = 3456
+// The vendor's `getAvailablePort` walks 100 ports up from either constant.
+const VENDOR_WALK_END = VENDOR_WS_PORT + 100
+
+/**
+ * The port a vendor bind for `port` really goes to, or null to fail it as in
+ * use.
+ *
+ * `phase` is which server the vendor is finding a port for: "ws" until its
+ * WebSocket server binds, "proxy" until its proxy binds, null after. The
+ * vendor probes for a free port by binding, and when the pinned port is taken
+ * between the supervisor's check and this bind, it walks upward: for the
+ * proxy, 3457 maps to this editor's own socket port, then 3458 is literal,
+ * which may be a sibling editor's. A pinned port is a promise to the
+ * supervisor, so every other port in the walk reads as taken: the vendor runs
+ * out of ports and exits with an error the supervisor reports.
+ */
+export function vendorBindPort(ports, port, phase = null) {
+  const inWalk = port >= VENDOR_PROXY_PORT && port < VENDOR_WALK_END
+  if (inWalk && phase === "ws" && ports.ws !== "auto" && port !== VENDOR_WS_PORT) return null
+  if (inWalk && phase === "proxy" && ports.proxy !== "auto" && port !== VENDOR_PROXY_PORT) return null
+  if (ports.ws !== "auto" && port === VENDOR_WS_PORT) return ports.ws
+  if (ports.proxy !== "auto" && port === VENDOR_PROXY_PORT) return ports.proxy
+  return port
+}
 
 const CHROME_BUNDLE = fileURLToPath(
   new URL("../dist/designlayer.js", import.meta.url)
@@ -583,7 +616,7 @@ async function startMcpEndpoint(config, runtime) {
     writeEndpointFile(config, runtime)
     console.log(
       state.mode === "hub"
-        ? `[designlayer] MCP http://${LOOPBACK}:${state.port}/mcp — served by the start screen, on between apps`
+        ? `[designlayer] MCP http://${LOOPBACK}:${state.port}/mcp — served by the start screen, shared by every app`
         : `[designlayer] MCP http://${LOOPBACK}:${state.port}/mcp — point your agent at it`
     )
   } catch (error) {
@@ -629,7 +662,7 @@ function publishToRegistry(config, runtime) {
     appUrl: runtime.appPort ? `http://${LOOPBACK}:${runtime.appPort}` : null,
     projectRoot: config.projectRoot,
     packageName: readPackageName(config.projectRoot),
-    url: `http://${LOOPBACK}:${runtime.proxyPort}`,
+    url: `http://${BROWSER_HOST}:${runtime.proxyPort}`,
   })
   if (!registryWithdrawal) {
     const port = runtime.proxyPort
@@ -864,10 +897,32 @@ export async function launch(config, { appPort, host, open, verbose = false, onR
 
   const restoreFetch = acceptErroringDevServer(host, appPort)
 
-  function configuredPort(port) {
-    if (config.ports.ws !== "auto" && port === VENDOR_WS_PORT) return config.ports.ws
-    if (config.ports.proxy !== "auto" && port === VENDOR_PROXY_PORT) return config.ports.proxy
-    return port
+  /*
+   * Counted at the call, not on "listening": the vendor probes for the proxy's
+   * port in the same tick it asks the WebSocket server to bind, before that
+   * server has said it is listening. Its probes are plain net.Servers, so only
+   * its two http.Servers move the phase on.
+   */
+  let vendorServersBound = 0
+  const vendorPhase = () => (vendorServersBound === 0 ? "ws" : vendorServersBound === 1 ? "proxy" : null)
+  const refusedPhases = new Set()
+
+  // Fails a bind the way a port in use fails it, which is what the vendor's
+  // probe listens for. Said once per server, in the terms of the pinned port.
+  function failAsInUse(server, port, phase) {
+    if (!refusedPhases.has(phase)) {
+      refusedPhases.add(phase)
+      const [label, pinned] = phase === "ws" ? ["WebSocket", config.ports.ws] : ["Proxy", config.ports.proxy]
+      console.error(`[designlayer] ${label} port ${pinned} is already in use, and this editor's ports are fixed, so it will not move to another port`)
+    }
+    const error = Object.assign(new Error(`listen EADDRINUSE: address already in use ${LOOPBACK}:${port}`), {
+      code: "EADDRINUSE",
+      syscall: "listen",
+      address: LOOPBACK,
+      port,
+    })
+    process.nextTick(() => server.emit("error", error))
+    return server
   }
 
   // Both long-lived servers are http.Servers and the pinned vendor starts the
@@ -882,11 +937,11 @@ export async function launch(config, { appPort, host, open, verbose = false, onR
       else if (runtime.proxyPort === null) {
         runtime.proxyPort = address.port
         writeEndpointFile(config, runtime)
-        onReady(`http://${LOOPBACK}:${runtime.proxyPort}`)
+        onReady(`http://${BROWSER_HOST}:${runtime.proxyPort}`)
         // The vendor's own banner reports the port it asked for, not the one it
         // got, so this line has to land after it to be the one a reader trusts.
         setImmediate(() => {
-          const url = `http://${LOOPBACK}:${runtime.proxyPort}`
+          const url = `http://${BROWSER_HOST}:${runtime.proxyPort}`
           console.log(
             `[designlayer] proxy ${url} — ws ://${LOOPBACK}:${runtime.wsPort} — api ${config.apiPrefix}`
           )
@@ -918,9 +973,13 @@ export async function launch(config, { appPort, host, open, verbose = false, onR
     // the proxy above all — gets the unpatched fetch back.
     restoreFetch()
     recordBoundPort(this)
+    const phase = vendorPhase()
+    if (this instanceof http.Server) vendorServersBound += 1
 
     if (typeof args[0] === "number") {
-      args[0] = configuredPort(args[0])
+      const port = vendorBindPort(config.ports, args[0], phase)
+      if (port === null) return failAsInUse(this, args[0], phase)
+      args[0] = port
       const hasExplicitHost = typeof args[1] === "string"
       if (!hasExplicitHost) {
         const [port, ...rest] = args
@@ -928,7 +987,11 @@ export async function launch(config, { appPort, host, open, verbose = false, onR
       }
     } else if (args[0] && typeof args[0] === "object") {
       const options = { ...args[0] }
-      if (typeof options.port === "number") options.port = configuredPort(options.port)
+      if (typeof options.port === "number") {
+        const port = vendorBindPort(config.ports, options.port, phase)
+        if (port === null) return failAsInUse(this, options.port, phase)
+        options.port = port
+      }
       if (!("host" in options)) options.host = LOOPBACK
       args[0] = options
     }

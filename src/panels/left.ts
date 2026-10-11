@@ -73,8 +73,9 @@
  * A subject printed inside one of its own views would be a heading that
  * disappears when you switch tabs.
  *
- * It is also the only control in this panel that ENDS the session: picking a
- * different app kills this editor and starts another. That is one level up from
+ * It is also the only control in this panel that can END the session: in a
+ * browser tab, picking a different app moves this tab to that app's editor,
+ * starting one first when it has none. That is one level up from
  * everything under it, the same reason the "Choose app" link it replaces sat
  * ahead of the toolbar's clusters rather than in one of them — and above the
  * strip is the only position in this column that says so.

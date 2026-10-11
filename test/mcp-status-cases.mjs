@@ -274,6 +274,22 @@ await check("GET /mcp/status answers 200 with the port it was configured with", 
   }
 })
 
+/*
+ * `shared` is what holds the Stay on between apps switch on: the start screen
+ * serves MCP for every editor it runs. An editor on its own never shares it.
+ */
+await check("an editor with no start screen behind it reports MCP as not shared", async () => {
+  const api = await statusRoute({ mcp: 5747 })
+  try {
+    const payload = await (await api.get()).json()
+    assert.equal(payload.shared, false)
+    assert.equal(payload.canStay, false)
+    assert.equal(payload.stay, false)
+  } finally {
+    await api.close()
+  }
+})
+
 await check("a port that never bound is reported as no URL, not a bad one", async () => {
   const api = await statusRoute({ mcp: null })
   try {

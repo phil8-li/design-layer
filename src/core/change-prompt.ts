@@ -23,11 +23,11 @@
  * way they leave the browser. Any reload emptied it — an ordinary hot reload
  * already did, silently, and that was a bug before anything else changed.
  *
- * The app chooser turned it from a bug into a certainty. Switching apps kills
- * this editor process and the supervisor starts another bound to the same proxy
- * port, so from the browser's side a switch IS a reload of the same document on
- * the same origin, with no confirmation step in front of it. A designer would
- * have lost every stranded change by clicking a name in a menu.
+ * The app chooser turned it from a bug into a certainty. In a browser tab,
+ * switching apps navigates this tab to another app's editor, so this document
+ * ends, and the first version of the chooser did that with no confirmation
+ * step in front of it. A designer would have lost every stranded change by
+ * clicking a name in a menu.
  *
  * So the ledger is filed per app through `app-scope`, exactly as the notes are.
  * Switching away files these changes under the app they were made in, switching

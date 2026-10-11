@@ -107,7 +107,7 @@ const EVENTS = [
     group: "System changes",
     items: [
       { event: "Switch apps with unapplied changes (first click)", message: { title: "Switching discards 2 unapplied changes", description: "Click again to go to Docs site anyway." }, kind: "info", source: "src/panels/app-chooser.ts", find: "Click again to go to ${label} anyway.`" },
-      { event: "Switch apps", message: "Switching to Docs site…", kind: "info", source: "src/panels/app-chooser.ts", find: "`Switching to ${label}\\u2026`" },
+      { event: "Switch apps", message: "Starting Docs site…", kind: "info", source: "src/panels/app-chooser.ts", find: "`Starting ${label}\\u2026`" },
       { event: "Switch to an app that stopped", message: "Docs site is no longer running. Start it again, or choose another app.", kind: "error", source: "src/panels/app-chooser.ts", find: "is no longer running. Start it again, or choose another app.`" },
       { event: "Add a design library", message: "Added Acme UI", kind: "info", source: "src/libraries/libraries-section.ts", find: "`Added ${library.name}`" },
       { event: "Remove a design library", message: "Removed Acme UI", kind: "info", source: "src/libraries/libraries-section.ts", find: "`Removed ${library.name}`" },

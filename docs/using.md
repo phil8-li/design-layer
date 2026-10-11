@@ -222,8 +222,29 @@ requests only; every other response keeps those headers.
 
 The chooser lasts as long as the session, not as long as the first app you pick.
 The command you ran stays a supervisor on 3455 and never becomes an editor
-itself; each app you choose is a child process it starts, watches, and can
-replace. So designing a second app is not a quit and a restart.
+itself; each app you choose is a child process it starts and watches. So
+designing a second app is not a quit and a restart.
+
+Several apps can be open at once, one editor each. Starting an app never stops
+another app's editor: the first app's editor keeps running, on its own proxy
+port. Choosing an app that already has an editor goes to that editor instead of
+starting a second one. An editor stops only when you press **Stop** for it on
+the start screen, when it crashes, when you choose a different project folder
+for the same app port (that one editor is replaced), or when the supervisor
+exits.
+
+Each app keeps its proxy port across restarts, because some editor settings are
+still stored per browser origin: the first app gets 3456 (socket 3457), the next
+3458/3459, and so on, skipping ports already in use. The pairs are remembered in
+`~/.local/state/designlayer/ports.json`. Passing `--proxy-port`/`--ws-port` to
+the supervisor moves the first pair; the rest follow from there. When those ports
+are free, the first editor takes them even if its app remembers another pair.
+
+Notes, their settings and preview-only changes are kept on this machine, in
+`~/.local/state/designlayer/storage/`, as well as in the browser. They follow an
+app across ports, host names and the Mac app. Notes saved before this version
+live only in the browser at the address they were made on; open that address
+(for example http://127.0.0.1:3456) once and they are brought over.
 
 From inside the editor, the **Choose app** pill in the toolbar is the way back.
 Unapplied changes and uncopied prompts live only in that tab, so the first click

@@ -36,6 +36,11 @@ export function deskPlistPath(home = os.homedir()) {
  * `DESIGNLAYER_DESK_PORT` is set on the LaunchAgent, which is the process that
  * binds it, and the installer writes the key only when the port is not the
  * default (desktop/mac/launch-agent.mjs `buildPlist`).
+ *
+ * On localhost, though the desk binds 127.0.0.1: the app window is served
+ * from there, so it is same-site with the editors it frames, which are on
+ * localhost too. Across sites, a frame gets no SameSite=Lax cookie and an app
+ * with cookie sign-in shows its signed-out screen.
  */
 export function deskUrlFromHost({ platform = process.platform, home = os.homedir() } = {}) {
   if (platform !== "darwin") return null
@@ -46,5 +51,5 @@ export function deskUrlFromHost({ platform = process.platform, home = os.homedir
     return null
   }
   const port = Number(/<key>DESIGNLAYER_DESK_PORT<\/key>\s*<string>(\d+)<\/string>/.exec(plist)?.[1])
-  return `http://127.0.0.1:${Number.isInteger(port) && port > 0 && port < 65536 ? port : DEFAULT_DESK_PORT}`
+  return `http://localhost:${Number.isInteger(port) && port > 0 && port < 65536 ? port : DEFAULT_DESK_PORT}`
 }

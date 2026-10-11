@@ -6,6 +6,7 @@
  * Nothing here runs on :3000.
  */
 
+import { hydrateScoped } from "./core/app-scope"
 import { whenBridgeReady } from "./core/bridge"
 import { installCompanionApi } from "./core/companion-api"
 import { createContext } from "./core/context"
@@ -87,6 +88,13 @@ const SLOW_BOOT = 1200
 const BOOT_WAIT = "boot-wait"
 
 async function boot(): Promise<void> {
+  /*
+   * Started first and awaited just before the stores exist, so the wait for the
+   * machine copy of notes runs beside the wait for the host instead of after it.
+   * It gives up on its own after 400 ms and never throws; see
+   * `core/app-scope.ts` for why the notes need it.
+   */
+  const hydrated = hydrateScoped()
   let bridge
   /*
    * THE WAIT SAYS SO, AND SO DOES GIVING UP.
@@ -138,6 +146,7 @@ async function boot(): Promise<void> {
    * left panel looked fine while it did.
    */
   installAppViewport()
+  await hydrated
   const context = createContext(bridge, shell.slots)
 
   installToolbar(context)

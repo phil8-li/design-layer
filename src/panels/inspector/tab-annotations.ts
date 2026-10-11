@@ -810,18 +810,34 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
    *
    * The same row as every setting below it, in the section it governs — no
    * heading, no sentence under it. The hint rides on the label's hover.
+   *
+   * While the start screen runs editors it serves MCP for all of them, so the
+   * switch shows on and is held there: turning it off would move the endpoint
+   * into this editor and cut off every other app sending to the same agent.
+   * The hint then says why it cannot move.
    */
   const STAY_HINT = "Your agent stays connected when you switch or restart apps."
+  const STAY_SHARED_HINT = "Every app you start from the start screen shares this address, so it stays on."
   let staySwitching = false
+  let stayShared = false
   const stay = switchRow("Stay on between apps", STAY_HINT, (value) => void setStay(value))
   stay.row.hidden = true
+
+  function showStayShared(shared: boolean): void {
+    if (shared === stayShared) return
+    stayShared = shared
+    const hint = shared ? STAY_SHARED_HINT : STAY_HINT
+    stay.toggle.setAttribute("aria-description", hint)
+    stay.row.querySelector(".de-ann-setting-label")?.setAttribute(TIP_ATTR, hint)
+    stay.toggle.disabled = shared
+  }
 
   /**
    * Flips at once and settles on the server's answer. The switch is held while
    * the endpoint moves, so a second press cannot start a second move.
    */
   async function setStay(on: boolean): Promise<void> {
-    if (staySwitching) return
+    if (staySwitching || stayShared) return
     staySwitching = true
     stay.toggle.setAttribute("aria-checked", String(on))
     stay.toggle.disabled = true
@@ -844,7 +860,7 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
       )
     } finally {
       staySwitching = false
-      stay.toggle.disabled = false
+      stay.toggle.disabled = stayShared
       void refreshMcp()
     }
   }
@@ -873,10 +889,16 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
         waiting: number
         stay?: boolean
         canStay?: boolean
+        shared?: boolean
+        /** Why the start screen could not host the shared address, when it could not. */
+        reason?: string
       }
       mcpAddress.textContent = status.url ?? "not running"
       stay.row.hidden = status.canStay !== true
-      if (!staySwitching) stay.toggle.setAttribute("aria-checked", String(status.stay === true))
+      if (!staySwitching) {
+        showStayShared(status.shared === true)
+        stay.toggle.setAttribute("aria-checked", String(status.stay === true || status.shared === true))
+      }
 
       /*
        * THREE FACTS, AND THEY FAIL INDEPENDENTLY.
@@ -894,7 +916,14 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
        * worth reading rather than worth ignoring.
        */
       if (!status.url || !status.listening) {
-        setMcpState("off", "Not running. Another editor may be using the port.")
+        // The start screen's own reason when it holds the shared address and
+        // could not bind it; the general sentence otherwise.
+        setMcpState(
+          "off",
+          typeof status.reason === "string" && status.reason.length > 0
+            ? `Not running. ${status.reason}`
+            : "Not running. Another editor may be using the port."
+        )
       } else if (status.agents < 1) {
         setMcpState("idle", "No agent connected. Paste this address into your agent.")
       } else if (status.waiting > 0) {

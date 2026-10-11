@@ -136,6 +136,10 @@ export function createHandoffQueue() {
       ancestry: Array.isArray(input.ancestry) ? input.ancestry : [],
       files: Array.isArray(input.files) ? input.files : [],
       handoffPath: typeof input.handoffPath === "string" ? input.handoffPath : null,
+      // Which project the change is for. One endpoint serves every editor the
+      // start screen runs, and `files` and `handoffPath` are relative to this.
+      projectRoot: typeof input.projectRoot === "string" && input.projectRoot ? input.projectRoot : null,
+      app: typeof input.app === "string" && input.app ? input.app : null,
     }
     entries.set(entry.id, entry)
     prune()

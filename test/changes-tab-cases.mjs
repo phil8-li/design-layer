@@ -366,6 +366,29 @@ await check("MCP is its own section, with the status as a mark in its header", a
   assert.equal(mark.textContent, "", "the status is still a sentence, not a mark")
 })
 
+// When the start screen holds the shared address and cannot bind it, the panel
+// says why, not a guess about another editor.
+await check("an endpoint that is not running says the start screen's reason when it has one", async () => {
+  try {
+    mcpStatus = { url: null, listening: false, agents: 0, waiting: 0, shared: true, reason: "Another program is using port 5747." }
+    reset()
+    await settle()
+    const mark = tab.node.querySelector(".de-section-header .de-mcp-state")
+    assert.equal(mark.dataset.deState, "off")
+    assert.equal(mark.title, "Not running. Another program is using port 5747.")
+
+    mcpStatus = { url: null, listening: false, agents: 0, waiting: 0 }
+    reset()
+    await settle()
+    assert.equal(
+      tab.node.querySelector(".de-section-header .de-mcp-state").title,
+      "Not running. Another editor may be using the port."
+    )
+  } finally {
+    mcpStatus = AGENT_ATTACHED
+  }
+})
+
 await check("with no agent connected, Send to agent is never offered", async () => {
   mcpStatus = { ...AGENT_ATTACHED, agents: 0, waiting: 0 }
   try {
@@ -690,6 +713,38 @@ await check("pressing it moves MCP, and a refusal puts the switch back with the 
     assert.equal(kind, "error")
     assert.equal(message.title, "MCP is still on between apps")
     assert.equal(message.description, "Another program is using port 5747.")
+  } finally {
+    globalThis.fetch = real
+    mcpStatus = AGENT_ATTACHED
+  }
+})
+
+/*
+ * Every app started from the start screen shares one MCP address, so the switch
+ * shows on and cannot be turned off from one of them: moving the endpoint back
+ * into one editor would cut every other app off from the agent.
+ */
+await check("a shared MCP address shows the switch on and locked, and a press sends nothing", async () => {
+  const real = globalThis.fetch
+  const posts = []
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/mcp/stay")) posts.push(JSON.parse(init.body))
+    return real(input, init)
+  }
+  try {
+    mcpStatus = { ...AGENT_ATTACHED, canStay: true, stay: false, shared: true }
+    reset()
+    await settle()
+    const toggle = stayRow().querySelector('[role="switch"]')
+    assert.equal(toggle.getAttribute("aria-checked"), "true")
+    assert.equal(toggle.disabled, true, "a shared address can be switched off from one app")
+    assert.equal(
+      toggle.getAttribute("aria-description"),
+      "Every app you start from the start screen shares this address, so it stays on."
+    )
+    toggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }))
+    await settle()
+    assert.deepEqual(posts, [], "a press on the locked switch moved MCP")
   } finally {
     globalThis.fetch = real
     mcpStatus = AGENT_ATTACHED

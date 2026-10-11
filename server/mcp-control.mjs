@@ -13,6 +13,15 @@
  * change a send records, and the status the panel shows. The start screen also
  * keeps the setting, because it is the process that outlives the choice.
  *
+ * With several editors running, the start screen serves the endpoint for all
+ * of them whatever the setting says (`runtime/mcp-hub.mjs`), because only one
+ * process can hold the port. An editor then never binds it, and the switch
+ * shows on and cannot be turned off: taking the endpoint back into one editor
+ * would leave the others sending into nothing. If the start screen cannot bind
+ * it yet, the editor still does not: it reports MCP off with the start
+ * screen's reason and asks again on every send and status read, relaying as
+ * soon as the start screen hosts.
+ *
  * Every caller goes through here — the launcher at boot, the `/agent` route for
  * a send, the `/mcp/status` route for the panel — so none of them can disagree
  * about where the endpoint is.
@@ -24,6 +33,12 @@ import { closeEndpoint, openEndpoint } from "./mcp.mjs"
 const HUB_TIMEOUT_MS = 4000
 /** Long enough for the other process to let the port go; see `openEndpoint`. */
 const MOVE_RETRY_MS = 1500
+/**
+ * How long boot waits for a start screen that is binding the port right now.
+ * Its own bind retries for `MOVE_RETRY_MS`, so this outlasts that.
+ */
+const HUB_STARTING_WAIT_MS = 3000
+const HUB_POLL_MS = 50
 
 function refusal(message, statusCode) {
   const error = new Error(message)
@@ -52,6 +67,15 @@ export function createMcpControl({ port = null, hubUrl = null, token = null, isL
   /** The switch in flight, so a send or a status read waits for it to land. */
   let moving = null
   const canStay = Boolean(hubUrl && token)
+  /**
+   * Off because the start screen owns the endpoint and cannot bind it yet.
+   * This editor never binds it instead: a second process on the port is what
+   * left other editors' sends going nowhere. Each send and status read asks
+   * the start screen again, which also makes it retry the bind.
+   */
+  let awaitingHub = false
+  /** The start screen's reason, shown while `awaitingHub`. */
+  let hubReason = null
 
   async function hub(method, pathname, body) {
     let response
@@ -70,6 +94,40 @@ export function createMcpControl({ port = null, hubUrl = null, token = null, isL
       throw refusal(payload?.error ?? `The start screen answered ${response.status}.`, response.status)
     }
     return payload
+  }
+
+  /** The start screen's status, polled while `keepWaiting` holds and it does not host yet. */
+  async function askHub(keepWaiting) {
+    let answer = await hub("GET", "api/mcp")
+    const deadline = Date.now() + HUB_STARTING_WAIT_MS
+    while (answer && !answer.hosting && keepWaiting(answer) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, HUB_POLL_MS))
+      answer = await hub("GET", "api/mcp")
+    }
+    return answer
+  }
+
+  function waitForHub(answer) {
+    mode = "off"
+    awaitingHub = true
+    hubReason = answer?.reason ?? "The start screen couldn’t start MCP."
+  }
+
+  /** While waiting on the start screen, one more ask: relay from now on if it hosts. */
+  async function rejoinHub() {
+    if (!awaitingHub || mode !== "off") return
+    try {
+      const answer = await askHub((reply) => reply.starting)
+      if (answer?.hosting) {
+        mode = "hub"
+        awaitingHub = false
+        hubReason = null
+      } else if (answer?.reason) {
+        hubReason = answer.reason
+      }
+    } catch {
+      // Not answering right now; stay off and ask again next time.
+    }
   }
 
   async function serveHere(retryMs = 0) {
@@ -101,7 +159,10 @@ export function createMcpControl({ port = null, hubUrl = null, token = null, isL
     try {
       await hub("POST", "api/mcp/stay", { on: true, pending: handed })
       mode = "hub"
+      awaitingHub = false
+      hubReason = null
     } catch (error) {
+      if (awaitingHub) throw error
       // Back where it was, so the agent has an endpoint either way.
       await serveHere(MOVE_RETRY_MS).catch(() => {})
       queue.adopt(handed)
@@ -141,10 +202,18 @@ export function createMcpControl({ port = null, hubUrl = null, token = null, isL
     async boot() {
       if (canStay) {
         try {
-          const answer = await hub("GET", "api/mcp")
+          // Binding, or owning, the endpoint for the editors it runs, likely
+          // this one. Binding here as well would race it for the port, and
+          // whichever lost would leave some editors' sends going nowhere. Each
+          // read makes a start screen that owns it try the port again.
+          const answer = await askHub((reply) => reply.starting || reply.shared)
           if (answer?.hosting) {
             mode = "hub"
             return { mode, port: answer.port ?? null }
+          }
+          if (answer?.starting || answer?.shared) {
+            waitForHub(answer)
+            return { mode, port: null, error: hubReason }
           }
         } catch {
           // No answer: serve here, as an editor without a start screen would.
@@ -167,6 +236,9 @@ export function createMcpControl({ port = null, hubUrl = null, token = null, isL
      */
     async deliver(input) {
       if (moving) await moving.catch(() => {})
+      await rejoinHub()
+      // Nobody serves this queue, and taking the port would split the agents.
+      if (awaitingHub) return { delivered: null, waiting: 0, listening: false }
       if (mode === "hub") {
         try {
           const answer = await hub("POST", "api/mcp/push", input)
@@ -194,6 +266,21 @@ export function createMcpControl({ port = null, hubUrl = null, token = null, isL
      */
     async status(fallbackPort = null) {
       if (moving) await moving.catch(() => {})
+      await rejoinHub()
+      if (awaitingHub) {
+        return {
+          url: null,
+          port: null,
+          listening: false,
+          agents: 0,
+          waiting: 0,
+          pending: 0,
+          stay: true,
+          canStay,
+          shared: true,
+          reason: hubReason,
+        }
+      }
       if (mode === "hub") {
         try {
           const answer = await hub("GET", "api/mcp")
@@ -206,9 +293,20 @@ export function createMcpControl({ port = null, hubUrl = null, token = null, isL
             pending: answer.pending ?? 0,
             stay: true,
             canStay,
+            shared: answer.shared === true,
           }
         } catch {
-          return { url: null, port: null, listening: false, agents: 0, waiting: 0, pending: 0, stay: true, canStay }
+          return {
+            url: null,
+            port: null,
+            listening: false,
+            agents: 0,
+            waiting: 0,
+            pending: 0,
+            stay: true,
+            canStay,
+            shared: false,
+          }
         }
       }
       const bound = queue.endpointListening ? (port ?? fallbackPort) : null
@@ -221,6 +319,7 @@ export function createMcpControl({ port = null, hubUrl = null, token = null, isL
         pending: queue.list("pending").length,
         stay: false,
         canStay,
+        shared: false,
       }
     },
 

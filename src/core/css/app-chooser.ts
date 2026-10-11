@@ -396,10 +396,10 @@ export const appChooserCss = `/* ---------- app chooser ---------- */
   color: ${t.color.textDim};
 }
 /*
- * The mark on a row that is a navigation rather than a process swap.
+ * The mark on a row that is a navigation rather than a start.
  *
  * A row backed by an editor that is already serving moves the page; a row
- * without one asks a supervisor to SIGTERM this editor. The reader has to be
+ * without one asks a supervisor to start an editor and waits. The reader has to be
  * able to tell those apart before pressing either, and the clause that used to
  * say so — \`editor already running\` — spent four words per row on it. An arrow
  * says the same thing in the width of a glyph, and \`base.ts\` already gives
@@ -417,12 +417,11 @@ export const appChooserCss = `/* ---------- app chooser ---------- */
 /*
  * THE ROW REPORTING ITS OWN HANDOVER.
  *
- * Switching apps asks a supervisor to stop one process and start another, and
- * it takes seconds. What the reader used to get was a toast that expires after
+ * Switching to an app with no editor asks a supervisor to start one, and it
+ * takes seconds. What the reader used to get was a toast that expires after
  * four of them and a menu whose rows went grey — so by the time anything
- * changed, the only thing that had explained it was gone, and the page behind
- * stopped answering because the server was gone too. The longest wait in the
- * product, furnished with the least.
+ * changed, the only thing that had explained it was gone. The longest wait in
+ * the product, furnished with the least.
  *
  * The SWEEP says the wait is progressing rather than merely happening, which is
  * the distinction a greyed row cannot draw. It is the same indeterminate mark

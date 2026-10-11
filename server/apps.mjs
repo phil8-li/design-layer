@@ -18,6 +18,7 @@
 
 import { chooserUrlFromEnv } from "../runtime/chooser-url.mjs"
 import { listEditors } from "../runtime/editor-registry.mjs"
+import { lastPage, portOfUrl, rememberPage } from "../runtime/last-pages.mjs"
 
 // The chooser's own scan is the floor: it probes every candidate port
 // concurrently with a 1.5s ceiling and then reads package.json off disk for the
@@ -54,6 +55,8 @@ function appRow(raw) {
     title: typeof raw.title === "string" ? raw.title : "",
     projectRoot: typeof raw.projectRoot === "string" ? raw.projectRoot : null,
     packageName: typeof raw.packageName === "string" ? raw.packageName : null,
+    // Where a switch to it lands. See runtime/last-pages.mjs.
+    page: lastPage({ port: raw.port, projectRoot: typeof raw.projectRoot === "string" ? raw.projectRoot : null }),
     // An app with no editor of its own can only be reached by asking the start
     // screen to start one, so there is nowhere for the browser to navigate to.
     target: null,
@@ -64,11 +67,10 @@ function appRow(raw) {
  * One running editor, as a row the browser can switch to by NAVIGATING.
  *
  * This is the row that makes the chooser work in the sessions most people
- * actually have. An app row is a request — kill this editor, start another —
- * and it needs a supervisor to carry it out. An editor row is just a URL: that
- * app already has an editor, it is already up, and switching to it is following
- * a link. Nothing is killed, nothing is started, and nothing queued in this tab
- * is at risk, because this tab is not the one being replaced.
+ * actually have. An app row is a request — start an editor for this app — and
+ * it needs a supervisor to carry it out. An editor row is just a URL: that app
+ * already has an editor, it is already up, and switching to it is following a
+ * link. Nothing is started, and nothing waits.
  */
 function editorRow(entry) {
   return {
@@ -84,6 +86,7 @@ function editorRow(entry) {
     title: "",
     projectRoot: typeof entry.projectRoot === "string" ? entry.projectRoot : null,
     packageName: typeof entry.packageName === "string" ? entry.packageName : null,
+    page: lastPage({ port: entry.appPort, projectRoot: typeof entry.projectRoot === "string" ? entry.projectRoot : null }),
     /** Where the browser goes. The other editor's own proxy. */
     target: typeof entry.url === "string" ? entry.url : null,
   }
@@ -130,6 +133,14 @@ export function createAppSwitcher({
       .filter((entry) => entry && entry.pid !== self)
       .map(editorRow)
       .filter((row) => row.target)
+  }
+
+  const ownEntry = () => {
+    try {
+      return editors().find((candidate) => candidate && candidate.pid === self) ?? null
+    } catch {
+      return null
+    }
   }
 
   return {
@@ -225,9 +236,10 @@ export function createAppSwitcher({
     },
 
     /**
-     * Hands one choice to the screen, which kills this editor and starts the
-     * next. Everything after that happens in another process, so the only
-     * success this can report is that the choice was accepted.
+     * Hands one choice to the screen, which starts an editor for it beside
+     * this one, or names the one already running. The answer carries that
+     * editor's `id`, which is how the page asks when it is ready — see
+     * `started`.
      *
      * The body is checked before the chooser is: the start screen validates it
      * too, and far better — it stats the folder and reads its scripts — but a
@@ -251,7 +263,11 @@ export function createAppSwitcher({
       // project's own best script when it is absent, and a null sent in its
       // place would be a value it has to reject rather than a question it can
       // answer for itself.
-      const choice = { url, projectRoot }
+      // A bare origin goes to the page that app was last used on, so the start
+      // screen sends every surface that follows it to the same page.
+      const port = portOfUrl(url)
+      const page = /^https?:\/\/[^/]+\/?$/.test(url) ? lastPage({ port, projectRoot }) : null
+      const choice = { url: page ? new URL(url).origin + page : url, projectRoot }
       if (typeof body.devScript === "string") choice.devScript = body.devScript
 
       let response
@@ -281,6 +297,57 @@ export function createAppSwitcher({
         )
       }
 
+      const said = await response.json().catch(() => null)
+      return {
+        ok: true,
+        id: typeof said?.id === "string" ? said.id : null,
+        existing: said?.existing === true,
+      }
+    },
+
+    /**
+     * Whether the editor a switch started is ready, and its address once it is.
+     *
+     * `stopped` is the screen's own sentence for an editor that will never be
+     * ready, which includes an id the screen no longer knows: either way the
+     * page has to stop asking and say why.
+     */
+    async started(id) {
+      const wanted = typeof id === "string" ? id.trim() : ""
+      if (!wanted) throw refusal("Asking whether an app started needs the id the switch answered with.", 400)
+      if (!chooserUrl) {
+        throw refusal("This editor was not started from the start screen, so nothing was started.", 409)
+      }
+      const address = new URL("api/status", chooserUrl)
+      address.searchParams.set("id", wanted)
+      let response
+      try {
+        response = await fetch(address, { signal: AbortSignal.timeout(CHOOSER_TIMEOUT_MS) })
+      } catch (error) {
+        throw refusal(unreachable(chooserUrl, error), 502)
+      }
+      const said = response.ok ? await response.json().catch(() => null) : null
+      if (!isPlainObject(said)) {
+        throw refusal(`The start screen answered ${response.status} when asked whether the app started.`, 502)
+      }
+      return {
+        ready: said.ready === true,
+        url: typeof said.url === "string" ? said.url : null,
+        stopped: typeof said.stopped === "string" && said.stopped.length > 0 ? said.stopped : null,
+      }
+    },
+
+    /**
+     * Files the page this editor's document is on, under this editor's app.
+     *
+     * The app comes from the registry entry this process published, not from
+     * the request: a page that names another app is dropped, so one editor
+     * cannot file a page under an app it does not proxy.
+     */
+    rememberPage(body) {
+      const entry = ownEntry()
+      if (!entry || typeof body?.page !== "string" || portOfUrl(body.appUrl) !== entry.appPort) return { ok: false }
+      rememberPage({ port: entry.appPort, projectRoot: entry.projectRoot ?? null, page: body.page })
       return { ok: true }
     },
   }

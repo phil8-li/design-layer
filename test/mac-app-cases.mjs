@@ -27,10 +27,14 @@
  */
 
 import assert from "node:assert/strict"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import vm from "node:vm"
 import { JSDOM } from "jsdom"
 
 import { browserPrelude, resolveConfig } from "../config.mjs"
+import { deskPlistPath, deskUrlFromHost } from "../runtime/mac-desk.mjs"
 import { PACKAGE_DIR } from "./host.mjs"
 
 let passed = 0
@@ -47,9 +51,10 @@ async function check(name, fn) {
   }
 }
 
-const DESK = "http://127.0.0.1:3454"
+// On localhost, the site of the editors it frames (runtime/mac-desk.mjs).
+const DESK = "http://localhost:3454"
 /** The editor page the banner is pressed on, query and all. */
-const PAGE = "http://127.0.0.1:3466/dashboard?tab=billing"
+const PAGE = "http://localhost:3466/dashboard?tab=billing"
 
 // ── The world the bundle loads into ────────────────────────────────────────
 
@@ -168,8 +173,8 @@ const bare = await laneFor(undefined, "no-prelude")
 const mac = await laneFor({ deskUrl: DESK }, "mac-with-app")
 /** A prelude naming a desk somewhere else, which the reader must refuse. */
 const offMachine = await laneFor({ deskUrl: "https://desk.example.com" }, "desk-off-machine")
-/** The same desk spelled with a trailing slash and `localhost`. */
-const spelled = await laneFor({ deskUrl: "http://localhost:3454/" }, "desk-spelled-loosely")
+/** A desk spelled with a trailing slash and `127.0.0.1`, as older launchers wrote it. */
+const spelled = await laneFor({ deskUrl: "http://127.0.0.1:3454/" }, "desk-spelled-loosely")
 
 const slot = () => {
   const node = window.document.createElement("div")
@@ -227,7 +232,7 @@ await check("a desk that is not on this machine is refused, and draws nothing", 
 
 await check("the desk is read as an origin, whatever trailing slash it arrives with", () => {
   assert.equal(mac.config.deskUrl, DESK)
-  assert.equal(spelled.config.deskUrl, "http://localhost:3454")
+  assert.equal(spelled.config.deskUrl, "http://127.0.0.1:3454")
 })
 
 await check("on a Mac with the app it is the last thing in the left panel, under every pane", () => {
@@ -413,6 +418,20 @@ await check("the prelude carries the desk through, and null when there is none",
   }
   assert.equal(payload({ proxyPort: 4567 }).deskUrl, null)
   assert.equal(payload({ proxyPort: 4567, deskUrl: DESK }).deskUrl, DESK)
+})
+
+// The desk page on 127.0.0.1 framed editors on localhost across sites: no
+// SameSite=Lax cookie reached them, so apps with cookie sign-in showed as
+// signed out inside the app.
+await check("the launcher names the desk on localhost, the editors' own site", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "mac-app-home-"))
+  try {
+    fs.mkdirSync(path.dirname(deskPlistPath(home)), { recursive: true })
+    fs.writeFileSync(deskPlistPath(home), "<plist></plist>")
+    assert.equal(deskUrlFromHost({ home, platform: "darwin" }), DESK)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

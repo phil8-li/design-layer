@@ -28,13 +28,20 @@ import { fileURLToPath } from "node:url"
 
 import { APP_FEATURES, CHROME_BINARY, chromeProfileDir, openChrome, profileInUse, quitProfileChrome } from "./chrome-pipe.mjs"
 import { LABEL, buildPlist, logDir, plistPath } from "./launch-agent.mjs"
-import { isDeskTitle } from "./shell-page.mjs"
+import { TABS_KEY, isDeskTitle } from "./shell-page.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(HERE, "..", "..")
 const SERVER = path.join(HERE, "desk-server.mjs")
 const PORT = Number(process.env.DESIGNLAYER_DESK_PORT) || 3454
-const DESK_URL = `http://127.0.0.1:${PORT}/`
+// The app is installed from localhost, the site of the editors it frames
+// (runtime/mac-desk.mjs). Its manifest id is this URL, so an app installed
+// from 127.0.0.1 is another app to Chrome, and is removed on install.
+const DESK_URL = `http://localhost:${PORT}/`
+const OLD_DESK_URL = `http://127.0.0.1:${PORT}/`
+// What this script itself asks the desk: the address it binds, whichever way
+// node resolves localhost.
+const DESK_API = OLD_DESK_URL
 const HOME = os.homedir()
 const UID = process.getuid()
 const DOMAIN = `gui/${UID}`
@@ -81,7 +88,7 @@ function stableNodePath() {
 
 function health(timeoutMs = 1500) {
   return new Promise((resolve) => {
-    const req = http.get(`${DESK_URL}api/health`, { timeout: timeoutMs }, (res) => {
+    const req = http.get(`${DESK_API}api/health`, { timeout: timeoutMs }, (res) => {
       let body = ""
       res.on("data", (c) => (body += c))
       res.on("end", () => {
@@ -95,6 +102,42 @@ function health(timeoutMs = 1500) {
     req.on("timeout", () => req.destroy())
     req.on("error", () => resolve(null))
   })
+}
+
+function putTabs(body) {
+  return new Promise((resolve) => {
+    const req = http.request(`${DESK_API}api/tabs`, { method: "PUT", timeout: 3000 }, (res) => {
+      res.resume()
+      res.on("end", () => resolve(res.statusCode === 200))
+    })
+    req.on("timeout", () => req.destroy())
+    req.on("error", () => resolve(false))
+    req.end(body)
+  })
+}
+
+/**
+ * Hands the desk the tabs the window on 127.0.0.1 saved in that origin's
+ * storage, so the window on localhost opens with them (it restores from
+ * GET /api/tabs). That window was quit before it ever ran a page that mirrors
+ * its tabs, so they are read here: from a page on the old origin, the desk's
+ * offline page, which runs no tab code of its own.
+ */
+async function carryTabs(chrome) {
+  const created = await chrome.send("Target.createTarget", { url: `${OLD_DESK_URL}offline.html` })
+  const targetId = created.result?.targetId
+  if (!targetId) return false
+  try {
+    const sessionId = (await chrome.send("Target.attachToTarget", { targetId, flatten: true })).result?.sessionId
+    const expression = `document.readyState === "complete" && location.origin === ${JSON.stringify(OLD_DESK_URL.slice(0, -1))} ? (localStorage.getItem(${JSON.stringify(TABS_KEY)}) ?? "") : null`
+    const saved = await waitFor(async () => {
+      const value = (await chrome.send("Runtime.evaluate", { expression, returnByValue: true }, 5000, sessionId)).result?.result?.value
+      return typeof value === "string" ? { value } : null
+    }, 8000, 250)
+    return Boolean(saved?.value) && (await putTabs(saved.value))
+  } finally {
+    await chrome.send("Target.closeTarget", { targetId })
+  }
 }
 
 async function waitFor(fn, ms, every = 500) {
@@ -164,6 +207,16 @@ async function installPwa() {
   if (!fs.existsSync(MARKER)) fs.writeFileSync(MARKER, `${new Date().toISOString()}\n`)
   const chrome = await openChrome({ userDataDir: PROFILE, args: ["--no-startup-window"] })
   try {
+    // The app on 127.0.0.1 goes first, so one DesignLayer app remains. It
+    // writes the same shim, so the new one is written only once the old one is
+    // gone. Its window's tabs go to the desk first.
+    if (!(await chrome.send("PWA.getOsAppState", { manifestId: OLD_DESK_URL })).error) {
+      say(`  tabs of the app on ${OLD_DESK_URL}: ${(await carryTabs(chrome)) ? "kept by the desk" : "none found"}`)
+      const removed = await chrome.send("PWA.uninstall", { manifestId: OLD_DESK_URL }, 30000)
+      if (removed.error) throw new Error(`PWA.uninstall of the app on ${OLD_DESK_URL} failed: ${removed.error.message}`)
+      await waitFor(() => !fs.existsSync(SHIM_LOADER), 15000)
+      say(`  removed the app installed from ${OLD_DESK_URL}`)
+    }
     // PWA.install refuses an app that is already installed ("Couldn't fetch
     // install info"), so a re-run keeps the registration unless the shim is gone.
     let installed = !(await chrome.send("PWA.getOsAppState", { manifestId: DESK_URL })).error
@@ -224,7 +277,7 @@ async function install() {
   } else {
     writeAgent(p)
     const up = await waitFor(() => health(), 20000)
-    if (!up) throw new Error(`The desk did not answer on ${DESK_URL}api/health. See ${LOG_FILE}.`)
+    if (!up) throw new Error(`The desk did not answer on ${DESK_API}api/health. See ${LOG_FILE}.`)
     say(`  health: ok (pid ${up.pid})`)
     const ss = await waitFor(async () => ((await health())?.startScreen?.ready ? (await health()).startScreen : null), 30000)
     say(ss ? `  start screen: ${ss.url} (${ss.owned ? "started by the desk" : "already running, reused"})` : "  start screen: not up yet (the desk keeps trying)")
@@ -233,6 +286,7 @@ async function install() {
   step(3, total, `Chrome web app (profile ${PROFILE})`)
   if (DRY) {
     say(`  (dry run) would launch Chrome with --user-data-dir=<profile> --remote-debugging-pipe --enable-devtools-pwa-handler`)
+    say(`  send PWA.uninstall {manifestId: "${OLD_DESK_URL}"} if an app from that address is installed`)
     say(`  and send PWA.install {manifestId: "${DESK_URL}", installUrlOrBundleUrl: "${DESK_URL}"}`)
   } else {
     await installPwa()
@@ -323,6 +377,9 @@ async function verifyWindowOverCdp() {
   try {
     const launched = await chrome.send("PWA.launch", { manifestId: DESK_URL }, 30000)
     say(`PWA.launch: ${launched.error ? `error ${launched.error.message}` : `ok, targetId ${launched.result?.targetId}`}`)
+    if (launched.error && !(await chrome.send("PWA.getOsAppState", { manifestId: OLD_DESK_URL })).error) {
+      say(`The installed app is the one from ${OLD_DESK_URL}. Run: node ${path.join(HERE, "install.mjs")}`)
+    }
     const page = await waitFor(async () => {
       const targets = await chrome.send("Target.getTargets")
       return targets.result?.targetInfos.find(
@@ -400,8 +457,12 @@ async function uninstall() {
     } else if (fs.existsSync(PROFILE)) {
       try {
         const chrome = await openChrome({ userDataDir: PROFILE, args: ["--no-startup-window"] })
-        const result = await chrome.send("PWA.uninstall", { manifestId: DESK_URL }, 30000)
-        say(`  PWA.uninstall: ${result.error ? result.error.message : "ok"}`)
+        // Either address: an app installed before the move to localhost has the old id.
+        for (const manifestId of [DESK_URL, OLD_DESK_URL]) {
+          if ((await chrome.send("PWA.getOsAppState", { manifestId })).error) continue
+          const result = await chrome.send("PWA.uninstall", { manifestId }, 30000)
+          say(`  PWA.uninstall ${manifestId}: ${result.error ? result.error.message : "ok"}`)
+        }
         await sleep(1500)
         await chrome.close()
       } catch (error) {

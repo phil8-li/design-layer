@@ -45,9 +45,10 @@ second copy with no editor attached.
 ```text
 Connect to the designlayer MCP server and work its loop until I say stop:
 1. Call wait_for_change. If it returns {timeout: true}, call it again.
-2. For each change with startNewSession: true, open a new chat session and send
-   its sessionPrompt verbatim as the first message. Otherwise read its brief and
-   the files it names, then edit the source.
+2. Work in the change's projectRoot folder; its files are relative to it.
+   For each change with startNewSession: true, open a new chat session there and
+   send its sessionPrompt verbatim as the first message. Otherwise read its brief
+   and the files it names, then edit the source.
 3. Call resolve_change with the id, resolution "applied" or "rejected", and a
    one-sentence summary.
 4. Go back to step 1.
@@ -75,6 +76,10 @@ so it can be pasted into a new chat by hand.
 
 Rules an agent must follow:
 
+- **Work in the change's `projectRoot`.** Every change carries `projectRoot`
+  (the absolute project folder) and `app` (that folder's name). One endpoint can
+  serve several apps at once, so two changes in one batch can be for two
+  different repos. `files` and `handoffFile` are relative to `projectRoot`.
 - **Always resolve.** An unresolved change comes back on the next wait, and the
   agent will redo finished work.
 - **One waiter at a time.** Changes are not claimed, so two agents waiting at
@@ -138,12 +143,19 @@ an agent's config by hand. It prints the URL at startup:
 Set `ports.mcp` to `null` to turn the endpoint off. A port already in use is a
 warning and nothing more — the editor starts, and Copy still works.
 
-The endpoint normally lives in the editor, so switching or restarting apps
-closes it for a few seconds. Some agents drop the server's tools after one
-failed call and need a restart to get them back. When the editor was started
-from the start screen, the MCP section of the Changes tab offers **Stay on
-between apps**: the start screen then serves the same address and keeps it up
-while editors come and go. It is off by default and saved for the next session.
+An editor you start on its own serves the endpoint itself, so restarting it
+closes the port for a few seconds. Some agents drop the server's tools after one
+failed call and need a restart to get them back.
+
+The start screen can run several editors at once, one per app, and only one
+process can hold the port. So while it runs any editor, the start screen serves
+the endpoint for all of them: every editor's **Send to agent** reaches the same
+address, and each change names the `projectRoot` it is for. The endpoint stays
+up after the last editor stops, until the start screen itself closes, so a
+change sent just before is not lost. In the Changes tab, **Stay on between
+apps** then shows on and cannot be turned off. Its other use is to make the
+start screen serve the endpoint from launch, before any app starts; it is off by
+default and saved for the next session.
 
 ## The loop
 

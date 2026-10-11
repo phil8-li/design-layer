@@ -32,7 +32,7 @@ import http from "node:http"
 import os from "node:os"
 import path from "node:path"
 
-import { JSDOM } from "jsdom"
+import { JSDOM, VirtualConsole } from "jsdom"
 
 import {
   DEFAULT_SCAN_PORTS,
@@ -190,6 +190,53 @@ await check("the cwd probe answers, or answers null — it never throws", async 
     assert.ok(root === null || typeof root === "string")
   } finally {
     app.close()
+  }
+})
+
+/** A page server in its own process, started in `cwd`, as a dev server is. */
+async function childServer(cwd, title) {
+  const { spawn } = await import("node:child_process")
+  const source = `const s = require("node:http").createServer((q, r) => {
+    r.writeHead(200, { "content-type": "text/html" }); r.end("<title>${title}</title>")
+  }); s.listen(0, "127.0.0.1", () => console.log(s.address().port))`
+  const child = spawn(process.execPath, ["-e", source], { cwd, stdio: ["ignore", "pipe", "inherit"] })
+  const port = await new Promise((resolve) => child.stdout.once("data", (chunk) => resolve(Number(String(chunk).trim()))))
+  return { port, pid: child.pid, close: () => child.kill() }
+}
+
+/*
+ * A dev server can be on any port. One pinned to 3041 was running, answering,
+ * and absent from both the start screen and the editor's chooser, because the
+ * scan only probed a fixed list. Ports off that list count when the process on
+ * them runs from a project the editor can open, and never when it is the
+ * editor's own.
+ */
+await check("an app on a port off the fixed list is found by its project", async () => {
+  const react = await childServer(reactProject(), "Pinned Port App")
+  const plain = await childServer(fixture("not-a-project"), "Some Desktop Helper")
+  try {
+    if ((await projectRootForPort(react.port)) === null) {
+      console.log("       skip (this machine will not name another process's folder)")
+      return
+    }
+    const found = await scanLocalApps({ ports: [], discover: { pids: [], ports: [] } })
+    const row = found.find((app) => app.port === react.port)
+    assert.ok(row, "the app on an unlisted port is missing")
+    assert.equal(row.title, "Pinned Port App")
+    assert.equal(row.packageName, "fixture-app")
+    assert.ok(!found.some((app) => app.port === plain.port), "a server outside any React project was listed")
+
+    // The editor's own processes run from the project they edit; they are not apps.
+    const byPid = await scanLocalApps({ ports: [], discover: { pids: [react.pid], ports: [] } })
+    assert.ok(!byPid.some((app) => app.port === react.port), "an excluded pid was listed")
+    const byPort = await scanLocalApps({ ports: [react.port], discover: { pids: [], ports: [react.port] } })
+    assert.ok(!byPort.some((app) => app.port === react.port), "an excluded port was listed")
+
+    // Without `discover`, the fixed list is all there is.
+    assert.deepEqual(await scanLocalApps({ ports: [] }), [])
+  } finally {
+    react.close()
+    plain.close()
   }
 })
 
@@ -391,7 +438,7 @@ await check("this run's endpoint file flips it to ready, with the proxy URL", as
   screen.reportEndpointFile(file)
   const { body } = await json(`${screen.url}/api/status`)
   assert.equal(body.ready, true)
-  assert.equal(body.url, "http://127.0.0.1:4312")
+  assert.equal(body.url, "http://localhost:4312")
 })
 
 /*
@@ -405,10 +452,10 @@ await check("the proxy being up is not a file the project folder has to accept",
   try {
     // No endpoint file was ever reported: the write it would have come from failed.
     assert.equal((await json(`${deaf.url}/api/status`)).body.ready, false)
-    deaf.reportReady("http://127.0.0.1:4344")
+    deaf.reportReady("http://localhost:4344")
     const { body } = await json(`${deaf.url}/api/status`)
     assert.equal(body.ready, true)
-    assert.equal(body.url, "http://127.0.0.1:4344")
+    assert.equal(body.url, "http://localhost:4344")
   } finally {
     deaf.close()
   }
@@ -439,14 +486,19 @@ await check("a valid choice resolves the handoff the CLI is waiting on", async (
 // The press before this one is still on its way up, and the supervisor has not
 // spawned anything yet. Acting on a second would kill a child the first is
 // waiting on, so it is refused — and refused in words, on the screen.
+// One app, one editor: a second press for the app that is already starting is
+// that same editor, not a refusal and not a second process.
 await check("a second press before the editor answers is the same press", async () => {
   const { status, body } = await start({
     url: `http://127.0.0.1:${app.port}`,
     projectRoot: project,
     devScript: "dev",
   })
-  assert.equal(status, 400)
-  assert.match(body.error, /already starting/i)
+  assert.equal(status, 200)
+  assert.equal(body.ok, true)
+  assert.equal(body.existing, true)
+  assert.equal(body.replaced, null)
+  assert.equal(typeof body.id, "string")
 })
 
 screen.close()
@@ -500,11 +552,13 @@ await check("a second choice is accepted once the first editor is up", async () 
  * page that kept the old URL and waited for it to change would follow the
  * corpse. Accepting a choice is what clears the old editor from the answer.
  */
-await check("status says what is being edited, and forgets it the moment a switch is asked for", async () => {
+// The top-level answer is about the newest choice, so a page waiting on it
+// waits for the editor it asked for; every running editor is in `editors`.
+await check("status says what is being edited, and answers for the newest choice", async () => {
   const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {} })
   try {
     const idle = (await json(`${screen.url}/api/status`)).body
-    assert.deepEqual(idle, { ready: false, editing: null, stopped: null })
+    assert.deepEqual(idle, { ready: false, editing: null, stopped: null, editors: [] })
 
     screen.reportReady("http://127.0.0.1:3456", {
       appUrl: "http://127.0.0.1:3000",
@@ -513,11 +567,12 @@ await check("status says what is being edited, and forgets it the moment a switc
     })
     const running = (await json(`${screen.url}/api/status`)).body
     assert.equal(running.ready, true)
-    assert.equal(running.url, "http://127.0.0.1:3456")
+    assert.equal(running.url, "http://localhost:3456")
     assert.equal(running.editing.appUrl, "http://127.0.0.1:3000")
     assert.equal(running.editing.packageName, "fixture-app")
     assert.equal(running.editing.projectRoot, project)
     assert.equal(running.stopped, null)
+    assert.equal(running.editors.length, 1)
 
     screen.nextChoice()
     const accepted = await json(`${screen.url}/api/start`, {
@@ -607,6 +662,67 @@ await check("the screen prefers one port, and steps aside when it is taken", asy
   assert.equal(port, PREFERRED_START_SCREEN_PORT)
 })
 
+console.log("\nWhat an app is called")
+
+/*
+ * Copies of one template share a package name and a page title, so four
+ * prototypes all had one name in the editor, on the card, in the Mac app's
+ * tabs and in the terminal. Every surface names an app by its folder now.
+ */
+await check("an app is named by its folder, everywhere", async () => {
+  const { appName } = await import("../runtime/app-name.mjs")
+  assert.equal(appName({ projectRoot: "/work/pinned copy", packageName: "studio" }), "pinned copy")
+  assert.equal(appName({ projectRoot: null, packageName: "studio" }), "studio")
+  assert.equal(appName({}), null)
+
+  const { browserPrelude, resolveConfig } = await import("../config.mjs")
+  const dir = reactProject({ name: "studio" })
+  const prelude = browserPrelude(resolveConfig({ projectRoot: dir }), { proxyPort: 4567, appPort: 3041 })
+  const payload = JSON.parse(prelude.slice(prelude.indexOf("=") + 1, prelude.indexOf(";window.") > 0 ? prelude.indexOf(";window.") : prelude.lastIndexOf(";")))
+  assert.equal(payload.app.name, path.basename(dir), "the editor's own chooser named the package")
+})
+
+await check("the card names the app being edited by its folder, and the pick is the app not open yet", async () => {
+  const dom = new JSDOM(startScreenPage(), { runScripts: "outside-only", url: "http://127.0.0.1:3455/" })
+  const editor = {
+    id: "e1",
+    state: "ready",
+    name: "pinned",
+    appUrl: "http://127.0.0.1:3041",
+    appPort: 3041,
+    projectRoot: "/work/pinned",
+    packageName: "studio",
+    url: "http://localhost:3456/#/home",
+  }
+  dom.window.fetch = async (target) => {
+    const url = new URL(target, "http://127.0.0.1:3455")
+    const body =
+      url.pathname === "/api/status"
+        ? { ready: true, url: editor.url, editing: editor, stopped: null, editors: [editor] }
+        : url.pathname === "/api/apps"
+          ? {
+              apps: [
+                { port: 3000, url: "http://127.0.0.1:3000", title: "Studio", projectRoot: "/work/vision", packageName: "studio", editor: null },
+                { port: 3041, url: "http://127.0.0.1:3041", title: "Studio", projectRoot: "/work/pinned", packageName: "studio", editor: { id: "e1", url: editor.url } },
+              ],
+            }
+          : { project: { path: url.searchParams.get("path"), name: path.basename(url.searchParams.get("path")), exists: true, isDirectory: true, hasPackageJson: true, packageName: "studio", hasReact: true, devScripts: ["dev"], framework: "vite" } }
+    return { ok: true, status: 200, json: async () => body }
+  }
+  try {
+    dom.window.eval(/<script type="module">([\s\S]*)<\/script>/.exec(startScreenPage())[1])
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const $ = (id) => dom.window.document.getElementById(id)
+    assert.equal($("current-name").textContent, "Continue editing pinned?")
+    // Behind "Open another app", the pick is the app that has no editor yet:
+    // whoever goes past the card is adding another app, not reopening this one.
+    assert.equal($("apps").querySelector('[aria-checked="true"]').dataset.port, "3000")
+    assert.match($("apps-note").textContent, /Picked vision for you/)
+  } finally {
+    dom.window.close()
+  }
+})
+
 console.log("\nThe page you asked for")
 
 /*
@@ -639,7 +755,7 @@ await check("the page the address named is the page the browser is sent to", asy
   await withScreen(async ({ screen, press, status }) => {
     assert.equal((await press(`http://127.0.0.1:${app.port}/ds`)).status, 200)
     screen.reportReady("http://127.0.0.1:3456", { appUrl: `http://127.0.0.1:${app.port}` })
-    assert.equal((await status()).url, "http://127.0.0.1:3456/ds")
+    assert.equal((await status()).url, "http://localhost:3456/ds")
     // The app is still the whole app. Only the browser's destination differs,
     // so what the launcher was handed has to be the origin, unchanged.
     assert.equal((await screen.chosen).appUrl, `http://127.0.0.1:${app.port}`)
@@ -654,19 +770,72 @@ await check("a choice with no page reports exactly the URL it always did", async
     await withScreen(async ({ screen, press, status }) => {
       assert.equal((await press(typed)).status, 200)
       screen.reportReady("http://127.0.0.1:3456")
-      assert.equal((await status()).url, "http://127.0.0.1:3456")
+      assert.equal((await status()).url, "http://localhost:3456")
     })
   }
 })
 
-// A query string is how a page says which of itself to show. A fragment is not
-// sent to a server at all, and nothing downstream of here could act on one.
-await check("a query string is part of the page; a fragment is not", async () => {
+// A query string is how a page says which of itself to show, and so is a
+// fragment: an app with a hash router keeps its whole page there.
+await check("the query string and the fragment are both part of the page", async () => {
   await withScreen(async ({ screen, press, status }) => {
     assert.equal((await press(`http://127.0.0.1:${app.port}/ds?theme=dark#row-4`)).status, 200)
     screen.reportReady("http://127.0.0.1:3456")
-    assert.equal((await status()).url, "http://127.0.0.1:3456/ds?theme=dark")
+    assert.equal((await status()).url, "http://localhost:3456/ds?theme=dark#row-4")
   })
+  await withScreen(async ({ screen, press, status }) => {
+    const page = "/#/dev-tools/playground?app=demo&view=agent"
+    assert.equal((await press(`http://127.0.0.1:${app.port}${page}`)).status, 200)
+    screen.reportReady("http://127.0.0.1:3456")
+    assert.equal((await status()).url, `http://localhost:3456${page}`)
+  })
+})
+
+/*
+ * Apps branch on `location.hostname === "localhost"` — a dev sign-in bypass, an
+ * auth-provider allowlist. Served from `127.0.0.1`, such an app showed its
+ * signed-out screen inside the editor. That happened for a typed address, a row
+ * pick and a switch from the editor's chooser alike, so every editor address
+ * the browser is sent to is on localhost, whatever spelling chose the app.
+ */
+await check("the browser is always sent to the editor on localhost", async () => {
+  for (const typed of [`http://localhost:${app.port}/#/home`, `http://127.0.0.1:${app.port}/#/home`]) {
+    await withScreen(async ({ screen, press, status }) => {
+      assert.equal((await press(typed)).status, 200)
+      screen.reportReady("http://127.0.0.1:3456")
+      assert.equal((await status()).url, "http://localhost:3456/#/home")
+      // The proxy is still aimed at the address that was typed.
+      assert.equal((await screen.chosen).appUrl, new URL(typed).origin)
+    })
+  }
+})
+
+/*
+ * A bare address — a row click — opens the page that app was last used on.
+ * Copies of one template share a home page, so the root of the app picked
+ * looked like a different app.
+ */
+await check("a bare address opens the page that app was last used on", async () => {
+  const home = fixture("home")
+  const before = process.env.HOME
+  process.env.HOME = home
+  try {
+    const { rememberPage } = await import("../runtime/last-pages.mjs")
+    rememberPage({ port: app.port, projectRoot: project, page: "/#/agents/a1?view=agent" })
+    await withScreen(async ({ screen, press, status }) => {
+      assert.equal((await press(`http://127.0.0.1:${app.port}`)).status, 200)
+      screen.reportReady("http://127.0.0.1:3456")
+      assert.equal((await status()).url, "http://localhost:3456/#/agents/a1?view=agent")
+    })
+    // A typed page is still the page.
+    await withScreen(async ({ screen, press, status }) => {
+      assert.equal((await press(`http://127.0.0.1:${app.port}/#/settings`)).status, 200)
+      screen.reportReady("http://127.0.0.1:3456")
+      assert.equal((await status()).url, "http://localhost:3456/#/settings")
+    })
+  } finally {
+    process.env.HOME = before
+  }
 })
 
 // The endpoint file is the other way readiness arrives, on the runs where the
@@ -677,28 +846,34 @@ await check("the page is on the end of the endpoint file's URL too", async () =>
     fs.writeFileSync(file, JSON.stringify({ pid: process.pid, proxyPort: 4312 }))
     screen.reportEndpointFile(file)
     assert.equal((await press(`http://127.0.0.1:${app.port}/ds`)).status, 200)
-    assert.equal((await status()).url, "http://127.0.0.1:4312/ds")
+    assert.equal((await status()).url, "http://localhost:4312/ds")
   })
 })
 
 /*
- * A switch lands the new proxy on the very port the old one had, so the page is
- * the only thing left that could tell the two apart — and a remembered one from
- * the app before would send the browser to a page this app may not have.
+ * One app, one editor: pressing the app again does not restart its editor, so
+ * the editor stays ready and keeps the page it is on. A restart here used to
+ * throw away the work open in another tab on that editor. HOME is a temporary
+ * folder because a bare press reads the app's saved page from the machine.
  */
-await check("the next app's page replaces the last one's", async () => {
-  await withScreen(async ({ screen, press, status }) => {
-    await press(`http://127.0.0.1:${app.port}/ds`)
-    screen.reportReady("http://127.0.0.1:3456")
-    assert.equal((await status()).url, "http://127.0.0.1:3456/ds")
+await check("the same app pressed again keeps its editor and its page", async () => {
+  const before = process.env.HOME
+  process.env.HOME = fixture("home")
+  try {
+    await withScreen(async ({ screen, press, status }) => {
+      await press(`http://127.0.0.1:${app.port}/ds`)
+      screen.reportReady("http://127.0.0.1:3456")
+      assert.equal((await status()).url, "http://localhost:3456/ds")
 
-    screen.nextChoice()
-    await press(`http://127.0.0.1:${app.port}`)
-    // Cleared with the URL it belonged to, before the new editor answers.
-    assert.equal((await status()).ready, false)
-    screen.reportReady("http://127.0.0.1:3456")
-    assert.equal((await status()).url, "http://127.0.0.1:3456")
-  })
+      screen.nextChoice()
+      const again = await press(`http://127.0.0.1:${app.port}`)
+      assert.equal(again.body.existing, true)
+      assert.equal((await status()).ready, true)
+      assert.equal((await status()).url, "http://localhost:3456/ds")
+    })
+  } finally {
+    process.env.HOME = before
+  }
 })
 
 await check("a page does not outlive the editor it belonged to", async () => {
@@ -709,7 +884,7 @@ await check("a page does not outlive the editor it belonged to", async () => {
     assert.equal((await status()).ready, false)
     // Whatever comes up next is not the app that asked for /ds.
     screen.reportReady("http://127.0.0.1:3456")
-    assert.equal((await status()).url, "http://127.0.0.1:3456")
+    assert.equal((await status()).url, "http://localhost:3456")
   })
 })
 
@@ -726,18 +901,41 @@ console.log("\nPicking a row")
  */
 const CLIENT = /<script type="module">([\s\S]*)<\/script>/.exec(startScreenPage())[1]
 
-async function mountPage(apps, projects) {
-  const dom = new JSDOM(startScreenPage(), { runScripts: "outside-only", url: "http://127.0.0.1:3455/" })
-  dom.window.fetch = async (target) => {
+/*
+ * `routes` answers a path from a function of the URL and the parsed request
+ * body, ahead of the defaults; null is a 404. Every request lands in
+ * `dom.requests`, so a case can say what was NOT asked for. jsdom cannot
+ * navigate, and says so; each attempt lands in `dom.navigations`. `before`
+ * gets the window ahead of the script, to make it a frame of something.
+ */
+async function mountPage(apps, projects, folders = {}, routes = {}, before = () => {}) {
+  const navigations = []
+  const virtualConsole = new VirtualConsole()
+  virtualConsole.forwardTo(console, { jsdomErrors: "none" })
+  virtualConsole.on("jsdomError", (error) => {
+    if (error.type === "not-implemented" && /navigation/i.test(error.message)) navigations.push(error.message)
+    else console.error(error.cause?.stack ?? error.message)
+  })
+  const dom = new JSDOM(startScreenPage(), { runScripts: "outside-only", url: "http://127.0.0.1:3455/", virtualConsole })
+  dom.navigations = navigations
+  dom.requests = []
+  before(dom.window)
+  dom.window.fetch = async (target, init = {}) => {
     const url = new URL(target, "http://127.0.0.1:3455")
+    const sent = init.body ? JSON.parse(init.body) : null
+    dom.requests.push({ method: init.method ?? "GET", path: url.pathname + url.search, body: sent })
     const body =
-      url.pathname === "/api/status"
-        ? { ready: false, editing: null, stopped: null }
-        : url.pathname === "/api/apps"
-          ? { apps }
-          : url.pathname === "/api/project"
-            ? { project: projects[url.searchParams.get("path")] }
-            : null
+      url.pathname in routes
+        ? await routes[url.pathname](url, sent)
+        : url.pathname === "/api/status"
+          ? { ready: false, editing: null, stopped: null, editors: [] }
+          : url.pathname === "/api/apps"
+            ? { apps }
+            : url.pathname === "/api/project"
+              ? { project: projects[url.searchParams.get("path")] }
+              : url.pathname === "/api/app-folder"
+                ? { project: folders[new URL(url.searchParams.get("url")).port] ?? null }
+                : null
     return { ok: body !== null, status: body === null ? 404 : 200, json: async () => body }
   }
   dom.window.eval(CLIENT)
@@ -840,6 +1038,89 @@ await check("clicking the row you are already on keeps the page you typed", asyn
     ;[...$("apps").children][1].click()
     await new Promise((resolve) => setTimeout(resolve, 20))
     assert.equal($("url").value, "http://127.0.0.1:3001")
+  } finally {
+    dom.window.close()
+  }
+})
+
+/*
+ * The screen clicks the first row on its own, so its folder is in the field
+ * before anyone types. Pasting the address of a different app used to leave it
+ * there: Start proxied the pasted app and wrote its edits into the first one.
+ */
+const PINNED = "/Users/someone/Projects/pinned app"
+const ELSEWHERE = "/Users/someone/Projects/elsewhere"
+const typeAddress = async (dom, value) => {
+  const field = dom.window.document.getElementById("url")
+  field.value = value
+  field.dispatchEvent(new dom.window.Event("input", { bubbles: true }))
+  await new Promise((resolve) => setTimeout(resolve, 400))
+}
+
+await check("a typed address brings its own app's folder", async () => {
+  const rows = [
+    ...ROWS,
+    { port: 3041, url: "http://127.0.0.1:3041", title: "Pinned", projectRoot: PINNED, packageName: "pinned" },
+  ]
+  const dom = await mountPage(rows, { [KNOWN]: projectSaid(KNOWN), [PINNED]: projectSaid(PINNED) })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    assert.equal($("folder-path").value, KNOWN, "boot did not pick the first row")
+    const typed = "http://localhost:3041/#/dev-tools/playground?app=demo"
+    await typeAddress(dom, typed)
+    assert.equal($("folder-path").value, PINNED, "the first row's folder stayed for another app")
+    assert.equal($("url").value, typed, "the typed page was replaced")
+  } finally {
+    dom.window.close()
+  }
+})
+
+// Copies of one template share its page title; every row is named by its folder.
+await check("rows are named by their folders, not their shared titles", async () => {
+  const rows = [
+    { port: 3000, url: "http://127.0.0.1:3000", title: "Studio", projectRoot: KNOWN, packageName: "studio" },
+    { port: 3041, url: "http://127.0.0.1:3041", title: "Studio", projectRoot: PINNED, packageName: "studio" },
+    { port: 4200, url: "http://127.0.0.1:4200", title: "Docs", projectRoot: ELSEWHERE, packageName: "docs" },
+  ]
+  const dom = await mountPage(rows, { [KNOWN]: projectSaid(KNOWN) })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    const names = [...$("apps").querySelectorAll(".app-name")].map((node) => node.textContent)
+    assert.deepEqual(names, ["host app", "pinned app", "elsewhere"])
+    assert.match($("apps-note").textContent, /host app/)
+  } finally {
+    dom.window.close()
+  }
+})
+
+await check("an address no row lists asks the server for its folder", async () => {
+  const dom = await mountPage(ROWS, { [KNOWN]: projectSaid(KNOWN) }, { 4555: projectSaid(ELSEWHERE) })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    await typeAddress(dom, "http://localhost:4555")
+    assert.equal($("folder-path").value, ELSEWHERE)
+
+    // Nobody can say where this one is, so the field empties and says why.
+    await typeAddress(dom, "http://localhost:4666")
+    assert.equal($("folder-path").value, "")
+    assert.equal($("folder-error").hidden, false)
+    assert.match($("folder-error").textContent, /4666/)
+  } finally {
+    dom.window.close()
+  }
+})
+
+await check("a folder the user typed stays when the address changes", async () => {
+  const dom = await mountPage(ROWS, { [KNOWN]: projectSaid(KNOWN), [ELSEWHERE]: projectSaid(ELSEWHERE) }, {
+    4555: projectSaid(PINNED),
+  })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    $("folder-path").value = ELSEWHERE
+    $("folder-path").dispatchEvent(new dom.window.Event("input", { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    await typeAddress(dom, "http://localhost:4555")
+    assert.equal($("folder-path").value, ELSEWHERE)
   } finally {
     dom.window.close()
   }
@@ -1115,48 +1396,420 @@ await check("the card is navigable by heading, and says which face is up", async
 })
 
 /*
- * An editor that is already up is one question and its two answers. It was a
+ * An editor that is already up is one question and its answers. It was a
  * wordmark, a "Now editing" label, the name and "Open the editor" — four slots
  * for one fact, with the product's name above the reader's app.
  */
-await check("an editor that is already up is one question with two answers", async () => {
-  const dom = new JSDOM(startScreenPage(), { runScripts: "outside-only", url: "http://127.0.0.1:3455/" })
-  try {
-    dom.window.fetch = async (target) => {
-      const url = new URL(target, "http://127.0.0.1:3455")
-      const body =
-        url.pathname === "/api/status"
-          ? {
-              ready: true,
-              url: "http://127.0.0.1:3456/",
-              editing: {
-                packageName: "shop-web",
-                appUrl: "http://127.0.0.1:3000",
-                projectRoot: "/Users/me/Projects/shop",
-              },
-              stopped: null,
-            }
-          : url.pathname === "/api/apps"
-            ? { apps: [] }
-            : null
-      return { ok: body !== null, status: body === null ? 404 : 200, json: async () => body }
-    }
-    dom.window.eval(CLIENT)
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    const $ = (id) => dom.window.document.getElementById(id)
+const SHOP = {
+  id: "e1",
+  state: "ready",
+  name: "shop",
+  appUrl: "http://127.0.0.1:3000",
+  appPort: 3000,
+  projectRoot: "/Users/me/Projects/shop",
+  packageName: "shop-web",
+  url: "http://localhost:3456/",
+}
+const statusOf = (editors) => ({
+  ready: editors.at(-1)?.state === "ready",
+  url: editors.at(-1)?.url ?? null,
+  editing: editors.at(-1) ?? null,
+  stopped: null,
+  editors,
+})
 
+await check("an editor that is already up is one question with its answers", async () => {
+  const dom = await mountPage([], {}, {}, { "/api/status": () => statusOf([SHOP]) })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
     assert.equal($("current").hidden, false)
-    assert.equal($("current-open").getAttribute("href"), "http://127.0.0.1:3456/")
+    assert.equal($("editors").querySelector("a.primary").getAttribute("href"), "http://localhost:3456/")
     // Everything the face shows, in order — the chooser's title goes with it.
+    // Named by its folder, not its package, and once: the heading says it.
     assert.equal(
       shownWords(dom).join(" "),
-      "Continue editing shop-web? 127.0.0.1:3000 · ~/Projects/shop Continue Switch app"
+      "Continue editing shop? 127.0.0.1:3000 · ~/Projects/shop Continue Stop Open another app"
     )
 
     $("current-change").click()
     assert.equal($("current").hidden, true)
     assert.equal($("choose-title").hidden, false)
     assert.equal($("form").hidden, false)
+  } finally {
+    dom.window.close()
+  }
+})
+
+// A server without the list still reports its one editor in `editing`.
+await check("a status with no editor list still offers its one editor", async () => {
+  const legacy = { ready: true, url: "http://localhost:3456/", stopped: null, editing: { packageName: "shop-web", appUrl: "http://127.0.0.1:3000" } }
+  const dom = await mountPage([], {}, {}, { "/api/status": () => legacy })
+  try {
+    assert.equal(shownWords(dom).join(" "), "Continue editing shop-web? 127.0.0.1:3000 Continue Open another app")
+  } finally {
+    dom.window.close()
+  }
+})
+
+console.log("\nSeveral editors at once")
+
+const DOCS = {
+  id: "e2",
+  state: "starting",
+  name: "docs",
+  appUrl: "http://127.0.0.1:4200",
+  appPort: 4200,
+  projectRoot: "/Users/me/Projects/docs",
+  packageName: "docs",
+  url: null,
+}
+
+await check("every running editor is listed with its own Continue and Stop", async () => {
+  const dom = await mountPage([], {}, {}, { "/api/status": () => statusOf([SHOP, DOCS]) })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    // No one name fits several, so the heading asks without one.
+    assert.equal($("current-name").textContent, "Continue editing?")
+    const items = [...$("editors").children]
+    assert.equal($("editors").tagName, "UL")
+    assert.equal($("editors").getAttribute("aria-labelledby"), "current-name")
+    assert.deepEqual(items.map((item) => item.querySelector(".editor-name").textContent), ["shop", "docs"])
+    const [shop, docs] = items
+    assert.equal(shop.querySelector("a.primary").getAttribute("href"), "http://localhost:3456/")
+    // Two Continue links on one screen are told apart by the app they open.
+    assert.equal(shop.querySelector("a.primary").getAttribute("aria-label"), "Continue editing shop")
+    assert.equal(shop.querySelector("button").getAttribute("aria-label"), "Stop shop")
+    // Still starting: no address to go to yet, and it says so.
+    assert.equal(docs.querySelector("a"), null)
+    assert.equal(docs.querySelector(".editor-starting").textContent, "Starting…")
+    assert.equal(docs.querySelector("button").textContent, "Stop")
+    assert.equal($("current-change").textContent, "Open another app")
+  } finally {
+    dom.window.close()
+  }
+})
+
+await check("a starting editor gains its Continue without a reload", async () => {
+  let editors = [SHOP, DOCS]
+  const dom = await mountPage([], {}, {}, { "/api/status": () => statusOf(editors) })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    editors = [SHOP, { ...DOCS, state: "ready", url: "http://localhost:3458/ds" }]
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    const docs = [...$("editors").children][1]
+    assert.equal(docs.querySelector("a.primary").getAttribute("href"), "http://localhost:3458/ds")
+  } finally {
+    dom.window.close()
+  }
+})
+
+await check("Open another app shows the chooser and stops nothing", async () => {
+  const dom = await mountPage(ROWS, { [KNOWN]: projectSaid(KNOWN) }, {}, { "/api/status": () => statusOf([SHOP]) })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    $("current-change").click()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal($("form").hidden, false)
+    assert.equal(dom.window.document.activeElement, $("url"))
+    assert.deepEqual(dom.requests.filter((request) => request.method === "POST"), [])
+  } finally {
+    dom.window.close()
+  }
+})
+
+await check("Stop ends that one editor and the card keeps the rest", async () => {
+  let editors = [SHOP, { ...DOCS, state: "ready", url: "http://localhost:3458/" }]
+  const rows = [
+    { ...ROWS[0], editor: null },
+    { port: 4200, url: "http://127.0.0.1:4200", title: "Docs", projectRoot: "/Users/me/Projects/docs", packageName: "docs", editor: { id: "e2", url: "http://localhost:3458/" } },
+  ]
+  const dom = await mountPage(rows, { [KNOWN]: projectSaid(KNOWN) }, {}, {
+    "/api/status": () => statusOf(editors),
+    "/api/stop": (url, sent) => {
+      editors = editors.filter((editor) => editor.id !== sent.id)
+      return { ok: true }
+    },
+  })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    const stop = [...$("editors").children][1].querySelector("button")
+    stop.focus()
+    stop.click()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assert.deepEqual(dom.requests.find((request) => request.path === "/api/stop").body, { id: "e2" })
+    assert.equal($("editors").children.length, 1)
+    assert.equal($("current-name").textContent, "Continue editing shop?")
+    // The focused Stop went with its entry, so focus lands on the card's heading
+    // rather than on <body>.
+    assert.equal(dom.window.document.activeElement, $("current-name"))
+    // And its row in the list is no longer marked open.
+    assert.equal($("apps").querySelector('[data-port="4200"] .app-open'), null)
+
+    // The last Stop leaves nothing to continue, so the chooser comes back.
+    $("editors").querySelector("button").click()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assert.equal($("current").hidden, true)
+    assert.equal($("form").hidden, false)
+  } finally {
+    dom.window.close()
+  }
+})
+
+await check("a row whose app is open says so in words, not only in colour", async () => {
+  const rows = [{ ...ROWS[0], editor: { id: "e1", url: "http://localhost:3456/" } }, { ...ROWS[1], editor: null }]
+  const dom = await mountPage(rows, { [KNOWN]: projectSaid(KNOWN) })
+  try {
+    const [open, closed] = [...dom.window.document.getElementById("apps").children]
+    assert.equal(open.querySelector(".app-open").textContent, "Editing")
+    assert.equal(closed.querySelector(".app-open"), null)
+  } finally {
+    dom.window.close()
+  }
+})
+
+await check("the pre-pick is the first app with no editor, else the first app", async () => {
+  const rows = [
+    { ...ROWS[0], editor: { id: "e1", url: "http://localhost:3456/" } },
+    { port: 3041, url: "http://127.0.0.1:3041", title: "Pinned", projectRoot: PINNED, packageName: "pinned", editor: null },
+  ]
+  const dom = await mountPage(rows, { [KNOWN]: projectSaid(KNOWN), [PINNED]: projectSaid(PINNED) })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    assert.equal($("apps").querySelector('[aria-checked="true"]').dataset.port, "3041")
+    assert.equal($("apps-note").textContent, "Picked pinned app for you.")
+  } finally {
+    dom.window.close()
+  }
+
+  const all = rows.map((row) => ({ ...row, editor: { id: "e" + row.port, url: "http://localhost:3456/" } }))
+  const full = await mountPage(all, { [KNOWN]: projectSaid(KNOWN), [PINNED]: projectSaid(PINNED) })
+  try {
+    assert.equal(full.window.document.getElementById("apps").querySelector('[aria-checked="true"]').dataset.port, "3000")
+  } finally {
+    full.window.close()
+  }
+})
+
+await check("Start for an app that is open goes to its editor", async () => {
+  const rows = [{ ...ROWS[0], editor: { id: "e1", url: "http://localhost:3456/" } }]
+  const dom = await mountPage(rows, { [KNOWN]: projectSaid(KNOWN) }, {}, {
+    "/api/start": () => ({ ok: true, id: "e1", existing: true }),
+    // Held not-ready so the wait can be read; a real answer is ready at once.
+    "/api/status": (url) => (url.searchParams.get("id") ? { ready: false, url: null, editing: null, stopped: null } : statusOf([])),
+  })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    $("form").dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.equal($("progress-text").textContent, "Opening host app…")
+    // Nothing compiles for an editor that is already up, so nothing says it will.
+    assert.equal($("waiting-note").hidden, true)
+    // It may be open in another tab, and opening it is no reason to end it.
+    assert.equal($("waiting-stop").hidden, true)
+    assert.ok(dom.requests.some((request) => request.path === "/api/status?id=e1"), "the wait did not ask about its own editor")
+  } finally {
+    dom.window.close()
+  }
+})
+
+/*
+ * Other editors are ready while this one starts, so the global status says
+ * ready. Polling it would send the tab to whichever app was chosen last.
+ */
+await check("the wait follows its own editor, not the latest one", async () => {
+  const dom = await mountPage(ROWS, { [KNOWN]: projectSaid(KNOWN) }, {}, {
+    "/api/start": () => ({ ok: true, id: "e9", existing: false }),
+    "/api/status": (url) =>
+      url.searchParams.get("id") === "e9"
+        ? { ready: false, editing: null, stopped: "The editor for host app stopped with code 1." }
+        : statusOf([]),
+  })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    const before = dom.requests.length
+    $("form").dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }))
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    assert.equal($("form").hidden, false)
+    assert.equal($("stopped").textContent, "The editor for host app stopped with code 1.")
+    const asked = dom.requests.slice(before).map((request) => request.path)
+    assert.ok(asked.includes("/api/status?id=e9"))
+    assert.ok(!asked.includes("/api/status"), "the wait read the global status")
+  } finally {
+    dom.window.close()
+  }
+})
+
+await check("the wait says what it is doing, and never Switching", async () => {
+  const page = startScreenPage()
+  assert.doesNotMatch(page, /Switching/)
+  assert.doesNotMatch(page, /Switch app/)
+  assert.match(page, /"Starting your app…"/)
+  assert.match(page, /"Starting the editor…"/)
+})
+
+/*
+ * Inside the Mac app this page is a Home tab. The vendor's socket takes one
+ * client, so a Home tab that loaded an editor another tab shows disconnected
+ * that tab and lost its unapplied edits. The desk knows which tab shows what.
+ */
+const DESK = "http://127.0.0.1:3454"
+const deskFrame = (sent, origin = DESK) => (window) => {
+  window.name = "designlayer-desk:home-1"
+  Object.defineProperty(window.location, "ancestorOrigins", { value: [origin], configurable: true })
+  Object.defineProperty(window, "parent", {
+    // Cloned, as a real postMessage would, out of the page's realm.
+    value: { postMessage: (message, target) => sent.push({ message: structuredClone(message), target }) },
+    configurable: true,
+  })
+}
+const pressStart = async (dom, ms = 80) => {
+  dom.window.document.getElementById("form").dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }))
+  await new Promise((resolve) => setTimeout(resolve, ms))
+}
+const READY_E9 = { ...DOCS, id: "e9", name: "host app", state: "ready", url: "http://localhost:3458/" }
+
+await check("inside the desk, a ready editor is asked of the desk, not loaded into the Home tab", async () => {
+  let started = false
+  const routes = {
+    "/api/start": () => {
+      started = true
+      return { ok: true, id: "e9", existing: false }
+    },
+    "/api/status": (url) =>
+      url.searchParams.get("id") ? { ready: true, url: READY_E9.url, stopped: null } : statusOf(started ? [READY_E9] : []),
+  }
+  const sent = []
+  const dom = await mountPage(ROWS, { [KNOWN]: projectSaid(KNOWN) }, {}, routes, deskFrame(sent))
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    await pressStart(dom)
+    assert.deepEqual(sent, [{ message: { type: "designlayer-desk:go", url: READY_E9.url }, target: DESK }])
+    assert.deepEqual(dom.navigations, [], "the Home tab loaded the editor itself")
+    // In case the desk keeps this tab, it shows the same editor's Continue.
+    assert.equal($("current").hidden, false)
+    assert.equal(dom.window.document.activeElement, $("current-name"))
+  } finally {
+    dom.window.close()
+  }
+
+  // A browser tab, and a frame of anything that is not a loopback desk, go there.
+  for (const before of [() => {}, deskFrame([], "https://example.com")]) {
+    started = false
+    const tab = await mountPage(ROWS, { [KNOWN]: projectSaid(KNOWN) }, {}, routes, before)
+    try {
+      await pressStart(tab)
+      assert.equal(tab.navigations.length, 1, "the tab did not go to its editor")
+    } finally {
+      tab.window.close()
+    }
+  }
+})
+
+await check("Continue inside the desk asks the desk; in a browser tab it stays a link", async () => {
+  const click = (dom, link, init = {}) =>
+    link.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ...init }))
+  const sent = []
+  const dom = await mountPage([], {}, {}, { "/api/status": () => statusOf([SHOP]) }, deskFrame(sent))
+  try {
+    const link = dom.window.document.querySelector("#editors a.primary")
+    assert.equal(link.getAttribute("href"), SHOP.url)
+    assert.equal(click(dom, link), false, "the click still navigated this frame")
+    assert.deepEqual(sent, [{ message: { type: "designlayer-desk:go", url: SHOP.url }, target: DESK }])
+    assert.deepEqual(dom.navigations, [])
+    // A modified click is the person asking for the link itself.
+    assert.equal(click(dom, link, { metaKey: true }), true)
+    assert.equal(sent.length, 1)
+  } finally {
+    dom.window.close()
+  }
+
+  const tab = await mountPage([], {}, {}, { "/api/status": () => statusOf([SHOP]) })
+  try {
+    assert.equal(click(tab, tab.window.document.querySelector("#editors a.primary")), true)
+  } finally {
+    tab.window.close()
+  }
+})
+
+// Started outside this screen, so it has no id here and nothing to wait for.
+await check("an editor started elsewhere is opened at once, not waited on", async () => {
+  const elsewhere = "http://localhost:3470/"
+  const routes = { "/api/start": () => ({ ok: true, id: null, existing: true, url: elsewhere }) }
+  const tab = await mountPage(ROWS, { [KNOWN]: projectSaid(KNOWN) }, {}, routes)
+  try {
+    await pressStart(tab)
+    assert.equal(tab.navigations.length, 1)
+    assert.ok(!tab.requests.some((request) => request.path.startsWith("/api/status?id")), "the page polled an id it was never given")
+  } finally {
+    tab.window.close()
+  }
+
+  const sent = []
+  const dom = await mountPage(ROWS, { [KNOWN]: projectSaid(KNOWN) }, {}, routes, deskFrame(sent))
+  try {
+    await pressStart(dom)
+    assert.deepEqual(sent, [{ message: { type: "designlayer-desk:go", url: elsewhere }, target: DESK }])
+    assert.deepEqual(dom.navigations, [])
+  } finally {
+    dom.window.close()
+  }
+})
+
+const pollsOf = (dom, id) => dom.requests.filter((request) => request.path === "/api/status?id=" + id).length
+
+await check("Stop on the wait ends the editor being started and comes back with no error", async () => {
+  const dom = await mountPage(ROWS, { [KNOWN]: projectSaid(KNOWN) }, {}, {
+    "/api/start": () => ({ ok: true, id: "e9", existing: false }),
+    "/api/status": (url) => (url.searchParams.get("id") ? { ready: false, url: null, stopped: null } : statusOf([])),
+    "/api/stop": () => ({ ok: true }),
+  })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    await pressStart(dom)
+    assert.equal($("waiting-stop").hidden, false)
+    assert.equal($("waiting-stop").textContent, "Stop")
+    assert.equal($("waiting-stop").getAttribute("aria-label"), "Stop host app")
+    assert.equal($("waiting-back").textContent, "Back")
+    $("waiting-stop").click()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assert.deepEqual(dom.requests.find((request) => request.path === "/api/stop").body, { id: "e9" })
+    assert.equal($("waiting").hidden, true)
+    assert.equal($("form").hidden, false)
+    assert.equal($("stopped").hidden, true, "stopping on purpose is not an error")
+    assert.equal(dom.window.document.activeElement, $("url"))
+    const polls = pollsOf(dom, "e9")
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    assert.equal(pollsOf(dom, "e9"), polls, "the wait goes on polling an editor that was stopped")
+  } finally {
+    dom.window.close()
+  }
+})
+
+await check("Back leaves the editor starting and shows it on the card", async () => {
+  let started = false
+  const dom = await mountPage(ROWS, { [KNOWN]: projectSaid(KNOWN) }, {}, {
+    "/api/start": () => {
+      started = true
+      return { ok: true, id: "e9", existing: false }
+    },
+    "/api/status": (url) =>
+      url.searchParams.get("id")
+        ? { ready: false, url: null, stopped: null }
+        : statusOf(started ? [{ ...READY_E9, state: "starting", url: null }] : []),
+  })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    await pressStart(dom)
+    $("waiting-back").click()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assert.ok(!dom.requests.some((request) => request.path === "/api/stop"), "Back stopped the editor")
+    assert.equal($("current").hidden, false)
+    assert.equal($("editors").querySelector(".editor-starting").textContent, "Starting…")
+    assert.equal(dom.window.document.activeElement, $("current-name"))
+    assert.equal($("stopped").hidden, true)
+    const polls = pollsOf(dom, "e9")
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    assert.equal(pollsOf(dom, "e9"), polls, "the wait still polls, and would move the tab")
   } finally {
     dom.window.close()
   }
@@ -1215,7 +1868,8 @@ await check("a choice made for you is said out loud, not only tinted", async () 
     // The tint that used to be the only signal measured 1.44:1 against an
     // unchosen row, and its border resolved to the same value as its fill.
     assert.match($("apps-note").textContent, /picked/i)
-    assert.match($("apps-note").textContent, /Host App/)
+    // Named by its folder, as the row is.
+    assert.match($("apps-note").textContent, /host app/)
     // The non-color half, which is the one that survives forced-colors.
     const chosen = $("apps").querySelector('[aria-checked="true"]')
     assert.ok(chosen.querySelector(".app-check"), "nothing marks the chosen row but its fill")

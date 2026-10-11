@@ -71,15 +71,17 @@ type View = typeof import("./toaster-view")
 export type ToastKind = "info" | "error"
 
 /**
- * One button on a toast, for the one thing a toast can offer that a sentence
- * cannot: taking the action back.
+ * One button on a toast: taking the action back, or opening the surface that
+ * owns the thing the toast is about.
  *
  * Deliberately a single optional action rather than a general options bag. A
- * toast in this chrome is a statement about something that already happened,
- * and the only interaction that belongs on one is undoing it — anything else a
- * card wants a reader to DO belongs on the surface that owns the thing, which
- * is the standing rule `css/lint.ts` records. Keeping the shape this narrow is
- * what stops the toast layer growing into a second, worse dialog.
+ * toast in this chrome is a statement about something that already happened.
+ * Undoing it belongs on the toast; anything else a reader has to DO belongs on
+ * the surface that owns the thing, which is the standing rule `css/lint.ts`
+ * records. So the second kind of action only opens that surface (the app
+ * chooser's "Open" lands on its ready row, where the real choice is made).
+ * Keeping the shape this narrow is what stops the toast layer growing into a
+ * second, worse dialog.
  */
 export interface ToastAction {
   label: string

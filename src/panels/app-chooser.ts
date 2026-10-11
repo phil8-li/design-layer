@@ -14,9 +14,9 @@
  * So it is a button that names the app and a menu that lists the alternatives,
  * and the menu IS the chooser — the rows are the running prototypes and
  * switching happens on click, with no intermediate screen. The start screen is
- * still what actually performs the swap, because it owns the supervisor that
- * can kill this editor and spawn the next one; the difference is that the
- * designer never sees it as a place they have to visit.
+ * still what starts an editor for an app that has none, because it owns the
+ * supervisor; the difference is that the designer never sees it as a place
+ * they have to visit.
  *
  * ## Why the menu is not a child of the panel
  *
@@ -40,56 +40,50 @@
  * than two, and it is the only mount point in this document from which the card
  * can be both unclipped and on top.
  *
- * ## Why a network failure on the switch is USUALLY the success path
+ * ## Why switching never stops this editor
  *
- * The POST asks the start screen to start another app, and the first thing the
- * supervisor does once it accepts is SIGTERM this editor — which is the process
- * serving the proxy this page is loaded from and the route the POST is in
- * flight to. So the happy path frequently ends with a dropped connection and no
- * response at all. Treating that as an error would show a failure message on
- * every successful switch.
+ * The supervisor runs one editor per app, each on its own proxy port, and
+ * starting one never stops another. So an `app` row asks the start screen for
+ * an editor, gets back its id, and polls until that editor is ready; then the
+ * page goes to it. This editor keeps running the whole time, which is why the
+ * note shown while waiting can be dismissed, and why a failed start leaves the
+ * reader exactly where they were.
  *
- * What that reasoning could not do was tell the supervisor killing us apart
- * from a loopback fetch that failed for any other reason — a proxy restarting
- * under a config change, a laptop that slept mid-request, an abort. Read as
- * success, those put "Starting X…" on screen over an editor that is working
- * perfectly, held the menu open against Escape, and only gave up when a
- * fifteen-second death budget expired. The avoided error was cosmetic; the
- * false positive blocked the whole editor.
+ * Switching used to replace this editor on the same port, and the page had to
+ * watch its own proxy die and come back to know when to reload. That handover
+ * is gone, and with it every reason to read a dropped connection as success:
+ * a failed request is a failed request.
  *
- * So a dropped connection asks one more question before it commits to the
- * story, and the question is exactly the thing that distinguishes the two
- * cases: `proxyAlive()`. No answer means the process serving this page is gone,
- * which only the supervisor can have done, and the handover proceeds. An answer
- * means nothing was killed, so nothing switched, and the ordinary failure path
- * reports it. A JSON error body is a third animal entirely: the server is alive
- * and declining, so that one is reported and nothing navigates.
+ * ## Where going lands
  *
- * ## Why one of the two row kinds arms before it goes
+ * In a browser tab the page navigates. In the Mac app every editor already has
+ * or gets its own tab, so the frame asks the desk to show the URL instead of
+ * navigating itself (`goInDesk`): the desk selects the tab that shows that
+ * editor, or opens it in a new tab when none does. This tab is never replaced.
  *
- * An `editor` row is a navigation to a proxy that is already serving. An `app`
- * row asks a supervisor to SIGTERM this process and bind a replacement to its
- * port, then waits the handover out — and if the replacement never binds there
- * is nothing to come back to.
+ * ## Why both row kinds arm before they go, in a browser tab
  *
- * Both of them end this document, and ending this document ends the three
- * queues that hold unapplied edits: the removal queue, the Angular queue and
- * the vendor store are all in memory, and nothing in this package writes a
- * `beforeunload`. This file used to argue that a switch costs nothing because
- * the pinned notes and the preview-only ledger are filed per app. That is true
- * of those two and only those two, and the sentence was read as though it
- * covered everything a designer might be holding. It does not.
+ * In a browser tab going anywhere ends this document, and ending this document
+ * ends the three queues that hold unapplied edits: the removal queue, the
+ * Angular queue and the vendor store are all in memory, and nothing in this
+ * package writes a `beforeunload`. The pinned notes and the preview-only ledger
+ * are filed per app and survive; nothing else does.
  *
- * So the confirm is spent where it buys most and costs least. The `app` row
- * arms, and only when `hasPendingChanges()` says there is something to lose:
- * the common empty session keeps its single click, because a navigation that
- * answers the first click with a question has to be performed twice every time,
- * and the second click appears exactly when the loss is real. The `editor` row
- * keeps its single click even with work outstanding, because it is the
- * reversible one — the editor you land on lists the one you came from, so the
- * way back is one more press of the same control, whereas a failed handover
- * leaves no control at all. The edits are gone on both paths, which is worth
- * knowing and is written down here rather than argued away.
+ * So a row arms only when `hasPendingChanges()` says there is something to
+ * lose: the common empty session keeps its single click, because a navigation
+ * that answers the first click with a question has to be performed twice every
+ * time, and the second click appears exactly when the loss is real. An
+ * `editor` row used to skip the confirm on the grounds that the way back is one
+ * more press of this control. The way back returns to the editor; it does not
+ * return the edits.
+ *
+ * Inside the Mac app nothing arms: the desk shows the other editor in another
+ * tab and this document stays, edits and all.
+ *
+ * The start wait checks again at its end. The designer keeps editing while an
+ * editor starts, so a session that had nothing to lose at the click can have
+ * something by the time the editor is ready. Then the page does not go: the
+ * menu offers the ready editor as a row, and that row arms like any other.
  */
 
 import { createApply } from "../core/apply"
@@ -103,6 +97,7 @@ import { tokens } from "../core/tokens"
 import { tip } from "../core/tooltip"
 import type { EditorContext } from "../core/context"
 import { plural } from "../core/format"
+import { goInDesk, isInDesk, tellDesk } from "../shell/desk"
 
 /**
  * One row of the chooser, and there are two kinds of them.
@@ -110,17 +105,14 @@ import { plural } from "../core/format"
  * `editor` is an app that already has an editor of its own running on this
  * machine, discovered through the registry in `runtime/editor-registry.mjs`.
  * `target` is that editor's proxy, and switching to it is a NAVIGATION — the
- * editor is already up, so there is nothing to start, nothing to kill and
- * nothing to wait for. This used to say the tab's queued work was not at risk
- * either, "because this tab is not the one being replaced". The PROCESS is not,
- * but the document is, and the queues live in the document; see the header.
- * What survives is the way back, which is why this is the kind that does not
- * arm.
+ * editor is already up, so there is nothing to start and nothing to wait for.
+ * In a browser tab the document still ends, and the queues live in the
+ * document; see the header.
  *
  * `app` is a running dev server with no editor pointed at it. Only the start
  * screen can find those and only a supervisor can act on one, so `target` is
- * null and switching means the slower path: ask the screen, let it replace this
- * editor, wait out the handover.
+ * null and switching means the slower path: ask the screen for an editor, wait
+ * until it is ready, go to it.
  */
 interface RunningApp {
   kind?: "editor" | "app"
@@ -140,6 +132,8 @@ interface RunningApp {
   packageName: string | null
   /** Another editor's proxy, for a row that is reached by going there. */
   target?: string | null
+  /** The page this app was last used on, from the server. */
+  page?: string | null
 }
 
 /**
@@ -255,7 +249,37 @@ function portOf(app: RunningApp): string {
  * word a person picked, which is more than can be said for `127.0.0.1:5173`.
  */
 function appLabel(app: RunningApp, folder: string | null): string {
-  return app.packageName || app.title || folder || app.url
+  // The folder first, by the rule every surface uses (runtime/app-name.mjs):
+  // copies of one template share a package name and a title.
+  return folder || app.packageName || app.title || app.url
+}
+
+function folderOf(app: RunningApp): string | null {
+  return typeof app.projectRoot === "string" && app.projectRoot.length > 0 ? folderName(app.projectRoot) : null
+}
+
+/**
+ * Each row's name, made distinct where the package names are not.
+ *
+ * Copies of one template keep its package name, so four prototypes all read
+ * "studio" and only the port told them apart. Rows that share a name but come
+ * from different folders are named by their folder, which is the name a person
+ * gave each copy. Rows from one folder keep the shared name: there the port is
+ * the real difference.
+ */
+export function rowLabels(apps: RunningApp[]): Map<RunningApp, string> {
+  const folders = new Map<string, Set<string | null>>()
+  for (const app of apps) {
+    const label = appLabel(app, folderOf(app))
+    folders.set(label, (folders.get(label) ?? new Set()).add(folderOf(app)))
+  }
+  return new Map(
+    apps.map((app) => {
+      const folder = folderOf(app)
+      const label = appLabel(app, folder)
+      return [app, folder && (folders.get(label)?.size ?? 0) > 1 ? folder : label]
+    })
+  )
 }
 
 /** How much is at stake, for the sentence on an armed row. */
@@ -292,6 +316,48 @@ function isCurrentApp(app: RunningApp, currentUrl: string | null): boolean {
   }
 }
 
+/**
+ * An editor's address as the browser should use it: on `localhost`.
+ *
+ * Editors register as `127.0.0.1`, and an app served from there sees that as
+ * its host name. Apps treat `localhost` as their dev host — a sign-in bypass,
+ * an auth-provider allowlist — so on `127.0.0.1` such an app showed its
+ * signed-out screen, which read as a different prototype. The proxy listens on
+ * 127.0.0.1, which `localhost` reaches in every browser.
+ */
+export function onLocalhost(target: string): string {
+  try {
+    const url = new URL(target)
+    if (url.hostname !== "127.0.0.1" || !target.startsWith(url.origin)) return target
+    // Spliced rather than `href`, which would add a "/" to a bare origin.
+    return `${url.protocol}//localhost${url.port ? `:${url.port}` : ""}${target.slice(url.origin.length)}`
+  } catch {
+    return target
+  }
+}
+
+function currentPage(): string {
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`
+}
+
+/**
+ * Where going to another editor lands: its proxy, on the page its app was last
+ * used on.
+ *
+ * Not the bare target. Copies of one template share a home page, so another
+ * editor's root looked exactly like the app just left. The server keeps each
+ * app's last page for every surface (runtime/last-pages.mjs), because the Mac
+ * app's frames cannot see a browser tab's storage, and each row carries it as
+ * `page`. Anything that is not a path on that origin is dropped.
+ */
+export function editorAddress(target: string, page: string | null | undefined): string {
+  const path = typeof page === "string" && page.startsWith("/") && !page.startsWith("//") ? page : "/"
+  try {
+    return onLocalhost(`${new URL(target).origin}${path}`)
+  } catch {
+    return onLocalhost(target)
+  }
+}
 
 export function installAppChooser(context: EditorContext): {
   node: HTMLElement
@@ -360,29 +426,29 @@ export function installAppChooser(context: EditorContext): {
   let isOpen = false
   /** Set while a menu is opened from the keyboard and its rows have not arrived yet. */
   let focusFirstOnLoad = false
-  /** True from the first accepted click until the page is replaced. Rows go dead. */
+  /** True from the first accepted click until the page goes or the choice fails. Rows go dead. */
   let switching = false
   /** The navigation is one-way and must not be attempted twice. */
   let leaving = false
   /**
-   * The menu is holding the only explanation of a handover in progress, so it
-   * refuses to be dismissed.
-   *
-   * Separate from `leaving`, and the split is the fix for a control that could
-   * become undismissable over a session that was never in any danger. `leaving`
-   * says the page is going somewhere and must not be sent twice; this says the
-   * reader is not allowed to close the card. The first is permanent by nature.
-   * The second is a claim about the next few seconds, and it is stood down the
-   * moment the claim stops being true.
+   * The sentence for an editor being started, while it is. A menu closed and
+   * reopened during the wait shows this rather than a list of dead rows.
    */
-  let pinned = false
-  /** Torn down. The handover wait reads it, because it outlives the element. */
+  let waitingNote: string | null = null
+  /**
+   * An editor a switch started that is ready and was not opened, because edits
+   * were made during the wait. The menu offers it as a row until it is opened
+   * or another choice replaces it. `appUrl` is the app's own row, left out of
+   * the list while this one stands in for it.
+   */
+  let ready: { url: string; label: string; appUrl: string } | null = null
+  /** Torn down. The start wait reads it, because it outlives the element. */
   let destroyed = false
   /**
    * The last answer this machine gave, seeded from storage so that the FIRST
-   * open of a session is warm too — including the open right after an app
-   * switch, which is a reload, and which is exactly when someone who has just
-   * used this menu is most likely to use it again.
+   * open of a session is warm too — including the first open in an editor
+   * just switched to, which is a new document, and which is exactly when
+   * someone who has just used this menu is most likely to use it again.
    */
   let cached: AppsResponse | null = null
   /**
@@ -456,7 +522,7 @@ export function installAppChooser(context: EditorContext): {
    * subtree handed to `replaceChildren`, which is exactly the mutation a live
    * region cannot report — so the handover sentence, the failure sentence and
    * the empty state were all silent, and a screen-reader user watched an open
-   * menu say nothing at all while their editor was being killed.
+   * menu say nothing at all while their switch was under way.
    *
    * The note lives in here rather than beside it. A separate hidden region
    * would mean the same sentence written twice, visible in one copy and
@@ -584,26 +650,84 @@ export function installAppChooser(context: EditorContext): {
     restore?.()
   }
 
+  /*
+   * One click when there is nothing to lose, two when there is, for every kind
+   * of row. True when this press armed the row, and the caller stops there.
+   *
+   * The single click is right and stays right for the common case: picking an
+   * app off a list is a navigation, the same gesture as clicking a layer or a
+   * tab, and a navigation that answers the first click with a question has to
+   * be performed twice every time — including the overwhelming majority of
+   * times when the session is holding nothing at all.
+   *
+   * With work outstanding it is not free in a browser tab. Every row ends with
+   * this document unloaded, and the removal queue, the Angular queue and the
+   * vendor store go with it. So the click arms when `hasPendingChanges()` says
+   * so, names the number it would cost, and stands itself down after six
+   * seconds — the same control, the same window and the same reasoning as
+   * clearing every note in the annotations tab. Inside the Mac app the desk
+   * shows the other editor in another tab and this document stays, so there is
+   * nothing to warn about.
+   */
+  const armed = (
+    row: HTMLButtonElement,
+    metaLine: HTMLElement,
+    label: string,
+    meta: string,
+    ariaLabel: string
+  ): boolean => {
+    if (armedRow === row || isInDesk() || !committer.hasPendingChanges()) {
+      disarm()
+      return false
+    }
+    disarm()
+    /*
+     * At least one, because the two questions are answered by different
+     * machinery. `hasPendingChanges` is the vendor store's own boolean;
+     * `pendingCount` asks it to build the operations a commit would send and
+     * falls back to the removals alone when it cannot. A store that says yes
+     * and then declines to count is rare and real, and "0 unapplied changes
+     * will be lost" would be the one sentence here that argues for pressing on.
+     */
+    const owed = Math.max(1, committer.pendingCount())
+    armedRow = row
+    restoreArmedRow = () => {
+      row.classList.remove("de-app-menu-row--danger")
+      metaLine.textContent = meta
+      row.setAttribute("aria-label", ariaLabel)
+    }
+    armedTimer = window.setTimeout(disarm, ARMED_MS)
+    row.classList.add("de-app-menu-row--danger")
+    /*
+     * The row names the OUTCOME of the next click rather than asking a
+     * question: "Switch anyway?" is the same instruction twice by the time the
+     * toast has said what is at stake.
+     *
+     * It used to add "Switch anyway" and "will be lost" around that outcome,
+     * which is a sentence where a figure goes — and the slot it lands in is the
+     * one that otherwise holds four digits, so every word in it is width taken
+     * off the name beside it. The verb and the count are the whole of what the
+     * second press costs; the toast one line away carries the instruction, and
+     * the accessible name below still carries both in full for a reader who
+     * cannot see the fill.
+     */
+    metaLine.textContent = `Discards ${changeWord(owed)}`
+    row.setAttribute("aria-label", `Switch to ${label} anyway. ${changeWord(owed)} will be lost.`)
+    // The default rung, not `error` — `DURATION.error` is `Infinity`, and a
+    // card that never dismisses outlives the `ARMED_MS` window it is
+    // describing. The row disarms after six seconds and the card would go on
+    // instructing a second click that now re-arms instead of switching. The
+    // same correction is made, for the same reason, on the notes tab's Clear
+    // all.
+    context.toast({
+      title: `Switching discards ${changeWord(owed)}`,
+      description: `Click again to go to ${label} anyway.`,
+    })
+    return true
+  }
+
   const close = (restoreFocus = false): void => {
     if (!isOpen) return
-    /*
-     * A handover in progress pins the menu open.
-     *
-     * It is holding the only sentence on screen that explains why the app is
-     * about to stop responding, and every ordinary way of dismissing it —
-     * Escape, a click on the page, the window losing focus while the other
-     * process starts — is something a person does reflexively in the seconds
-     * this takes. Letting any of them through would leave a page that freezes
-     * and then reloads with nothing having said what happened.
-     *
-     * `pinned` rather than `leaving`, which is what this used to read. The two
-     * are the same thing right up until the handover does not happen, and then
-     * they are opposites: `leaving` never clears, so a switch that was accepted
-     * and then failed to take left a working editor under a card that could not
-     * be closed by any means the reader has. The pin is released the moment
-     * this page can prove the switch did not happen — see `settleIntoNewEditor`.
-     */
-    if (pinned) return
     isOpen = false
     focusFirstOnLoad = false
     disarm()
@@ -628,11 +752,11 @@ export function installAppChooser(context: EditorContext): {
    *
    * Not disabled, because it is the one row that answers the question the menu
    * was opened to ask — "which one am I on" — and a disabled control is a
-   * control you are told not to read. Switching to it would be a real switch:
-   * the supervisor would kill this editor, spawn another on the same app, and
-   * the session's unapplied work would be gone in exchange for nothing.
+   * control you are told not to read. Switching to it would reload this
+   * editor, and the session's unapplied work would be gone in exchange for
+   * nothing.
    */
-  const rowFor = (app: RunningApp): HTMLButtonElement => {
+  const rowFor = (app: RunningApp, labels: Map<RunningApp, string>): HTMLButtonElement => {
     const isCurrent = isCurrentApp(app, config.app.url)
     /*
      * A row backed by a live editor is always switchable, whatever else is
@@ -640,11 +764,8 @@ export function installAppChooser(context: EditorContext): {
      * folder question below cannot arise.
      */
     const target = typeof app.target === "string" && app.target.length > 0 ? app.target : null
-    const folder =
-      typeof app.projectRoot === "string" && app.projectRoot.length > 0
-        ? folderName(app.projectRoot)
-        : null
-    const label = appLabel(app, folder)
+    const folder = folderOf(app)
+    const label = labels.get(app) ?? appLabel(app, folder)
     /*
      * An app the scanner found but could not place on disk.
      *
@@ -714,12 +835,12 @@ export function installAppChooser(context: EditorContext): {
     const nameLine = el("span", { class: "de-app-menu-name" }, [label])
     const metaLine = el("span", { class: "de-app-menu-where" }, [meta])
     /*
-     * The mark that tells a navigation from a process swap, in place of the
-     * clause that used to.
+     * The mark that tells a navigation from a start, in place of the clause
+     * that used to.
      *
-     * The distinction is real and load-bearing: an `editor` row moves the page
-     * to a proxy that is already serving, and an `app` row asks a supervisor to
-     * SIGTERM this editor and gamble on a replacement binding. Before either
+     * The distinction is real: an `editor` row moves the page to a proxy that
+     * is already serving, and an `app` row asks a supervisor to start an editor
+     * and waits for it. Before either
      * kind said anything, they were the same row down to the verb in the
      * `aria-label`, and the fix at the time was a clause — `editor already
      * running` — which is four words spent once per row on a fact the reader
@@ -767,91 +888,49 @@ export function installAppChooser(context: EditorContext): {
         return
       }
       if (!placed) return
+      if (armed(row, metaLine, label, meta, ariaLabel)) return
       /*
-       * An editor of its own is already running, so this is a link.
-       *
-       * No POST, no waiting for a process to die and another to bind, no
-       * handover note, and no armed step — the page goes there, the way
-       * clicking any link goes anywhere, and the editor it lands on lists this
-       * one, so the way back is one press of the same control.
+       * An editor of its own is already running, so this is a link: no POST
+       * and no wait. It lands on the app's last page, not the bare proxy root.
        */
       if (target) {
-        void goTo(target, label)
+        void goTo(editorAddress(target, app.page), label)
         return
       }
-      /*
-       * One click when there is nothing to lose, two when there is.
-       *
-       * The single click is right and stays right for the common case: picking
-       * an app off a list is a navigation, the same gesture as clicking a layer
-       * or a tab, and a navigation that answers the first click with a question
-       * has to be performed twice every time — including the overwhelming
-       * majority of times when the session is holding nothing at all.
-       *
-       * What the old version of this comment got wrong was the other case. It
-       * claimed the switch had been made free, on the strength of the pinned
-       * notes and the preview-only ledger moving to per-app storage. They did.
-       * The removal queue, the Angular queue and the vendor store did not, and
-       * a supervisor SIGTERM takes all three with the document. So the click
-       * arms when `hasPendingChanges()` says so, names the number it would
-       * cost, and stands itself down after six seconds — the same control, the
-       * same window and the same reasoning as clearing every note in the
-       * annotations tab.
-       */
-      if (armedRow !== row && committer.hasPendingChanges()) {
-        disarm()
-        /*
-         * At least one, because the two questions are answered by different
-         * machinery. `hasPendingChanges` is the vendor store's own boolean;
-         * `pendingCount` asks it to build the operations a commit would send
-         * and falls back to the removals alone when it cannot. A store that
-         * says yes and then declines to count is rare and real, and "0
-         * unapplied changes will be lost" would be the one sentence here that
-         * argues for pressing on.
-         */
-        const owed = Math.max(1, committer.pendingCount())
-        armedRow = row
-        restoreArmedRow = () => {
-          row.classList.remove("de-app-menu-row--danger")
-          metaLine.textContent = meta
-          row.setAttribute("aria-label", ariaLabel)
-        }
-        armedTimer = window.setTimeout(disarm, ARMED_MS)
-        row.classList.add("de-app-menu-row--danger")
-        /*
-         * The row names the OUTCOME of the next click rather than asking a
-         * question: "Switch anyway?" is the same instruction twice by the time
-         * the toast has said what is at stake.
-         *
-         * It used to add "Switch anyway" and "will be lost" around that
-         * outcome, which is a sentence where a figure goes — and the slot it
-         * lands in is the one that otherwise holds four digits, so every word
-         * in it is width taken off the name beside it. The verb and the count
-         * are the whole of what the second press costs; the toast one line
-         * away carries the instruction, and the accessible name below still
-         * carries both in full for a reader who cannot see the fill.
-         */
-        metaLine.textContent = `Discards ${changeWord(owed)}`
-        row.setAttribute("aria-label", `Switch to ${label} anyway. ${changeWord(owed)} will be lost.`)
-        // The default rung, not `error` — `DURATION.error` is `Infinity`, and a
-        // card that never dismisses outlives the `ARMED_MS` window it is
-        // describing. The row disarms after six seconds and the card would go
-        // on instructing a second click that now re-arms instead of switching.
-        // The same correction is made, for the same reason, on the notes tab's
-        // Clear all.
-        context.toast({
-          title: `Switching discards ${changeWord(owed)}`,
-          description: `Click again to go to ${label} anyway.`,
-        })
-        return
-      }
-      disarm()
-      // The row is handed over so the handover can be reported in it — see
+      // The row is handed over so the start can be reported in it — see
       // `reportSwitching`. It is the one row the user pressed, and the only one
       // with anything to say.
       void switchTo(app, label, row)
     })
 
+    return row
+  }
+
+  /**
+   * The row for an editor that is ready and was not opened. It goes like an
+   * editor row, and arms first while there is still something to lose; a
+   * designer who applied the edits in the meantime gets the single click.
+   */
+  const readyRowFor = (held: { url: string; label: string }): HTMLButtonElement => {
+    const meta = "Ready"
+    const ariaLabel = `Open ${held.label}, which is ready`
+    const metaLine = el("span", { class: "de-app-menu-where" }, [meta])
+    const row = el(
+      "button",
+      {
+        class: "de-app-menu-row de-app-menu-row--ready",
+        type: "button",
+        role: "menuitem",
+        tabindex: "-1",
+        "aria-label": ariaLabel,
+      },
+      [el("span", { class: "de-app-menu-name" }, [held.label]), metaLine, icon("ArrowRight", tokens.icon.marker)]
+    )
+    row.addEventListener("click", () => {
+      if (switching) return
+      if (armed(row, metaLine, held.label, meta, ariaLabel)) return
+      void goTo(held.url, held.label)
+    })
     return row
   }
 
@@ -884,7 +963,7 @@ export function installAppChooser(context: EditorContext): {
   }
 
   /**
-   * The row the user pressed reports its own handover, in the slot that
+   * The row the user pressed reports its own switch, in the slot that
    * otherwise holds its port.
    *
    * ## Why there is no longer a height to pin
@@ -914,8 +993,8 @@ export function installAppChooser(context: EditorContext): {
    *
    * There were two, "asking the supervisor" and then "waiting for it to come
    * up", named as the separately observable stages of the request. The second
-   * one was never observable: `leave()` runs in the same task and replaces the
-   * whole card with the handover note, so the row it was written into was
+   * one was never observable: the accepted switch replaces the whole card with
+   * the waiting note in the same task, so the row it was written into was
    * detached before a frame could paint it. One phrase, on the row, for as long
    * as the row exists; the sentence that covers the rest of the wait is the
    * note that replaces it.
@@ -929,11 +1008,14 @@ export function installAppChooser(context: EditorContext): {
 
   const switchTo = async (app: RunningApp, label: string, row?: HTMLElement): Promise<void> => {
     switching = true
+    ready = null
     parked = null
     setRowsDisabled(true)
-    if (row) reportSwitching(row, "Switching\u2026")
+    if (row) reportSwitching(row, "Starting\u2026")
+    reportPage()
 
     let failure: string | null = null
+    let id: string | null = null
     try {
       const response = await fetch(`${context.apiBase}/apps/switch`, {
         method: "POST",
@@ -943,40 +1025,48 @@ export function installAppChooser(context: EditorContext): {
         // browser meant "use the default" or "the browser is an old build".
         body: JSON.stringify({ url: app.url, projectRoot: app.projectRoot, devScript: null }),
       })
+      const body = (await response.json().catch(() => null)) as { message?: string; id?: unknown } | null
       if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as { message?: string } | null
         failure =
           typeof body?.message === "string" && body.message.length > 0
             ? body.message
             : refusedSentence(label)
+      } else if (typeof body?.id === "string" && body.id.length > 0) {
+        id = body.id
+      } else {
+        // Accepted with no id is a start screen that cannot say which editor
+        // to wait for, so there is nothing to wait on.
+        failure = refusedSentence(label)
       }
     } catch {
-      /*
-       * A dropped connection is the supervisor killing this process — usually.
-       * See the header: the difference between "we are being killed" and "that
-       * fetch just failed" is observable, and asking costs one loopback round
-       * trip on a gesture that was about to end the page anyway.
-       */
-      failure = (await proxyAlive()) ? refusedSentence(label) : null
+      // This editor is not being replaced, so a dropped request is just that.
+      failure = refusedSentence(label)
     }
 
-    if (failure) {
-      switching = false
-      setRowsDisabled(false)
-      // The row stops claiming a handover that is not happening. `showNote`
-      // below replaces the card, so nothing on screen depends on this today —
-      // it is here so that a later change which keeps the list up does not have
-      // to remember a row left mid-switch.
-      if (row) row.removeAttribute("data-de-switching")
-      // Both, and not one or the other. The toast is what a designer looking at
-      // the canvas will see; the note is what is still there a second later,
-      // under the row they pressed, when they look back at the menu.
-      showNote(failure)
-      context.toast(failure, "error")
+    if (destroyed) return
+    if (failure || !id) {
+      fail(failure ?? refusedSentence(label), row)
       return
     }
+    void waitForEditor(id, label, app.url)
+  }
 
-    leave(label)
+  /**
+   * A choice that will not open: the rows come back, and the reason is said
+   * twice. The toast is what a designer looking at the canvas will see; the
+   * note is what is still there a second later, under the row they pressed,
+   * when they look back at the menu.
+   */
+  const fail = (sentence: string, row?: HTMLElement): void => {
+    switching = false
+    waitingNote = null
+    setRowsDisabled(false)
+    // `showNote` replaces the card, so nothing on screen depends on this today;
+    // it keeps a later change that leaves the list up from showing a row
+    // stuck mid-switch.
+    if (row) row.removeAttribute("data-de-switching")
+    if (isOpen) showNote(sentence)
+    context.toast(sentence, "error")
   }
 
   /**
@@ -999,9 +1089,9 @@ export function installAppChooser(context: EditorContext): {
    * question.
    *
    * `no-store` because what is being asked is whether a server is on the other
-   * end RIGHT NOW, and a cached 200 from the editor being replaced is the one
-   * answer that would be wrong. Any response counts as alive — a proxy that is
-   * up but still compiling the app answers 500, and it is still up.
+   * end RIGHT NOW, and a cached 200 from an editor that has since stopped is
+   * the one answer that would be wrong. Any response counts as alive — a proxy
+   * that is up but still compiling the app answers 500, and it is still up.
    */
   const answers = async (url: string): Promise<boolean> => {
     try {
@@ -1012,8 +1102,23 @@ export function installAppChooser(context: EditorContext): {
     }
   }
 
-  /** The same question, asked of the proxy serving this page. */
-  const proxyAlive = (): Promise<boolean> => answers(`${context.apiBase}/apps`)
+  /**
+   * Shows `url`, which is another editor. Inside the Mac app the desk does it
+   * and this frame stays as it is, so the control is put back to rest; in a
+   * browser tab this document is replaced.
+   */
+  const go = (url: string): void => {
+    switching = false
+    waitingNote = null
+    if (goInDesk(url)) {
+      setRowsDisabled(false)
+      close()
+      return
+    }
+    leaving = true
+    close()
+    window.location.assign(url)
+  }
 
   /**
    * Goes to an editor that is already running, having checked that it is.
@@ -1031,17 +1136,16 @@ export function installAppChooser(context: EditorContext): {
    * allowed to repaint, since the answer that produced the stale row would
    * otherwise match the signature and be thrown away as "nothing changed".
    */
-  const goTo = async (target: string, label: string): Promise<void> => {
+  const goTo = async (url: string, label: string): Promise<void> => {
     if (leaving || switching) return
     switching = true
+    ready = null
     parked = null
     setRowsDisabled(true)
-    const reachable = await answers(target)
+    const reachable = await answers(url)
     if (destroyed) return
     if (reachable) {
-      leaving = true
-      close()
-      window.location.assign(target)
+      go(url)
       return
     }
     switching = false
@@ -1060,107 +1164,114 @@ export function installAppChooser(context: EditorContext): {
     })
 
   /**
-   * Waits out the handover and reloads in place, rather than sending the
-   * designer back to the screen they came here to stop needing.
+   * One answer to "is the editor with this id ready", from the start screen
+   * through this editor's relay.
    *
-   * The old behaviour was one line — navigate to the start screen and let it
-   * forward — and it worked, because that page polls and redirects. What it
-   * cost was the point of the whole control: picking an app from a menu inside
-   * the editor put a full-page interstitial on screen anyway, so switching
-   * still read as leaving and coming back rather than as changing what you are
-   * looking at.
-   *
-   * TWO phases, and the first is what makes the second trustworthy. The
-   * supervisor gives this editor a SIGTERM and then binds the next one to the
-   * same proxy port — 3456 both times is the normal case — so a single "is it
-   * up" poll would be satisfied immediately by the process that is about to
-   * die, reload into it, and land on whatever it serves in its last moment.
-   * Waiting for the port to go quiet FIRST is the only way this page can tell
-   * the two apart from the outside.
-   *
-   * Every way out of the wait ends somewhere real. The port never dying means
-   * the switch did not take; the port never coming back means the next editor
-   * failed to start, and the start screen is the page that knows why, because
-   * the supervisor reports the reason to it. Both fall through to the
-   * navigation this replaced, so the worst case here is the behaviour that was
-   * here before.
-   *
-   * And a port that never dies releases the pin. The card is held open against
-   * Escape because it is explaining a page that is about to freeze; a page that
-   * is demonstrably still answering after the whole death budget is a page
-   * nothing is happening to, and holding a card over it is no longer protecting
-   * anything. Fifteen seconds of an undismissable surface over a working editor
-   * is a worse failure than the one the pin was avoiding.
+   * A refusal from the relay is final and carries its sentence: no start
+   * screen behind this session, or one that has stopped answering, which
+   * takes the editor being started with it. A request that never arrived is
+   * this editor's own proxy having a moment, and the wait asks again.
    */
-  const DEATH_BUDGET_MS = 15_000
-  const REVIVAL_BUDGET_MS = 60_000
-  const POLL_MS = 400
-
-  const settleIntoNewEditor = async (label: string): Promise<void> => {
-    const until = async (alive: boolean, budget: number): Promise<boolean> => {
-      const deadline = Date.now() + budget
-      while (Date.now() < deadline) {
-        /*
-         * A control that has been torn down stops watching, and this is the
-         * check that makes the whole wait safe to start.
-         *
-         * The loop outlives the element by up to seventy-five seconds, and what
-         * it does at the end of it is reload the page. A detached control that
-         * kept counting would eventually reload a document it is no longer part
-         * of — out from under whatever replaced it, for a switch nobody is
-         * waiting on any more.
-         */
-        if (destroyed) return false
-        if ((await proxyAlive()) === alive) return true
-        await wait(POLL_MS)
+  const startedAnswer = async (id: string): Promise<{ ready: boolean; url: string | null; stopped: string | null }> => {
+    try {
+      const response = await fetch(`${context.apiBase}/apps/started?id=${encodeURIComponent(id)}`, {
+        cache: "no-store",
+        headers: { accept: "application/json" },
+      })
+      const body = (await response.json().catch(() => null)) as Record<string, unknown> | null
+      if (!response.ok) {
+        const said = typeof body?.message === "string" && body.message.length > 0 ? body.message : null
+        return { ready: false, url: null, stopped: said ?? "The start screen stopped answering." }
       }
-      return false
-    }
-
-    if (await until(false, DEATH_BUDGET_MS)) {
-      if (await until(true, REVIVAL_BUDGET_MS)) {
-        window.location.reload()
-        return
+      return {
+        ready: body?.ready === true,
+        url: typeof body?.url === "string" && body.url.length > 0 ? body.url : null,
+        stopped: typeof body?.stopped === "string" && body.stopped.length > 0 ? body.stopped : null,
       }
-    } else {
-      // Still answering after fifteen seconds, so nothing was killed and the
-      // reader gets their Escape key back.
-      pinned = false
-    }
-    if (destroyed) return
-    // Neither phase landed. The start screen is the one page that can say what
-    // became of the editor, so this is where the old behaviour is kept.
-    if (config.chooserUrl) window.location.assign(config.chooserUrl)
-    else {
-      pinned = false
-      /*
-       * The worst state this control can reach: the old editor was asked to go,
-       * the new one never arrived, and there is no screen to ask why. The
-       * sentence that used to be here reported exactly that and stopped — "and
-       * there is no start screen to ask why" — which leaves a reader staring at
-       * a zombie page whose only piece of information is that nobody can help.
-       * The recovery is unglamorous and it always works, so it is what the
-       * sentence says.
-       */
-      showNote(`${label} did not start. Run designlayer in its folder instead.`)
+    } catch {
+      return { ready: false, url: null, stopped: null }
     }
   }
 
   /**
-   * The switch has been accepted and this editor is being taken down with it.
+   * Waits for the editor a switch started, then goes to it.
    *
-   * The menu stays open and holds the explanation, because it is the surface
-   * the click happened on and the app behind it is about to stop answering —
-   * a toast alone would leave a page that visibly stops working with nothing
-   * on it saying why.
+   * This editor keeps running throughout, so nothing here holds the menu open:
+   * the note is the explanation for a reader who is looking, the toast for one
+   * who is not, and either can be dismissed while the wait goes on. The URL the
+   * start screen answers with already carries the page the app lands on.
+   *
+   * The budget covers a dev server that is slow to compile; the start screen
+   * normally ends the wait first, with `stopped`, when an editor fails.
    */
-  const leave = (label: string): void => {
-    if (leaving) return
-    leaving = true
-    pinned = true
-    context.toast(`Switching to ${label}\u2026`)
-    showNote(`Starting ${label}. This page reloads when it is ready.`)
-    void settleIntoNewEditor(label)
+  const START_BUDGET_MS = 120_000
+  const POLL_MS = 400
+
+  /**
+   * The editor is ready and edits were made while it started, so the page
+   * stays. The menu offers the editor as a row (see `readyRowFor`), and the
+   * toast's Open opens the menu onto that row and presses it, which arms it:
+   * a toast cannot carry the second press, and the row can.
+   */
+  const holdReady = (url: string, label: string, appUrl: string): void => {
+    switching = false
+    waitingNote = null
+    ready = { url, label, appUrl }
+    parked = null
+    if (isOpen) {
+      render(cached)
+      // Recorded, so a refresh with the same answer leaves the drawn rows
+      // alone rather than repainting an armed row back to rest.
+      shownSignature = signatureOf(cached)
+      position()
+    }
+    context.toast(
+      { title: `${label} is ready`, description: "It did not open, so your unapplied changes are still here." },
+      "info",
+      { label: "Open", onClick: openReady }
+    )
+  }
+
+  const openReady = (): void => {
+    if (!ready || destroyed || switching) return
+    if (!isOpen) open(false)
+    const row = menu.querySelector<HTMLButtonElement>(".de-app-menu-row--ready")
+    if (!row) return
+    focusControl(row)
+    row.click()
+  }
+
+  const waitForEditor = async (id: string, label: string, appUrl: string): Promise<void> => {
+    waitingNote = `Starting ${label}. It opens when it is ready.`
+    context.toast(`Starting ${label}\u2026`)
+    if (isOpen) showNote(waitingNote)
+    const deadline = Date.now() + START_BUDGET_MS
+    while (Date.now() < deadline) {
+      // The loop outlives the element, and what it does at the end is leave
+      // the page; a torn-down control must not.
+      if (destroyed) return
+      const answer = await startedAnswer(id)
+      if (destroyed) return
+      if (answer.stopped) {
+        fail(answer.stopped)
+        return
+      }
+      if (answer.ready && answer.url) {
+        // Asked again now, not at the click: the wait is long and the note
+        // dismissible, so the designer may have edited all through it. Inside
+        // the Mac app this document stays whatever the answer.
+        if (!isInDesk() && committer.hasPendingChanges()) holdReady(onLocalhost(answer.url), label, appUrl)
+        else go(onLocalhost(answer.url))
+        return
+      }
+      await wait(POLL_MS)
+    }
+    if (destroyed) return
+    fail(
+      config.chooserUrl
+        ? `${label} did not start. Try again, or start it from ${config.chooserUrl}.`
+        : `${label} did not start. Run designlayer in its folder instead.`
+    )
   }
 
   const render = (payload: AppsResponse | null): void => {
@@ -1175,6 +1286,29 @@ export function installAppChooser(context: EditorContext): {
      * the menu they are looking at.
      */
     const held = menu.contains(document.activeElement)
+    // An editor is being started: the rows are dead until it is, and the
+    // sentence saying so is worth more than a list nobody can press.
+    if (waitingNote) {
+      showNote(waitingNote)
+      return
+    }
+    // A ready editor that did not open leads the card, with the sentence that
+    // says why, and the rest of the list stays pressable under it. Drawn even
+    // when the list cannot be, since it does not depend on the list.
+    if (ready) {
+      const standing = ready
+      const others =
+        payload && !payload.error && Array.isArray(payload.apps)
+          ? payload.apps.filter((app) => app.url !== standing.appUrl)
+          : []
+      const labels = rowLabels(others)
+      menu.replaceChildren(liveRegion, readyRowFor(standing), ...others.map((app) => rowFor(app, labels)))
+      liveRegion.replaceChildren(
+        note(`${standing.label} is ready. It did not open, so your unapplied changes are still here.`)
+      )
+      settleRows(held)
+      return
+    }
     if (!payload) {
       showNote("Could not reach the DesignLayer server. Reload to try again.")
       return
@@ -1209,7 +1343,8 @@ export function installAppChooser(context: EditorContext): {
       )
       return
     }
-    const drawn: HTMLElement[] = apps.map(rowFor)
+    const labels = rowLabels(apps)
+    const drawn: HTMLElement[] = apps.map((app) => rowFor(app, labels))
     /*
      * One sentence under the list when anything in it is unswitchable, and
      * nothing under it at all when nothing is — which is the shape of every
@@ -1432,7 +1567,7 @@ export function installAppChooser(context: EditorContext): {
      * The note is now only for a menu that genuinely has nothing to show yet,
      * which after the first open of the first session is nobody.
      */
-    if (cached) {
+    if (cached || ready) {
       const signature = signatureOf(cached)
       /*
        * The rows the last close took down, when they describe the same apps.
@@ -1607,6 +1742,62 @@ export function installAppChooser(context: EditorContext): {
   window.addEventListener("scroll", onScroll, true)
   window.addEventListener("resize", onScroll)
   window.addEventListener("blur", onBlur)
+  // Leaving by any route — a reload, a typed address, a closed tab — files this
+  // app's page for the next switch back to it.
+  /*
+   * The page this document is on, filed with the server under this app: on
+   * every change, and on the way out. An app that routes with pushState fires
+   * no event for it, so a change is also looked for on a timer.
+   *
+   * Only once the person has used the app itself. An app redirects on load —
+   * from its root to its home, from a stale link to a default — and filing
+   * that page wrote the app's shared home over the page the person had been
+   * working on, so the next switch opened a page that looks like every other
+   * copy of the template. Clicks and keys in the editor's own chrome do not
+   * count: they are not a choice of page.
+   */
+  let used = false
+  const onUse = (event: Event): void => {
+    const target = event.target instanceof Element ? event.target : null
+    if (target?.closest("[data-designlayer], [class^='de-'], [class*=' de-']")) return
+    used = true
+  }
+  let reported = ""
+  const reportPage = (beacon = false): void => {
+    const page = currentPage()
+    if (!used || !config.app.url || (page === reported && !beacon)) return
+    reported = page
+    const body = JSON.stringify({ appUrl: config.app.url, page })
+    const url = `${context.apiBase}/apps/page`
+    if (beacon && typeof navigator.sendBeacon === "function") {
+      navigator.sendBeacon(url, new Blob([body], { type: "application/json" }))
+      return
+    }
+    void fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body, keepalive: true }).catch(
+      () => {}
+    )
+  }
+  // The Mac app names each tab from this, and reopens it on this page. Not
+  // gated on use: a tab's name has to be right from the first paint.
+  let told = ""
+  const tellDeskPage = (): void => {
+    const page = currentPage()
+    if (page === told) return
+    told = page
+    tellDesk(config.app.name ?? null, page)
+  }
+  const onPageHide = (): void => reportPage(true)
+  const onRouteChange = (): void => {
+    reportPage()
+    tellDeskPage()
+  }
+  const pageTimer = window.setInterval(onRouteChange, 2000)
+  tellDeskPage()
+  window.addEventListener("pointerdown", onUse, true)
+  window.addEventListener("keydown", onUse, true)
+  window.addEventListener("pagehide", onPageHide)
+  window.addEventListener("hashchange", onRouteChange)
+  window.addEventListener("popstate", onRouteChange)
 
   return {
     node: trigger,
@@ -1616,13 +1807,13 @@ export function installAppChooser(context: EditorContext): {
      * The menu is in `document.body` and the five listeners are on `window`, so
      * removing the button from the panel would leave both behind — a menu that
      * can still be opened by a keystroke aimed at whatever replaced it. The
-     * handover wait goes too, and it is the one that matters: it outlives the
-     * element by up to seventy-five seconds and ends by reloading the page.
+     * start wait goes too, and it is the one that matters: it outlives the
+     * element by up to two minutes and ends by leaving the page.
      */
     destroy() {
-      // First, so a handover wait already in flight stops before anything else
+      // First, so a start wait already in flight stops before anything else
       // here runs. It is the one thing in this control that can outlive the
-      // element, and what it does at the end is reload the page.
+      // element, and what it does at the end is leave the page.
       destroyed = true
       window.clearTimeout(warmTimer)
       disarm()
@@ -1635,6 +1826,12 @@ export function installAppChooser(context: EditorContext): {
       window.removeEventListener("scroll", onScroll, true)
       window.removeEventListener("resize", onScroll)
       window.removeEventListener("blur", onBlur)
+      window.removeEventListener("pagehide", onPageHide)
+      window.removeEventListener("pointerdown", onUse, true)
+      window.removeEventListener("keydown", onUse, true)
+      window.removeEventListener("hashchange", onRouteChange)
+      window.removeEventListener("popstate", onRouteChange)
+      window.clearInterval(pageTimer)
       menu.remove()
     },
   }

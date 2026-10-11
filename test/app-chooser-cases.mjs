@@ -4,10 +4,10 @@
  *
  * This is the one surface in the editor whose failure mode is losing the
  * session. Every other control is a view of ONE app; this one decides which app
- * that is, and picking a row here asks a supervisor to SIGTERM this process and
- * start another. So the cases below are chosen for the failures that are silent
- * — a chooser that still draws, still lists, still switches, and quietly does
- * the wrong thing:
+ * that is, and picking a row here asks a supervisor to start an editor for
+ * another app beside this one, then goes to it. So the cases below are chosen
+ * for the failures that are silent — a chooser that still draws, still lists,
+ * still switches, and quietly does the wrong thing:
  *
  *  - **the current row, matched by port.** The two halves of this answer are
  *    built by different machines and spell loopback differently: the prelude
@@ -17,18 +17,14 @@
  *    nothing on screen says so — the menu just looks like it has lost track of
  *    which app you are on. The case that pins this lists the current app at
  *    `[::1]` and the config at `127.0.0.1`;
- *  - **a dropped connection on the switch is USUALLY the success path.** The
- *    supervisor kills this editor — the process serving the page and the route
- *    the POST is in flight to — as soon as it accepts. Treating the rejected
- *    fetch as an error would put a failure message on screen after every
- *    successful switch. Treating it as success unconditionally was worse: a
- *    loopback fetch that failed for any other reason put a handover on screen
- *    over an editor that was working, and held the card open against Escape
- *    while it did. So the page asks whether its own proxy is still answering,
- *    and both answers are pinned. A JSON refusal is a third case, also below;
+ *  - **switching never stops this editor.** The picked app gets its own editor
+ *    on its own port; the page polls for it by the id the switch answered and
+ *    goes to it once it is ready. The waiting note can be dismissed, a failed
+ *    start says why and gives the rows back, and inside the Mac app the frame
+ *    asks the desk to show the editor instead of navigating itself;
  *  - **the arm/confirm window, and the fact that it is usually not there.** The
  *    removal queue, the Angular queue and the vendor store live in this tab and
- *    nowhere else, and a SIGTERM takes all three with the document. So a row
+ *    nowhere else, and going to any other editor unloads them. So a row
  *    pressed with work outstanding names what the next click would cost and
  *    goes on the second press, and a row pressed with nothing outstanding goes
  *    on the first. Both halves are pinned, because each is a regression in the
@@ -156,6 +152,12 @@ const navigations = []
  * the fallback to the start screen when it did not.
  */
 const reloads = []
+/**
+ * What the page posted to the Mac app's desk. In jsdom a top-level window is
+ * its own parent, so the editor's `window.parent.postMessage` lands here.
+ */
+const deskPosts = []
+window.postMessage = (message, origin) => deskPosts.push({ message, origin })
 const fakeLocation = {
   assign: (url) => navigations.push(String(url)),
   replace: (url) => navigations.push(String(url)),
@@ -170,6 +172,11 @@ const fakeLocation = {
   search: "",
   hash: "",
   toString: () => window.location.href,
+  /**
+   * Missing, as in jsdom and Firefox, until a case says which page frames this
+   * one; see `framedBy`.
+   */
+  ancestorOrigins: undefined,
 }
 const proxyWindow = new Proxy(window, {
   get(target, property) {
@@ -269,8 +276,14 @@ const server = {
   apps: { chooser: true, apps: clone(APPS) },
   appsUnreachable: false,
   /** What `POST {apiBase}/apps/switch` answers with. */
-  switch: { ok: true, status: 200, body: { ok: true } },
+  switch: { ok: true, status: 200, body: { ok: true, id: "e2", existing: false } },
   switchUnreachable: false,
+  /**
+   * What `GET {apiBase}/apps/started` answers, one entry per poll; the last one
+   * repeats. Not ready by default, so a case sees the wait unless it says when
+   * the editor comes up.
+   */
+  started: [{ ok: true, status: 200, body: { ready: false, url: null, stopped: null } }],
   /** Held open to keep a switch in flight while a case looks at the rows. */
   gate: null,
   /** What the start screen answers the SERVER half with. */
@@ -281,9 +294,11 @@ const server = {
   reset() {
     server.apps = { chooser: true, apps: clone(APPS) }
     server.appsUnreachable = false
-    server.switch = { ok: true, status: 200, body: { ok: true } }
+    server.switch = { ok: true, status: 200, body: { ok: true, id: "e2", existing: false } }
     server.switchUnreachable = false
+    server.started = [{ ok: true, status: 200, body: { ready: false, url: null, stopped: null } }]
     server.gate = null
+    deskPosts.length = 0
     server.calls = []
     navigations.length = 0
     reloads.length = 0
@@ -306,6 +321,11 @@ async function serve(input, init = {}) {
   if (url === `${API}/apps`) {
     if (server.appsUnreachable) throw new Error("Failed to fetch")
     return { ok: true, status: 200, json: async () => clone(server.apps) }
+  }
+  if (url.startsWith(`${API}/apps/started?`)) {
+    const answer = server.started.length > 1 ? server.started.shift() : server.started[0]
+    if (answer.unreachable) throw new Error("Failed to fetch")
+    return { ok: answer.ok, status: answer.status, json: async () => clone(answer.body) }
   }
   if (url === `${API}/apps/switch`) {
     if (server.gate) await server.gate
@@ -345,14 +365,14 @@ const { build } = await import("esbuild")
  * is a claim about that file rather than about this one, and asserting it
  * through the real panel is the only version of it worth having.
  */
-async function laneFor(app, chooserUrl, marker) {
-  globalThis.__DESIGNLAYER_CONFIG__ = { apiBase: API, chooserUrl, app }
+async function laneFor(app, chooserUrl, marker, extra = {}) {
+  globalThis.__DESIGNLAYER_CONFIG__ = { apiBase: API, chooserUrl, app, ...extra }
   const lane = await build({
     stdin: {
       contents: `
         export const marker = ${JSON.stringify(marker)}
         export { createContext } from "./src/core/context"
-        export { installAppChooser } from "./src/panels/app-chooser"
+        export { editorAddress, installAppChooser, onLocalhost, rowLabels } from "./src/panels/app-chooser"
         export { installLeftPanel } from "./src/panels/left"
         export { config } from "./src/core/config"
         export { icon } from "./src/core/icons"
@@ -380,6 +400,12 @@ async function laneFor(app, chooserUrl, marker) {
 const named = await laneFor({ url: CURRENT, name: "shop-web" }, CHOOSER, "named-app")
 /** A `--dev` launch: no app name yet, and no screen to go back to. */
 const ghost = await laneFor({ url: null, name: null }, null, "no-app")
+/** The same session as `named`, as one of the Mac app's tabs. */
+const DESK = "http://127.0.0.1:3454"
+const inDesk = await laneFor({ url: CURRENT, name: "shop-web" }, CHOOSER, "in-desk", { deskUrl: DESK })
+/** The same, with the prelude naming the desk where it now lives. */
+const NEW_DESK = "http://localhost:3454"
+const inNewDesk = await laneFor({ url: CURRENT, name: "shop-web" }, CHOOSER, "in-new-desk", { deskUrl: NEW_DESK })
 
 // ── Mounting one chooser ───────────────────────────────────────────────────
 
@@ -427,7 +453,7 @@ function mount(lane, { pending = false } = {}) {
   const context = lane.createContext(
     {
       ...baseBridge,
-      toast: (message, kind) => toasts.push({ message, kind }),
+      toast: (message, kind, action) => toasts.push({ message, kind, action }),
       store: { ...baseBridge.store, hasChanges: () => hasChanges },
     },
     { overlay: slot(), toolbar: slot(), left, right: slot() }
@@ -669,11 +695,10 @@ await check("each running app becomes a row that is a name and a port", () => {
   assert.equal(rows.length, 3)
   assert.deepEqual(
     rows.map((row) => row.querySelector(".de-app-menu-name").textContent),
-    // The package name, then the title, then the folder it was started from,
-    // and only then the url. All three fallbacks are reachable: a prototype
-    // started outside a project has no package.json, a page with no <title> has
-    // no title, and an editor row is handed an empty title by contract.
-    ["shop-web", "Docs site", "sketch"]
+    // The folder it was started from, then the package name, then the title,
+    // and only then the url (runtime/app-name.mjs). Copies of one template
+    // share a package name and a title, so the folder comes first.
+    ["shop", "docs", "sketch"]
   )
   assert.deepEqual(
     rows.map((row) => row.querySelector(".de-app-menu-where").textContent),
@@ -725,6 +750,30 @@ await check("an ordinary list carries no sentence under it", () => {
 })
 
 /*
+ * Copies of one template keep its package name. Four prototypes all read the
+ * same word and only the port told them apart, so rows that share a name and
+ * come from different folders are named by their folder. Two servers from one
+ * folder keep the name, because there the port is the real difference.
+ */
+await check("rows that share a name are told apart by their folders", () => {
+  const rows = [
+    { port: 3000, url: "http://127.0.0.1:3000", title: "Studio", projectRoot: "/work/studio", packageName: "studio" },
+    { port: 3041, url: "http://127.0.0.1:3041", title: "Studio", projectRoot: "/work/studio-pinned/", packageName: "studio" },
+    { port: 4200, url: "http://127.0.0.1:4200", title: "Docs", projectRoot: "/work/docs", packageName: "docs" },
+    { port: 8000, url: "http://127.0.0.1:8000", title: "Docs", projectRoot: "/work/docs", packageName: "docs" },
+  ]
+  const labels = named.rowLabels(rows)
+  assert.deepEqual(rows.map((row) => labels.get(row)), ["studio", "studio-pinned", "docs", "docs"])
+})
+
+await check("another editor is opened on localhost", () => {
+  assert.equal(named.onLocalhost("http://127.0.0.1:3464"), "http://localhost:3464")
+  assert.equal(named.onLocalhost("http://127.0.0.1:3464/#/a?b=c"), "http://localhost:3464/#/a?b=c")
+  assert.equal(named.onLocalhost("http://localhost:3464"), "http://localhost:3464")
+  assert.equal(named.onLocalhost("not a url"), "not a url")
+})
+
+/*
  * THE case in this file.
  *
  * The prelude knows the app as `http://127.0.0.1:3000` because that is the
@@ -740,18 +789,18 @@ await check("the row for the app you are on is marked, even spelled another way"
   assert.notEqual(APPS[0].url, CURRENT, "this case only means something if the two disagree")
   assert.ok(current.classList.contains("de-app-menu-row--current"))
   assert.equal(current.getAttribute("aria-current"), "true")
-  assert.equal(current.getAttribute("aria-label"), "shop-web, the app you are editing")
+  assert.equal(current.getAttribute("aria-label"), "shop, the app you are editing")
   for (const row of others) {
     assert.ok(!row.classList.contains("de-app-menu-row--current"))
     assert.equal(row.getAttribute("aria-current"), null)
   }
-  assert.equal(others[0].getAttribute("aria-label"), "Switch to Docs site")
+  assert.equal(others[0].getAttribute("aria-label"), "Switch to docs")
 })
 
 /*
- * Switching to the app you are already on is a real switch: the supervisor
- * kills this editor, starts another on the same app, and the session's
- * unapplied work is gone in exchange for nothing. The row stays pressable
+ * Switching to the app you are already on would be a real switch: the page
+ * would go to this app's editor again, and in a browser tab the session's
+ * unapplied work would be gone in exchange for nothing. The row stays pressable
  * because it is the one row that answers the question the menu was opened to
  * ask — it just answers it by closing.
  */
@@ -1069,7 +1118,7 @@ await check("with nothing unapplied, one click asks the server to switch", async
   const ui = await opened(mount(named))
   press(ui.rows()[1])
   await settle()
-  const posted = server.calls.filter((call) => call.method === "POST")
+  const posted = server.calls.filter((call) => call.method === "POST" && call.url === `${API}/apps/switch`)
   assert.equal(posted.length, 1)
   assert.equal(posted[0].url, `${API}/apps/switch`)
   assert.deepEqual(posted[0].body, {
@@ -1105,7 +1154,7 @@ await check("with work outstanding, the first press warns and the second switche
   press(row)
   await settle()
   assert.equal(
-    server.calls.filter((call) => call.method === "POST").length,
+    server.calls.filter((call) => call.method === "POST" && call.url === `${API}/apps/switch`).length,
     0,
     "a session holding unapplied edits was switched away on one click"
   )
@@ -1118,7 +1167,7 @@ await check("with work outstanding, the first press warns and the second switche
   // of its own; it is now the slot that holds four digits, and every word in it
   // is width taken off the name beside it. The instruction lives in the toast
   // and the whole of it in the accessible name, both asserted below.
-  assert.equal(row.querySelector(".de-app-menu-name").textContent, "Docs site")
+  assert.equal(row.querySelector(".de-app-menu-name").textContent, "docs")
   assert.match(row.querySelector(".de-app-menu-where").textContent, /^Discards \d+ unapplied change/)
   assert.ok(row.classList.contains("de-app-menu-row--danger"), "the armed row carries no fill")
   assert.match(row.getAttribute("aria-label"), /will be lost/)
@@ -1135,7 +1184,7 @@ await check("with work outstanding, the first press warns and the second switche
   press(row)
   await settle()
   assert.equal(
-    server.calls.filter((call) => call.method === "POST").length,
+    server.calls.filter((call) => call.method === "POST" && call.url === `${API}/apps/switch`).length,
     1,
     "the second press did not go through"
   )
@@ -1174,7 +1223,7 @@ await check("an armed row goes back to being an ordinary row if it is left alone
   // a question the reader has long since forgotten answering.
   press(row)
   await settle()
-  assert.equal(server.calls.filter((call) => call.method === "POST").length, 0)
+  assert.equal(server.calls.filter((call) => call.method === "POST" && call.url === `${API}/apps/switch`).length, 0)
   ui.destroy()
   server.reset()
 })
@@ -1193,7 +1242,7 @@ await check("closing the menu takes the armed row's second click away with it", 
   press(ui.rows()[1])
   await settle()
   assert.equal(
-    server.calls.filter((call) => call.method === "POST").length,
+    server.calls.filter((call) => call.method === "POST" && call.url === `${API}/apps/switch`).length,
     0,
     "a menu reopened onto a row that was still armed from last time"
   )
@@ -1227,83 +1276,178 @@ await check("notes and the preview-only ledger are filed per app, not dropped", 
   )
 })
 
-await check("a dropped connection on the switch is the success path", async () => {
+/*
+ * The supervisor runs one editor per app, so the picked app gets its own editor
+ * on its own port while this one keeps running. The page polls the start
+ * screen, through this editor's relay, with the id the switch answered, and
+ * goes to the new editor's address once it is ready. Switching used to replace
+ * this editor on the same port and reload into whatever came back there.
+ */
+await check("an accepted switch waits for the new editor, then goes to it", async () => {
   server.reset()
-  server.switchUnreachable = true
+  server.started = [
+    { ok: true, status: 200, body: { ready: false, url: null, stopped: null } },
+    { ok: true, status: 200, body: { ready: true, url: "http://localhost:3458/#/guide", stopped: null } },
+  ]
   const ui = await opened(mount(named))
-  // Only once the list is on screen. The proxy this page is served from is the
-  // process being killed, so it stops answering the moment the switch is
-  // accepted — not before, or there would have been nothing to click.
-  server.appsUnreachable = true
   press(ui.rows()[1])
   await settle()
 
   assert.ok(!ui.toasts.some((toast) => toast.kind === "error"), "a successful switch reported one")
-  assert.match(ui.toasts.at(-1).message, /Switching to Docs site/)
-  // Nothing has happened to the page yet, and the menu is holding the only
-  // sentence on screen that explains why the app has stopped responding.
-  assert.deepEqual(navigations, [], "the page bounced to the start screen anyway")
-  assert.deepEqual(reloads, [], "the page reloaded into the editor that is dying")
-  assert.match(ui.note().textContent, /Starting Docs site/)
+  assert.match(ui.toasts.at(-1).message, /Starting docs/)
+  assert.match(ui.note().textContent, /Starting docs/)
+  assert.doesNotMatch(ui.note().textContent, /reloads/, "the note still promises this page reloads")
+  const polled = server.calls.filter((call) => call.url.startsWith(`${API}/apps/started?`))
+  assert.equal(polled[0]?.url, `${API}/apps/started?id=e2`, "it did not ask after the editor the switch started")
+  assert.deepEqual(navigations, [], "it left before the new editor was ready")
 
-  // The supervisor binds the next editor to the same proxy port, and the page
-  // comes back on it rather than on the screen it was picked from.
-  server.appsUnreachable = false
-  await sleep(1200)
-  assert.equal(reloads.length, 1, "the editor came back up and the page did not reload into it")
-  assert.deepEqual(navigations, [], "it detoured through the start screen after all")
+  await sleep(700)
+  assert.deepEqual(navigations, ["http://localhost:3458/#/guide"], "the editor came up and the page did not go to it")
+  assert.deepEqual(reloads, [])
   ui.destroy()
   server.reset()
 })
 
 /*
- * The wait is two phases precisely so a single "is it up" poll cannot be
- * answered by the process that is about to die.
- *
- * Both editors bind the same proxy port — 3456 both times is the normal case —
- * so from inside this page the old one and the new one are indistinguishable by
- * address. Waiting for the port to go quiet FIRST is the only thing that tells
- * them apart, and this case is what stops that being optimised away: the proxy
- * never stops answering, so a one-phase wait would reload immediately into the
- * editor being replaced.
+ * The start screen answers with the editor's address and the page the app
+ * lands on. The app being left files its own page first, so switching back to
+ * it lands there too. An address on 127.0.0.1 is opened on localhost, because
+ * apps branch on that host name.
  */
-await check("a proxy that never goes quiet is a switch that did not take", async () => {
+await check("a switch files the page being left, and lands on localhost", async () => {
   server.reset()
-  server.switch = { ok: true, status: 200, body: { ok: true } }
+  server.started = [
+    { ok: true, status: 200, body: { ready: true, url: "http://127.0.0.1:3458/#/guide?step=2", stopped: null } },
+  ]
+  const ui = await opened(mount(named))
+  // Nothing is filed for a page the person never used: an app's redirect on
+  // load would otherwise write its shared home over the page they were on.
+  window.dispatchEvent(new window.Event("hashchange"))
+  assert.equal(server.calls.filter((call) => call.url === `${API}/apps/page`).length, 0, "a page nobody used was filed")
+  // A key in the app itself is use.
+  window.document.getElementById("app").dispatchEvent(new window.KeyboardEvent("keydown", { bubbles: true }))
+  press(ui.rows()[1])
+  await settle()
+  const filed = server.calls.filter((call) => call.url === `${API}/apps/page`)
+  assert.ok(filed.length > 0, "the app being left did not file its page")
+  assert.deepEqual(filed.at(-1).body, { appUrl: CURRENT, page: "/" })
+  assert.deepEqual(navigations, ["http://localhost:3458/#/guide?step=2"])
+  ui.destroy()
+  server.reset()
+})
+
+/*
+ * Choosing an app whose editor is already running starts nothing: the start
+ * screen answers with that editor's id and `existing: true`, the first poll
+ * finds it ready, and the page goes there without a wait.
+ */
+await check("an app whose editor already runs opens on the first answer", async () => {
+  server.reset()
+  server.switch = { ok: true, status: 200, body: { ok: true, id: "e1", existing: true } }
+  server.started = [{ ok: true, status: 200, body: { ready: true, url: "http://localhost:3460/#/cart", stopped: null } }]
   const ui = await opened(mount(named))
   press(ui.rows()[1])
   await settle()
-  await sleep(1200)
-  assert.deepEqual(reloads, [], "it reloaded into the editor it was replacing")
-  // Still waiting rather than having given up: the death budget is 15s, and
-  // the fallback to the start screen is what eventually ends it.
-  assert.deepEqual(navigations, [])
-  assert.match(ui.note().textContent, /Starting Docs site/)
+  assert.deepEqual(navigations, ["http://localhost:3460/#/cart"])
+  assert.equal(
+    server.calls.filter((call) => call.url.startsWith(`${API}/apps/started?`)).length,
+    1,
+    "a ready editor was asked after more than once"
+  )
   ui.destroy()
   server.reset()
 })
 
 /*
- * A dropped POST over a proxy that is still answering is not a handover.
- *
- * The success-on-a-dropped-connection reading is right about the case it was
- * written for — the supervisor kills the process serving this page, so the
- * happy path frequently ends with no response at all — and it had no way to
- * tell that case from a loopback fetch that failed for any other reason. Read
- * as success, a transient failure put "Starting Docs site" on screen over an
- * editor that was working perfectly, pinned the card against Escape, an outside
- * click and a window blur, and left it there until a fifteen-second budget ran
- * out. The error it was avoiding was cosmetic; this one blocks the editor.
- *
- * The distinguishing question is one the page can ask: is my own proxy still
- * there. It costs one loopback round trip on a gesture that was about to end
- * the page, and both answers are pinned — this case for alive, the case above
- * for dead.
+ * A page is filed under the editor's own app, read from the registry entry it
+ * published. During a switch the page leaving reports to whichever editor holds
+ * the port now, and that page is not this editor's app.
  */
-await check("a dropped POST over a live proxy is reported, not narrated as a handover", async () => {
+await check("an editor files a page only for its own app", async () => {
+  const fs = await import("node:fs")
+  const os = await import("node:os")
+  const path = await import("node:path")
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "designlayer-pages-"))
+  const before = process.env.HOME
+  process.env.HOME = home
+  try {
+    const pages = await import("../runtime/last-pages.mjs")
+    const me = { pid: process.pid, appPort: 4100, projectRoot: "/work/shop", proxyPort: 3456 }
+    const apps = createAppSwitcher({ chooserUrl: null, editors: () => [me] })
+    assert.deepEqual(apps.rememberPage({ appUrl: "http://127.0.0.1:4100", page: "/#/cart" }), { ok: true })
+    assert.equal(pages.lastPage({ port: 4100, projectRoot: "/work/shop" }), "/#/cart")
+    // Another app's page, reported to this editor.
+    assert.deepEqual(apps.rememberPage({ appUrl: "http://127.0.0.1:5173", page: "/#/other" }), { ok: false })
+    // Not a page of this origin.
+    apps.rememberPage({ appUrl: "http://127.0.0.1:4100", page: "//elsewhere.test/" })
+    assert.equal(pages.lastPage({ port: 4100, projectRoot: "/work/shop" }), "/#/cart")
+    // The same port from another project is another app.
+    assert.equal(pages.lastPage({ port: 4100, projectRoot: "/work/docs" }), null)
+  } finally {
+    process.env.HOME = before
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+/*
+ * An editor that fails to start ends the wait with the start screen's own
+ * sentence, in the note and in a toast, and the rows come back. This editor
+ * was never in danger, so nothing navigates.
+ */
+await check("an editor that stops while starting says why, and the rows come back", async () => {
   server.reset()
-  // The POST fails and the proxy keeps answering, which is the combination the
-  // old reading could not see.
+  server.started = [
+    { ok: true, status: 200, body: { ready: false, url: null, stopped: null } },
+    { ok: true, status: 200, body: { ready: false, url: null, stopped: "docs stopped before it was ready." } },
+  ]
+  const ui = await opened(mount(named))
+  press(ui.rows()[1])
+  await sleep(700)
+  assert.deepEqual(navigations, [], "it went to an editor that stopped")
+  assert.equal(ui.note().textContent, "docs stopped before it was ready.")
+  assert.equal(ui.toasts.at(-1).message, "docs stopped before it was ready.")
+  assert.equal(ui.toasts.at(-1).kind, "error")
+  const asked = server.calls.filter((call) => call.url.startsWith(`${API}/apps/started?`)).length
+  await sleep(500)
+  assert.equal(
+    server.calls.filter((call) => call.url.startsWith(`${API}/apps/started?`)).length,
+    asked,
+    "it kept asking after an editor that had stopped"
+  )
+  key("Escape")
+  await opened(ui)
+  assert.deepEqual(
+    ui.rows().map((row) => row.getAttribute("aria-disabled")),
+    [null, null, null]
+  )
+  ui.destroy()
+  server.reset()
+})
+
+/*
+ * The relay refusing the question is final too: its sentence is the reason,
+ * and asking again would get the same answer.
+ */
+await check("a refused status question ends the wait with its sentence", async () => {
+  server.reset()
+  server.started = [{ ok: false, status: 502, body: { ok: false, message: "The start screen did not answer." } }]
+  const ui = await opened(mount(named))
+  press(ui.rows()[1])
+  await settle()
+  assert.deepEqual(navigations, [])
+  assert.equal(ui.note().textContent, "The start screen did not answer.")
+  assert.equal(ui.toasts.at(-1).kind, "error")
+  ui.destroy()
+  server.reset()
+})
+
+/*
+ * A request that fails is a failure. Switching used to kill the editor serving
+ * this page, so a dropped connection was read as the switch taking effect;
+ * nothing kills this editor now, so there is nothing to read into it.
+ */
+await check("a dropped switch request is reported and goes nowhere", async () => {
+  server.reset()
   server.switchUnreachable = true
   const ui = await opened(mount(named))
   press(ui.rows()[1])
@@ -1311,12 +1455,17 @@ await check("a dropped POST over a live proxy is reported, not narrated as a han
 
   assert.deepEqual(navigations, [], "it left the page over a switch that never happened")
   assert.deepEqual(reloads, [])
-  assert.doesNotMatch(ui.note().textContent, /Starting Docs site/, "it narrated a handover anyway")
+  assert.doesNotMatch(ui.note().textContent, /Starting docs/, "it waited for an editor nobody started")
+  assert.equal(
+    server.calls.filter((call) => call.url.startsWith(`${API}/apps/started?`)).length,
+    0,
+    "it polled for an editor nobody started"
+  )
   assert.equal(ui.toasts.at(-1).kind, "error")
   // The sentence names a recovery rather than a status code. `Could not switch
   // apps (502)` was the old one: a number the reader cannot act on, standing in
   // for the sentence that would have told them how.
-  assert.match(ui.note().textContent, /^Could not switch to Docs site\./)
+  assert.match(ui.note().textContent, /^Could not switch to docs\./)
   assert.match(ui.note().textContent, /Try again, or start it from http:\/\/127\.0\.0\.1:3455\//)
   assert.doesNotMatch(ui.note().textContent, /\(\d{3}\)/, "a raw HTTP status reached the reader")
 
@@ -1334,25 +1483,115 @@ await check("a dropped POST over a live proxy is reported, not narrated as a han
 })
 
 /*
- * Every ordinary way of dismissing the menu is something a person does
- * reflexively in the seconds a handover takes, and the menu is holding the only
- * explanation on screen for an app that has stopped responding. So the handover
- * pins it open — but only while it is genuinely in flight; the case above is
- * the other side of that.
+ * This editor keeps running while the other one starts, so the menu holding
+ * the waiting note closes like any menu. The wait goes on behind it, a reopen
+ * shows the note rather than rows that cannot be pressed, and the page still
+ * goes once the editor is ready.
  */
-await check("nothing dismisses the menu while the handover is in flight", async () => {
+await check("the waiting note can be dismissed, and the page still goes when ready", async () => {
   server.reset()
-  server.switchUnreachable = true
   const ui = await opened(mount(named))
-  server.appsUnreachable = true
   press(ui.rows()[1])
   await settle()
+  assert.match(ui.note().textContent, /Starting docs/)
 
   key("Escape")
-  pointerDownOn(window.document.body)
-  window.dispatchEvent(new window.Event("blur"))
-  assert.notEqual(ui.menu.style.display, "none", "Escape or a stray click took the explanation away")
-  assert.match(ui.note().textContent, /Starting Docs site/)
+  assert.equal(ui.menu.style.display, "none", "Escape did not close a menu over a working editor")
+  await opened(ui)
+  assert.deepEqual(ui.rows(), [], "a reopen during the wait offered rows that cannot be pressed")
+  assert.match(ui.note().textContent, /Starting docs/)
+  pointerDownOn(window.document.getElementById("app"))
+  assert.equal(ui.menu.style.display, "none")
+
+  server.started = [{ ok: true, status: 200, body: { ready: true, url: "http://localhost:3458/", stopped: null } }]
+  await sleep(600)
+  assert.deepEqual(navigations, ["http://localhost:3458/"], "a closed menu gave up the wait")
+  ui.destroy()
+  server.reset()
+})
+
+/*
+ * The wait is long and its note can be dismissed, so the designer keeps
+ * editing through it. A page that went the moment the editor was ready took
+ * those edits with it, on a click made before they existed. So readiness asks
+ * again: with work outstanding the page stays, and the ready editor waits in
+ * the menu as a row behind the same two-step every other row uses.
+ */
+const READY_GUIDE = [{ ok: true, status: 200, body: { ready: true, url: "http://127.0.0.1:3458/#/guide", stopped: null } }]
+
+/** Starts docs, edits during the wait, and lets the editor come up. */
+async function heldReady(lane = named, { closeFirst = false } = {}) {
+  const ui = await opened(mount(lane))
+  press(ui.rows()[1])
+  await settle()
+  if (closeFirst) key("Escape")
+  ui.setPending(true)
+  server.started = clone(READY_GUIDE)
+  await sleep(600)
+  return ui
+}
+
+await check("edits made during the wait keep the page, and the ready editor waits in the menu", async () => {
+  server.reset()
+  const ui = await heldReady()
+  assert.deepEqual(navigations, [], "the page went and took the edits made during the wait")
+  const told = ui.toasts.at(-1)
+  assert.equal(told.kind, "info")
+  assert.equal(told.message.title, "docs is ready")
+  assert.equal(told.message.description, "It did not open, so your unapplied changes are still here.")
+  assert.equal(told.action?.label, "Open")
+  assert.equal(ui.note().textContent, "docs is ready. It did not open, so your unapplied changes are still here.")
+
+  const row = ui.menu.querySelector(".de-app-menu-row--ready")
+  assert.ok(row, "the menu does not offer the ready editor")
+  assert.equal(ui.rows()[0], row, "the ready editor does not lead the card")
+  assert.equal(row.getAttribute("aria-label"), "Open docs, which is ready")
+  assert.equal(row.querySelector(".de-app-menu-where").textContent, "Ready")
+  // It stands in for docs' own row; the rest of the list stays pressable.
+  assert.deepEqual(
+    ui.rows().slice(1).map((other) => other.querySelector(".de-app-menu-name").textContent),
+    ["shop", "sketch"]
+  )
+  assert.ok(ui.rows().every((other) => other.getAttribute("aria-disabled") === null))
+
+  press(row)
+  await settle()
+  assert.deepEqual(navigations, [], "the ready editor opened on one click over unapplied edits")
+  assert.match(row.querySelector(".de-app-menu-where").textContent, /^Discards \d+ unapplied change/)
+  assert.match(ui.toasts.at(-1).message.title, /^Switching discards \d+ unapplied change/)
+  press(row)
+  await settle()
+  assert.deepEqual(navigations, ["http://localhost:3458/#/guide"])
+  ui.destroy()
+  server.reset()
+})
+
+await check("the toast's Open opens the menu onto the ready editor and arms it", async () => {
+  server.reset()
+  const ui = await heldReady(named, { closeFirst: true })
+  assert.equal(ui.menu.style.display, "none")
+  assert.deepEqual(navigations, [])
+
+  ui.toasts.at(-1).action.onClick()
+  await settle()
+  assert.equal(ui.menu.style.display, "block", "Open did not show the menu")
+  const row = ui.menu.querySelector(".de-app-menu-row--ready")
+  assert.ok(row.classList.contains("de-app-menu-row--danger"), "Open did not arm the row")
+  assert.deepEqual(navigations, [], "Open discarded the edits without the second press")
+  press(row)
+  await settle()
+  assert.deepEqual(navigations, ["http://localhost:3458/#/guide"])
+  ui.destroy()
+  server.reset()
+})
+
+await check("a ready editor goes on one click once the edits are applied", async () => {
+  server.reset()
+  const ui = await heldReady()
+  ui.setPending(false)
+  press(ui.menu.querySelector(".de-app-menu-row--ready"))
+  await settle()
+  assert.deepEqual(navigations, ["http://localhost:3458/#/guide"], "it asked a question with nothing to lose")
   ui.destroy()
   server.reset()
 })
@@ -1426,7 +1665,7 @@ await check("the rows refuse a second choice without dropping the reader's place
   // note now, which is a stronger version of the same promise than three
   // disabled rows would be.
   assert.deepEqual(ui.rows(), [], "the list survived a switch it had already accepted")
-  assert.match(ui.note().textContent, /Starting Docs site/)
+  assert.match(ui.note().textContent, /Starting docs/)
   ui.destroy()
   server.reset()
 })
@@ -1449,7 +1688,7 @@ await check("the rows refuse a second choice without dropping the reader's place
  * the row keeps its name and its element count while the phrase is up, and the
  * sheet holds the slot to one line (see the stylesheet cases at the end).
  */
-await check("the row says it is switching where it said its port, and does not measure itself", async () => {
+await check("the row says it is starting where it said its port, and does not measure itself", async () => {
   server.reset()
   let release = () => {}
   server.gate = new Promise((resolve) => (release = resolve))
@@ -1459,14 +1698,15 @@ await check("the row says it is switching where it said its port, and does not m
   press(chosen)
 
   assert.equal(chosen.getAttribute("data-de-switching"), "")
-  assert.equal(chosen.querySelector(".de-app-menu-where").textContent, "Switching\u2026")
+  // The picked app gets an editor of its own; nothing here is switched off.
+  assert.equal(chosen.querySelector(".de-app-menu-where").textContent, "Starting\u2026")
   // One word, because the slot takes its width out of the name beside it and a
   // phrase long enough to push a long name onto a second line would move the
   // card exactly as the old wrapping url did.
   assert.equal(chosen.querySelector(".de-app-menu-where").textContent.split(/\s+/).length, 1)
   // Still the same row, saying which app it is: the reader has to be able to
   // see WHAT is being handed over, not just that something is.
-  assert.equal(chosen.querySelector(".de-app-menu-name").textContent, "Docs site")
+  assert.equal(chosen.querySelector(".de-app-menu-name").textContent, "docs")
   assert.equal(chosen.childElementCount, 2, "the handover grew the row a line of its own")
   assert.equal(chosen.style.minHeight, "", "the row measured itself to hold a height it cannot change")
 
@@ -1545,6 +1785,8 @@ await check("a listed app is cut down to the keys the contract promises", async 
   assert.deepEqual(Object.keys(apps[0]).sort(), [
     "kind",
     "packageName",
+    // Where a switch to it lands; filled by this side, not the start screen.
+    "page",
     "port",
     "projectRoot",
     "target",
@@ -1672,15 +1914,17 @@ await check("a refusal from the screen arrives in its own words and its own stat
 
 await check("an accepted switch is one POST to the screen's own start route", async () => {
   server.reset()
-  server.chooser = { ok: true, status: 200, body: { ok: true } }
+  server.chooser = { ok: true, status: 200, body: { ok: true, id: "e2", existing: false, replaced: null } }
   const apps = createAppSwitcher({ chooserUrl: CHOOSER, editors: () => [] })
+  // The id is kept: it is the only way the page can ask when that editor is
+  // ready.
   assert.deepEqual(
     await apps.switchTo({
       url: "  http://127.0.0.1:4200  ",
       projectRoot: " /work/docs ",
       devScript: "dev",
     }),
-    { ok: true }
+    { ok: true, id: "e2", existing: false }
   )
   assert.equal(server.calls.length, 1)
   assert.equal(server.calls[0].url, `${CHOOSER}api/start`)
@@ -1704,6 +1948,59 @@ await check("an accepted switch is one POST to the screen's own start route", as
     url: "http://127.0.0.1:4200",
     projectRoot: "/work/docs",
   })
+
+  // An app whose editor already runs comes back as that editor.
+  server.chooser = { ok: true, status: 200, body: { ok: true, id: "e1", existing: true, replaced: null } }
+  assert.deepEqual(
+    await apps.switchTo({ url: "http://127.0.0.1:4200", projectRoot: "/work/docs" }),
+    { ok: true, id: "e1", existing: true }
+  )
+})
+
+/*
+ * `started` relays the start screen's per-editor status, cut down to the three
+ * keys the page reads. The id goes in the query, encoded.
+ */
+await check("asking whether an editor started relays the screen's status for that id", async () => {
+  server.reset()
+  server.chooser = {
+    ok: true,
+    status: 200,
+    body: { ready: true, url: "http://localhost:3458/#/guide", editing: { name: "docs" }, stopped: null },
+  }
+  const apps = createAppSwitcher({ chooserUrl: CHOOSER, editors: () => [] })
+  assert.deepEqual(await apps.started("e 2"), { ready: true, url: "http://localhost:3458/#/guide", stopped: null })
+  assert.equal(server.calls[0].url, `${CHOOSER}api/status?id=e+2`)
+  assert.equal(server.calls[0].method, "GET")
+
+  // An id the screen no longer knows is a 200 with a sentence, so the page stops.
+  server.chooser = { ok: true, status: 200, body: { ready: false, editing: null, stopped: "That editor is not running." } }
+  assert.deepEqual(await apps.started("gone"), { ready: false, url: null, stopped: "That editor is not running." })
+})
+
+await check("asking whether an editor started is refused with a reason when it cannot be answered", async () => {
+  server.reset()
+  const refusedWith = (promise) => promise.then(() => null, (thrown) => thrown)
+  const apps = createAppSwitcher({ chooserUrl: CHOOSER, editors: () => [] })
+
+  const noId = await refusedWith(apps.started(""))
+  assert.equal(noId.statusCode, 400)
+  assert.deepEqual(server.calls, [], "a request with no id cost a round trip")
+
+  const noScreen = await refusedWith(createAppSwitcher({ chooserUrl: null, editors: () => [] }).started("e2"))
+  assert.equal(noScreen.statusCode, 409)
+  assert.ok(readsAsASentence(noScreen.message))
+
+  server.chooserUnreachable = true
+  const gone = await refusedWith(apps.started("e2"))
+  assert.equal(gone.statusCode, 502)
+  assert.ok(readsAsASentence(gone.message))
+  server.chooserUnreachable = false
+
+  server.chooser = { ok: false, status: 500, body: {} }
+  const broken = await refusedWith(apps.started("e2"))
+  assert.equal(broken.statusCode, 502)
+  assert.ok(readsAsASentence(broken.message))
 })
 
 /*
@@ -1771,7 +2068,7 @@ console.log("\nSwitching to an editor that is already running")
  * had to be rebuilt.
  *
  * It was written against the start screen: a supervisor keeps one alive, it
- * scans for apps, and switching means asking it to kill this editor and spawn
+ * scans for apps, and switching meant asking it to kill this editor and spawn
  * the next. That is a real way to run the editor. It is not the common one. The
  * common one is several editors, each started on its own against an app that
  * was already up, each with its ports pinned so they coexist — and in that
@@ -1780,8 +2077,8 @@ console.log("\nSwitching to an editor that is already running")
  *
  * A row backed by a live editor is a different and much better thing than an
  * app row. The destination is already serving, so switching is a NAVIGATION:
- * nothing is killed, nothing is started, no handover is waited out, and nothing
- * queued in this tab is at risk, because this tab is not the one being replaced.
+ * nothing is started and nothing is waited for. This document still ends, so
+ * unapplied work arms the row like any other.
  */
 const EDITOR_ROW = {
   kind: "editor",
@@ -1803,10 +2100,10 @@ await check("an app with an editor of its own is offered, with no start screen i
   assert.equal(ui.note(), null, "it still claimed there was nothing to switch to")
   const rows = ui.rows()
   assert.equal(rows.length, 1)
-  assert.equal(rows[0].querySelector(".de-app-menu-name").textContent, "shop-admin")
+  assert.equal(rows[0].querySelector(".de-app-menu-name").textContent, "shop")
   assert.equal(rows[0].getAttribute("aria-disabled"), null)
   // The two kinds of row are no longer the same row with different plumbing.
-  // One moves the page; the other asks a supervisor to kill this editor, and
+  // One moves the page; the other asks a supervisor to start an editor, and
   // the reader has to be able to tell them apart before pressing either.
   //
   // A MARK rather than the clause that used to say it. `editor already running`
@@ -1836,41 +2133,76 @@ await check("clicking it moves the page, with no process swapped anywhere", asyn
   server.apps = { chooser: true, apps: [clone(EDITOR_ROW)] }
   const ui = mount(ghost)
   await opened(ui)
-  const before = server.calls.filter((call) => call.method === "POST").length
+  const before = server.calls.filter((call) => call.method === "POST" && call.url === `${API}/apps/switch`).length
 
   press(ui.rows()[0])
   await settle()
-  assert.deepEqual(navigations, ["http://127.0.0.1:3464"], "it did not go to the other editor")
+  // The registry may say 127.0.0.1; an app may branch on its host name, so
+  // every editor opens on localhost. A row with no page known opens the root.
+  assert.deepEqual(navigations, ["http://localhost:3464/"], "it did not go to the other editor")
   assert.equal(
-    server.calls.filter((call) => call.method === "POST").length,
+    server.calls.filter((call) => call.method === "POST" && call.url === `${API}/apps/switch`).length,
     before,
     "a navigation asked the server to swap processes as well"
   )
-  // No handover: nothing here is being torn down, so there is nothing to narrate
-  // and no reload to wait for.
+  // Nothing to start, so nothing to wait for.
   assert.deepEqual(reloads, [])
+  assert.equal(server.calls.filter((call) => call.url.startsWith(`${API}/apps/started?`)).length, 0)
   ui.destroy()
   server.reset()
 })
 
 /*
- * It goes on the first click even with a column of unapplied edits behind it,
- * and that is a deliberate asymmetry rather than an oversight.
- *
- * The document ends either way, so the queues end either way — that much is the
- * same as the app row. What is not the same is the way back: the editor this
- * lands on lists the one it came from, so a misaimed click is undone by one
- * press of the same control, whereas a handover that never completes leaves no
- * control at all. The confirm is spent on the irreversible one.
+ * The row lands on the page its app was last used on. Its bare proxy root is
+ * the template's shared home page, which looks like a different app.
  */
-await check("an editor row goes on one click even with work outstanding", async () => {
+await check("an editor row lands on its app's last page, not the root", async () => {
+  server.reset()
+  server.apps = { chooser: true, apps: [{ ...clone(EDITOR_ROW), page: "/#/orders?tab=open" }] }
+  const ui = await opened(mount(ghost))
+  press(ui.rows()[0])
+  await settle()
+  assert.deepEqual(navigations, ["http://localhost:3464/#/orders?tab=open"])
+  ui.destroy()
+  server.reset()
+  // Anything that is not a path on that origin is dropped for the root.
+  assert.equal(ghost.editorAddress("http://127.0.0.1:3464", "//elsewhere.test/"), "http://localhost:3464/")
+  assert.equal(ghost.editorAddress("http://127.0.0.1:3464/", "/#/a"), "http://localhost:3464/#/a")
+  assert.equal(ghost.editorAddress("http://127.0.0.1:3464", null), "http://localhost:3464/")
+})
+
+/*
+ * Going to another editor unloads this document, and the unapplied work goes
+ * with it, exactly as for an app row. So with work outstanding the first press
+ * arms and the second goes. The way back reaches the editor, not the edits,
+ * which is why this row no longer skips the confirm.
+ */
+await check("an editor row arms with work outstanding, and goes on the second press", async () => {
   server.reset()
   server.apps = { chooser: true, apps: [clone(EDITOR_ROW)] }
   const ui = mount(ghost, { pending: true })
   await opened(ui)
+  const row = ui.rows()[0]
+  press(row)
+  await settle()
+  assert.deepEqual(navigations, [], "a session holding unapplied edits left on one click")
+  assert.match(row.querySelector(".de-app-menu-where").textContent, /^Discards \d+ unapplied change/)
+  assert.match(row.getAttribute("aria-label"), /will be lost/)
+  assert.match(ui.toasts.at(-1).message.title, /discards \d+ unapplied change/)
+  press(row)
+  await settle()
+  assert.deepEqual(navigations, ["http://localhost:3464/"], "the second press did not go")
+  ui.destroy()
+  server.reset()
+})
+
+await check("an editor row goes on one click when nothing is pending", async () => {
+  server.reset()
+  server.apps = { chooser: true, apps: [clone(EDITOR_ROW)] }
+  const ui = await opened(mount(ghost))
   press(ui.rows()[0])
   await settle()
-  assert.deepEqual(navigations, ["http://127.0.0.1:3464"], "it asked a question instead of going")
+  assert.deepEqual(navigations, ["http://localhost:3464/"], "it asked a question with nothing to lose")
   ui.destroy()
   server.reset()
 })
@@ -1897,7 +2229,7 @@ await check("a row whose editor died between the refresh and the click goes nowh
   // read time is exactly what makes the drawn row stale in the first place.
   const live = serve
   globalThis.fetch = window.fetch = async (input, init) => {
-    if (String(input) === "http://127.0.0.1:3464") throw new Error("Failed to fetch")
+    if (/^http:\/\/(127\.0\.0\.1|localhost):3464\b/.test(String(input))) throw new Error("Failed to fetch")
     return live(input, init)
   }
   server.apps = { chooser: true, apps: [] }
@@ -1907,7 +2239,7 @@ await check("a row whose editor died between the refresh and the click goes nowh
 
   assert.deepEqual(navigations, [], "the page went to an editor that is not there")
   assert.equal(ui.toasts.at(-1).kind, "error")
-  assert.match(ui.toasts.at(-1).message, /shop-admin is no longer running\./)
+  assert.match(ui.toasts.at(-1).message, /shop is no longer running\./)
   // And the list went back for a fresh answer rather than leaving a row the
   // reader has just been told is dead sitting there to be pressed again.
   assert.deepEqual(ui.rows(), [], "the stale row survived the probe that killed it")
@@ -1934,9 +2266,232 @@ await check("an editor row with no project folder is still somewhere to go", asy
   assert.equal(row.querySelector(".de-app-menu-where").textContent, "4200", "it reported a missing folder")
   press(row)
   await settle()
-  assert.deepEqual(navigations, ["http://127.0.0.1:3464"])
+  assert.deepEqual(navigations, ["http://localhost:3464/"])
   ui.destroy()
   server.reset()
+})
+
+// ── Inside the Mac app ─────────────────────────────────────────────────────
+
+console.log("\nGoing from one of the Mac app's tabs")
+
+/*
+ * Inside the Mac app every editor has or gets its own tab. A frame that
+ * navigated itself to another editor put a second copy of it in the window,
+ * and the vendor's socket takes one client, so the copy disconnected the tab
+ * already showing it. The frame asks the desk instead, on the desk's own
+ * origin, and stays where it is.
+ */
+async function inDeskFrame(fn) {
+  const before = window.name
+  window.name = "designlayer-desk:1"
+  try {
+    await fn()
+  } finally {
+    window.name = before
+  }
+}
+
+await check("in the Mac app an editor row asks the desk to show it, and does not navigate", () =>
+  inDeskFrame(async () => {
+    server.reset()
+    server.apps = { chooser: true, apps: [{ ...clone(EDITOR_ROW), page: "/#/orders" }] }
+    const ui = await opened(mount(inDesk))
+    deskPosts.length = 0
+    press(ui.rows()[0])
+    await settle()
+    assert.deepEqual(navigations, [], "the frame navigated itself inside the desk")
+    assert.deepEqual(
+      deskPosts.filter((post) => post.message?.type === "designlayer-desk:go"),
+      [{ message: { type: "designlayer-desk:go", url: "http://localhost:3464/#/orders" }, origin: DESK }]
+    )
+    // The frame stays, so the control is back at rest rather than dead.
+    assert.equal(ui.menu.style.display, "none")
+    await opened(ui)
+    assert.equal(ui.rows()[0].getAttribute("aria-disabled"), null, "the rows stayed dead in a frame that did not leave")
+    ui.destroy()
+    server.reset()
+  })
+)
+
+await check("in the Mac app a started editor is handed to the desk when ready", () =>
+  inDeskFrame(async () => {
+    server.reset()
+    server.started = [{ ok: true, status: 200, body: { ready: true, url: "http://127.0.0.1:3458/#/guide", stopped: null } }]
+    const ui = await opened(mount(inDesk))
+    deskPosts.length = 0
+    press(ui.rows()[1])
+    await settle()
+    assert.deepEqual(navigations, [])
+    assert.deepEqual(
+      deskPosts.filter((post) => post.message?.type === "designlayer-desk:go").map((post) => post.message.url),
+      ["http://localhost:3458/#/guide"]
+    )
+    ui.destroy()
+    server.reset()
+  })
+)
+
+/*
+ * In a browser tab nothing is posted: the same lane with no desk frame name
+ * navigates, so a page opened outside the app is unchanged.
+ */
+await check("outside the Mac app the same session navigates and posts nothing", async () => {
+  server.reset()
+  server.apps = { chooser: true, apps: [clone(EDITOR_ROW)] }
+  const ui = await opened(mount(inDesk))
+  deskPosts.length = 0
+  press(ui.rows()[0])
+  await settle()
+  assert.deepEqual(navigations, ["http://localhost:3464/"])
+  assert.deepEqual(deskPosts.filter((post) => post.message?.type === "designlayer-desk:go"), [])
+  ui.destroy()
+  server.reset()
+})
+
+/*
+ * Inside the app going never unloads this document: the desk selects the tab
+ * that shows the other editor, or opens a new one. So there is nothing for a
+ * row to warn about, and a "Discards" step would be a second click that saves
+ * nothing.
+ */
+const deskGoes = () =>
+  deskPosts.filter((post) => post.message?.type === "designlayer-desk:go").map((post) => post.message.url)
+
+await check("in the Mac app no row arms, because this tab stays", () =>
+  inDeskFrame(async () => {
+    server.reset()
+    server.apps = { chooser: true, apps: [clone(EDITOR_ROW)] }
+    const editorRow = await opened(mount(inDesk, { pending: true }))
+    press(editorRow.rows()[0])
+    await settle()
+    assert.deepEqual(deskGoes(), ["http://localhost:3464/"], "an editor row armed inside the app")
+    assert.ok(!editorRow.toasts.some((toast) => /discards/i.test(toast.message?.title ?? "")))
+    editorRow.destroy()
+
+    server.reset()
+    const appRow = await opened(mount(inDesk, { pending: true }))
+    press(appRow.rows()[1])
+    await settle()
+    assert.equal(
+      server.calls.filter((call) => call.method === "POST" && call.url === `${API}/apps/switch`).length,
+      1,
+      "an app row armed inside the app"
+    )
+    assert.doesNotMatch(appRow.rows()[1]?.querySelector(".de-app-menu-where")?.textContent ?? "", /Discards/)
+    appRow.destroy()
+    server.reset()
+  })
+)
+
+await check("in the Mac app edits made during the wait never hold the go", () =>
+  inDeskFrame(async () => {
+    server.reset()
+    const ui = await heldReady(inDesk)
+    assert.deepEqual(deskGoes(), ["http://localhost:3458/#/guide"], "the desk was not asked to show the ready editor")
+    assert.deepEqual(navigations, [])
+    assert.equal(ui.menu.querySelector(".de-app-menu-row--ready"), null)
+    ui.destroy()
+    server.reset()
+  })
+)
+
+// ── Which parent is the desk ───────────────────────────────────────────────
+
+console.log("\nOnly the desk is told anything")
+
+/**
+ * Runs `fn` as a frame of `origin` with the frame name `name`, the way Chrome
+ * reports a parent: `location.ancestorOrigins`, nearest first.
+ */
+async function framedBy(origin, name, fn) {
+  const before = window.name
+  fakeLocation.ancestorOrigins = {
+    length: 1,
+    0: origin,
+    item: (index) => (index === 0 ? origin : null),
+    contains: (candidate) => candidate === origin,
+  }
+  window.name = name
+  try {
+    await fn()
+  } finally {
+    window.name = before
+    fakeLocation.ancestorOrigins = undefined
+  }
+}
+
+const deskMessages = () => deskPosts.filter((post) => String(post.message?.type).startsWith("designlayer-desk:"))
+
+/*
+ * Any page can frame an editor and name the frame the way the desk does. A
+ * check on the name alone posted the app's name and the page path to that
+ * page's origin. The parent's origin, which the browser reports and a page
+ * cannot forge, decides.
+ */
+await check("a page that frames the editor and names the frame like the desk is told nothing", () =>
+  framedBy("https://example.com", "designlayer-desk:x", async () => {
+    server.reset()
+    server.apps = { chooser: true, apps: [clone(EDITOR_ROW)] }
+    const ui = await opened(mount(inDesk, { pending: true }))
+    assert.deepEqual(deskMessages(), [], "the app's name and page went to a page that is not the desk")
+    // To everyone else this is a browser tab, so the row arms and then navigates.
+    press(ui.rows()[0])
+    await settle()
+    assert.match(ui.rows()[0].querySelector(".de-app-menu-where").textContent, /^Discards/)
+    press(ui.rows()[0])
+    await settle()
+    assert.deepEqual(navigations, ["http://localhost:3464/"])
+    assert.deepEqual(deskMessages(), [])
+    ui.destroy()
+    server.reset()
+  })
+)
+
+await check("another loopback port is not the desk either", () =>
+  framedBy("http://localhost:3999", "designlayer-desk:1", async () => {
+    server.reset()
+    const ui = mount(inDesk)
+    assert.deepEqual(deskMessages(), [])
+    ui.destroy()
+    server.reset()
+  })
+)
+
+/*
+ * The desk moved from 127.0.0.1 to localhost. An editor whose prelude names
+ * one spelling still talks to a desk window opened on the other until the app
+ * is reinstalled, and each message goes to the origin the parent is actually
+ * on.
+ */
+await check("the desk on either loopback spelling is the desk", async () => {
+  await framedBy(NEW_DESK, "designlayer-desk:1", async () => {
+    server.reset()
+    server.apps = { chooser: true, apps: [clone(EDITOR_ROW)] }
+    const ui = await opened(mount(inDesk))
+    assert.deepEqual(deskMessages()[0], {
+      message: { type: "designlayer-desk:showing", name: "shop-web", page: "/" },
+      origin: NEW_DESK,
+    })
+    press(ui.rows()[0])
+    await settle()
+    assert.deepEqual(deskMessages().at(-1), {
+      message: { type: "designlayer-desk:go", url: "http://localhost:3464/" },
+      origin: NEW_DESK,
+    })
+    assert.deepEqual(navigations, [])
+    ui.destroy()
+    server.reset()
+  })
+  // A prelude already on the new desk, in a window still on the old one. The
+  // frame name does not matter once the parent's origin is known.
+  await framedBy(DESK, "", async () => {
+    server.reset()
+    const ui = mount(inNewDesk)
+    assert.deepEqual(deskMessages().map((post) => post.origin), [DESK])
+    ui.destroy()
+    server.reset()
+  })
 })
 
 // ── Opening without waiting ────────────────────────────────────────────────
@@ -1964,7 +2519,7 @@ await check("a menu that has seen an answer opens straight onto it", async () =>
   ui.destroy()
 
   // A second control, standing in for the next open — and for the open right
-  // after an app switch, which is a reload and therefore a fresh module graph
+  // after an app switch, which is a new document and therefore a fresh module graph
   // with nothing in memory. The bank is localStorage, so both are warm.
   const warm = mount(named)
   press(warm.trigger)
@@ -1996,7 +2551,7 @@ await check("it still asks, and a list that really changed is redrawn", async ()
   press(ui.trigger)
   await settle()
   const names = ui.rows().map((row) => row.querySelector(".de-app-menu-name").textContent)
-  assert.ok(names.includes("brand-new"), `the refresh never landed: ${names.join(", ")}`)
+  assert.ok(names.includes("new"), `the refresh never landed: ${names.join(", ")}`)
   assert.ok(
     server.calls.some((call) => call.method === "GET" && call.url === `${API}/apps`),
     "it opened warm and never went to check"
@@ -2345,7 +2900,7 @@ await check("the sentence lands in a node that was already there to announce it"
     "the live region was replaced along with the rows, which is what made it silent"
   )
   assert.equal(region.firstElementChild, ui.note())
-  assert.match(region.textContent, /Starting Docs site/)
+  assert.match(region.textContent, /Starting docs/)
   ui.destroy()
   server.reset()
 })
