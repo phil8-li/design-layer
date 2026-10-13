@@ -633,9 +633,18 @@ export function shellPage({ repoRoot }) {
       metaKey: ev.metaKey, ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, altKey: ev.altKey }, origin)
   }
   $("newTab").onclick = newHome
+  // The frame is replaced, not given its src again. Apps route by hash
+  // (http://localhost:3462/#/page), and a src that differs from the frame's
+  // page only after the # is a same-document navigation: the button did
+  // nothing. A new iframe always loads the page in full. The page is the one
+  // the editor last reported (DESK_SHOWING_MESSAGE), so the reload stays on it.
   $("reload").onclick = () => {
-    const f = framesEl.querySelector('iframe[data-id="' + active + '"]'); const t = tabs.find((x) => x.id === active)
-    if (f && t) f.src = tabUrl(t) || f.src
+    const t = tabs.find((x) => x.id === active)
+    const f = framesEl.querySelector('iframe[data-id="' + active + '"]')
+    if (!t || !f) return
+    t.stale = false
+    f.remove()
+    syncFrames()
   }
   $("pickFolder").onclick = async () => {
     try {

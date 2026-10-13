@@ -1283,6 +1283,35 @@ await check("Open in Mac app for a second editor opens its own tab, and a tab em
 })
 
 /*
+ * Found in the real app: the reload button set the frame's src to the page it
+ * already showed. Apps route by hash, and a src that differs only after the #
+ * is a same-document navigation, so the prototype never reloaded.
+ */
+await check("the reload button loads the active tab's page in a new frame and leaves the other tabs alone", async () => {
+  const d = await multiDesk({
+    tabs: [tabOn("a", SHOP, { src: "http://localhost:4101/#/cart" }), tabOn("b", DOCS)],
+    active: "a",
+    lists: [[SHOP, DOCS]],
+  })
+  try {
+    const old = d.frame("a"), other = d.frame("b")
+    // The editor reports a page change inside the app after the tab loaded.
+    d.say("a", { type: "designlayer-desk:showing", name: "shop", page: "/#/checkout" }, "http://localhost:4101")
+    d.doc.getElementById("reload").click()
+    const fresh = d.frame("a")
+    assert.notEqual(fresh, old, "the frame was only given its src again, which a hash route ignores")
+    assert.equal(old.isConnected, false)
+    assert.equal(fresh.src, "http://localhost:4101/#/checkout", "the reload left the page the editor was on")
+    assert.equal(fresh.hidden, false)
+    assert.equal(fresh.name, "designlayer-desk:a")
+    assert.equal(d.frame("b"), other, "another tab was reloaded")
+    assert.equal(d.doc.querySelectorAll('iframe[data-id="a"]').length, 1)
+  } finally {
+    d.close()
+  }
+})
+
+/*
  * The editor is a cross-origin frame in the app, so a key typed while focus is
  * in the shell — on the strip after a click on a tab, or after the frame
  * reloaded — never reaches it. ⌘. is how a hidden editor comes back, and it
