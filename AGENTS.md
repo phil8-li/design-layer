@@ -32,6 +32,13 @@ Run `npm run build && npm test` before saying a change works. Four suites
 `SKIPPED — no host app found` on a clean clone. That is expected; do not point
 `DESIGNLAYER_HOST` at another app to un-skip them.
 
+The Mac app is its own surface. Its window loads the desk page at
+`http://localhost:3454`, which frames the start screen and the editors, served
+by the checkout its LaunchAgent names (`WorkingDirectory` in the plist that
+`node desktop/mac/install.mjs --status` prints). After a change to UI the app
+shows, open `http://localhost:3454` and check the change there as well as in a
+browser tab before you say it works.
+
 ## Map
 
 | Path | Owns |
