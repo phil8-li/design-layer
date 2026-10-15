@@ -67,7 +67,8 @@ rounded:
   shot: 14px
   frame: 20px
   tweak: 8px
-  thumb: 6px
+  wheel-frame: 6px
+  thumb: 4px
   sticker: 0.175em
 spacing:
   wrap: 1120px
@@ -148,7 +149,7 @@ components:
   color-wheel-frame:
     backgroundColor: "{colors.primary}"
     width: 24px
-    rounded: "{rounded.thumb}"
+    rounded: "{rounded.wheel-frame}"
   slider-track:
     height: 40px
     rounded: "{rounded.tweak}"
@@ -246,8 +247,9 @@ Source: `landing/styles.css:56-59`, `:611`, `:2804` and `:2863` (8px),
 - `control` 10px: buttons. `shot` 14px: product shots. `frame` 20px: a framed
   shot or card, equal to `shot` plus the 6px `frame-inset`, so the two corners
   are concentric.
-- `tweak` 8px and `thumb` 6px: the footer inspector's wheel and sliders; the
-  thumb is inset 4px, so its corner runs parallel to the track's.
+- `tweak` 8px, `wheel-frame` 6px, and `thumb` 4px: the footer inspector's wheel
+  and sliders. The thumb is inset 4px, so its corner runs parallel to the
+  track's.
 - `sticker` 0.175em: the brand mark's 7/32 corner at the 0.8em sticker size.
   The pill's radius is `sticker` + ring (0.05em) + gap (0.17em).
 
@@ -316,6 +318,9 @@ and the check that enforces it when one exists.
    broken-ref or contrast warnings.
 5. Run `node landing/check.mjs --only static`. Add a static check there when a
    rule can be tested cheaply.
+6. Run `node test/design-md-cases.mjs`: it fails when a frontmatter value
+   differs from `styles.css` or has no row in its mapping table. A new token
+   gets a row there.
 
 ## Known Gaps
 
@@ -325,6 +330,10 @@ and the check that enforces it when one exists.
   the clamp's maximum (the full clamp is in Typography), and `gutter` and
   `section` keep the clamp as a string.
 - `rounded.frame` is the computed value of `calc(var(--radius-shot) + var(--frame-inset))`.
+- `rounded.thumb` is the computed value of `calc(8px - var(--inset))`, 4px,
+  which keeps the thumb's corner parallel to the 8px track. The slider rule
+  below says "6px corners"; that number and the parallel corner cannot both
+  hold, so the rule waits on Phil.
 - The linter accepts `color-mix()` only in srgb, so `pill`, `pill-hover` and
   `pill-active` hold the sRGB result of the stylesheet's oklab mix
   (`styles.css:609`, `:690`, `:695`). Recompute them when `--accent-fill`

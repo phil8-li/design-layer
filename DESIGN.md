@@ -439,9 +439,9 @@ and the check that enforces it when one exists.
    in place instead of adding a second one.
 4. Run `npx -y @google/design.md lint DESIGN.md`. Keep 0 errors and no
    broken-ref or contrast warnings.
-5. Run `npm run build && npm test`; for token edits also check
-   `npx -y @google/design.md export --format css-vars DESIGN.md` against
-   `themeDeclarations()` in `tokens.ts`.
+5. Run `node test/design-md-cases.mjs`: it fails when a frontmatter value
+   differs from `tokens.ts` or has no row in its mapping table. A new token
+   gets a row there. Then run `npm run build && npm test`.
 
 ## Known Gaps
 
