@@ -947,18 +947,26 @@ async function canvasCases(window) {
     $("bar").dispatchEvent(
       new window.MouseEvent("contextmenu", { bubbles: true, clientX: 10, clientY: 10 })
     )
-    const menu = window.document.querySelector(".de-layer-menu")
-    const rows = Array.from(menu.querySelectorAll(".de-layer-menu-row"))
+    // The stack is the context menu's "Select layer" submenu now, Figma's
+    // place for it, so ArrowRight opens it before its rows are read.
+    const menu = window.document.querySelector(".de-ctx-menu")
     assert.equal(menu.style.display, "block")
     assert.equal(menu.style.left, "248px")
+    window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }))
+    const submenu = window.document.querySelector(".de-ctx-submenu")
+    const rows = Array.from(submenu.querySelectorAll(".de-layer-menu-row"))
     assert.equal(rows[0].textContent, "Page")
     // The icon is the deepest row now. It has no component boundary of its own
-    // in this fixture, so it reads by tag, the same as any unnamed layer.
+    // in this fixture, so it reads by its id, and the tag stays in the tip.
     assert.equal(rows.at(-2).textContent, "IconButton")
-    assert.equal(rows.at(-1).textContent, "svg")
+    assert.equal(rows.at(-1).textContent, "icon")
+    assert.equal(rows.at(-1).title, "icon · svg")
     assert.equal(window.document.activeElement, rows[0])
     window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "End", bubbles: true }))
     assert.equal(window.document.activeElement, rows.at(-1))
+    // The first Escape closes the submenu, the second the menu.
+    window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
+    assert.equal(submenu.style.display, "none")
     window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
     assert.equal(menu.style.display, "none")
     assert.equal(window.document.activeElement, invoker)
@@ -979,7 +987,9 @@ async function canvasCases(window) {
     $("bar").dispatchEvent(
       new window.MouseEvent("contextmenu", { bubbles: true, clientX: 10, clientY: 10 })
     )
-    const menu = window.document.querySelector(".de-layer-menu")
+    const menu = window.document.querySelector(".de-ctx-menu")
+    // Into the Select layer submenu first: End on the top level is Delete.
+    window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }))
     window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "End", bubbles: true }))
     window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
     assert.equal(menu.style.display, "none")

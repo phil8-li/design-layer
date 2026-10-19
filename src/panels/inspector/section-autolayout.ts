@@ -1,14 +1,14 @@
 /**
- * Auto layout — Figma's stack panel, expressed as CSS flexbox.
+ * Auto layout — Figma's stack panel, expressed as CSS flexbox and grid.
+ *
+ * Every row sits on `propRow`, Figma's `1fr 1fr 24px` grid, in Figma's order:
+ * `Flow` (+ Wrap), then the size row from `section-layout.ts`, then
+ * [`Alignment`][`Gap`] (+ nothing yet in column 3), `Padding` (+ Individual
+ * padding) and `Clip content`. The rows are returned separately because the
+ * size row from another file goes between them.
  *
  * Only shown for elements that actually contain something: auto layout on a
  * leaf node is a control with no observable effect.
- *
- * Every control here sits under the caption Figma gives it — `Flow`,
- * `Alignment`, `Gap`, `Padding` (measured spec §6). The captions are not
- * decoration: this block asks five unrelated questions in a 240px column, and
- * the section header can only name the block, so without them a number in the
- * middle of the stack has nothing to say what it measures.
  */
 
 import { el, round } from "../../core/dom"
@@ -18,18 +18,21 @@ import type { IconName } from "../../core/icons"
 import { tokens } from "../../core/tokens"
 import {
   alignPad,
-  group,
-  iconButton,
   iconSegmented,
   isExpanded,
+  miniButton,
   numberField,
-  segmented,
+  propRow,
   setExpanded,
   takeJustExpanded,
+  trailingToggle,
 } from "./field"
+import { fieldMenu } from "./section-layout"
+import { MIXED, isMulti, mixedNumber, selectedOf, sharedValue, computedOf } from "./multi"
+import { fieldToken } from "./token-row"
 import type { SectionContext } from "./index"
 
-type Direction = "none" | "horizontal" | "vertical" | "wrap"
+export type Flow = "none" | "vertical" | "horizontal" | "grid"
 type Place = "flex-start" | "center" | "flex-end"
 
 const PLACES: Place[] = ["flex-start", "center", "flex-end"]
@@ -37,69 +40,46 @@ const PLACES: Place[] = ["flex-start", "center", "flex-end"]
 const PADDING_EXPANDER = "autolayout.padding"
 
 /*
- * Four mutually exclusive states on one rail.
- *
- * These were `⊘ → ↓ ⤶` in four bare buttons, and the strip is where a typed
- * glyph fails most visibly: four characters from four different Unicode blocks,
- * resolved by whatever font covered each, arriving at four different weights and
- * two different sizes in a row of buttons that are all the same button. `⤶` is
- * outside the coverage of several system fonts entirely and rendered as a
- * missing-glyph box.
- *
- * The rail is the other half of the fix. A row of separate buttons says nothing
- * about how the four relate; a continuous track with one raised chip says the
- * answer is exactly one of these, which is what `display`/`flex-direction`/
- * `flex-wrap` collapse to here.
- *
- * AND THE MARKS ARE NOW FOUR ARRANGEMENTS OF THE SAME TWO BOXES.
- *
- * Replacing the typed characters with drawn ones fixed the weights and left the
- * subject wrong: `Ban`, `ArrowRight`, `ArrowDown` and `WrapText` are a
- * prohibition sign, two arrows and a picture of text, borrowed from four
- * unrelated corners of a general-purpose set. Read as a strip they describe
- * four different things, when this control has exactly one subject — where the
- * children of this element end up. The native glyphs draw that subject: the
- * same pair of rounded boxes, moved.
- *
- * `FlowNone` is three boxes scattered rather than a crossed-out anything. "Not
- * laid out" is a real arrangement, not the absence of one, and a `Ban` sign
- * says the control is unavailable rather than that this state is a choice.
+ * Figma's order and Figma's tooltips. The marks are four arrangements of the
+ * same boxes, because the control has one subject: where the children end up.
+ * Wrap is not a flow: it is the column-3 toggle beside this rail.
  */
-const FLOWS: Array<{ value: Direction; label: string; glyph: IconName }> = [
-  { value: "none", label: "No auto layout", glyph: "FlowNone" },
-  { value: "horizontal", label: "Horizontal", glyph: "FlowHorizontal" },
+const FLOWS: Array<{ value: Flow; label: string; glyph: IconName }> = [
+  { value: "none", label: "Freeform", glyph: "FlowNone" },
   { value: "vertical", label: "Vertical", glyph: "FlowVertical" },
-  { value: "wrap", label: "Wrap", glyph: "FlowWrap" },
+  { value: "horizontal", label: "Horizontal", glyph: "FlowHorizontal" },
+  { value: "grid", label: "Grid", glyph: "FlowGrid" },
 ]
 
 /**
- * The mark the chosen pad cell wears, indexed by `PLACES`.
- *
- * One glyph cannot state both axes, and the cross axis is the one worth
- * drawing. A cell's position in the pad already says where the children sit
- * along the main axis — that is what the three columns of a row differ by — so
- * the mark spends itself on the claim the stack makes about its children:
- * bars side by side under a top rule for a row aligned to the top, stacked bars
- * against a left rule for a column aligned left. Which family applies therefore
- * follows the flow, not the cell.
+ * The mark the chosen pad cell wears, indexed by `PLACES`. The cell's position
+ * already says the main axis, so the mark draws the cross axis, and which
+ * family applies follows the flow.
  */
 const CROSS_GLYPH: Record<"horizontal" | "vertical", IconName[]> = {
   horizontal: ["AlignStartHorizontal", "AlignCenterHorizontal", "AlignEndHorizontal"],
   vertical: ["AlignStartVertical", "AlignCenterVertical", "AlignEndVertical"],
 }
 
-const PAD_GLYPH: Record<"top" | "right" | "bottom" | "left", IconName> = {
+const SIDES = ["left", "top", "right", "bottom"] as const
+type Side = (typeof SIDES)[number]
+
+const PAD_GLYPH: Record<Side, IconName> = {
   top: "PadTop",
   right: "PadRight",
   bottom: "PadBottom",
   left: "PadLeft",
 }
 
-function directionOf(computed: CSSStyleDeclaration): Direction {
+export function flowOf(computed: CSSStyleDeclaration): Flow {
   const display = computed.display
+  if (display === "grid" || display === "inline-grid") return "grid"
   if (display !== "flex" && display !== "inline-flex") return "none"
-  if (computed.flexWrap === "wrap" || computed.flexWrap === "wrap-reverse") return "wrap"
   return computed.flexDirection.startsWith("column") ? "vertical" : "horizontal"
+}
+
+function wrapsOf(computed: CSSStyleDeclaration): boolean {
+  return computed.flexWrap === "wrap" || computed.flexWrap === "wrap-reverse"
 }
 
 function placeOf(value: string): Place {
@@ -108,25 +88,105 @@ function placeOf(value: string): Place {
   return "flex-start"
 }
 
+/** `Auto layout` when the element lays out its children, `Layout` otherwise. */
+export function layoutTitle(context: SectionContext): string {
+  return drawsSpacingControls(context) ? "Auto layout" : "Layout"
+}
+
 /**
- * Figma's 3x3 alignment pad, mapped onto justify-content + align-items.
- *
- * Nine cells row-major, and a cell's place in the grid IS its value: the row is
- * where the children sit vertically and the column where they sit horizontally,
- * whichever axis the stack runs along. Which of the two is `justify-content` and
- * which is `align-items` flips with the flow, and that flip is the only thing
- * this function computes.
- *
- * It used to build nine `iconButton`s at `width:100%;height:18px` in an
- * inline-styled grid, each drawing a `Circle`. The pad is one control with nine
- * positions, not nine buttons that happen to be adjacent, and `alignPad` is what
- * says so — it owns the block, and draws the rest in every unchosen cell itself,
- * which is why only the pressed cell is handed a real mark here.
+ * The writes for one flow. Shared by the rail, the header toggle and the
+ * Shift+A command, so all three reach source through the same declarations.
+ */
+export function setFlow(context: SectionContext, next: Flow): void {
+  const writes =
+    next === "none"
+      ? [{ property: "display", value: "block" }]
+      : next === "grid"
+        ? [{ property: "display", value: "grid" }]
+        : [
+            { property: "display", value: "flex" },
+            { property: "flex-direction", value: next === "vertical" ? "column" : "row" },
+            // Wrap only means something on a row, so a column drops it.
+            ...(next === "vertical" ? [{ property: "flex-wrap", value: "nowrap" }] : []),
+          ]
+  context.writer.applyStyles(context.selection, writes, next === "none" ? "Remove auto layout" : "Set auto layout")
+  context.invalidate()
+}
+
+/**
+ * The section header's `Add auto layout` / `Remove auto layout` toggle.
+ * Null for a leaf, which has nothing to lay out.
+ */
+export function autoLayoutToggle(context: SectionContext): HTMLElement | null {
+  if (context.selection.element.childElementCount === 0) return null
+  const on = flowOf(context.computed) !== "none"
+  return miniButton({
+    label: on ? "Remove auto layout" : "Add auto layout",
+    glyph: icon("AutoLayout", tokens.icon.action),
+    pressed: on,
+    onClick: () => setFlow(context, on ? "none" : "horizontal"),
+  })
+}
+
+/** The `Flow` row: the four-way rail across columns 1-2 and Wrap in column 3. */
+export function flowRow(context: SectionContext): HTMLElement | null {
+  const { selection, computed, writer, invalidate } = context
+  if (selection.element.childElementCount === 0) return null
+  const flow = flowOf(computed)
+  const wraps = wrapsOf(computed)
+  const sharedFlow = sharedValue(context, flowOf)
+  const sharedWraps = sharedValue(context, wrapsOf)
+
+  // Figma draws Wrap beside either stack and leaves column 3 empty for freeform
+  // and grid. CSS can wrap a column, but the result is rarely wanted, so the
+  // toggle there only stays live to turn an existing wrap off.
+  let wrap: HTMLElement | null = null
+  if (flow === "horizontal" || flow === "vertical") {
+    wrap = trailingToggle({
+      label: "Wrap",
+      glyph: icon("WrapText", tokens.icon.action),
+      pressed: sharedWraps === true,
+      onClick: () => {
+        writer.applyStyles(selection, [{ property: "flex-wrap", value: wraps ? "nowrap" : "wrap" }], "Set wrap")
+        invalidate()
+      },
+    })
+    if (flow === "vertical" && !wraps) (wrap as HTMLButtonElement).disabled = true
+  }
+
+  return propRow({
+    id: "autolayout.flow",
+    caption: "Flow",
+    cells: [
+      iconSegmented({
+        label: "Flow",
+        value: sharedFlow ?? "",
+        options: FLOWS.map((entry) => ({
+          value: entry.value,
+          label: entry.label,
+          glyph: icon(entry.glyph, tokens.icon.action),
+        })),
+        onCommit: (next) => {
+          // Looked up rather than cast, so a renamed flow cannot reach a write.
+          const entry = FLOWS.find((candidate) => candidate.value === next)
+          if (entry) setFlow(context, entry.value)
+        },
+      }),
+    ],
+    trailing: wrap,
+  })
+}
+
+/**
+ * Figma's 3x3 alignment pad, mapped onto justify-content + align-items. A
+ * cell's row is where the children sit vertically and its column where they
+ * sit horizontally; which of those is `justify-content` flips with the flow.
  */
 function alignmentPad(options: {
   vertical: boolean
   justify: Place
   align: Place
+  mixed?: boolean
   onPick(justify: Place, align: Place): void
 }): HTMLElement {
   const glyphs = CROSS_GLYPH[options.vertical ? "vertical" : "horizontal"]
@@ -137,7 +197,7 @@ function alignmentPad(options: {
       const align = options.vertical ? column : row
       cells.push({
         label: `${justify.replace("flex-", "")} / ${align.replace("flex-", "")}`,
-        pressed: justify === options.justify && align === options.align,
+        pressed: !options.mixed && justify === options.justify && align === options.align,
         glyph: icon(glyphs[PLACES.indexOf(align)], tokens.icon.action),
         onClick: () => options.onPick(justify, align),
       })
@@ -146,224 +206,110 @@ function alignmentPad(options: {
   return alignPad({ label: "Alignment", cells })
 }
 
-function paddingControls(
-  context: SectionContext,
-  apply: (property: string, value: string) => void,
-  preview: (property: string, value: string) => void,
-  /**
-   * The `padding` token field, drawn under whichever number row is showing.
-   *
-   * Unlike the gap binding it goes INSIDE the group, because this group is full
-   * width — there is room for a token's whole name here and none in the 88px
-   * column `Gap` sits in. It stays put across the per-side toggle on purpose:
-   * the four sides are a way of writing the same padding, and a binding that
-   * vanished when a designer split the corners would look like splitting them
-   * had unbound it.
-   */
-  binding?: HTMLElement | null
-): HTMLElement {
-  const { computed, invalidate } = context
-  const sides = ["top", "right", "bottom", "left"] as const
-  const values = sides.map((side) => Number.parseFloat(computed.getPropertyValue(`padding-${side}`)) || 0)
-  const perSide = isExpanded(PADDING_EXPANDER)
-  const toggle = iconButton({
-    label: perSide ? "Link all sides" : "Set each side",
-    // Four cells to split, one box to relink. Drawn at the `control` rung,
-    // where this was a typed `⊞` at whatever size the button's text happened
-    // to be — see the same toggle in `section-appearance.ts`.
-    glyph: icon(perSide ? "Square" : "Grid2x2", tokens.icon.action),
-    pressed: perSide,
-    onClick: () => {
-      setExpanded(PADDING_EXPANDER, !perSide)
-      invalidate()
-    },
-  })
-
-  if (!perSide) {
-    const uniform = values.every((value) => value === values[0]) ? values[0] : null
-    const field = numberField({
-      id: "autolayout.padding",
-      label: "P",
-      title: "Padding",
-      value: uniform,
-      placeholder: uniform === null ? "Mixed" : undefined,
-      min: 0,
-      onPreview: (value) => preview("padding", `${round(value)}px`),
-      onCommit: (value) => apply("padding", `${round(value)}px`),
-    })
-    // One field beside a 24px toggle, so the field takes what is left. There is
-    // no grow utility in the stylesheet and this file may not add one.
-    field.style.flex = "1"
-    return group("Padding", el("div", { class: "de-row" }, [field, toggle]), binding ?? null)
+/** Track count from a computed or authored track list: `100px 100px`, `repeat(3, 1fr)`. */
+function trackCount(value: string): number | null {
+  const list = value.trim()
+  if (!list || list === "none") return null
+  const repeat = /^repeat\(\s*(\d+)\s*,/.exec(list)
+  if (repeat) return Number(repeat[1])
+  let depth = 0
+  let count = 0
+  let inToken = false
+  for (const char of list) {
+    if (char === "(") depth += 1
+    else if (char === ")") depth -= 1
+    if (depth === 0 && /\s/.test(char)) {
+      inToken = false
+      continue
+    }
+    if (!inToken && char !== "[") {
+      count += 1
+      inToken = true
+    }
   }
-
-  const grid = el(
-    "div",
-    { class: "de-row--quad", style: "flex:1" },
-    sides.map((side, index) =>
-      numberField({
-        id: `autolayout.padding.${side}`,
-        // The drawn side, not its initial. `T R B L` is four letters that work
-        // only once you already know the order they come in; the box with one
-        // edge weighted says which side without being learned. `title` carries
-        // the words, so the tooltip and the accessible name still read
-        // "Padding top".
-        label: icon(PAD_GLYPH[side], tokens.icon.action),
-        title: `Padding ${side}`,
-        value: values[index],
-        min: 0,
-        onPreview: (value) => preview(`padding-${side}`, `${round(value)}px`),
-        onCommit: (value) => apply(`padding-${side}`, `${round(value)}px`),
-      })
-    )
-  )
-  const perSideGroup = group("Padding", el("div", { class: "de-row" }, [grid, toggle]), binding ?? null)
-  // Opened only on the render that follows the press — see `takeJustExpanded`.
-  // Every other rebuild of this panel leaves the group exactly as it found it.
-  if (takeJustExpanded(PADDING_EXPANDER)) revealGroup(perSideGroup)
-  return perSideGroup
+  return count || null
 }
 
 /**
- * Whether this block draws its own `Gap` and `Padding` groups for this element.
+ * Whether this block draws its own gap and padding fields for this element.
  *
  * Exported for `section-unified-layout.ts`, which owns the spacing token
- * bindings and has to know which of them this block is about to give a home to.
- * Without it the two files each answer "does a gap control belong here?" from
- * different evidence and both say yes, which is the duplicate-control problem
- * this whole refactor exists to end — one property, two controls, a few rows
- * apart.
- *
- * It is deliberately the same two tests `autoLayoutControls` makes, in the same
- * order, rather than a restatement of them: a leaf node gets no block at all,
- * and a block whose direction is `none` draws only its flow strip. The second
- * is the one that catches people out — `directionOf` answers `none` for a grid,
- * so a grid container has a gap that this block does not draw a field for.
+ * bindings and hands the gap and padding ones to these fields when this says
+ * yes — so one property never gets two controls a few rows apart.
  */
 export function drawsSpacingControls(context: SectionContext): boolean {
-  if (context.selection.element.childElementCount === 0) return false
-  return directionOf(context.computed) !== "none"
+  // Every selected layer, so a gap typed into a multi-selection never lands on
+  // a box that does not lay anything out.
+  return selectedOf(context).every(
+    (entry) => entry.element.childElementCount > 0 && flowOf(computedOf(context, entry)) !== "none"
+  )
+}
+
+/** The number one property reads on every selected layer, or null for Mixed. */
+function sharedPx(context: SectionContext, read: (style: CSSStyleDeclaration) => string): number | null {
+  return sharedValue(context, (style) => round(Number.parseFloat(read(style)) || 0))
 }
 
 /**
- * The auto-layout block: flow, alignment, gap and padding.
+ * The rows under the size row: [Alignment][Gap] (or [Grid][Gap] for a grid)
+ * and Padding. Empty for a leaf or a freeform box.
  *
- * Returns the controls and nothing around them — Layout is one section made of
- * two blocks and this is the second, see `section-unified-layout.ts`. Null for a
- * leaf node, which is the caller's cue to leave the block out entirely.
- *
- * `bindings` are the design-system token fields for the two distances this
- * block draws numbers for. They arrive from the caller rather than being built
- * here because the catalogue they come from is the Layout section's business
- * and not auto layout's — but they are DRAWN here, under the number field each
- * one answers, because that is the only place a designer would look for them.
- * The alternative, which this replaced, was a second spacing block further down
- * the same section: the same property, twice, in two shapes, which is exactly
- * what dissolving the old `Design system` section was for. Absent when the
- * project stocks no spacing tokens, and the groups then look as they always did.
+ * Every gap and padding field carries its own token binding (`fieldToken`),
+ * so these rows need no separate token control.
  */
-export function autoLayoutControls(
-  context: SectionContext,
-  bindings: { gap?: HTMLElement | null; padding?: HTMLElement | null } = {}
-): HTMLElement | null {
-  const { selection, computed, writer, invalidate } = context
-  if (selection.element.childElementCount === 0) return null
+export function autoLayoutRows(context: SectionContext): HTMLElement[] {
+  if (!drawsSpacingControls(context)) return []
+  return [
+    flowOf(context.computed) === "grid" ? gridRow(context) : alignmentGapRow(context),
+    paddingRows(context),
+  ]
+}
 
-  const direction = directionOf(computed)
-  const vertical = direction === "vertical"
+// Numeric commits deliberately skip `invalidate`: the inspector rebuilds on the
+// next frame, which would tear the field out from under a drag-scrub.
+function writers(context: SectionContext) {
+  const { selection, writer } = context
+  return {
+    apply: (writes: Array<{ property: string; value: string }>, summary: string) =>
+      writer.applyStyles(selection, writes, summary),
+    preview: (writes: Array<{ property: string; value: string }>) => {
+      for (const entry of writes) selection.element.style.setProperty(entry.property, entry.value)
+    },
+  }
+}
+
+/** A column cell holding a stack of fields, like Figma's two gap fields for a grid. */
+function column(...children: Array<Node | null>): HTMLElement {
+  return el("div", { class: "de-lay-column" }, children)
+}
+
+function alignmentGapRow(context: SectionContext): HTMLElement {
+  const { selection, computed, writer, invalidate } = context
+  const { apply, preview } = writers(context)
+  const flow = flowOf(computed)
+  const vertical = flow === "vertical"
+  const wraps = wrapsOf(computed)
   const justify = placeOf(computed.justifyContent)
   const align = placeOf(computed.alignItems)
-  const spaceBetween = computed.justifyContent === "space-between"
-
-  // Numeric commits deliberately skip `invalidate`: the inspector rebuilds on
-  // the next frame, which would tear the field out from under a drag-scrub.
-  const apply = (property: string, value: string) => {
-    writer.applyStyles(selection, [{ property, value }], `Set ${property}`)
-  }
-  const preview = (property: string, value: string) => {
-    selection.element.style.setProperty(property, value)
-  }
-
-  const setDirection = (next: Direction) => {
-    const writes =
-      next === "none"
-        ? [{ property: "display", value: "block" }]
-        : [
-            { property: "display", value: "flex" },
-            { property: "flex-direction", value: next === "vertical" ? "column" : "row" },
-            { property: "flex-wrap", value: next === "wrap" ? "wrap" : "nowrap" },
-          ]
-    writer.applyStyles(selection, writes, "Set auto layout")
-    invalidate()
-  }
-
-  const flow = group(
-    "Flow",
-    iconSegmented({
-      label: "Flow",
-      value: direction,
-      options: FLOWS.map((entry) => ({
-        value: entry.value,
-        label: entry.label,
-        glyph: icon(entry.glyph, tokens.icon.action),
-      })),
-      onCommit: (next) => {
-        // Looked up rather than cast: `iconSegmented` speaks in strings, and a
-        // cast would let a renamed flow through the compiler into a bad write.
-        const entry = FLOWS.find((candidate) => candidate.value === next)
-        if (entry) setDirection(entry.value)
-      },
-    })
+  const auto = computed.justifyContent === "space-between"
+  // The pad marks a cell only when every layer sits there.
+  const placed = sharedValue(
+    context,
+    (style) => `${style.justifyContent === "space-between" ? "auto" : placeOf(style.justifyContent)} ${placeOf(style.alignItems)}`
   )
-
-  if (direction === "none") return flow
-
-  const gapField = numberField({
-    id: "autolayout.gap",
-    /*
-     * The mark, not the word — the caption above this field already says "Gap",
-     * and printing it again inside the control is the panel telling you the
-     * same thing twice in 24px. It is also the pair that makes the wrap case
-     * readable: two fields labelled "Gap" and "Row" do not look like one
-     * question asked about two axes, and two glyphs of the same two bars turned
-     * ninety degrees do.
-     */
-    label: icon("GapColumn", tokens.icon.action),
-    title: "Gap between children",
-    value: Number.parseFloat(computed.columnGap) || 0,
-    min: 0,
-    disabled: spaceBetween,
-    onPreview: (value) => preview("gap", `${round(value)}px`),
-    onCommit: (value) => apply("gap", `${round(value)}px`),
-  })
-
-  // Wrapping splits the gap in two: the cross-axis gap is its own declaration,
-  // and without it a wrapped stack has rows touching. It stacks under the same
-  // `Gap` caption, because it is the same question asked about the other axis.
-  const rowGapField =
-    direction === "wrap"
-      ? numberField({
-          id: "autolayout.rowgap",
-          label: icon("GapRow", tokens.icon.action),
-          title: "Gap between wrapped rows",
-          value: Number.parseFloat(computed.rowGap) || 0,
-          min: 0,
-          onPreview: (value) => preview("row-gap", `${round(value)}px`),
-          onCommit: (value) => apply("row-gap", `${round(value)}px`),
-        })
-      : null
 
   const pad = alignmentPad({
     vertical,
     justify,
     align,
+    mixed: placed === null,
     onPick: (nextJustify, nextAlign) => {
       writer.applyStyles(
         selection,
         [
-          // Space-between owns the main axis; the pad only moves the cross axis
+          // Auto spacing owns the main axis; the pad only moves the cross axis
           // while it is on, so picking a cell cannot silently repack the stack.
-          { property: "justify-content", value: spaceBetween ? "space-between" : nextJustify },
+          { property: "justify-content", value: auto ? "space-between" : nextJustify },
           { property: "align-items", value: nextAlign },
         ],
         "Set alignment"
@@ -372,65 +318,214 @@ export function autoLayoutControls(
     },
   })
 
-  /*
-   * Packed or spread, as a two-way switch.
-   *
-   * Figma does not spell it this way: distribution lives in the auto-layout
-   * settings modal as Between / Evenly / Around, three named distributions
-   * rather than one toggle. We keep the toggle because it is what our write path
-   * can express in both directions. `placeOf` reads `justify-content` back into
-   * one of three places, so a `space-evenly` we wrote here would come back as
-   * `start` on the next rebuild — a third option you could set and never see set
-   * is worse than two that round-trip.
-   *
-   * Uncaptioned, alone among the controls in this block: `Packed` and `Space
-   * between` are already the words a caption would have used.
-   */
-  const spacingMode = segmented({
-    label: "Spacing mode",
-    value: spaceBetween ? "between" : "packed",
-    options: [
-      { value: "packed", label: "Packed", title: "Children keep the set gap" },
-      { value: "between", label: "Space between", title: "Children spread to fill the space" },
+  const gapValue = Number.parseFloat(vertical ? computed.rowGap : computed.columnGap) || 0
+  const sharedAuto = sharedValue(context, (style) => style.justifyContent === "space-between")
+  const sharedGap = sharedPx(context, (style) => (vertical ? style.rowGap : style.columnGap))
+  const setGap = (value: number) => {
+    const writes = [{ property: "gap", value: `${round(value)}px` }]
+    if (!auto) return apply(writes, "Set gap")
+    // Typing a number while the gap reads Auto is Figma's way back to a fixed
+    // gap, so the spread goes with it.
+    apply([...writes, { property: "justify-content", value: justify }], "Set gap")
+    invalidate()
+  }
+
+  // An Auto gap has no number to bind, so it offers no token until it is fixed.
+  const gapToken = auto ? undefined : fieldToken(context, ["gap"], "Gap")
+  const gapField: HTMLElement = numberField({
+    id: "autolayout.gap",
+    label: icon(vertical ? "GapRow" : "GapColumn", tokens.icon.action),
+    title: vertical ? "Vertical gap between objects" : "Horizontal gap between objects",
+    ...(sharedAuto === null ? mixedNumber(null) : auto ? { value: null, placeholder: "Auto" } : mixedNumber(sharedGap)),
+    min: 0,
+    token: gapToken,
+    onPreview: (value) => preview([{ property: "gap", value: `${round(value)}px` }]),
+    onCommit: setGap,
+    trailing: fieldMenu({
+      label: "Gap options",
+      face: icon("ChevronDown", tokens.icon.marker),
+      value: auto ? "auto" : "fixed",
+      items: [
+        { value: "fixed", label: String(round(gapValue)) },
+        { value: "auto", label: "Auto" },
+        // Figma's gap menu ends with "Apply variable…"; this is the same entry.
+        ...(gapToken ? [{ value: "token", label: "Apply token…", action: true }] : []),
+      ],
+      onPick: (next) => {
+        if (next === "token") {
+          gapField.querySelector<HTMLElement>(".de-tokenbind-apply")?.click()
+          return
+        }
+        writer.applyStyles(
+          selection,
+          [{ property: "justify-content", value: next === "auto" ? "space-between" : justify }],
+          next === "auto" ? "Set gap to auto" : "Set gap"
+        )
+        invalidate()
+      },
+    }),
+  })
+
+  // A wrapped row has a second gap between its lines, under the same caption.
+  const rowGapField = wraps
+    ? numberField({
+        id: "autolayout.rowgap",
+        label: icon("GapRow", tokens.icon.action),
+        title: "Vertical gap between rows",
+        ...mixedNumber(sharedPx(context, (style) => style.rowGap)),
+        min: 0,
+        token: fieldToken(context, ["row-gap"], "Row gap"),
+        onPreview: (value) => preview([{ property: "row-gap", value: `${round(value)}px` }]),
+        onCommit: (value) => apply([{ property: "row-gap", value: `${round(value)}px` }], "Set row gap"),
+      })
+    : null
+
+  return propRow({
+    id: "autolayout.alignment",
+    caption: ["Alignment", "Gap"],
+    cells: [pad, column(gapField, rowGapField)],
+  })
+}
+
+/** Grid flow: [columns × rows] and [column gap / row gap], as Figma draws it. */
+function gridRow(context: SectionContext): HTMLElement {
+  const { apply, preview } = writers(context)
+  const tracks = (property: "grid-template-columns" | "grid-template-rows", label: string, title: string) => {
+    const value = sharedValue(context, (style) => trackCount(style.getPropertyValue(property)))
+    const mixed = isMulti(context) && value === null && sharedValue(context, (style) => style.getPropertyValue(property)) === null
+    const writes = (count: number) => [{ property, value: `repeat(${Math.max(1, round(count))}, minmax(0, 1fr))` }]
+    return numberField({
+      id: `autolayout.${property}`,
+      label,
+      title,
+      value,
+      placeholder: mixed ? MIXED : value === null ? "Auto" : undefined,
+      min: 1,
+      onPreview: (count) => preview(writes(count)),
+      onCommit: (count) => apply(writes(count), `Set ${title.toLowerCase()}`),
+    })
+  }
+  const gap = (property: "column-gap" | "row-gap", glyph: IconName, title: string) =>
+    numberField({
+      id: `autolayout.${property}`,
+      label: icon(glyph, tokens.icon.action),
+      title,
+      ...mixedNumber(sharedPx(context, (style) => style.getPropertyValue(property))),
+      min: 0,
+      token: fieldToken(context, [property], property === "column-gap" ? "Column gap" : "Row gap"),
+      onPreview: (value) => preview([{ property, value: `${round(value)}px` }]),
+      onCommit: (value) => apply([{ property, value: `${round(value)}px` }], `Set ${property}`),
+    })
+
+  return propRow({
+    id: "autolayout.grid",
+    caption: ["Grid", "Gap"],
+    cells: [
+      column(tracks("grid-template-columns", "C", "Columns"), tracks("grid-template-rows", "R", "Rows")),
+      column(
+        gap("column-gap", "GapColumn", "Horizontal gap between columns"),
+        gap("row-gap", "GapRow", "Vertical gap between rows")
+      ),
     ],
-    onCommit: (next) => {
-      writer.applyStyles(
-        selection,
-        [{ property: "justify-content", value: next === "between" ? "space-between" : justify }],
-        "Set distribution"
-      )
+  })
+}
+
+/**
+ * `Padding`: [horizontal][vertical] + Individual padding, or with the toggle
+ * pressed [left][top] over [right][bottom]. Each field binds a token for the
+ * sides it writes.
+ */
+function paddingRows(context: SectionContext): HTMLElement {
+  const { invalidate } = context
+  const { apply, preview } = writers(context)
+  const value = (style: CSSStyleDeclaration, side: Side) =>
+    Number.parseFloat(style.getPropertyValue(`padding-${side}`)) || 0
+  const individual = isExpanded(PADDING_EXPANDER)
+  const toggle = trailingToggle({
+    label: "Individual padding",
+    glyph: icon("IndividualSides", tokens.icon.action),
+    pressed: individual,
+    onClick: () => {
+      setExpanded(PADDING_EXPANDER, !individual)
       invalidate()
     },
   })
 
-  return el("div", { class: "de-stack" }, [
-    flow,
-    // The pad and the gap share a row, each in one of the two 88px columns the
-    // panel splits into — which is Figma's own arrangement, and the reason the
-    // pad is 56px tall rather than as wide as the panel: the alignment of a
-    // stack and the distance between its children are one question asked twice,
-    // and reading them side by side is cheaper than scrolling between them.
-    el("div", { class: "de-row--split" }, [
-      group("Alignment", pad),
-      /*
-       * The binding goes IN the Gap column, under the number it answers, and
-       * the column is the narrow one.
-       *
-       * It sat full width beneath this row first, to give a token name like
-       * `Spacing/Comfortable` room to be read rather than ellipsed to eight
-       * characters. Rendered, that was the wrong trade: the alignment pad is
-       * three rows tall and the gap field is one, so a full-width field lands
-       * directly under the PAD and reads as belonging to it — or to both — and
-       * a control whose subject is ambiguous is worse than one whose value is
-       * abbreviated. The column also has the vertical room going spare, which
-       * is what made the wide version look deliberate when it was not.
-       *
-       * Truncation is recoverable and mis-attribution is not: the field carries
-       * its full name in `aria-label`, and opening it shows every name in full.
-       */
-      group("Gap", gapField, rowGapField, bindings.gap ?? null),
-    ]),
-    spacingMode,
-    paddingControls(context, apply, preview, bindings.padding),
-  ])
+  // Sides are written as longhands: the source writer maps `padding-left` and
+  // friends, and splits an existing `p-*` shorthand when one side changes.
+  const field = (id: string, label: Node, title: string, sides: Side[], tokenId: string) => {
+    // NaN when one layer's own sides differ, so that layer alone reads Mixed too.
+    const shared = sharedValue(context, (style) => {
+      const values = sides.map((entry) => value(style, entry))
+      return values.every((entry) => entry === values[0]) ? round(values[0]) : NaN
+    })
+    const same = shared !== null && !Number.isNaN(shared)
+    const writes = (next: number) => sides.map((side) => ({ property: `padding-${side}`, value: `${round(next)}px` }))
+    return numberField({
+      id,
+      label,
+      title,
+      value: same ? shared : null,
+      placeholder: same ? undefined : MIXED,
+      min: 0,
+      token: fieldToken(context, sides.map((entry) => `padding-${entry}` as const), title, tokenId),
+      onPreview: (next) => preview(writes(next)),
+      onCommit: (next) => apply(writes(next), `Set ${title.toLowerCase()}`),
+    })
+  }
+  const side = (name: Side) =>
+    field(`autolayout.padding.${name}`, icon(PAD_GLYPH[name], tokens.icon.action), `Padding ${name}`, [name], `padding-${name}`)
+
+  const rows = individual
+    ? [
+        propRow({ id: "autolayout.padding", caption: "Padding", cells: [side("left"), side("top")], trailing: toggle }),
+        propRow({ id: "autolayout.padding-more", cells: [side("right"), side("bottom")] }),
+      ]
+    : [
+        propRow({
+          id: "autolayout.padding",
+          caption: "Padding",
+          cells: [
+            field("autolayout.padding-x", icon("PadHorizontal", tokens.icon.action), "Horizontal padding", [
+              "left",
+              "right",
+            ], "padding-x"),
+            field("autolayout.padding-y", icon("PadVertical", tokens.icon.action), "Vertical padding", [
+              "top",
+              "bottom",
+            ], "padding-y"),
+          ],
+          trailing: toggle,
+        }),
+      ]
+  const block = el("div", { class: "de-stack de-lay-padding" }, rows)
+  // Opened only on the render that follows the press — see `takeJustExpanded`.
+  if (individual && takeJustExpanded(PADDING_EXPANDER)) revealGroup(rows[1])
+  return block
+}
+
+/** `Clip content`: Figma's last row, for any element with children. */
+export function clipContentRow(context: SectionContext): HTMLElement | null {
+  const { selection, computed, writer, invalidate } = context
+  if (selection.element.childElementCount === 0) return null
+  const overflow = computed.overflowX || computed.overflow
+  const clipped = overflow === "hidden" || overflow === "clip"
+  const input = el("input", {
+    type: "checkbox",
+    class: "de-lay-check-input",
+    "data-de-field": "autolayout.clip",
+  }) as HTMLInputElement
+  input.checked = clipped
+  input.addEventListener("change", () => {
+    writer.applyStyles(
+      selection,
+      [{ property: "overflow", value: input.checked ? "hidden" : "visible" }],
+      input.checked ? "Clip content" : "Show overflow"
+    )
+    invalidate()
+  })
+  return propRow({
+    id: "autolayout.clip",
+    cells: [el("label", { class: "de-lay-check" }, [input, el("span", {}, ["Clip content"])])],
+  })
 }

@@ -371,4 +371,45 @@ html.designlayer-chrome-hidden .de-handle-hit {
   transition: opacity ${t.duration.exit} ${t.ease}, display 0s allow-discrete;
 }
 @starting-style { .de-marquee { opacity: 0; } }
+/*
+ * Auto layout spacing handles (\`canvas/spacing-handles.ts\`). The band is a
+ * light \`guide\` wash with a fine hatch, over the product, so it stays
+ * translucent. Like a guide it fades in and leaves at once: a band that
+ * lingered would describe padding the pointer has already left.
+ */
+.de-space-layer { position: absolute; inset: 0; pointer-events: none; }
+.de-space-band {
+  position: absolute;
+  left: 0; top: 0;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(-45deg, color-mix(in srgb, ${t.color.guide} 45%, transparent) 0 1px, transparent 1px 5px),
+    color-mix(in srgb, ${t.color.guide} 12%, transparent);
+  opacity: 1;
+  transition: opacity ${t.duration.exit} ${t.ease}, display 0s allow-discrete;
+}
+@starting-style { .de-space-band { opacity: 0; } }
+/* The hit box takes the pointer; the bar inside it is the drawing. */
+.de-space-handle {
+  position: absolute;
+  left: 0; top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  touch-action: none;
+}
+.de-space-bar {
+  width: var(--de-space-bar-w, 2px);
+  height: var(--de-space-bar-h, 12px);
+  background: ${t.color.guide};
+  /* A white edge so the bar reads on the band and on any product color. */
+  box-shadow: 0 0 0 ${t.size.hairline}px ${t.color.onAccent};
+  pointer-events: none;
+  transition: transform ${t.duration.hover} ${t.ease};
+}
+@media (hover: hover) and (pointer: fine) {
+  .de-space-handle:hover > .de-space-bar { transform: scale(1.25); }
+}
+.de-space-badge { left: 0; top: 0; }
 `

@@ -6,7 +6,14 @@
  * conversion has to happen in exactly one place or the rows disagree.
  */
 
-import { clamp, el } from "../../core/dom"
+import { clamp, el, round } from "../../core/dom"
+import { icon } from "../../core/icons"
+import { tokens } from "../../core/tokens"
+import { optionsStore } from "../../options/store"
+import { styledSection } from "../../options/panel"
+import type { StyleScope } from "../../options/scopes"
+import { emptySection, miniButton, numberField, propRow } from "./field"
+import type { SectionContext } from "./index"
 
 /** `#abc`, `#aabbcc` and `rgb()/rgba()` in; six-digit hex or null out. */
 export function toHex(color: string): string | null {
@@ -116,10 +123,19 @@ export function restated(color: string, alpha: number): string | null {
  * `.de-color-well` in `css/panels.ts`, where the rest of the panel's controls
  * keep theirs.
  */
-const SWATCH_STYLE = ["width:20px", "height:20px", "flex:none", "padding:0"].join(";")
+const swatchStyle = (size: number) => [`width:${size}px`, `height:${size}px`, "flex:none", "padding:0"].join(";")
 
-/** Standalone colour well, for a row that composes its own layout. */
-export function swatch(value: string, label: string, onCommit: (hex: string) => void): HTMLInputElement {
+/**
+ * Standalone colour well, for a row that composes its own layout. `size` is
+ * 20 standalone; a paint well passes the 16px icon rung so the swatch sits
+ * inside the 24px well with 4px around it, as Figma's does.
+ */
+export function swatch(
+  value: string,
+  label: string,
+  onCommit: (hex: string) => void,
+  size = 20
+): HTMLInputElement {
   const node = el("input", {
     type: "color",
     class: "de-color-well",
@@ -134,7 +150,7 @@ export function swatch(value: string, label: string, onCommit: (hex: string) => 
      */
     value: toHex(value) ?? "#000000",
     ...(toHex(value) ? {} : { "data-de-unparsed": "" }),
-    style: SWATCH_STYLE,
+    style: swatchStyle(size),
   }) as HTMLInputElement
   node.addEventListener("input", () => onCommit(node.value))
   return node
@@ -193,4 +209,171 @@ export function colorField(options: ColorFieldOptions): HTMLElement {
    */
   const field = el("div", { class: "de-field", style: "flex:1" }, [text])
   return el("div", { class: "de-row" }, [well, field])
+}
+
+/* ---------- paint rows: Fill, Stroke and Effects share these ---------- */
+
+/**
+ * The same colour at a different alpha, as the shortest string that round-trips,
+ * or `null` when it cannot be produced without inventing a colour.
+ *
+ * sRGB colours go through hex, which round-trips exactly. Anything else is
+ * re-stated in its own space by `restated`. The old fallback was
+ * `toHex(color) ?? "#000000"`, which wrote black into the source of any element
+ * authored in `oklch()` or `color(display-p3 …)`; a caller that gets `null`
+ * declines the write instead.
+ */
+export function withAlpha(color: string, alpha: number): string | null {
+  const hex = toHex(color)
+  if (hex) {
+    if (alpha >= 1) return hex
+    const [r, g, b] = [1, 3, 5].map((at) => Number.parseInt(hex.slice(at, at + 2), 16))
+    return `rgba(${r},${g},${b},${round(alpha, 3)})`
+  }
+  return restated(color, round(alpha, 3))
+}
+
+/** `FFF`, `ffffff` or `#abc` typed into a hex cell, as a CSS colour; else the text as typed. */
+function typedColor(raw: string): string | null {
+  const text = raw.trim()
+  if (!text) return null
+  const bare = /^#?([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(text)
+  if (bare) return `#${bare[1].toLowerCase()}`
+  // A named colour or a function is kept as written, if the browser accepts it.
+  if (typeof CSS === "undefined" || typeof CSS.supports !== "function") return text
+  return CSS.supports("color", text) ? text : null
+}
+
+export interface PaintRowOptions {
+  /** Field-id stem: `fill`, `stroke`, `type.color`'s row uses `text`. */
+  id: string
+  /** Accessible name of the swatch and the value: "Fill color". */
+  label: string
+  /** The colour the row shows, which may be a parked one. */
+  value: string
+  /** Whether the paint is on the element now; a parked one dims and disables opacity. */
+  live: boolean
+  /** The token field for this paint; the row prints an editable hex when it is null. */
+  binding: HTMLElement | null
+  /** `data-de-field` for the hex input, when a test or focus memory names it. */
+  hexId?: string
+  onColor(value: string): void
+  /** The opacity half of the well. Omitted for a paint whose alpha has no honest write. */
+  alpha?: { onPreview?(alpha: number): void; onCommit(alpha: number): void }
+  /** The eye. */
+  visibility?: { onToggle(): void }
+  /** The `−`, in column 3. `null` leaves column 3 empty (text has no "no colour"). */
+  remove?: { label: string; onClick(event: Event): void } | null
+}
+
+/**
+ * One paint, laid out as Figma's: a joined well `[swatch + hex | opacity %]`
+ * and the eye across columns 1-2, the `−` in column 3, so the remove lines up
+ * with every other row's trailing action and with the header's `+`.
+ *
+ * `.de-paint-row` stays on the cluster the binding sits in, because the token
+ * tests find a paint by that class.
+ */
+export function paintRow(options: PaintRowOptions): HTMLElement {
+  const alpha = alphaOf(options.value)
+  const shown = toHex(options.value)?.slice(1).toUpperCase() ?? options.value
+  const well = swatch(options.value, options.label, (hex) => options.onColor(hex), tokens.icon.action)
+
+  /*
+   * Editable, as Figma's hex is. It used to be an inert span, so with no token
+   * stocked there was no way to type a colour at all. The class stays
+   * `.de-paint-value`, which the sparse-catalog test looks for.
+   */
+  const hex = el("input", {
+    type: "text",
+    class: "de-paint-value",
+    "aria-label": options.label,
+    title: options.value,
+    value: shown,
+    spellcheck: "false",
+    "data-de-field": options.hexId ?? `${options.id}.hex`,
+  }) as HTMLInputElement
+  const commitHex = () => {
+    const next = typedColor(hex.value)
+    if (!next || next === `#${shown.toLowerCase()}`) {
+      hex.value = shown
+      return
+    }
+    options.onColor(next)
+  }
+  hex.addEventListener("change", commitHex)
+  hex.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault()
+      commitHex()
+    } else if (event.key === "Escape") {
+      event.preventDefault()
+      hex.value = shown
+      hex.blur()
+    }
+  })
+
+  const opacity = options.alpha
+    ? numberField({
+        id: `${options.id}.alpha`,
+        // An empty strip, not a letter: Figma prints `100 %` with nothing in
+        // front, and the strip still scrubs, so the drag survives the letter.
+        label: "",
+        title: `${options.label} opacity (%)`,
+        value: alpha * 100,
+        min: 0,
+        max: 100,
+        suffix: "%",
+        disabled: !options.live,
+        onPreview: options.alpha.onPreview ? (next) => options.alpha?.onPreview?.(next / 100) : undefined,
+        onCommit: (next) => options.alpha?.onCommit(next / 100),
+      })
+    : null
+  opacity?.classList.add("de-paint-alpha")
+
+  const eye = options.visibility
+    ? miniButton({
+        label: options.live ? `Hide ${options.label.toLowerCase()}` : `Show ${options.label.toLowerCase()}`,
+        glyph: icon(options.live ? "Eye" : "EyeOff", tokens.icon.action),
+        onClick: () => options.visibility?.onToggle(),
+      })
+    : null
+
+  const remove = options.remove
+    ? miniButton({
+        label: options.remove.label,
+        glyph: icon("Minus", tokens.icon.action),
+        danger: true,
+        onClick: (event) => options.remove?.onClick(event),
+      })
+    : null
+
+  const joined = el("div", { class: "de-paint-well" }, [well, options.binding ?? hex, opacity])
+  const cluster = el(
+    "div",
+    { class: options.live ? "de-paint-row" : "de-paint-row de-paint-row--hidden" },
+    [joined, eye]
+  )
+  return propRow({ id: `${options.id}.paint`, cells: [cluster], trailing: remove })
+}
+
+/**
+ * A paint section with nothing to show: Figma's dimmed header and `+`.
+ *
+ * Two things keep the body. `extras` are rows that are not the paint but live
+ * here (a ring, an outline, an icon's SVG fill, a shadow or motion token), and
+ * those stay reachable. Saved styles for the scope keep the styles toggle,
+ * because the empty header has nowhere else to open them from.
+ */
+export function emptyPaintSection(
+  context: SectionContext,
+  scope: StyleScope,
+  title: string,
+  add: HTMLElement,
+  extras: Array<Node | null> = []
+): HTMLElement {
+  const present = extras.filter((node): node is Node => node !== null)
+  const saved = optionsStore(context.editor).stylesFor(context.selection.key, scope).length > 0
+  if (!present.length && !saved) return emptySection(title, add)
+  return styledSection(context, scope, title, el("div", { class: "de-stack" }, present), add)
 }

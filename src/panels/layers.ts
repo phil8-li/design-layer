@@ -11,7 +11,8 @@ import { toSourceRef } from "../core/bridge"
 import { LAYER_INDENT } from "../core/css/layers"
 import { el } from "../core/dom"
 import { focusControl } from "../core/focus"
-import { icon, type IconName } from "../core/icons"
+import { tipAttrs } from "../core/tooltip"
+import { icon, type IconName, type IconSize } from "../core/icons"
 import { isDeepSelect } from "../core/keymap"
 import { getResolver } from "../core/resolve"
 import { scrollerFor } from "../core/scroll"
@@ -26,13 +27,65 @@ import type { LayerElement, Selection } from "../core/types"
 import { tokens } from "../core/tokens"
 import { plural } from "../core/format"
 
-const INDENT = LAYER_INDENT, MAX_DEPTH = 40
+const INDENT = LAYER_INDENT, INSET = tokens.space["2xs"], MAX_DEPTH = 40
 /** Filtering is the only full-tree walk; bound it so typing can never lock up. */
 const FILTER_BUDGET = 6000
 
+/** Room the deepest row keeps for its name once the tree is wider than the pane. */
+const NAME_ROOM = 120
+/** How much of a selected row's name must be on screen for it to count as in view. */
+const NAME_PEEK = 48
+
+/**
+ * The tree's width floor for its deepest visible row: both tree insets, the
+ * row's indent, chevron and glyph, room for a name, and the row's end padding.
+ *
+ * A floor from depth rather than a width read off the rows, because only the
+ * rows near the view are in the document: a width measured from them would
+ * change as the tree scrolls vertically and jerk the sideways scroll with it.
+ * A painted row with a longer name still widens the tree past this, since the
+ * tree is `max-content` wide (`css/layers.ts`).
+ */
+export function layersReach(depth: number): number {
+  const s = tokens.space
+  return s["2xs"] * 2 + INSET + depth * INDENT + tokens.icon.action * 2 + s.xs + NAME_ROOM + s.sm
+}
+
+/**
+ * Where the pane should scroll sideways so a revealed row's name can be read,
+ * or null when it already can. All values are in the pane's content
+ * coordinates: `start` is the row's chevron, `name` and `end` the two ends of
+ * its name's text.
+ *
+ * `soft` is a reveal the reader caused inside the tree — a click, an arrow
+ * key — and a name already on screen there leaves the pane alone, even with
+ * its chevron or its tail cut off, so pressing a row never moves it under the
+ * pointer. Otherwise the row lands one indent in from the edge, which keeps
+ * its parent's glyph column in view as context.
+ *
+ * A reveal from anywhere else (a click on the canvas) brings the whole span,
+ * one indent before the chevron to the end of the name, into view by the
+ * shortest move; a span wider than the pane starts one indent in.
+ */
+export function sidewaysScroll(
+  view: { left: number; width: number },
+  row: { start: number; name: number; end: number },
+  soft = false
+): number | null {
+  const right = view.left + view.width
+  const from = Math.max(0, row.start - INDENT)
+  if (soft) return row.name >= view.left && row.name + NAME_PEEK <= right ? null : from
+  const to = row.end + tokens.space.sm
+  if (from >= view.left && to <= right) return null
+  if (to - from > view.width) return from === view.left ? null : from
+  return from < view.left ? from : to - view.width
+}
+
 /** Everything the vendor server needs to move a node among its JSX siblings. */
 interface DragRef { filePath: string; fromLine: number; parentPath: string; parentLine: number }
-interface Meta { name: string; promoted: boolean; drag: DragRef | null }
+interface Meta { name: string; tag: string; promoted: boolean; drag: DragRef | null }
+/** What `layerKindOf` needs from the cascade, copied out before any row is written. */
+interface Look { display: string; flexDirection: string }
 interface Row { element: LayerElement; parent: LayerElement | null; depth: number; meta: Meta
   open: boolean; hasChildren: boolean; posinset: number; setsize: number }
 
@@ -42,20 +95,50 @@ function setAttr(node: Element, name: string, value: string | null): void {
 }
 
 /**
- * The row's type mark, decided from what the DOM can actually tell apart.
+ * The row's type mark, in Figma's vocabulary, decided from what the DOM and
+ * the cascade can tell apart.
  *
- * A component wins over whatever it happens to be rendered as, and is the only
- * one of the four that also takes a colour. Below it the test is deliberately
- * shallow — media, then a leaf that is nothing but words, then the box that
- * everything else is. Guessing harder (list, button, link) would put a dozen
- * near-identical outlines in one column, which is texture, not information.
+ * A component wins over whatever it renders as and is the only kind that takes
+ * a colour. Then media, vectors and a text leaf, by the same tests the
+ * inspector's layer header uses (`layerKind` there), so the row and the header
+ * name the same kind. A box with children is a frame, split by layout the way
+ * Figma splits auto layout; a box without children is a rectangle.
  */
-function glyphFor(element: LayerElement, promoted: boolean): IconName {
-  if (promoted) return "Component"
+export type LayerKind = "component" | "image" | "vector" | "text" | "stack-horizontal" | "stack-vertical"
+  | "grid" | "frame" | "rectangle"
+
+/**
+ * Where Phosphor has no picture yet, the nearest existing glyph stands in:
+ * Figma's `#` frame and rounded rectangle both draw as `Square`, and the pen
+ * as `Pencil`. The kind is still written on the row (`data-kind`), so swapping
+ * a glyph in is one line here.
+ */
+export const KIND_GLYPH: Record<LayerKind, IconName> = {
+  component: "Component",
+  image: "Image",
+  vector: "Vector",
+  text: "Type",
+  "stack-horizontal": "FlowHorizontal",
+  "stack-vertical": "FlowVertical",
+  grid: "FlowGrid",
+  frame: "Frame",
+  rectangle: "Rectangle",
+}
+
+const MEDIA = new Set(["img", "picture", "video", "canvas"])
+
+export function layerKindOf(element: LayerElement, promoted: boolean, look: Look | null): LayerKind {
+  if (promoted) return "component"
   const tag = element.tagName.toLowerCase()
-  if (tag === "img" || tag === "svg" || tag === "picture") return "Image"
-  if (!element.firstElementChild && (element.textContent ?? "").trim()) return "Type"
-  return "Square"
+  if (MEDIA.has(tag)) return "image"
+  if (element instanceof SVGElement) return "vector"
+  if (!element.firstElementChild) return (element.textContent ?? "").trim() ? "text" : "rectangle"
+  const display = look?.display ?? ""
+  if (display === "grid" || display === "inline-grid") return "grid"
+  if (display === "flex" || display === "inline-flex") {
+    return look?.flexDirection.startsWith("column") ? "stack-vertical" : "stack-horizontal"
+  }
+  return "frame"
 }
 
 /**
@@ -66,10 +149,10 @@ function glyphFor(element: LayerElement, promoted: boolean): IconName {
  * keystroke. A marker glyph is decorative and `currentColor` throughout, so a
  * deep clone is indistinguishable from a fresh draw.
  */
-const glyphs = new Map<IconName, SVGSVGElement>()
-function glyph(name: IconName): Node {
-  let drawn = glyphs.get(name)
-  if (!drawn) glyphs.set(name, (drawn = icon(name, tokens.icon.marker)))
+const glyphs = new Map<string, SVGSVGElement>()
+function glyph(name: IconName, size: IconSize = tokens.icon.marker): Node {
+  let drawn = glyphs.get(`${name}@${size}`)
+  if (!drawn) glyphs.set(`${name}@${size}`, (drawn = icon(name, size)))
   return drawn.cloneNode(true)
 }
 
@@ -111,7 +194,25 @@ export function installLayersPanel(context: EditorContext): void {
   }) as HTMLInputElement
   const tree = el("div", { class: "de-layers-tree", role: "tree", "aria-label": "Layers" })
   const indicator = el("div", { class: "de-layer-drop", "aria-hidden": "true", style: "display:none" })
-  const header = el("div", { class: "de-section-header" }, ["Layers"])
+  /*
+   * Figma's section header: the title on the left, its actions on the right.
+   * Search opens the filter the way Figma's Pages search does, so the field
+   * costs no height until it is wanted; it stays open while it holds a query,
+   * because a narrowed tree with no visible reason is a tree that looks broken.
+   */
+  const searchToggle = el("button", {
+    class: "de-mini de-layers-search", type: "button", "aria-expanded": "false",
+    "aria-controls": "de-layer-filter", ...tipAttrs("Find layer"),
+  }, [glyph("Search", tokens.icon.action)]) as HTMLButtonElement
+  const foldAll = el("button", {
+    class: "de-mini de-layers-fold", type: "button", ...tipAttrs("Collapse all layers"),
+  }, [glyph("ChevronsDownUp", tokens.icon.action)]) as HTMLButtonElement
+  const header = el("div", { class: "de-section-header de-layers-header" }, [
+    el("span", { class: "de-section-title" }, ["Layers"]),
+    el("span", { class: "de-section-actions" }, [searchToggle, foldAll]),
+  ])
+  search.id = "de-layer-filter"
+  const filterBand = el("div", { class: "de-layer-filter-band", hidden: true }, [search])
 
   /**
    * The way out of a filter that matched nothing, offered where the miss is.
@@ -133,7 +234,7 @@ export function installLayersPanel(context: EditorContext): void {
       onclick: () => {
         search.value = ""
         request()
-        focusControl(search)
+        openFilter(true)
       },
     },
     ["Clear filter"]
@@ -160,29 +261,52 @@ export function installLayersPanel(context: EditorContext): void {
   let emptyShowing = ""
 
   tree.append(indicator)
-  context.slots.left.append(
-    header,
-    /*
-     * The filter's band, on the scale and symmetric, where it was a raw literal
-     * with no top padding at all.
-     *
-     * "0 8px 8px" put the field flush against the tab strip's bottom hairline
-     * while the Controls pane's filter — the other half of the same strip —
-     * carried 8px of air on every side. Two panes of one tab strip inset
-     * differently is the kind of thing nobody reports and everybody feels when
-     * they switch between them.
-     *
-     * The inline side is `space["2xs"]` rather than `md`, so the field's edge lands
-     * on the same 4px column the tree rows below it already indent from.
-     */
-    el(
-      "div",
-      { style: `padding:${tokens.space.sm}px ${tokens.space["2xs"]}px ${tokens.space.sm}px` },
-      [search]
-    ),
-    tree,
-    emptyNote
-  )
+  context.slots.left.append(header, filterBand, tree, emptyNote)
+  // The pane scrolls sideways for this tree alone, with a thumb along its
+  // bottom (`css/left-tabs.ts`, `shell/overlay-scrollbar.ts`); the Controls
+  // pane beside it keeps the left panel's clip.
+  context.slots.left.setAttribute("data-de-scroll-x", "")
+
+  /** Shows or hides the filter band; `focus` moves the caret into it. */
+  function openFilter(open: boolean, focus = open): void {
+    const shown = open || search.value.trim() !== ""
+    filterBand.hidden = !shown
+    setAttr(searchToggle, "aria-expanded", String(shown))
+    if (focus && shown) focusControl(search)
+  }
+  searchToggle.addEventListener("click", () => {
+    if (filterBand.hidden) openFilter(true)
+    else if (search.value) focusControl(search)
+    else {
+      openFilter(false)
+      focusControl(searchToggle)
+    }
+  })
+  search.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return
+    // The first Escape clears the query, the second closes the field.
+    event.stopPropagation()
+    if (search.value) {
+      search.value = ""
+      request()
+    } else {
+      openFilter(false)
+      focusControl(searchToggle)
+    }
+  })
+  search.addEventListener("blur", (event) => {
+    // Pressing the toggle blurs the field first; let the toggle decide.
+    if ((event as FocusEvent).relatedTarget !== searchToggle) openFilter(false, false)
+  })
+  /*
+   * One button, Figma's collapse/expand toggle. Collapse closes every branch;
+   * expand opens every branch the walk can reach within `FILTER_BUDGET` rows.
+   */
+  foldAll.addEventListener("click", () => {
+    expandAll = !anyOpen
+    overrides = new WeakMap()
+    request()
+  })
 
   /**
    * User expand/collapse only. A filter reveals rows without touching it.
@@ -191,7 +315,15 @@ export function installLayersPanel(context: EditorContext): void {
    * change unmounts them: a strong map would keep every page this session ever
    * visited alive, detached subtrees and all.
    */
-  const overrides = new WeakMap<LayerElement, boolean>()
+  let overrides = new WeakMap<LayerElement, boolean>()
+  /** Set by "Expand all": a branch with no override of its own starts open. */
+  let expandAll = false
+  /** Whether any visible row is an open branch, from the last flatten. */
+  let anyOpen = false
+  /** The depth of the deepest visible row, from the last flatten; see `paintRows`. */
+  let deepest = 0
+  /** The tree's width floor last written, so an unchanged one is not rewritten. */
+  let reachShown = -1
   const rowByElement = new Map<LayerElement, HTMLElement>()
   const rowInfo = new WeakMap<HTMLElement, Row>()
   const metaCache = new WeakMap<LayerElement, Meta>()
@@ -228,7 +360,7 @@ export function installLayersPanel(context: EditorContext): void {
       isRoot && info?.filePath && info.lineNumber && host?.filePath && host.lineNumber
         ? { filePath: info.filePath, fromLine: info.lineNumber, parentPath: host.filePath, parentLine: host.lineNumber }
         : null
-    const meta = { name, promoted: isRoot, drag }
+    const meta = { name, tag: element.tagName.toLowerCase(), promoted: isRoot, drag }
     metaCache.set(element, meta)
     return meta
   }
@@ -239,7 +371,10 @@ export function installLayersPanel(context: EditorContext): void {
     let budget = FILTER_BUDGET
     const visit = (element: LayerElement, depth: number): boolean => {
       if (budget-- <= 0 || depth > MAX_DEPTH) return false
-      let hit = metaOf(element).name.toLowerCase().includes(query)
+      // The tag also matches: rows used to be named by tag, and a search for
+      // "button" should still find a button named by its text.
+      const meta = metaOf(element)
+      let hit = meta.name.toLowerCase().includes(query) || meta.tag.startsWith(query)
       if (hit) matched.add(element)
       for (const child of childrenOf(element)) if (visit(child, depth + 1)) hit = true
       if (hit) reveal.add(element)
@@ -254,10 +389,15 @@ export function installLayersPanel(context: EditorContext): void {
     const query = search.value.trim().toLowerCase()
     const found = query ? (filter?.query === query ? filter : (filter = filterFor(query))) : null
     const rows: Row[] = []
+    anyOpen = false
+    deepest = 0
     const walk = (element: LayerElement, parent: LayerElement | null, depth: number, posinset: number, setsize: number) => {
       const kids = childrenOf(element).filter((k) => !found || found.matched.has(element) || found.reveal.has(k))
-      const open = overrides.get(element) ?? Boolean(found && kids.some((k) => found.reveal.has(k)))
+      const open = overrides.get(element) ??
+        ((expandAll && rows.length < FILTER_BUDGET) || Boolean(found && kids.some((k) => found.reveal.has(k))))
       rows.push({ element, parent, depth, meta: metaOf(element), open, hasChildren: kids.length > 0, posinset, setsize })
+      if (depth > deepest) deepest = depth
+      if (open && kids.length) anyOpen = true
       if (!open || depth >= MAX_DEPTH) return
       kids.forEach((kid, index) => walk(kid, element, depth + 1, index + 1, kids.length))
     }
@@ -266,7 +406,8 @@ export function installLayersPanel(context: EditorContext): void {
     return rows
   }
 
-  function buildRow(row: Row, selected: Set<LayerElement>, focusTarget: LayerElement | null, isHidden: boolean) {
+  function buildRow(row: Row, selected: Set<LayerElement>, focusTarget: LayerElement | null, isHidden: boolean,
+    look: Look | null, block: string) {
     let node = rowByElement.get(row.element)
     if (!node) {
       // Built once and cloned: a filter can bring in a thousand rows in one
@@ -296,17 +437,21 @@ export function installLayersPanel(context: EditorContext): void {
          * say, so the overwhelmingly common row costs one empty span.
          */
         el("span", { class: "de-layer-saved" }),
-        el("span", { class: "de-layer-actions" }, [
-          el("button", { class: "de-layer-action", type: "button", "data-action": "lock" }),
-          el("button", { class: "de-layer-action", type: "button", "data-action": "eye" }),
-          el("button", { class: "de-layer-action de-layer-action--danger", type: "button",
-            "data-action": "delete" }),
+        // The strip hangs off a zero-wide anchor that sticks to the pane's
+        // visible end, so it stays in view when the tree scrolls sideways.
+        el("span", { class: "de-layer-end" }, [
+          el("span", { class: "de-layer-actions" }, [
+            el("button", { class: "de-layer-action", type: "button", "data-action": "lock" }),
+            el("button", { class: "de-layer-action", type: "button", "data-action": "eye" }),
+            el("button", { class: "de-layer-action de-layer-action--danger", type: "button",
+              "data-action": "delete" }),
+          ]),
         ]),
       ])).cloneNode(true) as HTMLElement
       // open-pencil stops the press on the action itself rather than filtering
       // it out of the row handler. Same here, and on both events: pointerdown
       // is what would otherwise begin a row drag, click is what would select.
-      const strip = fresh.lastElementChild as HTMLElement
+      const strip = (fresh.lastElementChild as HTMLElement).firstElementChild as HTMLElement
       strip.addEventListener("pointerdown", (event) => event.stopPropagation())
       strip.addEventListener("click", (event) => {
         event.stopPropagation()
@@ -321,19 +466,23 @@ export function installLayersPanel(context: EditorContext): void {
       rowByElement.set(row.element, node)
     }
     rowInfo.set(node, row)
-    const [twisty, typeMark, label, saved, strip] = Array.from(node.children) as HTMLElement[]
-    const [lock, eye, remove] = Array.from(strip.children) as HTMLElement[]
+    const [twisty, typeMark, label, saved, end] = Array.from(node.children) as HTMLElement[]
+    const [lock, eye, remove] = Array.from((end.firstElementChild as HTMLElement).children) as HTMLElement[]
     const openState = row.hasChildren ? String(row.open) : null
     // Rows are recycled across renders, so the twisty is toggled by presence
     // rather than rebuilt — a fresh <svg> per frame would churn the whole tree.
-    if (row.hasChildren && twisty.childElementCount === 0) twisty.append(glyph("ChevronRight"))
+    if (row.hasChildren && twisty.childElementCount === 0) twisty.append(glyph("ChevronRight", tokens.icon.marker))
     else if (!row.hasChildren && twisty.childElementCount > 0) twisty.replaceChildren()
     // Same reason the mark is remembered on the node: it can only change when
     // the element does, and redrawing it is another whole <svg>.
-    const mark = glyphFor(row.element, row.meta.promoted)
+    // Figma draws its type marks at 16 beside 11px names; `icon.action` is the
+    // chrome's row glyph and keeps that proportion beside 12px names.
+    const kind = layerKindOf(row.element, row.meta.promoted, look)
+    const mark = KIND_GLYPH[kind]
+    if (typeMark.dataset.kind !== kind) typeMark.dataset.kind = kind
     if (typeMark.dataset.glyph !== mark) {
       typeMark.dataset.glyph = mark
-      typeMark.replaceChildren(glyph(mark))
+      typeMark.replaceChildren(glyph(mark, tokens.icon.action))
     }
     /*
      * The name, and a way to read the half of it the panel cut off.
@@ -358,8 +507,13 @@ export function installLayersPanel(context: EditorContext): void {
      * per repaint and an attribute write that changes nothing still dirties
      * style.
      */
+    // The tag rides along in the tip and the description, so naming a layer
+    // after its text or id never hides what element it is.
+    const tagged = row.meta.name === row.meta.tag ? null : row.meta.tag
+    const tipText = tagged ? `${row.meta.name} · ${tagged}` : row.meta.name
     if (label.textContent !== row.meta.name) label.textContent = row.meta.name
-    if (label.title !== row.meta.name) label.title = row.meta.name
+    if (label.title !== tipText) label.title = tipText
+    setAttr(node, "aria-description", tagged)
     /*
      * Read off the store rather than remembered, for the same reason the hidden
      * state below is: this changes from a surface that is not this tree —
@@ -406,8 +560,8 @@ export function installLayersPanel(context: EditorContext): void {
     // never come back.
     setAttr(node, "class", `de-layer${row.meta.promoted ? " de-layer--component" : ""}` +
       `${isLocked ? " de-layer--locked" : ""}${isHidden ? " de-layer--hidden" : ""}` +
-      `${drag?.element === row.element ? " de-layer--dragging" : ""}`)
-    setAttr(node, "style", `padding-left:${8 + row.depth * INDENT}px;--de-indent:${row.depth * INDENT}px`)
+      `${drag?.element === row.element ? " de-layer--dragging" : ""}${block}`)
+    setAttr(node, "style", `padding-left:${INSET + row.depth * INDENT}px`)
     setAttr(node, "aria-expanded", openState)
     setAttr(node, "aria-selected", String(selected.has(row.element)))
     setAttr(node, "aria-level", String(row.depth + 1))
@@ -416,6 +570,31 @@ export function installLayersPanel(context: EditorContext): void {
     setAttr(node, "tabindex", row.element === focusTarget ? "0" : "-1")
     node.draggable = Boolean(row.meta.drag)
     return node
+  }
+
+  /**
+   * Figma's selection block, as one class suffix per visible row.
+   *
+   * A selected row's open descendants share a lighter tint, and the whole run
+   * reads as one rounded block: a row joined to the lit row above or below it
+   * drops the corners on that side. Adjacent selected siblings join the same
+   * way, which is how Figma draws a range.
+   */
+  function selectionBlocks(rows: Row[], selected: Set<LayerElement>): string[] {
+    if (selected.size === 0) return rows.map(() => "")
+    const lit: boolean[] = []
+    const child: boolean[] = []
+    let anchorDepth = -1
+    rows.forEach((row, index) => {
+      if (anchorDepth >= 0 && row.depth <= anchorDepth) anchorDepth = -1
+      const isSelected = selected.has(row.element)
+      child[index] = anchorDepth >= 0
+      if (isSelected && anchorDepth < 0) anchorDepth = row.depth
+      lit[index] = isSelected || child[index]
+    })
+    return rows.map((_, index) => !lit[index] ? "" :
+      `${child[index] ? " de-layer--in-selection" : ""}` +
+      `${lit[index - 1] ? " de-layer--join-up" : ""}${lit[index + 1] ? " de-layer--join-down" : ""}`)
   }
 
   function render(): void {
@@ -444,6 +623,11 @@ export function installLayersPanel(context: EditorContext): void {
       if (count > 0) savedKeys.set(key, count)
     }
     paintRows(state)
+    const foldLabel = anyOpen ? "Collapse all layers" : "Expand all layers"
+    if (foldAll.getAttribute("aria-label") !== foldLabel) {
+      for (const [name, value] of Object.entries(tipAttrs(foldLabel))) foldAll.setAttribute(name, value)
+      foldAll.replaceChildren(glyph(anyOpen ? "ChevronsDownUp" : "ChevronsUpDown", tokens.icon.action))
+    }
   }
 
   /*
@@ -510,16 +694,22 @@ export function installLayersPanel(context: EditorContext): void {
     // any row is written, so the reads cost one style flush between them rather
     // than one per row after the first write. Until the page's first frame the
     // inline answer stands in (see `settled`).
-    const hidden = rows.map((row) =>
-      settled
-        ? getComputedStyle(row.element).display === "none"
-        : (row.element as HTMLElement).hidden === true || (row.element as HTMLElement).style?.display === "none"
-    )
+    const looks = rows.map((row): Look => {
+      if (!settled) {
+        const inline = (row.element as HTMLElement).style
+        return { display: (row.element as HTMLElement).hidden === true ? "none" : inline?.display ?? "",
+          flexDirection: inline?.flexDirection ?? "" }
+      }
+      const style = getComputedStyle(row.element)
+      return { display: style.display, flexDirection: style.flexDirection }
+    })
+    const blocks = selectionBlocks(visible, selected)
     tree.style.paddingTop = start > 0 ? `${start * ROW}px` : ""
     tree.style.paddingBottom = end < total ? `${(total - end) * ROW + tokens.space.sm}px` : ""
     let cursor = indicator.nextSibling
     rows.forEach((row, index) => {
-      const node = buildRow(row, selected, focusTarget, hidden[index])
+      const look = looks[index]
+      const node = buildRow(row, selected, focusTarget, look.display === "none", look, blocks[start + index])
       if (node === cursor) cursor = cursor.nextSibling
       else tree.insertBefore(node, cursor)
     })
@@ -531,10 +721,43 @@ export function installLayersPanel(context: EditorContext): void {
       cursor = next
     }
     paintEmpty()
+    const reach = layersReach(deepest)
+    if (reach !== reachShown) {
+      reachShown = reach
+      tree.style.setProperty("--de-layers-reach", `${reach}px`)
+    }
     // Never smooth: selection can change faster than a smooth scroll settles.
     if (pane && scrollTo !== null) pane.scrollTop = scrollTo
-    else if (reveal && !(pane && view > 0)) rowByElement.get(reveal)?.scrollIntoView({ block: "nearest" })
+    else if (reveal && !(pane && view > 0)) {
+      // A row spans the whole tree, so the browser's inline `nearest` would
+      // nudge the pane sideways; `revealSideways` owns that axis.
+      const sideways = scroller()
+      const left = sideways?.scrollLeft ?? 0
+      rowByElement.get(reveal)?.scrollIntoView({ block: "nearest" })
+      if (sideways && sideways.scrollLeft !== left) sideways.scrollLeft = left
+    }
+    if (reveal) revealSideways(reveal, revealSoft)
     reveal = null
+    revealSoft = false
+  }
+
+  /** Scrolls the pane sideways, only when it must, so the revealed row's name is on screen. */
+  function revealSideways(element: LayerElement, soft: boolean): void {
+    const node = rowByElement.get(element)
+    const sideways = scroller()
+    if (!node || !sideways || sideways.clientWidth === 0) return
+    const origin = sideways.getBoundingClientRect().left - sideways.scrollLeft
+    const [twisty, , label] = Array.from(node.children) as HTMLElement[]
+    // The name's box runs to the row's end; its TEXT is what has to show.
+    const text = document.createRange()
+    text.selectNodeContents(label)
+    const name = label.getBoundingClientRect().left - origin
+    const target = sidewaysScroll(
+      { left: sideways.scrollLeft, width: sideways.clientWidth },
+      { start: twisty.getBoundingClientRect().left - origin, name, end: name + text.getBoundingClientRect().width },
+      soft
+    )
+    if (target !== null && target !== sideways.scrollLeft) sideways.scrollLeft = target
   }
 
   /** Repaints the slice when the view has run past the rows painted for it. */
@@ -575,6 +798,8 @@ export function installLayersPanel(context: EditorContext): void {
   let settled = false
   /** The row to bring into view on the next paint; set by a selection change. */
   let reveal: LayerElement | null = null
+  /** Whether that reveal came from the tree itself — a click, a key; see `sidewaysScroll`. */
+  let revealSoft = false
   const showing = (state = context.getState()) =>
     state.layersOpen && state.leftTab === "layers" && !state.chromeHidden
 
@@ -704,9 +929,12 @@ export function installLayersPanel(context: EditorContext): void {
       context.bridge.refreshGeometry()
       // Every other panel repaints from this.
       context.refresh()
-      if (next) focused = next
+      if (next) {
+        focused = reveal = next
+        revealSoft = true
+      }
     })
-    if (next) focusControl(rowByElement.get(next))
+    if (next) focusControl(rowByElement.get(next), { preventScroll: true })
   }
 
   /** A new Set per toggle: `setState` compares by identity. */
@@ -716,6 +944,16 @@ export function installLayersPanel(context: EditorContext): void {
     context.setState({ locked })
     request()
   }
+
+  /*
+   * The action strip's own `stopPropagation` cannot be relied on: the shell
+   * neuters it on every chrome pointer event (`restoreChromeFocus` in
+   * `shell/shell.ts`) to keep the vendor's capture listeners out. So the tree
+   * asks where the event came from instead, or pressing the lock also selects
+   * the row, and Enter on a focused action selects instead of pressing it.
+   */
+  const fromActions = (event: Event) =>
+    event.target instanceof Element && event.target.closest(".de-layer-actions") !== null
 
   function rowAt(target: EventTarget | null): Row | null {
     const node = target instanceof Element ? target.closest(".de-layer") : null
@@ -750,9 +988,13 @@ export function installLayersPanel(context: EditorContext): void {
       // document, Home, End or a far ArrowUp must bring the row in before focus
       // can land on it — which is the scroll focusing it would have caused.
       focused = reveal = element
+      revealSoft = true
       owed = true
     })
-    focusControl(rowByElement.get(element))
+    // The paint above already brought the row into view on both axes. Focus's
+    // own scroll would treat the row as the tree's full width and shift the
+    // pane sideways a few pixels on every arrow key.
+    focusControl(rowByElement.get(element), { preventScroll: true })
   }
 
   /**
@@ -841,6 +1083,7 @@ export function installLayersPanel(context: EditorContext): void {
   }
 
   tree.addEventListener("click", (event) => {
+    if (fromActions(event)) return
     const row = rowAt(event.target)
     if (!row) return
     if (row.hasChildren && (event.target as Element).closest(".de-layer-twisty")) toggle(row, !row.open)
@@ -853,6 +1096,7 @@ export function installLayersPanel(context: EditorContext): void {
   tree.addEventListener("pointerleave", () => context.setState({ hovered: null }))
 
   tree.addEventListener("keydown", (event) => {
+    if (fromActions(event)) return
     const row = rowAt(event.target)
     if (!row) return
     const index = visible.indexOf(row)
@@ -992,7 +1236,12 @@ export function installLayersPanel(context: EditorContext): void {
       for (let n = element && resolver.layerParent(element); n; n = resolver.layerParent(n)) {
         overrides.set(n, true)
       }
-      if (element) focused = reveal = element
+      if (element) {
+        focused = reveal = element
+        // Inside a tree batch the reader pressed a row or a key; anything else
+        // (a click on the canvas) asks for the whole name.
+        revealSoft = batching > 0
+      }
       changed = true
     }
     // Shown again after missing a paint: catch up, and bring the selected row

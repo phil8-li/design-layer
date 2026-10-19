@@ -5,7 +5,8 @@
  * sections, each owning one file, each returning `null` when it has nothing to
  * say about the current selection — which keeps the panel as short as the
  * element is simple. **Changes** holds the session's outbox. **Design system**
- * holds the project's libraries and the audit against them.
+ * holds the project's libraries and the audit against them. There is no
+ * Prototype tab: one was built and then removed at the user's request.
  *
  * They are tabs rather than more sections because they are not more to scroll
  * past: each is a different thing to be looking at, and two of them own a
@@ -63,6 +64,7 @@ import type { Selection } from "../../core/types"
 import type { InspectorTab } from "./tab-code"
 import { annotationsTab } from "./tab-annotations"
 import { designSystemTab } from "./tab-design-system"
+import { layerHeaderSection } from "./section-layer-header"
 import { iconSection } from "./section-icon"
 import { instanceSection } from "./section-instance"
 import { positionSection } from "./section-position"
@@ -72,9 +74,11 @@ import { appearanceSection } from "./section-appearance"
 import { fillSection } from "./section-fill"
 import { strokeSection } from "./section-stroke"
 import { effectsSection } from "./section-effects"
+import { selectionColorsSection } from "./section-selection-colors"
 import { typographySection } from "./section-typography"
 import { classesSection } from "./section-classes"
 import { formatCount } from "../../core/format"
+import { fanOutWriter } from "./multi"
 
 export interface SectionContext {
   editor: EditorContext
@@ -83,12 +87,12 @@ export interface SectionContext {
   /**
    * Everything selected, primary first — `selection` is this one's head.
    *
-   * Both are here rather than one, because a section that describes a box
-   * (fill, typography, the frame readout) is answering a question about ONE
-   * box however many are picked, and a section that places boxes relative to
-   * each other is answering a question about the set. Making every section
-   * read `selections[0]` would have been the same information with every
-   * existing call site rewritten to say it.
+   * Both are here rather than one, because most sections still build their
+   * controls around ONE box and let `fanOutWriter` (`multi.ts`) spread the
+   * write over the set, reading the set only to say "Mixed" through
+   * `sharedValue`; a section that places boxes relative to each other reads
+   * the set directly. Making every section read `selections[0]` would have
+   * been the same information with every existing call site rewritten.
    *
    * Optional, and a reader must treat an absent one as "just the primary".
    * The section suites build this object by hand to drive one section in
@@ -106,7 +110,9 @@ export type InspectorSection = (context: SectionContext) => HTMLElement | null
 
 /** Figma's own top-to-bottom order, minus the sections with no DOM analogue. */
 const SECTIONS: InspectorSection[] = [
-  // First, like Figma's instance properties: the first question about a placed
+  // Figma's layer header: the layer type and its actions, with no body.
+  layerHeaderSection,
+  // Then, like Figma's instance properties: the first question about a placed
   // symbol is which symbol it is.
   iconSection,
   // Directly under it, the way Figma stacks an instance's block: which main
@@ -124,17 +130,25 @@ const SECTIONS: InspectorSection[] = [
   // properties one section edits — text styles in Typography, color styles in
   // Fill, and so on — so it lives in that section's header, beside the controls
   // it would change. `options/panel.ts` builds that control.
-  responsiveSection,
-  // Above layout, the way every editor stacks it: where the thing sits and how
-  // it lines up with its siblings is the first question, and it is answerable
-  // without knowing anything about the box's own internals.
+  //
+  // From here down is Figma's order, read off its panel: Position, Layout,
+  // Appearance, Typography, then the paints (Fill, Stroke, Effects). Typography
+  // sits above Fill because in Figma a text layer's color IS its fill, so the
+  // type controls come first and the color right under them.
   positionSection,
   unifiedLayoutSection,
   appearanceSection,
+  typographySection,
   fillSection,
   strokeSection,
   effectsSection,
-  typographySection,
+  // Figma's next section: every colour the selection and its children paint.
+  selectionColorsSection,
+  // Below the paints, where Figma keeps Layout guide and Export: per-breakpoint
+  // overrides are a web concept with no Figma section, and at the top of the
+  // panel they pushed Position, the first thing a Figma user looks for, a full
+  // screen down.
+  responsiveSection,
   classesSection,
 ]
 
@@ -146,6 +160,14 @@ const SECTIONS: InspectorSection[] = [
  * nothing else they show depends on where the element was written.
  */
 const SOURCE_SECTIONS: InspectorSection[] = [instanceSection, classesSection]
+
+/**
+ * Sections about one element's identity rather than its look: which icon,
+ * which component, its own class list, its own breakpoints. With several
+ * layers picked they keep acting on the primary, so they get the plain writer;
+ * every other section gets `fanOutWriter`, which spreads its edit over the set.
+ */
+const PRIMARY_ONLY = new Set<InspectorSection>([iconSection, instanceSection, responsiveSection, classesSection])
 
 interface FocusMemory {
   /** `data-de-field` identity, when the control declared one. */
@@ -570,13 +592,11 @@ export function installInspector(editor: EditorContext): void {
       return
     }
 
-    /*
-     * No identity header over the sections. It named the component, its tag
-     * and its source line, and every one of those is already on screen where it
-     * belongs: the layer row is selected in the left panel, the canvas labels
-     * the box, and the Code tab beside Layers is where source lives. Repeating
-     * them here spent the top of the panel on a readout instead of a control.
-     */
+    // The layer header (`section-layer-header.ts`) is the first section: Figma
+    // users expect the layer type and its actions at the top, and the user
+    // asked for it.
+    // Primary-only sections keep their own reach; the rest reach every
+    // selected layer through `fanOutWriter`, each with its own removals.
     const context: SectionContext = {
       editor,
       writer,
@@ -585,6 +605,7 @@ export function installInspector(editor: EditorContext): void {
       computed: getComputedStyle(selection.element),
       invalidate,
     }
+    const shared: SectionContext = { ...context, writer: fanOutWriter(writer, selections) }
 
     /*
      * Built detached and appended in one go. The sections read the element's
@@ -597,7 +618,7 @@ export function installInspector(editor: EditorContext): void {
     for (const section of SECTIONS) {
       let node: HTMLElement | null = null
       try {
-        node = section(context)
+        node = section(PRIMARY_ONLY.has(section) ? context : shared)
       } catch (error) {
         console.warn("[designlayer] inspector section failed", error)
       }

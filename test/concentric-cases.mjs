@@ -435,9 +435,6 @@ function cornerInsets(padding) {
  * changes, by whoever changed it.
  */
 const LEAVES = {
-  ".de-paint-card":
-    "its first child is a ROW, and the 20px swatch at the left of it is centred in a 24px " +
-    "band — 4px in across, 6px down. Nothing reaches a corner.",
   ".de-ann-composer-text": "a <textarea>. It has no element children to nest.",
   /*
    * `.de-lib-prop` was here, a column whose first child was `.de-lib-line`. It

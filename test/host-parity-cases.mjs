@@ -237,6 +237,11 @@ async function panelFor(hostConfig, elementId) {
   const sections = Array.from(slots.right.querySelectorAll("button[aria-expanded]")).map((b) =>
     (b.getAttribute("aria-label") || b.textContent || "").trim()
   )
+  // An empty Fill, Stroke or Effects is a header with no fold button, as in
+  // Figma, so its title is read from the header itself.
+  for (const title of slots.right.querySelectorAll(".de-section--empty .de-section-title")) {
+    sections.push((title.textContent || "").trim())
+  }
   const controls = Array.from(slots.right.querySelectorAll("input,select,button"))
     .map((c) => c.getAttribute("aria-label") || c.getAttribute("placeholder") || (c.textContent || "").trim())
     .filter(Boolean)
@@ -329,9 +334,14 @@ check("every always-drawn section carries its saved-style control, on both", () 
    * control from one section would quietly lose the only way to save that
    * kind of style, so the toggles are counted per section.
    */
-  const toggles = ["Layout styles", "Appearance styles", "Color styles", "Stroke styles", "Effect styles"]
+  const toggles = ["Layout styles", "Appearance styles"]
   for (const panel of [reactPanel, angularPanel]) {
     for (const name of toggles) {
+      assert.ok(panel.controls.includes(name), `${name} is missing`)
+    }
+    // An empty paint section is Figma's header and `+`, with no styles toggle
+    // until a style exists for its scope (`test/paint-sections-cases.mjs`).
+    for (const name of ["Add fill", "Add stroke", "Add effect"]) {
       assert.ok(panel.controls.includes(name), `${name} is missing`)
     }
     assert.ok(!panel.sections.includes("Saved styles"), "the standalone Saved styles section is back")

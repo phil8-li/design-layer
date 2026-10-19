@@ -160,7 +160,45 @@ function buildFixture() {
   target.append(chevron)
   card.append(heading, target)
   root.append(card)
-  return { root, card, target }
+
+  /*
+   * One node per Figma reference state, so `--select=` can put the panel in
+   * front of the same kinds of layer the Figma captures show: a plain
+   * rectangle, one with mixed corners, a text layer, a frame with no auto
+   * layout and a child placed inside it, a vertical list whose rows fill its
+   * width, and a grid.
+   */
+  const add = (tag, style, text) => {
+    const node = document.createElement(tag)
+    node.setAttribute("style", style)
+    if (text) node.textContent = text
+    return node
+  }
+  const shapes = add("div", "display:flex;gap:24px;align-items:flex-start;margin-top:32px;flex-wrap:wrap")
+  const box = add("div", "width:120px;height:80px;border-radius:12px;background:#4a5df9")
+  const boxMixed = add("div", "width:120px;height:80px;border-radius:4px 12px 20px 0;background:#d9d9d9")
+  const paragraph = add(
+    "p",
+    "margin:0;max-width:220px;font-size:16px;line-height:24px;font-weight:400;color:#1d2026",
+    "Plans scale with your team."
+  )
+  const freeform = add("div", "position:relative;width:320px;height:200px;background:#ffffff;overflow:hidden")
+  const absChild = add("div", "position:absolute;left:40px;top:40px;width:80px;height:60px;background:#d9d9d9")
+  freeform.append(absChild)
+  const list = add(
+    "div",
+    "display:flex;flex-direction:column;gap:8px;padding:12px;width:240px;background:#ffffff;border-radius:8px"
+  )
+  const rows = [0, 1, 2].map(() => add("div", "align-self:stretch;height:32px;background:#e9edf0;border-radius:4px"))
+  list.append(...rows)
+  const grid = add(
+    "div",
+    "display:grid;grid-template-columns:repeat(2, 1fr);gap:8px;padding:8px;width:200px;background:#ffffff"
+  )
+  grid.append(...[0, 1, 2, 3].map(() => add("div", "height:40px;background:#e9edf0")))
+  shapes.append(box, boxMixed, paragraph, freeform, list, grid)
+  root.append(shapes)
+  return { root, card, target, heading, box, boxMixed, paragraph, freeform, absChild, list, row: rows[0], grid, shapes }
 }
 
 /**
@@ -189,6 +227,24 @@ function buildBridge(nodes) {
     tagName: "button",
     ...frame("TrialButton", 24),
     stack: [frame("TrialButton", 24), frame("PricingCard", 18)],
+  })
+  // The reference-state nodes, each on a line of its own in the same file.
+  // The reference-state nodes, each on a line of its own in the same file. They
+  // share PricingPage's owner stack, as React reports it, so none of them reads
+  // as a component root.
+  const extra = {
+    shapes: ["div", 33], box: ["div", 34], boxMixed: ["div", 35], paragraph: ["p", 36],
+    freeform: ["div", 37], absChild: ["div", 38], list: ["div", 40], row: ["div", 41], grid: ["div", 45],
+  }
+  for (const [key, [tagName, line]] of Object.entries(extra)) {
+    if (!nodes[key]) continue
+    info.set(nodes[key], { tagName, ...frame("PricingPage", line), stack: [frame("PricingPage", 9)] })
+  }
+  // Rendered by the card, so it shares the card's owner stack and is not a root.
+  info.set(nodes.heading, {
+    tagName: "h2",
+    ...frame("PricingCard", 20),
+    stack: [frame("PricingCard", 18), frame("PricingPage", 9)],
   })
 
   const listeners = new Set()
@@ -228,7 +284,7 @@ function buildBridge(nodes) {
       return null
     },
     hitTest: () => null,
-    selectedElement: () => nodes.target,
+    selectedElement: () => nodes.selected ?? nodes.target,
     refreshGeometry() {},
     toast() {},
     root: () => nodes.root,
@@ -293,7 +349,11 @@ export function mount(options = {}) {
   seedOutbox(fixture.target)
 
   installInspector(editor)
-  editor.select(fixture.target)
+  // `?select=` names a reference state; anything else gets the historical button.
+  // A comma list selects several, the first as primary, the way shift-click does.
+  const picks = String(options.select ?? "").split(",").map((key) => fixture[key]).filter(Boolean)
+  editor.select(picks[0] ?? fixture.target)
+  for (const node of picks.slice(1)) editor.select(node, { additive: true })
 
   /**
    * Switch tabs the way a user does: by pressing the tab.

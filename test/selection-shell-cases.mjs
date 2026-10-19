@@ -386,6 +386,17 @@ await check("the vendor overlay is patched off its own rAF loop", () => {
   )
 })
 
+/*
+ * The Mac app's desk frames every editor on another port. The vendor's own
+ * `window !== window.top` bail kept its engine off there, so a double-click on
+ * a text layer did nothing and no edit reached the source.
+ */
+await check("the vendor overlay boots inside the Mac app's frame", () => {
+  assert.doesNotMatch(patchedVendor, /window!==window\.top/)
+  assert.match(patchedVendor, /function lp\(\)\{let e=window\.__REACT_REWRITE_WS_PORT__;/)
+  assert.match(patchedVendor, /document\.addEventListener\("dblclick",al,!0\)/, "text editing still binds")
+})
+
 const disabledControl = {
   path: "Cards.Layout.gap",
   key: "gap",

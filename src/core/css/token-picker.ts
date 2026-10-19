@@ -6,7 +6,7 @@
  */
 
 import { tokens as t, accentFillText } from "../tokens"
-import { CONTROL_RADIUS, FOCUS_RING } from "./panels"
+import { CONTROL_RADIUS, FOCUS_INSET, FOCUS_RING } from "./panels"
 
 export const tokenPickerCss = `/* ---------- token field ---------- */
 /*
@@ -271,4 +271,82 @@ export const tokenPickerCss = `/* ---------- token field ---------- */
 }
 .de-token-custom-input::placeholder { color: ${t.color.textDim}; }
 
+
+/* ---------- a number field's token binding ---------- */
+/*
+ * Figma's "Apply variable": a hexagon at the field's end that shows on hover
+ * and keyboard focus. It keeps its slot while hidden, so the number does not
+ * shift when the pointer arrives, and it stays in the tab order so a keyboard
+ * reaches it. A bound field shows it all the time.
+ */
+.de-tokenbind-apply {
+  flex: none; align-self: stretch;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: ${t.size.rowHeight - t.space["2xs"]}px; padding: 0;
+  border: none; background: transparent;
+  color: ${t.color.textMuted};
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity ${t.duration.hover} ${t.ease}, color ${t.duration.hover} ${t.ease};
+}
+.de-tokenbind:hover .de-tokenbind-apply,
+.de-tokenbind:focus-within .de-tokenbind-apply,
+.de-tokenbind-apply[aria-expanded="true"],
+.de-tokenbind--bound .de-tokenbind-apply { opacity: 1; }
+@media (hover: hover) and (pointer: fine) {
+  .de-tokenbind-apply:hover { color: ${t.color.text}; }
+}
+.de-tokenbind-apply:focus-visible { ${FOCUS_INSET} }
+.de-tokenbind-apply[disabled] { color: ${t.color.textDisabled}; cursor: default; }
+/* Nothing to scrub while a token holds the value. */
+/* A bound field does not scrub, so its label drops the ew-resize of a live one.
+   \`auto\`, not \`default\`: it is not a control, and the chrome keeps \`default\`
+   for disabled ones. */
+.de-tokenbind-label { cursor: auto; }
+/*
+ * The bound token's name where the number was, on a raised chip so it reads as
+ * a reference rather than as typed text. \`bgRaised\` stays distinct from the
+ * field in dark; the hairline separates it from the field in light, where
+ * \`bgRaised\` is white on a near-white well.
+ */
+.de-tokenbind-chip {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center;
+  height: ${t.size.rowHeight - 2 * t.space["2xs"]}px;
+  padding-left: ${t.space["2xs"]}px;
+  border-radius: ${t.radius.xs};
+  background: ${t.color.bgRaised};
+  box-shadow: inset 0 0 0 1px ${t.color.border};
+  color: ${t.color.text};
+  font-size: ${t.type.body};
+}
+.de-tokenbind-name {
+  flex: 1; min-width: 0;
+  display: flex;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.de-tokenbind-group { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: ${t.color.textMuted}; }
+.de-tokenbind-leaf { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+/*
+ * Detach sits on the chip's end and shows with the hexagon. Zero-width while
+ * hidden, so a short name keeps the whole chip; still focusable, so Tab from
+ * the field reveals it.
+ */
+.de-tokenbind-detach {
+  flex: none; align-self: stretch;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 0; padding: 0; overflow: hidden;
+  border: none; background: transparent;
+  color: ${t.color.textMuted};
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity ${t.duration.hover} ${t.ease};
+}
+.de-tokenbind:hover .de-tokenbind-detach,
+.de-tokenbind:focus-within .de-tokenbind-detach { width: ${t.icon.action}px; opacity: 1; }
+@media (hover: hover) and (pointer: fine) {
+  .de-tokenbind-detach:hover { color: ${t.color.text}; }
+}
+.de-tokenbind-detach:focus-visible { ${FOCUS_INSET} }
 `

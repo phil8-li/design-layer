@@ -168,8 +168,9 @@ const MAP = {
   TextAlignMiddle: { from: "arrows-in-line-vertical", scale: 0.8 },
   TextAlignBottom: "arrow-line-down",
 
-  // Auto layout's flow strip: off, then the same boxes in three arrangements.
-  FlowNone: "prohibit",
+  // Auto layout's flow strip. Freeform is Figma's loose shapes, not a "none" sign:
+  // children keep their own placement, which is a layout too.
+  FlowNone: "shapes",
   FlowHorizontal: "columns",
   FlowVertical: "rows",
   FlowWrap: "squares-four",
@@ -195,6 +196,49 @@ const MAP = {
    * centre, because all of a corner's mass sits at one end of its box.
    */
   CornerRadius: { add: ["M56,224V128A72,72,0,0,1,128,56H224A8,8,0,0,1,224,72H128A56,56,0,0,0,72,128V224A8,8,0,0,1,56,224Z"] },
+
+  /*
+   * The Figma panel's row marks. Each is the glyph a Figma user already reads
+   * in that slot: the angle on Rotation, the turn and the two mirrors beside
+   * it, the drop on blend mode, four corner brackets for individual corners,
+   * a bounding box for per-side values, sliders for a settings popover.
+   */
+  Rotation: "angle",
+  Rotate90: "arrow-clockwise",
+  FlipHorizontal: "flip-horizontal",
+  FlipVertical: "flip-vertical",
+  BlendMode: "drop",
+  IndividualCorners: "frame-corners",
+  IndividualSides: "bounding-box",
+  Settings: "sliders-horizontal",
+  FlowGrid: "grid-four",
+  // The layer header's More actions, Figma's three dots.
+  DotsThree: "dots-three",
+  // Selection colors' "select layers with this colour", Figma's target mark.
+  Target: "crosshair-simple",
+  // A field's "Apply token" affordance, Figma's variable hexagon.
+  Variable: "hexagon",
+  // Layers row kinds Figma marks with their own glyph: a frame, a shape, a vector.
+  Frame: "hash",
+  Rectangle: "rectangle",
+  Vector: "pen-nib",
+  // The Layout header's add/remove toggle and type settings' decoration rail.
+  AutoLayout: "layout",
+  Underline: "text-underline",
+  Strikethrough: "text-strikethrough",
+  // Horizontal and vertical padding: the PadLeft frame with both measured edges.
+  PadHorizontal: { from: "square", add: ["M48,48H64V208H48Z", "M192,48H208V208H192Z"] },
+  PadVertical: { from: "square", add: ["M48,48H64V208H48Z", "M192,48H208V208H192Z"], rotate: 90 },
+  LineHeight: "text-a-underline",
+  // Letter spacing: Phosphor's T between two measured bars, Figma's |A| in this set.
+  LetterSpacing: {
+    from: "text-t",
+    scale: 0.86,
+    add: [
+      "M24,48a8,8,0,0,1,8,8V200a8,8,0,0,1-16,0V56A8,8,0,0,1,24,48Z",
+      "M232,48a8,8,0,0,1,8,8V200a8,8,0,0,1-16,0V56A8,8,0,0,1,232,48Z",
+    ],
+  },
 
   // Not drawn by the chrome today; kept so a name never disappears under a caller.
   Ban: "prohibit",

@@ -1264,11 +1264,26 @@ function savedStylesCases(surface) {
     }
     globalThis.requestAnimationFrame ??= (callback) => setTimeout(callback, 0)
     globalThis.cancelAnimationFrame ??= (handle) => clearTimeout(handle)
+    // The fixture is `<p>Hello</p>`: no border and no shadow, so Stroke and
+    // Effects are Figma's empty header and `+`, with no toggle until a style
+    // exists. Fill is not empty, because the text colour is its fill.
+    const empty = new Set(["strokeSection", "effectsSection"])
     for (const [name, label] of expected) {
       const node = surface[name](context)
       assert.ok(node, `${name} drew nothing`)
       const toggle = node.querySelector(".de-section-actions .de-style-toggle")
+      if (empty.has(name)) {
+        assert.equal(node.getAttribute("data-de-empty"), "true", `${name} is not drawn empty`)
+        assert.equal(toggle, null, `${name} offers styles with none saved`)
+        continue
+      }
       assert.equal(toggle?.getAttribute("aria-label"), label, `${name} has no styles toggle`)
+    }
+    // A saved style brings the toggle back, so the header stays the way in.
+    withStyles(option("s1", "Hairline", "stroke"), option("s2", "Lifted", "effects"))
+    for (const [name, label] of [["strokeSection", "Stroke styles"], ["effectsSection", "Effect styles"]]) {
+      const toggle = surface[name](context).querySelector(".de-section-actions .de-style-toggle")
+      assert.equal(toggle?.getAttribute("aria-label"), label, `${name} hid its saved styles`)
     }
   })
 

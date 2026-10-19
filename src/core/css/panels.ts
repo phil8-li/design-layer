@@ -346,6 +346,9 @@ html.designlayer-chrome-hidden .de-panel--right { transform: translateX(100%); }
   border-radius: ${t.radius.sm}; corner-shape: round;
   background-color: transparent;
 }
+/* The sideways copy runs along the bottom of a pane that opts in
+   (\`data-de-scroll-x\`); its width and place are written inline. */
+.de-scroll-thumb--x { right: auto; left: 0; height: 12px; }
 .de-scroll-thumb[hidden] { display: none; }
 .de-scroll-thumb[data-scrolling] { background-color: ${t.color.scrollbarThumb}; }
 .de-scroll-thumb:hover, .de-scroll-thumb[data-dragging] { background-color: ${t.color.scrollbarThumbHover}; }
@@ -634,6 +637,41 @@ html.designlayer-chrome-hidden .de-panel--right { transform: translateX(100%); }
    longer a child of the button that turns it. */
 .de-section-header--collapsed .de-chevron { transform: rotate(0deg); }
 
+/*
+ * The Design tab's header is Figma's: the title, then the actions standing over
+ * the rows' 24px action column, and no resting chevron. Figma's sections do not
+ * fold, so a Figma user reads a chevron on every header as noise and expects
+ * \`+\` to line up with the per-row toggles under it.
+ *
+ * The fold stays (the whole bar is still the button), and its mark moves to
+ * just after the title: shown on hover and on keyboard focus, so it can be
+ * found, and always on a folded section, so hidden rows have a visible cue.
+ * The last action is centred over the action column: the plate is
+ * \`miniSize\`, the column \`rowHeight\`, and the margin is half the difference.
+ */
+#de-tabpanel-design .de-section-header {
+  grid-template-columns: minmax(0, max-content) auto minmax(0, 1fr) auto;
+}
+#de-tabpanel-design .de-section-header > .de-section-title { grid-column: 1; }
+/* One row: the chevron (column 2) comes after the actions (column 4) in the
+   DOM, and auto-placement would otherwise start a second row for it. */
+#de-tabpanel-design .de-section-header > * { grid-row: 1; }
+#de-tabpanel-design .de-section-header > .de-section-actions {
+  grid-column: 4;
+  margin-inline-end: ${(t.size.rowHeight - t.size.miniSize) / 2}px;
+}
+#de-tabpanel-design .de-section-header--collapsible > .de-chevron {
+  grid-column: 2;
+  margin-inline-start: ${t.space["2xs"]}px;
+  opacity: 0;
+  transition: transform ${t.duration.reveal} ${t.easeReveal}, opacity ${t.duration.hover} ${t.ease};
+}
+@media (hover: hover) and (pointer: fine) {
+  #de-tabpanel-design .de-section-header--collapsible:hover > .de-chevron { opacity: 1; }
+}
+#de-tabpanel-design .de-section-header--collapsed > .de-chevron,
+#de-tabpanel-design .de-section-header:has(> .de-section-toggle:focus-visible) > .de-chevron { opacity: 1; }
+
 /* Vertical rhythm inside a section body — one rule instead of an inline style. */
 .de-stack { display: flex; flex-direction: column; gap: ${t.space.sm}px; }
 .de-layout-group { display: flex; flex-direction: column; gap: ${t.space.sm}px; }
@@ -737,42 +775,6 @@ html.designlayer-chrome-hidden .de-panel--right { transform: translateX(100%); }
 .de-source { font-size: ${t.type.body}; color: ${t.color.textDim}; word-break: break-all; }
 
 .de-row { display: flex; align-items: center; gap: ${t.space.sm}px; }
-/*
- * TWO GAPS, NOT ONE, and the shorthand was quietly saying the wrong thing.
- *
- * \`gap: \${t.space.sm}px\` sets the row gap AND the column gap to 8. Eight is
- * also what \`.de-section-body\` and \`.de-stack\` put BETWEEN groups. So in the
- * Position section the gutter between the X and Y fields — two items inside one
- * captioned group — was 8px, and the distance from the whole Position group to
- * the whole Size group was also 8px. Nothing in the rhythm said which pair
- * belonged together; the grouping rule wants twice as much between groups as
- * within one, and this measured 1.0.
- *
- * The column gap drops to \`space["2xs"]\`, which makes it 8/4 = 2.0 and is not a new
- * number: 4px between two adjacent wells is what \`.de-paint-row\` already uses a
- * few rules down. It also hands 4px of width back to a 260px column, where
- * every pixel is spoken for.
- *
- * The ROW gap stays at 8. These grids wrap to a second line in the Size and
- * Position sections, and a wrapped row is a new pair of items rather than a
- * tighter version of the one above — halving it there would merge two rows into
- * one block.
- *
- * Honest caveat, recorded because the audit that found this made it: the
- * comparison is cross-axis — horizontal within a row against vertical between
- * groups — and the rule is usually read as same-axis. Every same-axis ratio in
- * this panel already clears 2.0. The change is made anyway because the reader's
- * eye does not know which axis it is crossing; it only sees which things are
- * nearer each other.
- */
-.de-row--split {
-  display: grid; grid-template-columns: 1fr 1fr;
-  gap: ${t.space.sm}px ${t.space["2xs"]}px;
-}
-.de-row--quad {
-  display: grid; grid-template-columns: repeat(2, 1fr);
-  gap: ${t.space.sm}px ${t.space["2xs"]}px;
-}
 
 /*
  * Every field rests in a well.
@@ -920,6 +922,11 @@ html.designlayer-chrome-hidden .de-panel--right { transform: translateX(100%); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: ${t.color.text}; font-size: ${t.type.body};
 }
+/* Position's angle reads as one value, \`0°\`, the way Figma prints it: the input
+   sizes to its digits and the degree sign follows in value ink, taking the rest
+   of the well (section-position.ts focuses the input when it is clicked). */
+.de-pos-angle input { flex: 0 1 auto; width: auto; field-sizing: content; min-width: 1ch; padding-right: 0; }
+.de-pos-angle .de-field-suffix { flex: 1; color: ${t.color.text}; cursor: text; }
 
 /* ---------- paint rows (fill / stroke / effects) ---------- */
 /*
@@ -1011,20 +1018,60 @@ html.designlayer-chrome-hidden .de-panel--right { transform: translateX(100%); }
   color: ${t.color.text};
   font-family: ${t.font.mono}; font-size: ${t.type.body};
 }
-/* Not a nest, and the guard in \`test/concentric-cases.mjs\` records why: the
-   card's first child is a ROW, and the 20px swatch at its left end is centred
-   in a 24px band, so it sits 4px in horizontally and 6px down. Nothing here
-   reaches a corner, so there is no curve for anything to be parallel to. */
-/* The kit's card surface (\`.card-surface\`): the panel ground inside one
-   structural hairline, no shadow because it is docked. It was filled with
-   \`bgSunken\`, which is the same rung as the fields it holds, so the wells
-   inside it disappeared. \`radius.lg\` with a 4px inset puts the fields' 8px
-   corner concentric with the card's, as the kit's segmented track does. */
-.de-paint-card {
+/*
+ * Figma's joined paint well: [swatch + hex | opacity %] as one filled field
+ * with a hairline of panel ground between the halves. The parts inside drop
+ * their own fill and corners so the well reads as one control; each part still
+ * takes the hover and focus of the half the pointer is on.
+ */
+.de-paint-well, .de-effect-well {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center;
+  height: ${t.size.rowHeight}px;
+  border-radius: ${CONTROL_RADIUS};
+  background: ${t.color.field};
+  overflow: hidden;
+}
+/* 16px swatch, 4px in from the well's edge on every side. */
+.de-paint-well > .de-color-well { margin: 0 ${t.space["2xs"]}px; }
+/* At 16px the UA's swatch padding leaves a hollow box, so the colour fills the
+   well up to its 1px edge. */
+.de-paint-well > .de-color-well::-webkit-color-swatch-wrapper { padding: 0; }
+.de-paint-well > .de-color-well::-webkit-color-swatch { border: none; border-radius: ${t.radius.xs}; }
+.de-paint-well > .de-color-well::-moz-color-swatch { border: none; border-radius: ${t.radius.xs}; }
+.de-paint-well > .de-paint-value {
+  align-self: stretch; height: auto;
+  padding: 0 ${t.space["2xs"]}px 0 0;
+  border: none; background: transparent; outline: none;
+  font-family: inherit;
+}
+.de-paint-well > .de-token-field {
+  flex: 1; min-width: 0; width: auto;
+  padding-left: 0;
+  background: transparent; border-radius: 0;
+}
+.de-paint-well > .de-paint-alpha {
+  flex: 0 0 40%;
+  background: transparent; border-radius: 0;
+  box-shadow: inset 1px 0 0 ${t.color.bg};
+}
+/* No letter in front of the number, but the strip still scrubs. */
+.de-paint-alpha .de-field-label { min-width: 0; padding: 0 0 0 ${t.space.sm}px; }
+.de-paint-well:has(> .de-paint-value:focus-visible) { box-shadow: inset 0 0 0 1px ${t.color.accent}; }
+@media (hover: hover) and (pointer: fine) {
+  .de-paint-well:hover, .de-effect-well:hover { background: ${t.color.fieldHover}; }
+}
+/* A parked paint: the value goes to the dim ink, the swatch keeps its colour. */
+.de-paint-row--hidden .de-paint-value,
+.de-paint-row--hidden .de-token-field-name,
+.de-paint-row--hidden .de-select { color: ${t.color.textDim}; }
+
+/* Effect row: the settings button and the type select share one well. */
+.de-effect-well > .de-mini { margin-left: ${t.space["3xs"]}px; }
+.de-effect-well > .de-select-shell { flex: 1; min-width: 0; }
+.de-effect-well .de-select { background: transparent; padding-left: ${t.space["2xs"]}px; }
+.de-effect, .de-effect-settings, .de-stroke-geometry, .de-stroke-sides {
   display: flex; flex-direction: column; gap: ${t.space["2xs"]}px;
-  padding: ${t.space["2xs"]}px;
-  background: ${t.color.bg};
-  border: 1px solid ${t.color.border}; border-radius: ${t.radius.lg};
 }
 
 /*
@@ -1321,6 +1368,50 @@ html.designlayer-chrome-hidden .de-panel--right { transform: translateX(100%); }
   line-height: ${t.type.leadingRow};
 }
 
+/* ---------- Figma property row ---------- */
+/*
+ * Two equal field columns and one 24px action column, the grid Figma builds
+ * every row of its panel on. The action column is reserved on rows without an
+ * action, so individual corners, individual padding, aspect lock and wrap all
+ * stand on one vertical line down the panel.
+ *
+ * The caption takes the same caption role as \`.de-group-caption\`, and the
+ * caption-to-field and field-to-field steps are that group's 4px, so a row and
+ * a group read as the same thing.
+ */
+.de-prow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) ${t.size.rowHeight}px;
+  column-gap: ${t.space["2xs"]}px;
+  row-gap: ${t.space["2xs"]}px;
+  align-items: center;
+}
+.de-prow-caption {
+  color: ${t.color.textDim};
+  font-size: ${t.type.caption};
+  font-weight: ${t.type.weightValue};
+  line-height: ${t.type.leadingRow};
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* A row of its own on the parent's columns. Its third cell stays empty, so a
+   caption never runs under the action column. */
+.de-prow-captions { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; }
+.de-prow-caption--span { grid-column: 1 / 3; }
+.de-prow-cell { grid-column: auto; min-width: 0; display: flex; align-items: center; }
+.de-prow-captions + .de-prow-cell, .de-prow > .de-prow-cell:first-child { grid-column-start: 1; }
+.de-prow-cell > * { flex: 1; min-width: 0; }
+.de-prow-cell--span { grid-column: 1 / 3; }
+.de-prow-trail { grid-column: 3; display: flex; align-items: center; justify-content: center; }
+/* A follow-up row (individual corners, individual padding) sits a field step
+   under its parent row rather than a group step. */
+.de-prow + .de-prow:not(:has(> .de-prow-captions)) { margin-top: -${t.space["2xs"]}px; }
+
+/* ---------- empty section ---------- */
+/* Header only, title dimmed, the \`+\` at the end: Figma's empty Stroke. */
+.de-section-header--empty { grid-template-columns: minmax(0, 1fr) auto; }
+.de-section-header--empty .de-section-title { color: ${t.color.textDim}; font-weight: ${t.type.weightSection}; }
+
 /* ---------- joined action group ---------- */
 /*
  * Three or four momentary buttons drawn as one block — Figma's align triples,
@@ -1595,6 +1686,38 @@ html.designlayer-chrome-hidden .de-panel--right { transform: translateX(100%); }
 /* The field owns the caret's colour so a disabled axis reads as one dead
    control rather than a dead number beside a live menu. */
 .de-field input[disabled] ~ .de-field-trailing { color: ${t.color.textDisabled}; }
+
+/* ---------- Layout section ---------- */
+/* A menu in a field's trailing slot: our face, with a transparent native select
+   laid over it so the menu and its keyboard handling stay the platform's. */
+.de-lay-menu { position: relative; }
+.de-lay-menu-face { display: inline-flex; align-items: center; pointer-events: none; }
+.de-lay-menu-select {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  margin: 0; padding: 0; border: none;
+  opacity: 0;
+  font: inherit;
+  cursor: pointer;
+}
+.de-lay-menu:has(.de-lay-menu-select:focus-visible) { ${FOCUS_INSET} }
+/* Fields stacked in one column cell: the gap pair, the grid tracks, a binding. */
+.de-lay-column {
+  display: flex; flex-direction: column; gap: ${t.space["2xs"]}px;
+  align-self: start;
+}
+/* The column pairs with the 3x3 pad, which is taller than a row: hold the
+   fields to the top of it, as Figma does. */
+.de-prow-cell:has(> .de-lay-column) { align-self: start; }
+.de-lay-check {
+  display: inline-flex; align-items: center; gap: ${t.space.sm}px;
+  height: ${t.size.rowHeight}px;
+  color: ${t.color.text};
+  font-size: ${t.type.body};
+  cursor: pointer;
+}
+.de-lay-check-input { margin: 0; accent-color: ${t.color.accent}; cursor: pointer; }
+.de-lay-check-input:focus-visible { ${FOCUS_INSET} }
 
 /* The same well as \`.de-field\`, since a select is a field you pick from — and
    the same rungs and focus, for the reason spelled out there. */

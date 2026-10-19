@@ -1355,7 +1355,7 @@ check("the axes beyond the first nine write a real CSS property and a real class
     ["margin-right", "margin-right", "mr-4"],
     ["margin-bottom", "margin-bottom", "mb-4"],
     ["margin-left", "margin-left", "ml-4"],
-    ["motion-duration", "transition-duration", "duration-[150ms]"],
+    ["motion-duration", "transition-duration", "duration-150"],
   ])
 
   // `ring`, `outline` and `stroke` each carry a width as well as a colour, so a
@@ -1618,10 +1618,23 @@ async function withInspector(markup, run) {
   }
 }
 
+/*
+ * A numeric field binds its token through its own "Apply token" button now,
+ * with the axis as its field id, so that surface is named by its axis the way
+ * the separate row it replaced was named.
+ */
+const FIELD_TOKEN_NAMES = [
+  [/^corner-radius/, "Corner radius token"],
+  [/^(gap|row-gap|column-gap)$/, "Container gap token"],
+  [/^padding/, "Uniform padding token"],
+]
 const rowLabels = (right) =>
-  [...right.querySelectorAll('[data-de-field^="design-system."]')].map((node) =>
-    node.getAttribute("aria-label")
-  )
+  [...right.querySelectorAll('[data-de-field^="design-system."]')].map((node) => {
+    const label = node.getAttribute("aria-label")
+    if (label !== "Apply token") return label
+    const axis = node.getAttribute("data-de-field").slice("design-system.".length)
+    return FIELD_TOKEN_NAMES.find(([pattern]) => pattern.test(axis))?.[1] ?? `${axis} token`
+  })
 
 function expectRows(right, { present = [], absent = [] }) {
   const labels = rowLabels(right)

@@ -1,8 +1,8 @@
 /**
- * The Position section: align, distribute, arrange, frame.
+ * The Position section: alignment, position, rotation, arrange.
  *
- * All four are easy to get subtly wrong in ways nothing else notices, so this
- * pins the parts a refactor could quietly invert:
+ * Each is easy to get subtly wrong in ways nothing else notices, so this pins
+ * the parts a refactor could quietly invert:
  *
  *  - alignment writes on the PARENT, and which property it writes depends on
  *    the parent's flex direction — horizontal is `justify-content` on a row and
@@ -12,8 +12,10 @@
  *    controls that would do nothing;
  *  - arrange speaks the layers panel's protocol — `getSiblings` then `reorder`
  *    — and refuses the moves that have nowhere to go;
- *  - the frame stays a readout. The moment X becomes an `<input>` it is
- *    promising a write there is no property to make.
+ *  - X and Y stay a readout. The moment X becomes an `<input>` it is
+ *    promising a write there is no property to make;
+ *  - rotation and flips write `rotate` and `scale` on the element, never
+ *    `transform`, and the angle a transform already carries is counted.
  *
  * Usage: node designlayer/test/position-cases.mjs
  */
@@ -51,6 +53,7 @@ for (const key of [
   "Event",
   "CustomEvent",
   "MouseEvent",
+  "KeyboardEvent",
 ]) {
   Object.defineProperty(globalThis, key, { value: window[key], configurable: true, writable: true })
 }
@@ -62,13 +65,21 @@ for (const key of [
  * touched would show up here as `undefined` rather than as a silent pass.
  */
 const layouts = new WeakMap()
+// `rotate`, `scale` and `transform` are read through `getPropertyValue`, so the
+// fixture serves them from the same object as the flex longhands.
+const withProperties = (layout) => ({
+  ...layout,
+  getPropertyValue: (property) => layout[property] ?? "",
+})
 globalThis.getComputedStyle = (node) =>
-  layouts.get(node) ?? {
-    display: "block",
-    flexDirection: "row",
-    justifyContent: "normal",
-    alignItems: "normal",
-  }
+  withProperties(
+    layouts.get(node) ?? {
+      display: "block",
+      flexDirection: "row",
+      justifyContent: "normal",
+      alignItems: "normal",
+    }
+  )
 
 const { build } = await import("esbuild")
 const bundled = await build({
@@ -103,6 +114,7 @@ function scene({
   line = 12,
   parentLine = 5,
   source = true,
+  transforms = {},
 } = {}) {
   inspector.forgetSiblings()
   window.document.body.replaceChildren()
@@ -118,6 +130,7 @@ function scene({
     alignItems: "normal",
     ...parentLayout,
   })
+  layouts.set(element, { display: "block", ...transforms })
 
   const frame = (componentName, filePath, lineNumber) => ({
     componentName,
@@ -196,6 +209,8 @@ function scene({
       Array.from(node.querySelectorAll("button")).find((button) => button.textContent === label) ??
       null,
     strip: (label) => node.querySelector(`[role="toolbar"][aria-label="${label}"]`),
+    row: (id) => node.querySelector(`[data-de-row="${id}"]`),
+    rotation: () => node.querySelector('[data-de-field="position.rotation"]'),
     text: () => node.textContent,
     node: () => node,
     press(label) {
@@ -309,45 +324,41 @@ console.log("\nAlign, with nothing to align in")
 check("a parent that is not flex offers the way in instead of six dead marks", () => {
   const view = scene({ parent: { display: "block" } })
   assert.equal(view.strip("Align"), null)
-  assert.equal(view.strip("Distribute"), null)
-  assert.match(view.text(), /is not a flex container/)
+  assert.equal(view.button("Distribute horizontally"), null)
+  // The reason is the button's tooltip and description, not a sentence under it.
+  const button = view.button("Make parent auto layout")
+  assert.match(button.getAttribute("aria-description"), /<div> is not a flex container/)
+  assert.match(button.getAttribute("data-de-tip"), /is not a flex container/)
+  assert.equal(view.node().querySelector(".de-hint"), null)
   view.press("Make parent auto layout")
   assert.deepEqual(lastWrite(view).styles, [{ property: "display", value: "flex" }])
   assert.equal(lastWrite(view).target, view.parent)
 })
 
-check("the hint says out loud that alignment acts on every child", () => {
-  assert.match(scene().text(), /Aligns all children of <div>/)
+check("the row says it acts on every child in its tooltips, not in a sentence", () => {
+  const view = scene()
+  assert.doesNotMatch(view.text(), /Aligns all children/)
+  assert.equal(view.node().querySelector(".de-hint"), null)
+  assert.equal(view.strip("Align").getAttribute("aria-description"), "Aligns all children of <div>.")
+  assert.equal(view.button("Align left").getAttribute("data-de-tip"), "Align left. Aligns all children of <div>.")
+  // The name stays the name: the description is extra, not a replacement.
+  assert.equal(view.button("Align left").getAttribute("aria-label"), "Align left")
+})
+
+check("the six marks are one captioned row on the panel grid", () => {
+  const row = scene().strip("Align")
+  assert.ok(row.classList.contains("de-prow"), "the align toolbar is not a property row")
+  assert.equal(row.querySelector(".de-prow-caption").textContent, "Alignment")
+  assert.equal(row.querySelectorAll(".de-prow-cell .de-agroup").length, 2)
 })
 
 /* ---------- distribute ---------- */
 
 console.log("\nDistribute")
 
-check("one button, wearing the mark for the parent's main axis", () => {
-  assert.ok(scene().button("Distribute horizontally"), "a row parent has no horizontal spread")
-  const column = scene({ parent: { display: "flex", flexDirection: "column" } })
-  assert.ok(column.button("Distribute vertically"), "a column parent has no vertical spread")
-  assert.equal(column.button("Distribute horizontally"), null)
-})
-
-check("it spreads the main axis, which is always justify-content", () => {
-  const row = scene().press("Distribute horizontally")
-  assert.deepEqual(lastWrite(row).styles, [{ property: "justify-content", value: "space-between" }])
-  const column = scene({ parent: { display: "flex", flexDirection: "column" } }).press(
-    "Distribute vertically"
-  )
-  assert.deepEqual(lastWrite(column).styles, [
-    { property: "justify-content", value: "space-between" },
-  ])
-})
-
-check("a parent that is already spread shows it", () => {
-  const view = scene({
-    parent: { display: "flex", flexDirection: "row", justifyContent: "space-between" },
-  })
-  assert.equal(view.button("Distribute horizontally").getAttribute("aria-pressed"), "true")
-  assert.equal(scene().button("Distribute horizontally").getAttribute("aria-pressed"), "false")
+check("one element selected offers no distribute: Layout's gap Auto owns spacing", () => {
+  assert.equal(scene().button("Distribute horizontally"), null)
+  assert.equal(scene({ parent: { display: "flex", flexDirection: "column" } }).button("Distribute vertically"), null)
 })
 
 /* ---------- arrange ---------- */
@@ -433,19 +444,121 @@ check("a disabled move sends nothing when it is clicked anyway", () => {
   assert.equal(view.sent.length, before)
 })
 
-/* ---------- frame ---------- */
+/* ---------- position ---------- */
 
-console.log("\nFrame")
+console.log("\nPosition")
 
-check("X, Y, W and H are all present, and all read-only", () => {
+check("X and Y are present and read-only, and W and H have moved to Layout", () => {
   const view = scene()
-  const labels = Array.from(
-    view.node().querySelectorAll(".de-field-label"),
-    (node) => node.textContent
+  const row = view.row("position.xy")
+  assert.ok(row, "there is no Position row")
+  assert.equal(row.querySelector(".de-prow-caption").textContent, "Position")
+  assert.deepEqual(
+    Array.from(row.querySelectorAll(".de-field-label"), (node) => node.textContent),
+    ["X", "Y"]
   )
-  assert.deepEqual(labels, ["X", "Y", "W", "H"])
-  assert.equal(view.node().querySelectorAll("input").length, 0, "the frame grew a field")
-  assert.equal(view.node().querySelectorAll(".de-field-value").length, 4)
+  assert.equal(row.querySelectorAll("input").length, 0, "the readout grew a field")
+  assert.equal(row.querySelectorAll(".de-field-value").length, 2)
+  const letters = Array.from(view.node().querySelectorAll(".de-field-label"), (node) => node.textContent)
+  assert.equal(letters.includes("W"), false, "W is still drawn in Position")
+  assert.equal(letters.includes("H"), false, "H is still drawn in Position")
+  assert.doesNotMatch(view.text(), /Size/)
+})
+
+check("the rows come in Figma's order", () => {
+  const captions = Array.from(scene().node().querySelectorAll(".de-prow-caption"), (node) => node.textContent)
+  assert.deepEqual(captions, ["Alignment", "Position", "Rotation", "Arrange"])
+})
+
+/* ---------- rotation ---------- */
+
+console.log("\nRotation")
+
+const type = (view, value, key = "Enter", extra = {}) => {
+  const input = view.rotation()
+  input.value = value
+  input.dispatchEvent(new window.KeyboardEvent("keydown", { key, bubbles: true, ...extra }))
+  return view
+}
+
+check("an angle field with the angle mark, then rotate and the two flips", () => {
+  const view = scene()
+  const row = view.row("position.rotation")
+  assert.ok(row, "there is no Rotation row")
+  assert.equal(row.querySelector(".de-prow-caption").textContent, "Rotation")
+  const field = view.rotation()
+  assert.equal(field.value, "0")
+  assert.equal(field.getAttribute("aria-label"), "Rotation")
+  assert.ok(field.closest(".de-field").querySelector(".de-field-label svg"), "the prefix is not a drawn mark")
+  assert.equal(field.closest(".de-field").querySelector(".de-field-suffix").textContent, "°")
+  const group = row.querySelector('[aria-label="Rotate and flip"]')
+  assert.deepEqual(
+    Array.from(group.querySelectorAll("button"), (node) => node.getAttribute("aria-label")),
+    ["Rotate 90° right", "Flip horizontal", "Flip vertical"]
+  )
+})
+
+check("the angle is read off computed rotate, in any unit", () => {
+  assert.equal(scene({ transforms: { rotate: "45deg" } }).rotation().value, "45")
+  assert.equal(scene({ transforms: { rotate: "0.25turn" } }).rotation().value, "90")
+  assert.equal(scene({ transforms: { rotate: "z 30deg" } }).rotation().value, "30")
+  assert.equal(scene({ transforms: { rotate: "none" } }).rotation().value, "0")
+})
+
+check("a transform's rotation is counted, and a commit writes only rotate's share", () => {
+  const view = scene({ transforms: { transform: "matrix(0, 1, -1, 0, 0, 0)" } })
+  assert.equal(view.rotation().value, "90")
+  type(view, "30")
+  assert.deepEqual(lastWrite(view).styles, [{ property: "rotate", value: "-60deg" }])
+})
+
+check("Enter writes rotate on the element, never transform", () => {
+  const view = type(scene(), "30")
+  assert.equal(lastWrite(view).target, view.element)
+  assert.deepEqual(lastWrite(view).styles, [{ property: "rotate", value: "30deg" }])
+  assert.equal(lastWrite(view).summary, "Rotate")
+  assert.ok(view.renders >= 1, "the panel was not asked to re-render")
+})
+
+check("the field takes arrows, Shift steps and math", () => {
+  assert.deepEqual(lastWrite(type(scene(), "0", "ArrowUp")).styles, [{ property: "rotate", value: "1deg" }])
+  assert.deepEqual(
+    lastWrite(type(scene(), "0", "ArrowDown", { shiftKey: true })).styles,
+    [{ property: "rotate", value: "-10deg" }]
+  )
+  assert.deepEqual(lastWrite(type(scene(), "10*3")).styles, [{ property: "rotate", value: "30deg" }])
+})
+
+check("angles fold into -180..180, the range the field shows", () => {
+  assert.deepEqual(lastWrite(type(scene(), "270")).styles, [{ property: "rotate", value: "-90deg" }])
+  assert.equal(scene({ transforms: { rotate: "540deg" } }).rotation().value, "180")
+})
+
+check("Rotate 90° right adds a quarter turn clockwise", () => {
+  const view = scene().press("Rotate 90° right")
+  assert.deepEqual(lastWrite(view).styles, [{ property: "rotate", value: "90deg" }])
+  assert.equal(lastWrite(view).target, view.element)
+  const late = scene({ transforms: { rotate: "135deg" } }).press("Rotate 90° right")
+  assert.deepEqual(lastWrite(late).styles, [{ property: "rotate", value: "-135deg" }])
+})
+
+check("Flip horizontal mirrors the x scale, and pressing it again mirrors it back", () => {
+  const view = scene()
+  assert.equal(view.button("Flip horizontal").getAttribute("aria-pressed"), "false")
+  view.press("Flip horizontal")
+  assert.deepEqual(lastWrite(view).styles, [{ property: "scale", value: "-1 1" }])
+  const flipped = scene({ transforms: { scale: "-1 1" } })
+  assert.equal(flipped.button("Flip horizontal").getAttribute("aria-pressed"), "true")
+  assert.equal(flipped.button("Flip vertical").getAttribute("aria-pressed"), "false")
+  flipped.press("Flip horizontal")
+  assert.deepEqual(lastWrite(flipped).styles, [{ property: "scale", value: "none" }])
+})
+
+check("the two flips combine, and keep a scale the element already had", () => {
+  const both = scene({ transforms: { scale: "-1 1" } }).press("Flip vertical")
+  assert.deepEqual(lastWrite(both).styles, [{ property: "scale", value: "-1 -1" }])
+  const sized = scene({ transforms: { scale: "2" } }).press("Flip vertical")
+  assert.deepEqual(lastWrite(sized).styles, [{ property: "scale", value: "2 -2" }])
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

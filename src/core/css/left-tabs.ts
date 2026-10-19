@@ -83,13 +83,25 @@ export const leftTabsCss = `/* ---------- left panel tabs ---------- */
  * \`word-break: break-all\`, so the path WRAPS rather than reaching for an axis
  * that is not there — at 240px and at the 180px floor alike. Anything mounted
  * here in future has the same obligation: clip is the policy, so a pane that
- * plans to scroll sideways will silently lose its tail instead.
+ * plans to scroll sideways must opt in (below) or silently lose its tail.
  *
  * This is what the panel did before the tabs existed, since \`.de-panel\` is
  * \`overflow: hidden\` and the body only ever scrolled vertically. It restores
  * the behaviour rather than choosing a new one.
+ *
+ * The Layers pane is the one exception, and it was the user's call. In a real
+ * app a row twelve levels deep lost its name to the clip, ellipsized down to a
+ * letter, with nothing that reached the rest. So a pane that opts in with
+ * \`data-de-scroll-x\` scrolls sideways, as Figma's layer list does: trackpads
+ * and Shift with the wheel natively, and \`shell/overlay-scrollbar.ts\` draws a
+ * thumb along its bottom to drag. Only the tree opts in (\`panels/layers.ts\`);
+ * the pane already contains overscroll, so a swipe that reaches either end
+ * does not become the browser's back gesture.
  */
 .de-panel--left .de-tabpanel {
   overflow-x: hidden;
+}
+.de-panel--left .de-tabpanel[data-de-scroll-x] {
+  overflow-x: auto;
 }
 `

@@ -28,11 +28,20 @@ import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 const ROOT = path.dirname(fileURLToPath(new URL("../package.json", import.meta.url)))
-const OUT = path.join(ROOT, ".harness")
-const THEMES = ["dark", "light"]
-
 const args = process.argv.slice(2)
 const flags = new Set(args)
+const option = (name) => (args.find((arg) => arg.startsWith(`--${name}=`)) ?? "").slice(name.length + 3).trim()
+/** `--out=<dir>` keeps parallel runs from writing over each other's shots. */
+const OUT = path.resolve(ROOT, option("out") || ".harness")
+/** `--themes=dark` skips the light pass. */
+const THEMES = option("themes") ? option("themes").split(",") : ["dark", "light"]
+/**
+ * `--select=<state>` puts one reference state in front of the panel;
+ * `--states=a,b,c` shoots several, one `panel-<state>-<theme>.png` each. The
+ * states are the fixture's named nodes: target (the default button), card,
+ * heading, box, boxMixed, paragraph, freeform, absChild, list, row, grid.
+ */
+const STATES = option("states") ? option("states").split(",") : option("select") ? [option("select")] : [null]
 const wantShots = !flags.has("--no-shots")
 /** Section titles to fold before shooting, so a tall section can be got out of the frame. */
 const collapseTitles = (args.find((arg) => arg.startsWith("--collapse=")) ?? "")
@@ -109,12 +118,42 @@ function pageHtml(sceneCode) {
 </style>
 </head>
 <body>
+<script>
+  // ?tokens=demo stocks a small design system, so token pickers have something
+  // to offer. It is set before the scene runs because config is read at import.
+  if (new URLSearchParams(location.search).get("tokens") === "demo") {
+    window.__DESIGNLAYER_CONFIG__ = {
+      apiBase: "/__designlayer",
+      host: { framework: "react", tailwind: true },
+      designSystem: {
+        name: "Harness System",
+        trackingUnit: "em",
+        colors: [
+          { id: "color:surface", name: "Surface/Base", category: "color", values: { default: "#ffffff" }, cssVar: "--hx-surface-base" },
+          { id: "color:ink", name: "Text/Primary", category: "color", values: { default: "#0c1014" }, cssVar: "--hx-text-primary" },
+          { id: "color:brand", name: "Brand/Primary", category: "color", values: { default: "#2f56c4" }, cssVar: "--hx-brand-primary" },
+        ],
+        spacing: [
+          { id: "spacing:sm", name: "spacing/sm", category: "spacing", values: { default: 8 } },
+          { id: "spacing:md", name: "spacing/md", category: "spacing", values: { default: 16 } },
+          { id: "spacing:lg", name: "spacing/lg", category: "spacing", values: { default: 24 } },
+        ],
+        radii: [
+          { id: "radius:sm", name: "radius/sm", category: "radius", values: { default: 8 }, cssVar: "--hx-radius-sm" },
+          { id: "radius:md", name: "radius/md", category: "radius", values: { default: 12 }, cssVar: "--hx-radius-md" },
+          { id: "radius:lg", name: "radius/lg", category: "radius", values: { default: 16 }, cssVar: "--hx-radius-lg" },
+        ],
+        textStyles: [], uiTextStyles: [], effects: [], icons: [], motion: [],
+      },
+    };
+  }
+</script>
 <script>${escapeForScript(sceneCode)}</script>
 <script>
   // ?theme=light opens the light variant directly, so the page is useful on its
   // own and not only under Playwright.
   var requested = new URLSearchParams(location.search).get("theme") === "light" ? "light" : "dark";
-  var harness = DesignLayerHarness.mount({ theme: requested });
+  var harness = DesignLayerHarness.mount({ theme: requested, select: new URLSearchParams(location.search).get("select") || undefined });
   window.__panelHarness = {
     handle: harness,
     measure: function () { return DesignLayerHarness.measure(harness.panel); },
@@ -349,7 +388,18 @@ async function main() {
   })
   page.on("pageerror", (error) => consoleErrors.push(`pageerror: ${error.message}`))
 
-  await page.goto(pathToFileURL(htmlPath).href)
+  const written = []
+  const measurements = {
+    generatedAt: new Date().toISOString(),
+    page: htmlPath,
+    deviceScaleFactor: 2,
+    themes: {},
+  }
+  let sections = []
+  for (const state of STATES) {
+  const url = pathToFileURL(htmlPath).href + (state ? `?select=${encodeURIComponent(state)}` : "")
+  await page.setViewportSize({ width: 1100, height: 900 })
+  await page.goto(url)
   await page.waitForSelector("html[data-harness-ready]", { timeout: 15000 })
 
   if (tab) {
@@ -386,27 +436,24 @@ async function main() {
   await page.setViewportSize({ width: 1100, height })
   await page.waitForTimeout(120)
 
-  const sections = await page.evaluate(() => window.__panelHarness.handle.sectionTitles())
-  const written = []
-  const measurements = {
-    generatedAt: new Date().toISOString(),
-    page: htmlPath,
-    deviceScaleFactor: 2,
-    viewport: { width: 1100, height },
-    inspectorWidth: await page.evaluate(() => window.__panelHarness.handle.inspectorWidth),
-    sections,
-    themes: {},
-  }
+  sections = await page.evaluate(() => window.__panelHarness.handle.sectionTitles())
+  measurements.viewport = { width: 1100, height }
+  measurements.inspectorWidth = await page.evaluate(() => window.__panelHarness.handle.inspectorWidth)
+  measurements.sections = sections
 
   for (const theme of THEMES) {
     await page.evaluate((next) => window.__panelHarness.handle.applyTheme(next), theme)
     await page.waitForTimeout(80)
 
-    const shot = path.join(OUT, `panel-${theme}.png`)
+    const shot = path.join(OUT, state ? `panel-${state}-${theme}.png` : `panel-${theme}.png`)
     await page.locator("#harness-panel").screenshot({ path: shot })
     written.push(shot)
 
     measurements.themes[theme] = await page.evaluate(() => window.__panelHarness.measure())
+  }
+  // One file per state as well, so a before/after report can place markers on
+  // the boxes each state actually rendered.
+  if (state) fs.writeFileSync(path.join(OUT, `measurements-${state}.json`), JSON.stringify(measurements))
   }
 
   const jsonPath = path.join(OUT, "measurements.json")
@@ -415,8 +462,8 @@ async function main() {
   const summary = {
     generatedAt: measurements.generatedAt,
     sections,
-    dark: digest(measurements.themes.dark.rows),
-    light: digest(measurements.themes.light.rows),
+    dark: measurements.themes.dark ? digest(measurements.themes.dark.rows) : null,
+    light: measurements.themes.light ? digest(measurements.themes.light.rows) : null,
   }
   const summaryPath = path.join(OUT, "summary.json")
   fs.writeFileSync(summaryPath, JSON.stringify(summary, null, 1))
@@ -424,7 +471,7 @@ async function main() {
   await browser.close()
 
   for (const file of written) console.log(`Shot      ${file}`)
-  console.log(`Measured  ${jsonPath} (${measurements.themes.dark.rows.length} elements per theme)`)
+  console.log(`Measured  ${jsonPath} (${(measurements.themes.dark ?? measurements.themes.light).rows.length} elements per theme)`)
   console.log(`Summary   ${summaryPath}`)
   console.log(`Sections  ${sections.join(", ")}`)
   if (consoleErrors.length) {

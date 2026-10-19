@@ -16,6 +16,7 @@ const CHIP_LEAVE_MS = (): number =>
 import { icon } from "../../core/icons"
 import { tokens as t } from "../../core/tokens"
 import { section, textField } from "./field"
+import { selectedOf } from "./multi"
 import type { InspectorSection } from "./index"
 
 const CHIP_STYLE = [
@@ -47,7 +48,8 @@ const PATH_STYLE = [
   `transition:color ${t.duration.hover} ${t.ease}`,
 ].join(";")
 
-export const classesSection: InspectorSection = ({ editor, selection, writer, invalidate }) => {
+export const classesSection: InspectorSection = (context) => {
+  const { editor, selection, writer, invalidate } = context
   const names = Array.from(selection.element.classList)
   const source = selection.source
   if (names.length === 0 && !source) return null
@@ -108,7 +110,14 @@ export const classesSection: InspectorSection = ({ editor, selection, writer, in
     )
   }
 
+  // A class list belongs to one element, so with several picked this section
+  // stays on the primary and says which one that is.
+  const count = selectedOf(context).length
+  const subject = selection.componentName ? `${selection.tagName} in ${selection.componentName}` : selection.tagName
   const body = el("div", { class: "de-stack" }, [
+    count > 1
+      ? el("div", { class: "de-hint", "data-de-primary": "" }, [`First of ${count} selected: ${subject}`])
+      : null,
     chips.length > 0 ? el("div", { style: "display:flex;flex-wrap:wrap;gap:4px" }, chips) : null,
     textField({ id: "classes.add", label: "Add", value: "", placeholder: "class names", onCommit: add }),
     source

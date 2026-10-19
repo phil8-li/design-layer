@@ -13,7 +13,7 @@
  */
 
 import { accentFillText, tokens as t } from "../tokens"
-import { FOCUS_OUTLINE } from "./panels"
+import { FOCUS_OUTLINE, FOCUS_RING } from "./panels"
 
 export const inspectorCss = `/* ---------- inspector tabs ---------- */
 .de-panel--right .de-panel-body {
@@ -321,4 +321,102 @@ export const inspectorCss = `/* ---------- inspector tabs ---------- */
 /* An author \`display\` beats the UA [hidden] rule, so restate it. */
 .de-tabpanel[hidden] { display: none; }
 /* No native bar inside a panel: the overlay thumb in css/panels.ts. */
+
+/* ---------- Appearance and Typography ---------- */
+.de-app-actions { display: contents; }
+/* The blend menu: a transparent native select over the drop glyph, so the
+   platform draws the menu under its trigger. */
+.de-app-blend { cursor: pointer; }
+.de-app-blend--set { background: ${t.color.accentSoft}; }
+.de-app-blend-select {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  opacity: 0; cursor: pointer;
+  border: none; margin: 0; padding: 0;
+  font: inherit;
+}
+.de-app-blend:has(.de-app-blend-select:focus-visible) { ${FOCUS_RING} }
+/* Turned per corner; inline-flex so the rotation pivots on the glyph box. */
+.de-app-corner { display: inline-flex; }
+/* Typed marks in the type settings rails, where no drawn glyph exists. */
+.de-type-mark {
+  font-size: ${t.type.body};
+  font-weight: ${t.type.weightValue};
+  line-height: 1;
+}
+/* Text on the weight select's inset: its 4px padding inside the same border. */
+.de-type-family > .de-field-label { display: none; }
+.de-type-family > input { padding-inline-start: ${t.space["2xs"]}px; }
+/*
+ * The layer header, Figma's first row: the layer type at the section titles'
+ * 8px inset, and the actions on the section headers' column, the last one
+ * centred over the rows' 24px action column. Taller than a section header
+ * because it heads the whole tab, the way Figma's 48 out-measures its 40.
+ */
+.de-layerhead {
+  position: relative;
+  height: ${t.size.tabBar}px;
+  display: flex; align-items: center; gap: ${t.space.sm}px;
+  padding: 0 ${t.space.sm}px;
+  border-bottom: 1px solid ${t.color.border};
+}
+.de-layerhead-title {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: center; gap: ${t.space.xs}px;
+  color: ${t.color.text};
+  font-size: ${t.type.body}; font-weight: ${t.type.weightTitle};
+}
+.de-layerhead--component .de-layerhead-title { color: ${t.color.component}; }
+.de-layerhead-title > svg { flex: none; }
+.de-layerhead-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.de-layerhead-actions {
+  flex: none;
+  display: flex; align-items: center; gap: ${t.space.sm}px;
+  margin-inline-end: ${(t.size.rowHeight - t.size.miniSize) / 2}px;
+}
+.de-layerhead-more[aria-expanded="true"] { background: ${t.color.bgHover}; }
+/* Under its trigger and aligned to the trigger's end edge. The card and its
+   rows are the canvas layer menu's (\`.de-layer-menu\` in css/layers.ts), so
+   the chrome keeps one menu look; only placement and the shortcut column are
+   set here. */
+.de-layerhead-menu {
+  z-index: 2;
+  top: calc(50% + ${t.size.miniSize / 2 + t.space["2xs"]}px);
+  inset-inline-end: ${t.space.sm + (t.size.rowHeight - t.size.miniSize) / 2}px;
+  outline: none;
+}
+.de-layerhead-menu .de-layerhead-menu-row {
+  display: flex; align-items: center; justify-content: space-between; gap: ${t.space.lg}px;
+}
+.de-layerhead-menu .de-layerhead-menu-row[aria-disabled="true"] {
+  background: transparent; color: ${t.color.textDisabled}; cursor: default;
+}
+.de-layerhead-menu-key { color: ${t.color.textDim}; font-weight: ${t.type.weightBody}; }
+/* ---------- selection colors ---------- */
+/* The summary is a read-out, so a press on it folds the section like the rest
+   of the bar does in Figma, instead of being caught as a header action. */
+.de-selcolor-section > .de-section-header > .de-section-actions { pointer-events: none; }
+/* Only a folded section shows the summary; unfolded, the rows say it. The last
+   24px cell lands on the rows' action column. */
+.de-selcolor-section > .de-section-header:not(.de-section-header--collapsed) .de-selcolor-summary { display: none; }
+.de-selcolor-summary {
+  display: flex; align-items: center;
+  margin-inline-end: -${(t.size.rowHeight - t.size.miniSize) / 2}px;
+}
+.de-selcolor-chit {
+  box-sizing: border-box;
+  width: ${t.icon.action}px; height: ${t.icon.action}px;
+  margin: 0 ${(t.size.rowHeight - t.icon.action) / 2}px;
+  border-radius: ${t.radius.xs};
+  box-shadow: inset 0 0 0 1px ${t.color.border};
+}
+.de-selcolor-more {
+  min-width: ${t.size.rowHeight}px;
+  text-align: center;
+  color: ${t.color.textDim};
+  font-size: ${t.type.caption}; font-weight: ${t.type.weightBody};
+}
+/* The well ends where Fill's does: this row has no eye, and a wider well would
+   break the column the paint rows share. */
+.de-selcolor-row .de-paint-row { padding-inline-end: ${t.size.miniSize + t.space["2xs"]}px; }
 `

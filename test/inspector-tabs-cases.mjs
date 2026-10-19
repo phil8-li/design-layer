@@ -11,7 +11,9 @@
  *    against. Code used to sit third and has moved to the left rail beside
  *    Layers — `code-tab-cases.mjs` is what pins it there, and the count below
  *    is what notices it coming back. Order is a claim, not an accident of the
- *    array literal, and nothing but this would notice it drifting;
+ *    array literal, and nothing but this would notice it drifting. A Prototype
+ *    tab sat second for one day and was removed at the user's request, so the
+ *    count also notices it coming back;
  *  - and there are THREE, not four. A Library tab sat second here for a
  *    release, on the argument that it is what the Design tab reads from. It has
  *    moved to the left panel, beside Layers, because what it grew into is a
@@ -232,6 +234,7 @@ await check("three tabs, named for the three things you can be looking at", () =
 await check("the library is not one of them — it browses, so it lives on the left", () => {
   assert.equal(tabs().length, 3)
   assert.equal(tabNamed("Library"), null, "the library tab is back in the inspector")
+  assert.equal(tabNamed("Prototype"), null, "the removed Prototype tab is back in the inspector")
 })
 
 await check("exactly one tab is selected, and Design is the one you land on", () => {

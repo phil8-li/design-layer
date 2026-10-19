@@ -8,6 +8,7 @@
  * so each concern owns one file.
  */
 
+import { registerCommand } from "../core/commands"
 import { isCanvasElement, isChrome } from "../core/dom"
 import { canvasAction, isDeepSelect, NUDGE, ownsCanvasKeys } from "../core/keymap"
 import { getResolver, isLayerCandidate, toSelectable } from "../core/resolve"
@@ -18,6 +19,7 @@ import type { LayerElement } from "../core/types"
 import { dipHoverOutline, installSelectionFrame, releaseHoverDip } from "./selection"
 import { installTransform, translateBy } from "./transform"
 import { installSnapping } from "./snapping"
+import { installSpacingHandles } from "./spacing-handles"
 import { installMarquee } from "./marquee"
 import { installLayerMenu } from "./layer-menu"
 
@@ -28,6 +30,7 @@ export function installCanvas(context: EditorContext): void {
   installSelectionFrame(context)
   installTransform(context, writer)
   installSnapping(context)
+  installSpacingHandles(context, writer)
   installLayerMenu(context)
 
   // `select()` early-returns when the element is already the whole selection,
@@ -256,6 +259,9 @@ export function installCanvas(context: EditorContext): void {
     context.bridge.refreshGeometry()
     context.refresh()
   }
+  // The keys stay answered below (the row is `owner: "canvas"`); the command
+  // is for the context menu, which has no key event to hand over.
+  registerCommand("element.delete", deleteSelection)
 
   const onKeyDown = (event: KeyboardEvent) => {
     if (!selectionOwnsInput()) return

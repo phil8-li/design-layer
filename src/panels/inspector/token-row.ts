@@ -72,6 +72,7 @@ import {
   tokenPreviewKind,
   tokenStyleWrites,
   tokenSwatchCss,
+  type TokenStyleWrite,
   tokensForProperty,
   type DesignSystemMatch,
   type DesignTokenProperty,
@@ -81,8 +82,9 @@ import { toSourceRef } from "../../core/bridge"
 import { elementKey } from "../../core/store"
 import { activeDesignSystem } from "../../libraries/store"
 import type { LayerElement, Selection } from "../../core/types"
-import { group } from "./field"
-import { tokenField, type TokenChoice, type TokenPreview } from "./token-picker"
+import { group, type FieldToken } from "./field"
+import { toggleTokenList, tokenField, type TokenChoice, type TokenPreview } from "./token-picker"
+import { computedOf, selectedOf } from "./multi"
 import type { SectionContext } from "./index"
 
 export const SIDES = ["top", "right", "bottom", "left"] as const
@@ -339,6 +341,19 @@ interface BuiltRow {
   inert: string
 }
 
+/**
+ * The writes a pick lands as on `target`, the same for a row and for a field.
+ *
+ * A reset the element already satisfies is left out, so picking a role on
+ * plain text does not write `font-style: normal` into its source.
+ */
+function neededWrites(styles: TokenStyleWrite[], target: Selection): Array<{ property: string; value: string }> {
+  const computed = getComputedStyle(target.element)
+  return styles
+    .filter((write) => !write.reset || computed.getPropertyValue(write.property).trim() !== write.value)
+    .map((write) => ({ property: write.property, value: landedValue(write, computed) }))
+}
+
 function build(context: SectionContext, spec: RowSpec, hidePreview = false): BuiltRow {
   const tokens = tokensForProperty(spec.property)
   // One derivation of "can this token be written here": the row that offers it,
@@ -367,13 +382,7 @@ function build(context: SectionContext, spec: RowSpec, hidePreview = false): Bui
       const token = tokens.find((entry) => entry.id === id)
       const styles = writes.get(id)
       if (!token || !styles?.length) return
-      // A reset the element already satisfies is left out, so picking a role
-      // on plain text does not write `font-style: normal` into its source.
-      const computed = getComputedStyle(spec.target.element)
-      const needed = styles
-        .filter((write) => !write.reset || computed.getPropertyValue(write.property).trim() !== write.value)
-        .map((write) => ({ property: write.property, value: landedValue(write, computed) }))
-      context.writer.applyStyles(spec.target, needed, `Apply ${tokenDisplayName(token)}`)
+      context.writer.applyStyles(spec.target, neededWrites(styles, spec.target), `Apply ${tokenDisplayName(token)}`)
       context.invalidate()
     },
     // The one declaration this axis owns, written straight. The Tailwind layer
@@ -475,6 +484,92 @@ export function tokenControl(
 ): HTMLElement | null {
   if (!tokensForProperty(property).length) return null
   return build(context, resolveSpec(context, property, label, options), options.hidePreview).field
+}
+
+/**
+ * The token every selected layer is bound to on every one of `axes`, or null.
+ *
+ * Authored evidence only: a `var()` the element declares or a utility class
+ * that names the token. A computed match is a value that happens to equal a
+ * step on the scale, and on a spacing scale nearly every number does; drawing
+ * those as bound would hide the number in almost every padding field.
+ */
+function authoredBinding(
+  context: SectionContext,
+  axes: readonly DesignTokenProperty[],
+  label: string
+): DesignSystemToken | null {
+  let found: DesignSystemToken | null = null
+  for (const entry of selectedOf(context)) {
+    for (const axis of axes) {
+      const spec = resolveSpec(context, axis, label, { target: entry, computed: computedOf(context, entry) })
+      const matches = authoredTokenMatches(axis, spec.inlineValue, Array.from(entry.element.classList))
+      if (matches.length !== 1 || matches[0].ambiguous) return null
+      if (found && found.id !== matches[0].token.id) return null
+      found = matches[0].token
+    }
+  }
+  return found
+}
+
+/**
+ * The binding a number field folds in — Figma's "Apply variable" — for one
+ * axis or for several that the field writes together (horizontal padding is
+ * `padding-left` and `padding-right`). `undefined` when the catalog stocks
+ * nothing for the axis, which tells the field to draw no token button.
+ *
+ * A pick writes the same declarations the separate token row wrote, through
+ * `context.writer`, which is the fan-out writer when several layers are picked.
+ * Detach writes the resolved number back as a plain value.
+ */
+export function fieldToken(
+  context: SectionContext,
+  axes: readonly DesignTokenProperty[],
+  label: string,
+  id: string = axes.join("+")
+): FieldToken | undefined {
+  const tokens = tokensForProperty(axes[0])
+  if (!tokens.length) return undefined
+  const writes = new Map(tokens.map((token) => [token.id, axes.flatMap((axis) => tokenStyleWrites(axis, token))]))
+  const bound = authoredBinding(context, axes, label)
+  const spec = resolveSpec(context, axes[0], label, {})
+  return {
+    id: `design-system.${id}`,
+    bound: bound ? tokenDisplayName(bound) : null,
+    open: (trigger, anchor) =>
+      toggleTokenList(
+        trigger,
+        {
+          title: label,
+          selectedId: bound?.id ?? "",
+          choices: tokens.map((token) => tokenChoice(spec, token, (writes.get(token.id) ?? []).length > 0)),
+          onCommit: (picked) => {
+            const token = tokens.find((entry) => entry.id === picked)
+            const styles = writes.get(picked)
+            if (!token || !styles?.length) return
+            context.writer.applyStyles(
+              context.selection,
+              neededWrites(styles, context.selection),
+              `Apply ${tokenDisplayName(token)}`
+            )
+            context.invalidate()
+          },
+        },
+        anchor
+      ),
+    detach: () => {
+      // The number the browser resolved, which is what the field showed before
+      // the token; the token's own literal when the variable does not resolve.
+      const plain = axes.map((axis) => {
+        const resolved = plainValue(axis, resolveSpec(context, axis, label, {}).computedValue)
+        const write = bound ? tokenStyleWrites(axis, bound)[0] : undefined
+        const literal = write?.fallback ?? (write && !write.value.includes("var(") ? write.value : undefined)
+        return { property: tokenCssProperty(axis), value: resolved || literal || "0px" }
+      })
+      context.writer.applyStyles(context.selection, plain, `Detach ${bound ? tokenDisplayName(bound) : "token"}`)
+      context.invalidate()
+    },
+  }
 }
 
 /**

@@ -351,10 +351,12 @@ await checkAsync("arrows move the active row and Enter commits it", async () => 
     assert.ok(pending.length > 0, "the pick queued no source operation")
     // The commit rebuilds the panel, so the field the keyboard was on has to be
     // handed back or the next arrow key goes to <body>.
+    // The radius binds from inside its number field, so focus returns to the
+    // field's token button and the field shows the token's name as a chip.
     const after = field(right, "corner-radius")
     assert.notEqual(after, before, "the inspector did not rebuild")
     assert.equal(window.document.activeElement, after)
-    assert.equal(after.textContent, "Radius/2xl")
+    assert.equal(after.closest(".de-field").querySelector(".de-tokenbind-name").textContent, "Radius/2xl")
   })
 })
 
@@ -511,9 +513,11 @@ await checkAsync("a typed value lands on the element, in source, and hands the f
 await checkAsync("Enter in the typed field takes what was typed, not the row the arrows are on", async () => {
   await withInspector(FIXTURE, async (harness) => {
     const { window, target } = harness
-    const { popover } = open(harness, "corner-radius")
+    // Margin, because it has no number field: the radius and the spacing that
+    // have one take a typed value there instead of in the list.
+    const { popover } = open(harness, "margin")
     const custom = customOf(popover)
-    assert.ok(custom, "the radius picker offers no way out of the list")
+    assert.ok(custom, "the margin picker offers no way out of the list")
 
     // A row IS highlighted — opening the picker parks the cursor on the binding
     // — so the window-level capture handler has a token ready to commit.
@@ -524,9 +528,9 @@ await checkAsync("Enter in the typed field takes what was typed, not the row the
     key(window, custom, "Enter")
     await harness.paint()
 
-    assert.equal(target.style.borderRadius, "7px")
+    assert.equal(target.style.margin, "7px")
     assert.ok(
-      !target.style.borderRadius.includes("var("),
+      !target.style.margin.includes("var("),
       "Enter committed the highlighted token instead of the typed value"
     )
   })
@@ -566,8 +570,12 @@ await checkAsync("the three compound axes offer no typed value, and every single
 
   await withInspector(FIXTURE, async (harness) => {
     assert.equal(has(harness, "text-style"), false, "a text style is four declarations, not one typed string")
-    for (const property of ["fill-color", "text-color", "corner-radius", "gap", "padding"]) {
+    for (const property of ["fill-color", "text-color", "margin"]) {
       assert.equal(has(harness, property), true, `${property} is one declaration and has no way out of the list`)
+    }
+    // A number field is its own typed value, so the list it opens has no footer.
+    for (const property of ["corner-radius", "gap", "padding-x"]) {
+      assert.equal(has(harness, property), false, `${property} repeats its number field inside the list`)
     }
   })
   await withInspector(ICON_FIXTURE, async (harness) => {

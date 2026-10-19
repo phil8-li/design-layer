@@ -24,14 +24,41 @@ export interface LayerBridge {
 
 export interface LayerMeta {
   info: RewriteElementInfo | null
-  /** Component name at an instance root; a label, its text, or the tag below one. */
+  /** See `layerName`. */
   name: string
+  /** The lowercase tag, kept beside the name so a developer can still read it. */
+  tag: string
   /** True at the outermost DOM node of a React component instance. */
   isRoot: boolean
 }
 
 const NAME_MAX = 28
 const NON_VISUAL = /^(SCRIPT|STYLE|LINK|META|TEMPLATE)$/
+/** React's `useId` output (`:r1:`, `«r1»`) names nothing a person wrote. */
+const GENERATED_ID = /[:«»]/
+
+/**
+ * A layer's name, the way Figma names layers rather than the way the DOM does.
+ *
+ * In order: an icon's own name, the component name at an instance root, an
+ * `aria-label`, a text leaf's words, an authored `id`, and the tag last. Every
+ * surface that prints a layer (the tree, the canvas stack menu, its filter)
+ * reads this, so they cannot disagree about what a layer is called.
+ */
+export function layerName(element: Element, componentName: string | null): string {
+  const icon = iconNameOf(element)
+  if (icon) return icon
+  if (componentName) return componentName
+  const label = element.getAttribute("aria-label")?.trim()
+  if (label) return label
+  if (!element.children.length) {
+    const text = (element.textContent ?? "").replace(/\s+/g, " ").trim()
+    if (text) return text.length > NAME_MAX ? `${text.slice(0, NAME_MAX - 1).trimEnd()}…` : text
+  }
+  const id = element.id.trim()
+  if (id && !GENERATED_ID.test(id)) return id
+  return element.tagName.toLowerCase()
+}
 
 /**
  * Chrome is excluded by `isCanvasElement`; non-visual document nodes and
@@ -146,15 +173,8 @@ function createResolver(bridge: LayerBridge): Resolver {
 
   const meta = (element: Element): LayerMeta => {
     const { info, isRoot } = fiber(element)
-    const label = element.getAttribute("aria-label")?.trim()
-    const text = element.children.length ? "" : element.textContent?.trim().slice(0, NAME_MAX)
-    // An icon names itself, and that name beats every other candidate: the row
-    // for a glyph should read "Compass", not "svg" and not the name of whatever
-    // component happened to render it.
-    const icon = iconNameOf(element)
-    const name =
-      icon || (isRoot && info ? info.componentName : label || text || element.tagName.toLowerCase())
-    return { info, name, isRoot }
+    const name = layerName(element, isRoot && info ? info.componentName : null)
+    return { info, name, tag: element.tagName.toLowerCase(), isRoot }
   }
 
   const isLayerRoot = (element: Element) => fiber(element).isRoot

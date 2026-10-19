@@ -185,7 +185,9 @@ check("propertyForClass reads the tailwind tables back", () => {
   assert.equal(m.propertyForClass("gap-x-2"), "column-gap")
   assert.equal(m.propertyForClass("-mt-2"), "margin-top")
   assert.equal(m.propertyForClass("lg:hover:font-semibold"), "font-weight")
-  assert.equal(m.propertyForClass("uppercase"), null)
+  // The Figma panel's type settings write case, so the tables now read it back.
+  assert.equal(m.propertyForClass("uppercase"), "text-transform")
+  assert.equal(m.propertyForClass("sr-only"), null)
 })
 
 console.log("\nProperty classification")

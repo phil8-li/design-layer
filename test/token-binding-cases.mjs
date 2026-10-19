@@ -19,9 +19,9 @@
  *      appear at most once. This nearly broke in review on a flex container,
  *      where both the Layout section and the auto-layout block inside it wanted
  *      to draw gap and padding; `drawsSpacingControls` in
- *      `section-autolayout.ts` is the arbitration, and a grid container is where
- *      the two files most nearly disagree — `directionOf` reads grid as "none"
- *      while `laysOutChildren` accepts it.
+ *      `section-autolayout.ts` is the arbitration. A childless flex box is
+ *      where the two files most nearly disagree: `laysOutChildren` accepts it
+ *      while the auto-layout rows draw nothing for it.
  *
  * Self-contained, and deliberately so. `token-cases.mjs` pins a real host's own
  * numbers and SKIPS the whole process when no host is on disk, which takes its
@@ -470,7 +470,8 @@ const SCENARIOS = [
   {
     name: "a flex container with children",
     markup: `<div id="target" style="display:flex;gap:16px;padding:16px"><span>a</span><span>b</span></div>`,
-    present: ["gap", "padding", "margin", "corner-radius"],
+    // Gap and padding are bound from inside their own number fields now.
+    present: ["gap", "padding-x", "padding-y", "margin", "corner-radius"],
     absent: ["text-color", "text-style", "svg-fill", "svg-stroke"],
   },
   {
@@ -478,7 +479,7 @@ const SCENARIOS = [
     markup: `<div id="target" style="display:grid;gap:16px;padding:16px"><span>a</span><span>b</span></div>`,
     // `directionOf` reads grid as "none" and `laysOutChildren` accepts it, so
     // this is the element the two spacing owners disagree about most nearly.
-    present: ["gap", "padding", "margin", "corner-radius"],
+    present: ["column-gap", "row-gap", "padding-x", "padding-y", "margin", "corner-radius"],
     absent: ["text-color", "text-style"],
   },
   {
@@ -540,6 +541,7 @@ const SCENARIOS = [
   {
     name: "a <button> whose only child is an <svg>",
     markup: `<button id="target" style="padding:8px"><svg data-fx-icon="star"></svg></button>`,
+    // Not auto layout, so no padding fields: the padding token row stays.
     present: ["svg-fill", "svg-stroke", "padding", "margin", "corner-radius"],
     // No text of its own, so the two type rows would edit nothing — and the
     // button is not an icon itself, so there is no icon NAME to size.
@@ -611,8 +613,9 @@ await checkAsync("no section named or titled `Design system` survives in the Des
   // "Saved styles" is not a section any more: each scoped style control lives
   // in the header of the section whose properties it saves.
   const known = new Set([
-    "Icon", "Responsive", "Position", "Layout", "Appearance", "Fill", "Stroke",
-    "Effects", "Typography", "Classes",
+    // Layout is titled "Auto layout" on a flex or grid box, as Figma's is.
+    "Icon", "Responsive", "Position", "Layout", "Auto layout", "Appearance", "Fill", "Stroke",
+    "Effects", "Selection colors", "Typography", "Classes",
   ])
   const strangers = [...seen].filter((title) => !known.has(title))
   assert.deepEqual(strangers, [], `unrecognised section titles: ${strangers.join(", ")}`)
@@ -670,49 +673,49 @@ await checkAsync("no axis is drawn twice on any scenario element", async () => {
 /*
  * The two elements the arbitration was written for, asserted directly.
  *
- * On a flex container `drawsSpacingControls` says yes, so the auto-layout block
- * houses gap and padding under its own number fields and `spacingBindings`
- * stands down. On a grid container it says no — `directionOf` reads grid as
- * "none" — so the block draws only its flow strip and the bindings come from
- * `spacingBindings` instead. Same one control each way, from opposite files.
+ * On a flex or grid container `drawsSpacingControls` says yes, so the gap and
+ * padding number fields carry their own token buttons and `spacingBindings`
+ * stands down. On a childless flex box it says no, and the bindings come from
+ * `spacingBindings` instead.
  */
-await checkAsync("a flex container gets exactly one gap and one padding, under the number fields", async () => {
+await checkAsync("a flex container binds gap and padding inside their number fields, once each", async () => {
   await withPanel(
     helpers,
     `<div id="target" style="display:flex;gap:16px;padding:16px"><span>a</span></div>`,
     ({ design }) => {
-      assert.equal(design.querySelectorAll('[data-de-field="design-system.gap"]').length, 1)
-      assert.equal(design.querySelectorAll('[data-de-field="design-system.padding"]').length, 1)
-      // Housed: the binding sits in the auto-layout block's own `Gap` group,
-      // beside `autolayout.gap`, not in a captioned row further down.
-      const gap = fieldFor(design, "gap")
-      const group = gap.closest(".de-group")
-      assert.ok(group, "the gap binding is not inside a captioned group")
-      assert.ok(
-        group.querySelector('[data-de-field="autolayout.gap"]'),
-        "the gap binding did not land under the gap number field"
-      )
-      const padding = fieldFor(design, "padding")
-      assert.ok(
-        padding.closest(".de-group").querySelector('[data-de-field="autolayout.padding"]'),
-        "the padding binding did not land under the padding number field"
-      )
+      for (const [axis, field] of [
+        ["gap", "autolayout.gap"],
+        ["padding-x", "autolayout.padding-x"],
+        ["padding-y", "autolayout.padding-y"],
+      ]) {
+        assert.equal(design.querySelectorAll(`[data-de-field="design-system.${axis}"]`).length, 1, axis)
+        assert.ok(
+          fieldFor(design, axis).closest(".de-field").querySelector(`[data-de-field="${field}"]`),
+          `the ${axis} binding is not inside the ${field} field`
+        )
+      }
+      expectAxes(design, "housed flex", { absent: ["padding", "row-gap", "column-gap"] })
     }
   )
 })
 
-await checkAsync("a grid container gets exactly one gap and one padding, from the other file", async () => {
+/*
+ * Grid is a Flow now, as in Figma, so a grid container draws its own column
+ * and row gap fields and padding fields, and each carries its binding.
+ */
+await checkAsync("a grid container binds each gap inside its own field", async () => {
   await withPanel(
     helpers,
     `<div id="target" style="display:grid;gap:16px;padding:16px"><span>a</span></div>`,
     ({ design }) => {
-      assert.equal(design.querySelectorAll('[data-de-field="design-system.gap"]').length, 1)
-      assert.equal(design.querySelectorAll('[data-de-field="design-system.padding"]').length, 1)
-      // Not housed: the auto-layout block drew no number fields for either, so
-      // these are `spacingBindings`' own captioned rows.
-      assert.equal(design.querySelector('[data-de-field="autolayout.gap"]'), null)
-      assert.equal(design.querySelector('[data-de-field="autolayout.padding"]'), null)
-      assert.equal(fieldFor(design, "gap").getAttribute("aria-label"), "Container gap token")
+      for (const axis of ["column-gap", "row-gap"]) {
+        assert.ok(
+          fieldFor(design, axis).closest(".de-field").querySelector(`[data-de-field="autolayout.${axis}"]`),
+          `the ${axis} binding is not inside its field`
+        )
+      }
+      expectAxes(design, "housed grid", { absent: ["gap", "padding"] })
+      assert.deepEqual(duplicates(design), [])
     }
   )
 })
@@ -731,21 +734,38 @@ await checkAsync("a flex container with no children keeps its gap and loses its 
 console.log("\nThe per-side and per-corner axes, in both states")
 
 await checkAsync("the per-side spacing axes are absent until the expander is opened", async () => {
-  const markup = `<div id="target" style="display:flex;gap:16px;padding:16px"><span>a</span></div>`
+  // On a box that does not lay out its children there are no gap or padding
+  // fields, so the token rows are still the way in, behind the expander.
+  const markup = `<div id="target" style="display:block;padding:16px"><span>a</span></div>`
   const PER_SIDE = [
-    "row-gap", "column-gap",
     "padding-top", "padding-right", "padding-bottom", "padding-left",
     "margin-top", "margin-right", "margin-bottom", "margin-left",
   ]
   await withPanel(helpers, markup, ({ design }) => {
-    expectAxes(design, "spacing folded", { present: ["gap", "padding", "margin"], absent: PER_SIDE })
+    expectAxes(design, "spacing folded", { present: ["padding", "margin"], absent: PER_SIDE })
   })
   await withPanel(
     helpers,
     markup,
     ({ design }) => {
-      expectAxes(design, "spacing unfolded", { present: ["gap", "padding", "margin", ...PER_SIDE] })
+      expectAxes(design, "spacing unfolded", { present: ["padding", "margin", ...PER_SIDE] })
       assert.deepEqual(duplicates(design), [], "unfolding doubled a spacing axis")
+    },
+    { expanded: [PRECISION_EXPANDER] }
+  )
+})
+
+await checkAsync("on an auto-layout box the expander only lengthens margin", async () => {
+  // The gap and padding fields bind their own axes, so the per-side rows for
+  // them would be a second control for the same declaration.
+  await withPanel(
+    helpers,
+    `<div id="target" style="display:flex;gap:16px;padding:16px"><span>a</span></div>`,
+    ({ design }) => {
+      expectAxes(design, "auto layout unfolded", {
+        present: ["margin-top", "margin-right", "margin-bottom", "margin-left"],
+        absent: ["row-gap", "column-gap", "padding-top", "padding-left", "padding"],
+      })
     },
     { expanded: [PRECISION_EXPANDER] }
   )
@@ -767,7 +787,7 @@ await checkAsync("the per-side axes follow the same gates their uniform rows do"
   )
 })
 
-await checkAsync("the four corner axes appear only for a box that has corners", async () => {
+await checkAsync("the four corner axes appear with the four corner fields", async () => {
   const rounded = `<div id="target" style="${ROUNDED}"></div>`
   const CORNERS = [
     "corner-radius-top-left", "corner-radius-top-right",
@@ -796,43 +816,24 @@ await checkAsync("the four corner axes appear only for a box that has corners", 
 })
 
 /*
- * FIXED, and the case is kept as the guard rather than deleted.
- *
- * `section-appearance.ts` puts the uniform binding and the four per-corner ones
- * in the two arms of one `perCorner ? … : …`, and the per-corner arm carries a
- * second gate — `cornerTokens`, meaning some corner above 0 or a `rounded*`
- * class. For one release those two facts combined into a hole: a SQUARE box with
- * the per-corner toggle OPEN bound no radius at all, because the uniform row had
- * gone with the fold and the four meant to replace it were gated away. The one
- * arrangement in which a designer had asked for more corner control was the one
- * with less.
- *
- * It could not happen before the token rows moved into this section — the
- * uniform binding lived in the dissolved `Design system` section behind its own
- * double chevron, where the Appearance toggle could not reach it. That is what
- * makes it worth a permanent case: the defect was created by the merge, so it
- * is the merge that has to keep being tested.
- *
- * `cornerTokens` now chooses between the FOUR and the ONE, never between the
- * four and nothing.
+ * The guard for a hole the token-row merge once opened: a SQUARE box with the
+ * per-corner toggle open bound no radius at all. Each corner field now carries
+ * its own binding, so the toggle can only ever add bindings.
  */
 await checkAsync("a square box binds its radius in both states of the corner toggle", async () => {
   await withPanel(
     helpers,
     `<div id="target"></div>`,
     ({ design }) => {
-      expectAxes(design, "square box, toggle open", { present: ["corner-radius"] })
-      // The four per-corner bindings stay out: a square box has no corner for
-      // them to be about, which is the gate doing its job rather than failing.
-      assert.deepEqual(
-        axesIn(design).filter((axis) => axis.startsWith("corner-radius-")),
-        [],
-        "a square box grew four per-corner bindings it has no corners for"
-      )
-      // The per-corner NUMBER fields are still there, so the fold did open.
+      expectAxes(design, "square box, toggle open", {
+        present: [
+          "corner-radius", "corner-radius-top-left", "corner-radius-top-right",
+          "corner-radius-bottom-right", "corner-radius-bottom-left",
+        ],
+      })
       assert.ok(
-        design.querySelector('[data-de-field="appearance.radius.top-left"]'),
-        "the per-corner number fields went missing, so the toggle did not open"
+        fieldFor(design, "corner-radius-top-left").closest(".de-field").querySelector('[data-de-field="appearance.radius.top-left"]'),
+        "the top-left binding is not inside the top-left field"
       )
     },
     { expanded: [RADIUS_EXPANDER] }
@@ -932,10 +933,10 @@ await checkAsync("the toggles really drive the keys these cases write", async ()
       design.querySelector('[aria-label="Show per-side tokens"]').click()
       await paint()
       assert.equal(helpers.isExpanded(PRECISION_EXPANDER), true)
-      expectAxes(design, "after the per-side click", { present: ["margin-top", "row-gap"] })
+      expectAxes(design, "after the per-side click", { present: ["margin-top"], absent: ["row-gap"] })
 
       assert.equal(helpers.isExpanded(RADIUS_EXPANDER), false)
-      design.querySelector('[aria-label="Set each corner"]').click()
+      design.querySelector('[aria-label="Individual corners"]').click()
       await paint()
       assert.equal(helpers.isExpanded(RADIUS_EXPANDER), true)
       expectAxes(design, "after the per-corner click", { present: ["corner-radius-top-left"] })
@@ -1006,7 +1007,9 @@ await checkAsync("a token row's caption is a group caption, never a layout-group
 
     // The block captions that legitimately DO wear the loud rank, so the
     // negative above is not passing because nothing uses the class.
-    for (const title of ["Auto layout", "Spacing"]) {
+    // \`Auto layout\` is the section title now, as in Figma, which leaves
+    // \`Spacing\` the one block caption at this rank.
+    for (const title of ["Spacing"]) {
       assert.ok(loud.includes(title), `${title} should be a layout-group title, and is not`)
     }
   })
@@ -1043,12 +1046,11 @@ await checkAsync("the three paint rows draw exactly one colour well and no secon
         )
       }
 
-      // Targeted, not global: a row with no well beside it keeps its preview,
-      // which is the only mark it gets.
+      // The radius binds from inside its number field, which draws no swatch.
       assert.equal(
-        fieldFor(design, "corner-radius").querySelectorAll(".de-token-swatch").length,
-        1,
-        "the radius row lost the preview that is its only mark"
+        fieldFor(design, "corner-radius").closest(".de-field").querySelectorAll(".de-token-swatch").length,
+        0,
+        "the radius field drew a swatch"
       )
       assert.equal(
         fieldFor(design, "margin").querySelectorAll(".de-token-swatch").length,
@@ -1072,7 +1074,7 @@ await checkAsync("an unstocked axis renders no field and no empty captioned grou
     ({ design }) => {
       // Every gate on this element passes. Only the shelves are bare.
       expectAxes(design, "sparse catalog", {
-        present: ["gap", "padding", "margin"],
+        present: ["gap", "padding-x", "padding-y", "margin"],
         absent: [
           "fill-color", "text-color", "stroke-color", "ring-color", "outline-color",
           "svg-fill", "svg-stroke", "corner-radius", "text-style", "shadow",
@@ -1101,9 +1103,10 @@ await checkAsync("an unstocked axis renders no field and no empty captioned grou
         design.querySelector(".de-paint-value"),
         "Fill dropped its plain hex readout as well as its binding"
       )
+      // Text color is not Typography's any more: as in Figma, Fill lists it.
       assert.ok(
-        design.querySelector('[data-de-field="type.color"]'),
-        "Typography dropped its colour field instead of falling back to it"
+        design.querySelector('[data-de-field="type.size"]'),
+        "Typography dropped its own controls along with the binding"
       )
       assert.ok(
         design.querySelector('[data-de-field="appearance.radius"]'),
@@ -1125,7 +1128,7 @@ await checkAsync("the stocked catalog is what makes the sparse one meaningful", 
       expectAxes(design, "stocked catalog", {
         present: [
           "fill-color", "text-color", "stroke-color", "ring-color", "corner-radius",
-          "text-style", "shadow", "motion-duration", "gap", "padding", "margin",
+          "text-style", "shadow", "motion-duration", "gap", "padding-x", "padding-y", "margin",
         ],
       })
       assert.deepEqual(duplicates(design), [])

@@ -184,12 +184,37 @@ export interface NumberFieldOptions {
   step?: number
   disabled?: boolean
   /**
+   * A design-system token this number can be bound to — Figma's "Apply
+   * variable". Absent when the catalog stocks nothing for the property.
+   */
+  token?: FieldToken
+  /**
    * Live value during a scrub. Sections wire this to an inline style so the
    * drag is visible without queueing a source write (and a toast) per frame.
    */
   onPreview?(value: number): void
   onCommit(value: number): void
 }
+
+/**
+ * A number field's token binding, already resolved by the caller.
+ *
+ * This module knows nothing about catalogs: `token-row.ts` decides which token
+ * is bound and what a pick writes, and hands over the name and two callbacks.
+ */
+export interface FieldToken {
+  /** Focus memory for the field's token button, kept across the rebuild a pick causes. */
+  id: string
+  /** The bound token's display name, or null while the field holds a plain number. */
+  bound: string | null
+  /** Opens the token list. `trigger` takes focus back; `anchor` is what the list lines up under. */
+  open(trigger: HTMLElement, anchor: HTMLElement): void
+  /** Writes the resolved number in place of the token. */
+  detach(): void
+}
+
+/** "Corner radius" as it reads mid-sentence in a tooltip. */
+const midSentence = (name: string): string => name.charAt(0).toLowerCase() + name.slice(1)
 
 /**
  * The accessible name for a field whose label may be a drawn mark.
@@ -207,6 +232,7 @@ const accessibleName = (title: string | undefined, label: string | Node): string
 
 /** Figma-style scrubbable number input: drag the label, or type a value. */
 export function numberField(options: NumberFieldOptions): HTMLElement {
+  if (options.token?.bound) return boundNumberField(options, options.token)
   const initial = options.value === null ? "" : String(round(options.value))
   const input = el("input", {
     type: "text",
@@ -248,7 +274,20 @@ export function numberField(options: NumberFieldOptions): HTMLElement {
     const current = evaluateNumeric(input.value) ?? 0
     commit(String(round(event.key === "ArrowUp" ? current + step : current - step)))
   })
-  input.addEventListener("blur", () => commit(input.value))
+  /*
+   * Commit on blur only when the person left a changed value behind.
+   *
+   * Chrome fires `blur` on a focused input that is REMOVED, and every commit
+   * rebuilds the panel, so an unconditional commit here re-ran the last edit on
+   * the field it was removing; any section whose commit invalidates the panel
+   * (Rotation's does) then rebuilt, blurred and committed again in a microtask
+   * loop that froze the page. A detached input or an unedited value is not a
+   * person leaving the field.
+   */
+  input.addEventListener("blur", () => {
+    if (!input.isConnected || input.value === initial) return
+    commit(input.value)
+  })
 
   const label = el(
     "span",
@@ -305,12 +344,79 @@ export function numberField(options: NumberFieldOptions): HTMLElement {
   // `--numeric` rather than styling every `.de-field input`: tabular figures
   // stop the digits walking sideways under a scrub, but the same treatment on
   // a text field would space out prose that has no columns to keep.
-  return el("div", { class: "de-field de-field--numeric" }, [
+  const field = el("div", { class: options.token ? "de-field de-field--numeric de-tokenbind" : "de-field de-field--numeric" }, [
     label,
     input,
     options.suffix ? el("span", { class: "de-field-suffix" }, [options.suffix]) : null,
     options.trailing ?? null,
   ])
+  if (options.token) field.append(applyTokenButton(options, options.token, field))
+  return field
+}
+
+/**
+ * The hexagon at the field's end. Hidden until the field is hovered or holds
+ * focus, as in Figma, but always in the tab order so a keyboard reaches it.
+ */
+function applyTokenButton(options: NumberFieldOptions, token: FieldToken, field: HTMLElement): HTMLElement {
+  const name = midSentence(accessibleName(options.title, options.label))
+  const button = el(
+    "button",
+    {
+      class: "de-tokenbind-apply",
+      type: "button",
+      "aria-label": "Apply token",
+      title: token.bound ? `Change ${name} token` : `Apply token to ${name}`,
+      "aria-haspopup": "listbox",
+      "aria-expanded": "false",
+      "aria-pressed": token.bound ? "true" : undefined,
+      "data-de-field": token.id,
+      disabled: options.disabled,
+    },
+    [icon("Variable", tokens.icon.action)]
+  )
+  button.addEventListener("click", () => token.open(button, field))
+  return button
+}
+
+/**
+ * A bound field: the token's name as a chip where the number was, and a detach
+ * action on the chip. The number is not drawn, so there is nothing to type or
+ * scrub until the token is detached; Figma's bound fields behave the same way.
+ */
+function boundNumberField(options: NumberFieldOptions, token: FieldToken): HTMLElement {
+  const title = accessibleName(options.title, options.label)
+  const bound = token.bound ?? ""
+  const detach = el(
+    "button",
+    {
+      class: "de-tokenbind-detach",
+      type: "button",
+      "aria-label": "Detach token",
+      title: `Detach token from ${midSentence(title)}`,
+      disabled: options.disabled,
+    },
+    [icon("XSmall", tokens.icon.marker)]
+  )
+  detach.addEventListener("click", () => token.detach())
+  // The leaf never clips: in a field this narrow, "Radius/…" names the group
+  // and hides the answer, so the group gives way first.
+  const cut = bound.lastIndexOf("/") + 1
+  const name = el("span", { class: "de-tokenbind-name" }, [
+    cut ? el("span", { class: "de-tokenbind-group" }, [bound.slice(0, cut)]) : null,
+    el("span", { class: "de-tokenbind-leaf" }, [bound.slice(cut)]),
+  ])
+  const chip = el("span", { class: "de-tokenbind-chip", title: `${title}: ${bound}` }, [name, detach])
+  const field = el("div", { class: "de-field de-field--numeric de-tokenbind de-tokenbind--bound" }, [
+    el("span", { class: "de-field-label de-tokenbind-label", title }, [options.label]),
+    chip,
+    options.trailing ?? null,
+  ])
+  const apply = applyTokenButton(options, token, field)
+  // The name is the larger target, so a press on it opens the same list.
+  name.addEventListener("click", () => apply.click())
+  field.append(apply)
+  return field
 }
 
 /**
@@ -326,6 +432,80 @@ export function group(caption: string, ...children: Array<Node | null>): HTMLEle
     el("div", { class: "de-group-caption" }, [caption]),
     ...children,
   ])
+}
+
+export interface PropRowOptions {
+  /**
+   * One caption over the whole row (Figma's `Position`), or one per column
+   * (`Opacity` over the first field, `Corner radius` over the second). A `null`
+   * column caption leaves that column's caption cell empty, so a lone second
+   * caption still lands over the second field.
+   */
+  caption?: string | [string | null, string | null]
+  /** One control spanning both columns, or one per column. */
+  cells: Array<Node | null>
+  /**
+   * The row's 24px action: individual corners, individual padding, aspect lock,
+   * wrap, a settings popover. The column is drawn whether or not this row has
+   * one, so every trailing action in the panel sits on one vertical line.
+   */
+  trailing?: Node | null
+  /** Stable id for tests and focus memory. */
+  id?: string
+}
+
+/**
+ * Figma's property row: captions over a `1fr 1fr 24px` grid.
+ *
+ * Measured off Figma's own panel (`ui3OneInputOneIconRow` and its siblings):
+ * every row is two equal field columns and one icon column, and a control that
+ * needs the whole width spans the first two. Building each section's rows on
+ * this one grid is what lines the X field up with W, Opacity, the fill hex and
+ * the font family, and puts every per-side toggle in the same column, so a
+ * Figma user finds a control by where it sits.
+ *
+ * Expanded follow-up rows (individual corners, individual padding) are more
+ * `propRow`s with no caption, so they keep the same columns.
+ */
+export function propRow(options: PropRowOptions): HTMLElement {
+  const captions: HTMLElement[] = []
+  if (typeof options.caption === "string") {
+    captions.push(el("div", { class: "de-prow-caption de-prow-caption--span" }, [options.caption]))
+  } else if (options.caption) {
+    const [first, second] = options.caption
+    captions.push(el("div", { class: "de-prow-caption" }, [first ?? ""]))
+    captions.push(el("div", { class: "de-prow-caption" }, [second ?? ""]))
+  }
+  const present = options.cells.filter((cell): cell is Node => cell !== null)
+  const cells = present.map((cell) =>
+    el("div", { class: present.length === 1 ? "de-prow-cell de-prow-cell--span" : "de-prow-cell" }, [cell])
+  )
+  return el("div", { class: "de-prow", "data-de-row": options.id }, [
+    // Its own subgrid row, so the cells below always start back at column 1.
+    captions.length ? el("div", { class: "de-prow-captions" }, captions) : null,
+    ...cells,
+    options.trailing ? el("div", { class: "de-prow-trail" }, [options.trailing]) : null,
+  ])
+}
+
+/**
+ * A toggle for the row's trailing column — Figma's individual-corners button.
+ * `pressed` draws the selected plate so an expanded row says it is expanded.
+ */
+export function trailingToggle(options: {
+  label: string
+  glyph: Node
+  pressed: boolean
+  onClick(): void
+}): HTMLElement {
+  const button = iconButton({
+    label: options.label,
+    glyph: options.glyph,
+    pressed: options.pressed,
+    onClick: options.onClick,
+  })
+  button.classList.add("de-prow-toggle")
+  return button
 }
 
 export interface IconChoice {
@@ -513,6 +693,12 @@ export interface SelectFieldOptions {
   label: string
   value: string
   options: Array<{ value: string; label: string }>
+  /**
+   * Shown when `value` names no option — `Mixed` across a multi-selection.
+   * Without it a native select falls back to its first option and claims a
+   * value no layer has.
+   */
+  placeholder?: string
   onCommit(value: string): void
 }
 
@@ -541,6 +727,12 @@ export function selectField(options: SelectFieldOptions): HTMLElement {
     "aria-label": options.label,
     "data-de-field": options.id,
   }) as HTMLSelectElement
+  if (options.placeholder !== undefined && !options.options.some((option) => option.value === options.value)) {
+    // Disabled and hidden: it names the state and cannot be picked back.
+    const blank = el("option", { value: "", disabled: true, hidden: true }, [options.placeholder]) as HTMLOptionElement
+    blank.selected = true
+    select.append(blank)
+  }
   for (const option of options.options) {
     const node = el("option", { value: option.value }, [option.label]) as HTMLOptionElement
     if (option.value === options.value) node.selected = true
@@ -716,6 +908,11 @@ export function miniButton(options: {
   )
 }
 
+/** Drops the user's fold choice for one section, so its default applies again. */
+export function forgetSectionFold(title: string): void {
+  collapsedSections.delete(title)
+}
+
 /**
  * A collapsible section. The header folds the body in place rather than asking
  * the panel to re-render: a rebuild here would drop focus from whatever the
@@ -748,10 +945,11 @@ export function section(
    */
   hint?: string
 ): HTMLElement {
-  if (collapsedByDefault && !collapsedSections.has(title)) {
-    collapsedSections.set(title, true)
-  }
-  const collapsed = collapsedSections.get(title) === true
+  // A default, not a choice: it is not stored, so a section whose default
+  // changes with its content (Selection colors folds above four colours)
+  // follows it until the user presses the header, and their choice wins after.
+  const folded = (): boolean => collapsedSections.get(title) ?? collapsedByDefault
+  const collapsed = folded()
   const wrapped = el("div", { class: "de-section-body" }, [body])
   wrapped.hidden = collapsed
   /*
@@ -823,7 +1021,7 @@ export function section(
     // The `+` is inside the bar but is not part of the fold: a press on it must
     // add a fill, not collapse the section the new row would land in.
     if ((event.target as HTMLElement | null)?.closest(".de-section-actions")) return
-    const next = !(collapsedSections.get(title) === true)
+    const next = !folded()
     collapsedSections.set(title, next)
     wrapped.hidden = next
     toggle.setAttribute("aria-expanded", String(!next))
@@ -833,6 +1031,23 @@ export function section(
   header.classList.toggle("de-section-header--collapsed", collapsed)
 
   return el("div", { class: "de-section" }, [header, fold])
+}
+
+/**
+ * A section with nothing in it yet: the title, dimmed, and the `+` that adds
+ * the first entry. Figma draws an empty Stroke, Effects or Export this way, a
+ * one-line header instead of a body that says "No stroke", so the sections an
+ * element does use stay near the top of the panel.
+ *
+ * No fold: there is no body to fold, and a chevron on an empty header would
+ * promise content that is not there.
+ */
+export function emptySection(title: string, actions: HTMLElement, hint?: string): HTMLElement {
+  const header = el("div", { class: "de-section-header de-section-header--empty" }, [
+    sectionHeading(title, hint),
+    el("span", { class: "de-section-actions" }, [actions]),
+  ])
+  return el("div", { class: "de-section de-section--empty", "data-de-empty": "true" }, [header])
 }
 
 /**

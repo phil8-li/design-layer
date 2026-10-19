@@ -22,13 +22,14 @@
  */
 
 import { el, round } from "../../core/dom"
-import { leaveRow } from "../../core/leave"
+import { leaveRow, revealGroup } from "../../core/leave"
 import { icon } from "../../core/icons"
 import { tokens } from "../../core/tokens"
-import { swatch, toHex } from "./color"
-import { miniButton, numberField, selectField } from "./field"
+import { alphaOf, emptyPaintSection, paintRow, withAlpha } from "./color"
+import { isExpanded, miniButton, numberField, propRow, selectField, setExpanded, takeJustExpanded } from "./field"
 import { styledSection } from "../../options/panel"
 import { hasUtility, tokenRow } from "./token-row"
+import { isMulti, mixedPaintSection, selectedOf, sharedValue } from "./multi"
 import type { InspectorSection } from "./index"
 
 interface Shadow {
@@ -40,6 +41,7 @@ interface Shadow {
   color: string
 }
 
+const EXPANDER = "effects"
 const DEFAULT_SHADOW: Shadow = { inset: false, x: 0, y: 2, blur: 8, spread: 0, color: "#00000026" }
 
 /** Effects parked by the eye, keyed by element — see the Fill section's note. */
@@ -118,11 +120,20 @@ export const effectsSection: InspectorSection = (context) => {
     commit(next, summary)
   }
 
+  // Different shadows across the selection: Figma's hint, and `+` replaces
+  // every layer's effects with the one default shadow.
+  const mixed = isMulti(context) && sharedValue(context, (style) => style.boxShadow) === null
+
   const add = miniButton({
     label: "Add effect",
     glyph: icon("Plus", tokens.icon.marker),
-    onClick: () => commit([...rows, { shadow: DEFAULT_SHADOW, hidden: false }], "Add effect"),
+    onClick: () => {
+      if (!mixed) return commit([...rows, { shadow: DEFAULT_SHADOW, hidden: false }], "Add effect")
+      for (const entry of selectedOf(context)) parked.delete(entry.key)
+      commit([{ shadow: DEFAULT_SHADOW, hidden: false }], "Add effect")
+    },
   })
+  if (mixed) return mixedPaintSection(context, "effects", "Effects", add)
 
   /*
    * The shadow binding, and it sits ABOVE the stack on purpose.
@@ -131,17 +142,15 @@ export const effectsSection: InspectorSection = (context) => {
    * each; a shadow token binds the whole declaration in one write. Those are two
    * views of one property, and they cannot both be authoritative — so the panel
    * has to say which wins, and it is the token: picking one replaces the
-   * declaration, layers and all, and the cards below redraw as whatever the
+   * declaration, layers and all, and the rows below redraw as whatever the
    * token turned out to be. Nothing here merges a token into layer three. The
    * parked rows are the one thing that survives it, and should: the eye is a
    * statement about a layer the designer switched off, not about the value that
    * happened to be painted when they did.
    *
-   * Placement is how that gets said without a sentence. Under the cards it would
-   * read as a fifth field on the last one, and a control that overwrites the
-   * four cards above it must not look like it belongs to one of them. Above
-   * them, before the list, it reads as what it is: the whole effect, with the
-   * per-layer breakdown underneath as the long form of the same answer.
+   * Placement says that without a sentence. Under the rows it would read as a
+   * setting of the last effect; above them it reads as the whole effect, with
+   * the per-layer rows as the long form of the same answer.
    */
   const shadowBinding =
     computed.boxShadow !== "none" || hasUtility(selection.element, "shadow")
@@ -159,7 +168,7 @@ export const effectsSection: InspectorSection = (context) => {
       ? tokenRow(context, "motion-duration", "Motion duration")
       : null
 
-  const cards = rows.map((row, index) => {
+  const blocks = rows.map((row, index) => {
     const preview = (patch: Partial<Shadow>) => {
       if (row.hidden) return
       const drafted = rows.map((entry, at) => (at === index ? { ...entry, shadow: { ...entry.shadow, ...patch } } : entry))
@@ -180,15 +189,34 @@ export const effectsSection: InspectorSection = (context) => {
         label,
         title,
         value: row.shadow[key],
+        min: key === "blur" ? 0 : undefined,
         disabled: row.hidden,
         onPreview: (value) => preview(patch(value)),
         onCommit: (value) => replace(index, patch(value), `Set effect ${title.toLowerCase()}`),
       })
     }
 
-    return el("div", { class: "de-paint-card" }, [
-      el("div", { class: "de-paint-row" }, [
-        swatch(row.shadow.color, "Effect color", (hex) => replace(index, { color: hex }, "Set effect color")),
+    /*
+     * Figma opens an effect's numbers in a popover from the row's icon. Here
+     * they open under the row instead, remembered per effect index, so the
+     * closed list is one row per effect and an open one stays open across the
+     * rebuild every commit causes.
+     */
+    const key = `${EXPANDER}.${index}`
+    const open = isExpanded(key)
+    const settings = miniButton({
+      label: "Effect settings",
+      glyph: icon("Settings", tokens.icon.action),
+      onClick: () => {
+        setExpanded(key, !open)
+        invalidate()
+      },
+    })
+    settings.setAttribute("aria-expanded", String(open))
+
+    const head = el("div", { class: "de-paint-row" }, [
+      el("div", { class: "de-effect-well" }, [
+        settings,
         selectField({
           id: `effects.${index}.type`,
           label: "Effect type",
@@ -199,61 +227,69 @@ export const effectsSection: InspectorSection = (context) => {
           ],
           onCommit: (value) => replace(index, { inset: value === "inner" }, "Set effect type"),
         }),
-        miniButton({
-          label: row.hidden ? "Show effect" : "Hide effect",
-          glyph: row.hidden ? "◎" : "◉",
-          pressed: row.hidden,
-          onClick: () =>
-            commit(
-              rows.map((entry, at) => (at === index ? { ...entry, hidden: !entry.hidden } : entry)),
-              row.hidden ? "Show effect" : "Hide effect"
-            ),
-        }),
-        miniButton({
-          label: "Remove effect",
-          glyph: icon("Minus", tokens.icon.marker),
-          danger: true,
-          onClick: (event: Event) => {
-            // The whole CARD leaves, not just its first row: an effect is four
-            // rows of one object, and collapsing the top one would leave three
-            // orphaned lines standing where the thing they described was.
-            const card = (event.currentTarget as HTMLElement).closest(".de-paint-card")
-            const write = () => commit(rows.filter((_, at) => at !== index), "Remove effect")
-            const closing = card instanceof HTMLElement ? leaveRow(card) : null
-            if (closing) void closing.then(write)
-            else write()
-          },
-        }),
       ]),
-      el("div", { class: "de-row--split" }, [scalar("x", "X", "Offset X"), scalar("y", "Y", "Offset Y")]),
-      el("div", { class: "de-row--split" }, [scalar("blur", "B", "Blur"), scalar("spread", "S", "Spread")]),
-      el("div", { class: "de-hint" }, [toHex(row.shadow.color) ?? row.shadow.color]),
+      miniButton({
+        label: row.hidden ? "Show effect" : "Hide effect",
+        glyph: icon(row.hidden ? "EyeOff" : "Eye", tokens.icon.action),
+        onClick: () =>
+          commit(
+            rows.map((entry, at) => (at === index ? { ...entry, hidden: !entry.hidden } : entry)),
+            row.hidden ? "Show effect" : "Hide effect"
+          ),
+      }),
+    ])
+    if (row.hidden) head.classList.add("de-paint-row--hidden")
+
+    const remove = miniButton({
+      label: "Remove effect",
+      glyph: icon("Minus", tokens.icon.action),
+      danger: true,
+      onClick: (event: Event) => {
+        // The whole effect leaves, its open settings with it.
+        const block = (event.currentTarget as HTMLElement).closest(".de-effect")
+        const write = () => commit(rows.filter((_, at) => at !== index), "Remove effect")
+        const closing = block instanceof HTMLElement ? leaveRow(block) : null
+        if (closing) void closing.then(write)
+        else write()
+      },
+    })
+
+    const details = open
+      ? el("div", { class: "de-effect-settings" }, [
+          propRow({ id: `effects.${index}.offset`, cells: [scalar("x", "X", "Offset X"), scalar("y", "Y", "Offset Y")] }),
+          propRow({ id: `effects.${index}.size`, cells: [scalar("blur", "B", "Blur"), scalar("spread", "S", "Spread")] }),
+          paintRow({
+            id: `effects.${index}.color`,
+            label: "Effect color",
+            value: row.shadow.color,
+            live: !row.hidden,
+            binding: null,
+            onColor: (next) =>
+              replace(index, { color: withAlpha(next, alphaOf(row.shadow.color)) ?? next }, "Set effect color"),
+            alpha: {
+              onPreview: (alpha) => {
+                const next = withAlpha(row.shadow.color, alpha)
+                if (next) preview({ color: next })
+              },
+              onCommit: (alpha) => {
+                const next = withAlpha(row.shadow.color, alpha)
+                if (next) replace(index, { color: next }, "Set effect opacity")
+              },
+            },
+          }),
+        ])
+      : null
+    if (details && takeJustExpanded(key)) revealGroup(details)
+
+    return el("div", { class: "de-effect" }, [
+      propRow({ id: `effects.${index}`, cells: [head], trailing: remove }),
+      details,
     ])
   })
 
-  /*
-   * No layers is no longer the end of the section.
-   *
-   * It used to return early with a bare `No effects.` hint, which was true about
-   * the stack and wrong about everything else: an element with a transition and
-   * no shadow still has a motion duration to bind, and an element wearing a
-   * `shadow-*` utility that computes to `none` — a `shadow-none` override, a
-   * variant that only paints on hover — still has a shadow axis to point at a
-   * token. Both were unreachable, because the row that would have said so was
-   * below a `return`.
-   *
-   * The hint now describes the stack rather than the section, and it stays: the
-   * cards are the only thing here a designer adds to, so the empty list needs a
-   * word where the rows would be. The `+` rides on the header in both states, as
-   * it always did.
-   */
-  const body = el("div", { class: "de-stack" }, [
-    shadowBinding,
-    cards.length
-      ? el("div", { class: "de-stack" }, cards)
-      : el("div", { class: "de-hint" }, ["No effects"]),
-    motionBinding,
-  ])
+  if (!blocks.length) return emptyPaintSection(context, "effects", "Effects", add, [shadowBinding, motionBinding])
+
+  const body = el("div", { class: "de-stack" }, [shadowBinding, ...blocks, motionBinding])
 
   return styledSection(context, "effects", "Effects", body, add)
 }

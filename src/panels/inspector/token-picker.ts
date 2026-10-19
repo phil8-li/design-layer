@@ -207,7 +207,22 @@ export function tokenField(options: TokenFieldOptions): HTMLElement {
   return field
 }
 
-function openPicker(field: HTMLElement, options: TokenFieldOptions): void {
+/** What the list itself needs; the closed field's own options stay with `tokenField`. */
+export type TokenListOptions = Pick<TokenFieldOptions, "title" | "choices" | "selectedId" | "onCommit" | "custom">
+
+/**
+ * Opens the list from a control that is not a `tokenField`: the "Apply token"
+ * button inside a number field. `trigger` takes focus back and reports
+ * `aria-expanded`; `anchor` is the field the card lines up under, as Figma's
+ * variable list lines up under the field rather than under its small button.
+ * Pressing the trigger again closes it.
+ */
+export function toggleTokenList(trigger: HTMLElement, options: TokenListOptions, anchor: HTMLElement = trigger): void {
+  if (openFor === trigger) dismiss?.(true)
+  else openPicker(trigger, options, anchor)
+}
+
+function openPicker(field: HTMLElement, options: TokenListOptions, anchor: HTMLElement = field): void {
   dismiss?.(false)
 
   const listId = `de-token-list-${(pickerSeq += 1)}`
@@ -405,11 +420,12 @@ function openPicker(field: HTMLElement, options: TokenFieldOptions): void {
      * typing into — and it makes the anchor a property of the current list
      * rather than of the list that happened to be there when it opened.
      */
-    place(field, popover)
+    place(anchor, popover)
   }
 
   const onPointerDown = (event: Event) => {
-    if (!popover.contains(event.target as Node) && !field.contains(event.target as Node)) close(false)
+    const target = event.target as Node
+    if (!popover.contains(target) && !field.contains(target)) close(false)
   }
   /**
    * The popover is anchored to a field that scrolls with the panel, so a scroll
@@ -454,7 +470,7 @@ function openPicker(field: HTMLElement, options: TokenFieldOptions): void {
   document.body.append(popover)
   field.setAttribute("aria-expanded", "true")
   render("")
-  place(field, popover)
+  place(anchor, popover)
   dismiss = close
   openFor = field
   window.addEventListener("pointerdown", onPointerDown, true)
@@ -468,10 +484,17 @@ function openPicker(field: HTMLElement, options: TokenFieldOptions): void {
  * bottom. Measured after mount rather than estimated: the height depends on how
  * many tokens the axis has, and a picker whose last rows are past the viewport
  * edge is a picker those tokens cannot be chosen from.
+ *
+ * Its left edge sits on the field's left edge, or its right edge on the
+ * field's right edge when the card would run off the window. The inspector
+ * docks on the right, so a field in the second column ends its card flush with
+ * that field instead of being pushed to an arbitrary spot by the clamp.
  */
 function place(field: HTMLElement, popover: HTMLElement): void {
   const anchor = field.getBoundingClientRect()
-  popover.style.left = `${clamp(anchor.left, EDGE, Math.max(EDGE, window.innerWidth - POPOVER_WIDTH - EDGE))}px`
+  const startAligned = anchor.left + POPOVER_WIDTH + EDGE <= window.innerWidth
+  const left = startAligned ? anchor.left : anchor.right - POPOVER_WIDTH
+  popover.style.left = `${clamp(left, EDGE, Math.max(EDGE, window.innerWidth - POPOVER_WIDTH - EDGE))}px`
   const height = popover.getBoundingClientRect().height
   const below = anchor.bottom + 4
   const fits = below + height + EDGE <= window.innerHeight

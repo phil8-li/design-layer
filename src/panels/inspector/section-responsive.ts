@@ -342,6 +342,11 @@ export const responsiveSection: InspectorSection = ({ selection, computed, write
             ]),
           ]
         : []),
-    ])
+    ]),
+    undefined,
+    // Folded on arrival: a per-breakpoint override is a web concept Figma has
+    // no section for, and open it is the tallest block in the panel. The
+    // folded header keeps its chevron, so it is still one press away.
+    true
   )
 }

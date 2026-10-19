@@ -528,6 +528,21 @@ export const SHORTCUTS: readonly Shortcut[] = [
     owner: "canvas",
   },
   {
+    command: "layout.auto.add",
+    chord: { key: "a", shift: true },
+    label: "Add auto layout to the selection",
+    figma: "Add auto layout (⇧A)",
+    group: "Edit",
+  },
+  {
+    // `code`, because ⌥ rewrites the letter on a Mac (⌥⇧A reports "Å").
+    command: "layout.auto.remove",
+    chord: { code: "KeyA", shift: true, alt: true },
+    label: "Remove auto layout from the selection",
+    figma: "Remove auto layout (⌥⇧A)",
+    group: "Edit",
+  },
+  {
     command: "notes.copy",
     chord: { code: "KeyC", mod: true, alt: true },
     label: "Copy notes and edits",
@@ -609,7 +624,10 @@ const KEY_NAMES: Record<string, string> = {
  */
 export function chordLabel(chord: Chord, mac = isMac()): string {
   const source = chord.code ?? chord.key ?? ""
-  let name = KEY_NAMES[source] ?? source.toUpperCase()
+  // A physical `KeyA` / `Digit4` code reads as its letter or digit; only the
+  // named keys above need a table entry.
+  const physical = /^Key([A-Z])$/.exec(source) ?? /^Digit(\d)$/.exec(source)
+  let name = KEY_NAMES[source] ?? (physical ? physical[1] : source.toUpperCase())
   if (chord.code === "Slash" && chord.shift) name = "?"
   // A Mac laptop has one delete key and it is backspace, labelled "delete";
   // its forward delete is ⌦ and is not on the keyboard most designers own.

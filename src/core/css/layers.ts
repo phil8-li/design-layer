@@ -6,12 +6,12 @@ import { CONTROL_RADIUS, FOCUS_INSET } from "./panels"
 /**
  * One indent step, in px, shared with the panel that builds the rows.
  *
- * It lives here because the stylesheet is the other half of the measurement:
- * the row sets its own `padding-left` from this, and the indent guides are a
- * gradient that has to repeat on exactly the same pitch or the rule drifts off
- * the level it marks. Two numbers that must agree is one number.
+ * Figma indents 24px a level; a DOM tree runs far deeper than a Figma file,
+ * and at 24 a 240px panel loses the names by the eighth level. `space.lg` puts
+ * a child's chevron gutter under its parent's glyph, so glyphs still line up
+ * per level.
  */
-export const LAYER_INDENT = 16
+export const LAYER_INDENT = t.space.lg
 
 /**
  * The context menu's corner and its rows' corner, from one inset: the kit's
@@ -29,6 +29,9 @@ export const layersCss = `/* ---------- layers ---------- */
  * the kit's 16px field corner, which on a box this short is a pill; see the
  * note on that constant in \`css/panels.ts\`.
  */
+/* Opened from the header's Search button; see \`panels/layers.ts\`. */
+.de-layer-filter-band { padding: 0 ${t.space["2xs"]}px ${t.space.sm}px; }
+.de-layer-filter-band[hidden] { display: none; }
 .de-layer-filter {
   /* The row rung, named rather than a literal that happens to equal it. */
   width: 100%; height: ${t.size.rowHeight}px;
@@ -50,14 +53,34 @@ export const layersCss = `/* ---------- layers ---------- */
 }
 .de-layer-filter:focus-visible { border-color: ${t.color.accent}; }
 /*
+ * The Layers pane scrolls sideways (\`data-de-scroll-x\`, set by
+ * \`panels/layers.ts\`; the rule and its reason are in \`css/left-tabs.ts\`).
+ * The header and the filter stay put while the tree moves under them.
+ */
+[data-de-scroll-x] > :is(.de-layers-header, .de-layer-filter-band, .de-empty) {
+  position: sticky; inset-inline-start: 0;
+}
+/*
  * The tree is the focus root for the selected band below, so it — and not the
  * whole left slot — is what :focus-within is asked about. The horizontal inset
  * is what lets a rounded row read as a band with edges, not a full-bleed stripe.
+ *
+ * As wide as its widest row and never narrower than the pane, so every row —
+ * and the selection block — spans the same width however far it scrolls.
+ * \`--de-layers-reach\` is the floor \`layersReach\` (\`panels/layers.ts\`) works
+ * out from the deepest visible row, which keeps the scroll range steady while
+ * only the rows near the view are painted.
  */
-.de-layers-tree { position: relative; padding: 0 ${t.space["2xs"]}px ${t.space.sm}px; }
+.de-layers-tree {
+  position: relative; padding: 0 ${t.space["2xs"]}px ${t.space.sm}px;
+  box-sizing: border-box;
+  width: max-content; min-width: max(100%, var(--de-layers-reach, 0px));
+}
 .de-layer {
   position: relative;
-  display: flex; align-items: center; gap: ${t.space["2xs"]}px;
+  /* No gap: the chevron gutter butts the glyph, and the glyph sets its own
+     distance to the name, as Figma lays the row out. */
+  display: flex; align-items: center; gap: 0;
   height: ${t.size.rowHeight}px;
   padding-right: ${t.space.sm}px;
   /* \`radius.sm\`: the kit's 12px row highlight is a pill on a 24px row. */
@@ -65,6 +88,9 @@ export const layersCss = `/* ---------- layers ---------- */
   /* Rows read in the body ink, as the kit's list rows do; hierarchy comes from
      the type marks and the component hue, not from greying every name. */
   color: ${t.color.text};
+  /* The row's current fill, read by the action strip that paints over the
+     name's tail; every state rule below restates it beside its background. */
+  --de-row-fill: ${t.color.bg};
   cursor: pointer;
   white-space: nowrap;
   /*
@@ -84,26 +110,6 @@ export const layersCss = `/* ---------- layers ---------- */
   transition: background-color ${t.duration.hover} ${t.ease}, color ${t.duration.hover} ${t.ease};
 }
 /*
- * Indent guides: one hairline per level the row sits under, drawn as a single
- * repeating gradient clipped to the row's own indent width. A rule per level
- * as real elements would triple the node count of a deep tree for decoration
- * that never takes a pointer — and this tree is diffed on every selection.
- *
- * \`border\` and not \`borderStrong\`: 1.32:1 on the dark ground and 1.18:1 on
- * paper. It is decoration, so no floor applies, and five of these down a deep
- * row is exactly the place where a louder rule becomes noise.
- */
-.de-layer::before {
-  content: ""; position: absolute; left: 8px; top: 0; bottom: 0;
-  width: var(--de-indent, 0px);
-  background-image: repeating-linear-gradient(
-    to right,
-    ${t.color.border} 0 ${t.size.hairline}px,
-    transparent ${t.size.hairline}px ${LAYER_INDENT}px
-  );
-  pointer-events: none;
-}
-/*
  * The row ladder. Hover is the kit's row hover — \`bgHoverQuiet\`, a percentage
  * lift in dark so it keeps its step whenever the ground moves, \`--muted\` in
  * light — and not the louder \`bgHover\`, which is the inset-ghost rung. Off the
@@ -121,28 +127,22 @@ export const layersCss = `/* ---------- layers ---------- */
  * transient state past both.
  */
 @media (hover: hover) and (pointer: fine) {
-  .de-layer:hover { background-color: ${t.color.bgHoverQuiet}; }
+  .de-layer:hover { background-color: ${t.color.bgHoverQuiet}; --de-row-fill: ${t.color.bgHoverQuiet}; }
 }
 /*
- * A selected row is a SOLID band, not the canvas's 18% wash: the panel is the
- * one place a selection has to stay findable while the pointer is elsewhere.
- * Muted is that band with focus outside the tree — still the row you left, no
- * longer competing with whatever now has the caret.
- *
- * The band is the same value as the container behind a chosen icon button:
- * \`rowSelected\` equals \`accentSoft\` — the kit's \`--unseen\` indigo tint
- * \`#ebf1ff\` in light, the indigo fill at 28% over the ground in dark. One hue
- * for "this is the thing" everywhere in the chrome. The muted band is the same
- * tint at roughly half strength.
- *
- * The band is separated from the ground by hue far more than by value, so the
- * ink on top is what has to be unambiguous, and it is: \`text\` on the focused
- * band is 12.9:1 dark and 16.9:1 light, and more on the muted one. The focus
- * ring stays legible on both, at 3.5:1 dark and 5.9:1 light at worst — a ring
- * is a non-text component, so 3:1 is its floor.
+ * Figma's selection block. The selected row takes the full indigo band; its
+ * open descendants take the muted band, and rows joined above or below drop
+ * those corners so the run reads as one rounded block (\`selectionBlocks\` in
+ * \`panels/layers.ts\` writes the classes). The band no longer dims when focus
+ * leaves the tree: Figma keeps it, and the descendants now carry the muted rung.
+ * Ink stays \`text\` on both, 12.9:1 dark and 16.9:1 light at worst.
  */
-.de-layer[aria-selected="true"] { background-color: ${t.color.rowSelectedMuted}; color: ${t.color.text}; }
-.de-layers-tree:focus-within .de-layer[aria-selected="true"] { background-color: ${t.color.rowSelected}; }
+.de-layer.de-layer--in-selection { background-color: ${t.color.rowSelectedMuted}; --de-row-fill: ${t.color.rowSelectedMuted}; }
+.de-layer[aria-selected="true"] {
+  background-color: ${t.color.rowSelected}; --de-row-fill: ${t.color.rowSelected}; color: ${t.color.text};
+}
+.de-layer--join-up { border-start-start-radius: 0; border-start-end-radius: 0; }
+.de-layer--join-down { border-end-start-radius: 0; border-end-end-radius: 0; }
 .de-layer:focus-visible { ${FOCUS_INSET} }
 .de-layer-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; }
 .de-layer--component .de-layer-name { color: ${t.color.component}; font-weight: ${t.type.weightValue}; }
@@ -163,7 +163,10 @@ export const layersCss = `/* ---------- layers ---------- */
 .de-layer-twisty {
   width: ${t.icon.action}px; align-self: stretch; flex: none;
   display: inline-flex; align-items: center; justify-content: center;
-  border: none; background: transparent; color: inherit; cursor: pointer;
+  border: none; background: transparent; color: ${t.color.textDim}; cursor: pointer;
+}
+@media (hover: hover) and (pointer: fine) {
+  .de-layer-twisty:hover { color: ${t.color.text}; }
 }
 /* The same quarter turn the inspector's chevron takes, and now at the same
    duration. \`.de-lib-twisty\` and \`.de-opt-twisty\` already had it; this was the
@@ -176,7 +179,8 @@ export const layersCss = `/* ---------- layers ---------- */
  * distinction it draws is what the row is, which selection does not change.
  */
 .de-layer-icon {
-  width: ${t.icon.marker}px; height: ${t.icon.marker}px; flex: none;
+  width: ${t.icon.action}px; height: ${t.icon.action}px; flex: none;
+  margin-inline-end: ${t.space.xs}px;
   display: inline-flex; align-items: center; justify-content: center;
   color: ${t.color.textDim};
 }
@@ -243,6 +247,7 @@ export const layersCss = `/* ---------- layers ---------- */
  */
 .de-layer-saved {
   flex: none;
+  margin-inline-start: ${t.space["2xs"]}px;
   min-width: ${t.size.miniSize}px;
   padding: 0 ${t.space["3xs"]}px;
   border-radius: ${t.radius.xs};
@@ -256,35 +261,62 @@ export const layersCss = `/* ---------- layers ---------- */
 }
 .de-layer-saved:empty { display: none; }
 /*
- * REVEAL-ON-HOVER ROW ACTIONS (MICRO-INTERACTIONS § 4).
+ * REVEAL-ON-HOVER ROW ACTIONS (MICRO-INTERACTIONS § 4), laid over the row.
  *
- * The cluster keeps its space while hidden, so revealing it moves nothing, and
- * it is inert while hidden so an invisible bin cannot take a click. It reveals
- * on row hover under a fine pointer, on keyboard focus in the row or the
- * cluster, while the row is being dragged, and permanently on a coarse
- * pointer, where there is no hover to find it with.
+ * Figma lays its lock and eye over the end of the row rather than reserving
+ * their width, and so does this: a reserved strip cut every name about 80px
+ * short on every row to make room for buttons that show on one. The strip
+ * paints the row's own fill (\`--de-row-fill\`) with a short fade, so the name
+ * runs under it and nothing reflows when it appears. It is inert while hidden
+ * so an invisible bin cannot take a click. It reveals on row hover under a
+ * fine pointer, on keyboard focus in the row or the strip, while the row is
+ * dragged, and always on a coarse pointer, where there is no hover.
  *
- * Two states hold it lit, the kit's \`data-persistent\` case: a locked or hidden
- * row, because the lock and the crossed-out eye ARE the state and hiding them
- * would hide it. The selected row is held lit too, a density call: in a
- * 240px tree the selected row is the one whose actions are wanted next.
+ * A locked row keeps its lock up and a hidden row its crossed-out eye, the
+ * kit's \`data-persistent\` case and Figma's: the mark IS the state, and hiding
+ * it would hide the state. At rest only that pressed button shows. A selected
+ * row is not held up, as in Figma: the block's tint already marks it.
+ *
+ * The strip hangs off \`.de-layer-end\`, a zero-wide anchor at the row's end
+ * that sticks to the pane's visible edge. A row is as wide as the widest row,
+ * so with the tree scrolled to the left the row's own end is off screen, and a
+ * strip pinned there would be too. The anchor takes no width, so the name still
+ * runs under the strip; the negative end margin puts it on the row's padding
+ * edge, where the strip has always ended, and the sticky inset matches the
+ * tree's own inset, so a tree that fits the pane looks exactly as before.
  */
+.de-layer-end {
+  position: sticky; inset-inline-end: ${t.space["2xs"]}px;
+  flex: none; align-self: stretch; width: 0;
+  margin-inline: auto -${t.space.sm}px;
+  border-radius: inherit;
+}
 .de-layer-actions {
+  position: absolute; inset-block: 0; inset-inline-end: 0;
   /* \`space.sm\`, not \`space["3xs"]\`: the gap is what keeps the three 24px hit pads
      below from overlapping. See the pad's own note. */
-  display: flex; flex: none; align-items: center; gap: ${t.space.sm}px;
-  margin-left: ${t.space["2xs"]}px;
+  display: flex; align-items: center; gap: ${t.space.sm}px;
+  padding-inline: ${t.space["2xs"]}px ${t.space.sm}px;
+  border-radius: inherit;
+  background: var(--de-row-fill);
   opacity: 0;
   pointer-events: none;
   transition: opacity ${t.duration.hover} ${t.ease};
 }
+.de-layer-actions::before {
+  content: ""; position: absolute; inset-block: 0; inset-inline-end: 100%;
+  width: ${t.space.md}px;
+  background: linear-gradient(to right, transparent, var(--de-row-fill));
+  pointer-events: none;
+}
 .de-layer:is(:focus-visible, :has(:focus-visible)) .de-layer-actions,
 .de-layer--dragging .de-layer-actions,
-.de-layer[aria-selected="true"] .de-layer-actions,
 .de-layer--locked .de-layer-actions,
 .de-layer--hidden .de-layer-actions { opacity: 1; pointer-events: auto; }
 @media (hover: hover) and (pointer: fine) {
   .de-layer:hover .de-layer-actions { opacity: 1; pointer-events: auto; }
+  .de-layer:is(.de-layer--locked, .de-layer--hidden):not(:hover, :focus-visible, :has(:focus-visible), .de-layer--dragging)
+    .de-layer-action:not([aria-pressed="true"]) { visibility: hidden; }
 }
 @media (pointer: coarse) {
   .de-layer-actions { opacity: 1; pointer-events: auto; }
@@ -480,6 +512,37 @@ export const layersCss = `/* ---------- layers ---------- */
 }
 .de-layer-menu-row:focus-visible { background: ${t.color.bgRaisedHover}; }
 .de-layer-menu-row--component { color: ${t.color.component}; font-weight: ${t.type.weightValue}; }
+/*
+ * The canvas context menu: the same card and rows, plus Figma's right column
+ * of shortcuts. The card grows past the stack's 176px floor so the longest
+ * label and its chord sit on one line with a clear gap between them. The stack
+ * is a submenu card positioned from inside it (see \`canvas/layer-menu.ts\`).
+ */
+.de-ctx-menu { min-width: 200px; max-width: 280px; }
+.de-ctx-item {
+  display: flex; align-items: center; gap: ${t.space["2xl"]}px;
+  width: 100%; height: ${t.size.rowHeight}px;
+  padding: 0 ${t.space.md}px;
+  border: none; border-radius: ${MENU.radius};
+  background: transparent;
+  color: ${t.color.text};
+  font: inherit; font-weight: ${t.type.weightValue}; text-align: start;
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+}
+.de-ctx-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.de-ctx-shortcut, .de-ctx-chevron { flex: none; color: ${t.color.textDim}; }
+.de-ctx-chevron { display: flex; }
+@media (hover: hover) and (pointer: fine) {
+  .de-ctx-item:not([aria-disabled="true"]):hover { background: ${t.color.bgRaisedHover}; }
+}
+.de-ctx-item:not([aria-disabled="true"]):focus-visible,
+.de-ctx-item[aria-expanded="true"] { background: ${t.color.bgRaisedHover}; }
+.de-ctx-item[aria-disabled="true"] { cursor: default; }
+.de-ctx-item[aria-disabled="true"],
+.de-ctx-item[aria-disabled="true"] .de-ctx-shortcut { color: ${t.color.textDisabled}; }
+.de-ctx-separator { height: 1px; margin: ${t.space["2xs"]}px 0; background: ${t.color.border}; }
 
 
 `

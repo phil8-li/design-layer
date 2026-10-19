@@ -101,7 +101,7 @@ async function translationCases() {
     write: false,
     logLevel: "silent",
   })
-  const { toClassUpdate } = await import(
+  const { toClassUpdate, propertyForClass } = await import(
     `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString("base64")}`
   )
 
@@ -141,7 +141,27 @@ async function translationCases() {
     )
   })
   check("unknown properties are refused rather than guessed", () => {
-    assert.equal(toClassUpdate("mix-blend-mode", "multiply"), null)
+    assert.equal(toClassUpdate("clip-path", "circle(50%)"), null)
+  })
+  check("the Figma panel's new controls reach source", () => {
+    assert.equal(toClassUpdate("overflow", "hidden").tailwindToken, "overflow-hidden")
+    assert.equal(toClassUpdate("visibility", "hidden").tailwindToken, "invisible")
+    assert.equal(toClassUpdate("mix-blend-mode", "multiply").tailwindToken, "mix-blend-multiply")
+    assert.equal(toClassUpdate("text-transform", "uppercase").tailwindToken, "uppercase")
+    assert.equal(toClassUpdate("text-decoration-line", "line-through").tailwindToken, "line-through")
+    assert.equal(toClassUpdate("white-space", "nowrap").tailwindToken, "whitespace-nowrap")
+    const turn = toClassUpdate("rotate", "45deg")
+    assert.equal(turn.tailwindPrefix, "rotate")
+    assert.equal(turn.value, "45deg")
+    assert.equal(new RegExp(turn.classPattern).test("rotate-[12deg]"), true)
+    const flip = toClassUpdate("scale", "-1 1")
+    assert.equal(flip.tailwindToken, "[scale:-1_1]")
+    assert.equal(new RegExp(flip.classPattern).test("[scale:1_-1]"), true)
+    assert.equal(toClassUpdate("grid-template-columns", "repeat(3, minmax(0, 1fr))").tailwindToken, "grid-cols-3")
+    assert.equal(toClassUpdate("grid-template-rows", "40px auto").tailwindToken, "grid-rows-[40px_auto]")
+    const top = toClassUpdate("border-top-width", "2px")
+    assert.equal(top.tailwindPrefix, "border-t")
+    assert.equal(new RegExp(top.classPattern).test("border-t-red-500"), false)
   })
   check("a text style's italic and axes reach source rather than staying preview only", () => {
     assert.equal(toClassUpdate("font-style", "italic").tailwindToken, "italic")
@@ -154,6 +174,31 @@ async function translationCases() {
   })
   check("an arbitrary value never carries a double quote into className", () => {
     assert.equal(toClassUpdate("font-family", '"Kit Mono", monospace').value, "'Kit_Mono',_monospace")
+  })
+  check("transitions map to Tailwind's names", () => {
+    const cls = (property, value) => {
+      const update = toClassUpdate(property, value)
+      return update.tailwindToken && update.standalone ? update.tailwindToken
+        : update.tailwindToken ? `${update.tailwindPrefix}-${update.tailwindToken}` : `${update.tailwindPrefix}-[${update.value}]`
+    }
+    assert.equal(cls("transition-property", "all"), "transition")
+    assert.equal(cls("transition-property", "opacity"), "transition-opacity")
+    assert.equal(cls("transition-property", "box-shadow"), "transition-shadow")
+    assert.equal(cls("transition-property", "transform, translate, scale, rotate"), "transition-transform")
+    assert.equal(cls("transition-property", "color, background-color, border-color, outline-color, text-decoration-color, fill, stroke"), "transition-colors")
+    assert.equal(cls("transition-property", "none"), "transition-none")
+    assert.equal(cls("transition-timing-function", "linear"), "ease-linear")
+    assert.equal(cls("transition-timing-function", "cubic-bezier(0, 0, 0.2, 1)"), "ease-out")
+    assert.equal(cls("transition-timing-function", "cubic-bezier(0.4, 0, 1, 1)"), "ease-in")
+    assert.equal(cls("transition-timing-function", "cubic-bezier(0.4, 0, 0.2, 1)"), "ease-in-out")
+    // A motion token's duration lands by name when Tailwind's scale has it.
+    assert.equal(cls("transition-duration", "200ms"), "duration-200")
+    assert.equal(cls("transition-duration", "0.3s"), "duration-300")
+    assert.equal(cls("transition-duration", "240ms"), "duration-[240ms]")
+    // A re-pick replaces the old class, `transition-all` included.
+    assert.ok(new RegExp(toClassUpdate("transition-property", "opacity").classPattern).test("transition-all"))
+    assert.equal(propertyForClass("transition-all"), "transition-property")
+    assert.equal(propertyForClass("hover:ease-out"), "transition-timing-function")
   })
 }
 

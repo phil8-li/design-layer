@@ -203,7 +203,7 @@ setState({ selection: [] })
 console.log("\nLayers panel")
 
 check("the tree flattens to the rows the fixture should show", () => {
-  assert.deepEqual(names(), ["Page", "div", "Card", "Homecoming", "img", "div"])
+  assert.deepEqual(names(), ["Page", "wrap", "Card", "Homecoming", "photo", "box"])
 })
 
 check("a plain click replaces the selection and re-points the scope", () => {
@@ -252,13 +252,17 @@ check("a range with no anchor yet falls back to selecting the one row", () => {
   fresh.slots.left.remove()
 })
 
-check("every row carries a type glyph, drawn at 12", () => {
+check("every row carries a type glyph, drawn at 16 like Figma's", () => {
+  assert.deepEqual(
+    rows().map((row) => row.querySelector(".de-layer-icon").dataset.kind),
+    ["component", "frame", "component", "text", "image", "frame"]
+  )
   assert.deepEqual(
     rows().map((row) => row.querySelector(".de-layer-icon").dataset.glyph),
-    ["Component", "Square", "Component", "Type", "Image", "Square"]
+    ["Component", "Frame", "Component", "Type", "Image", "Frame"]
   )
   const svg = rows()[0].querySelector(".de-layer-icon svg")
-  assert.equal(svg.getAttribute("width"), "12")
+  assert.equal(svg.getAttribute("width"), "16")
 })
 
 check("only a component row takes the component tint", () => {
@@ -273,21 +277,22 @@ check("only a component row takes the component tint", () => {
   )
 })
 
-check("the indent step is 16, and each row states its own guide width", () => {
-  assert.equal(LAYER_INDENT, 16)
+check("the indent step is space.lg, with no guide lines", () => {
+  assert.equal(LAYER_INDENT, tokens.space.lg)
   const style = (index) => rows()[index].getAttribute("style")
-  assert.equal(style(0), "padding-left:8px;--de-indent:0px")
-  assert.equal(style(2), "padding-left:40px;--de-indent:32px")
-  assert.match(layersCss, /\.de-layer::before \{[^}]*width: var\(--de-indent, 0px\);/s)
-  assert.match(layersCss, /repeating-linear-gradient\([^)]*\s+to right,/s)
+  assert.equal(style(0), "padding-left:4px")
+  assert.equal(style(2), "padding-left:36px")
+  assert.doesNotMatch(layersCss, /\.de-layer::before/)
+  assert.doesNotMatch(layersCss, /repeating-linear-gradient/)
 })
 
-check("the selected band is solid, and dims when focus leaves the tree", () => {
-  const muted = `.de-layer[aria-selected="true"] { background-color: ${tokens.color.rowSelectedMuted};`
-  const focused = `.de-layers-tree:focus-within .de-layer[aria-selected="true"] { background-color: ${tokens.color.rowSelected};`
-  assert.ok(layersCss.includes(muted), "resting selected row is the muted band")
-  assert.ok(layersCss.includes(focused), "focus inside the tree lifts it to the full band")
-  assert.ok(layersCss.indexOf(muted) < layersCss.indexOf(focused), "the focused variant must win")
+check("the selected row is the full band, its descendants the muted one", () => {
+  const child = `.de-layer.de-layer--in-selection { background-color: ${tokens.color.rowSelectedMuted};`
+  const selected = `.de-layer[aria-selected="true"] {\n  background-color: ${tokens.color.rowSelected};`
+  assert.ok(layersCss.includes(child), "descendants of the selection take the muted band")
+  assert.ok(layersCss.includes(selected), "the selected row takes the full band")
+  assert.ok(layersCss.indexOf(child) < layersCss.indexOf(selected), "a selected row inside a block stays full")
+  assert.doesNotMatch(layersCss, /:focus-within \.de-layer\[aria-selected/)
   assert.notEqual(tokens.color.rowSelected, tokens.color.rowSelectedMuted)
 })
 
@@ -326,7 +331,7 @@ check("the row keeps its motionless chrome and its rounded band", () => {
     layersCss.includes(`border-radius: ${tokens.radius.sm};`),
     "the row no longer takes its corner from the control radius"
   )
-  assert.match(layersCss, /\.de-layer \{[^}]*gap: 4px;/s)
+  assert.match(layersCss, /\.de-layer \{[^}]*gap: 0;/s)
 })
 
 check("the drop rule is a 2px accent line the panel can place", () => {
@@ -348,20 +353,20 @@ check("the filter still narrows the tree, and clearing it restores the rows", ()
   const search = context.slots.left.querySelector("input")
   search.value = "Homecoming"
   search.dispatchEvent(new window.Event("input", { bubbles: true }))
-  assert.deepEqual(names(), ["Page", "div", "Card", "Homecoming"])
+  assert.deepEqual(names(), ["Page", "wrap", "Card", "Homecoming"])
   search.value = ""
   search.dispatchEvent(new window.Event("input", { bubbles: true }))
-  assert.deepEqual(names(), ["Page", "div", "Card", "Homecoming", "img", "div"])
+  assert.deepEqual(names(), ["Page", "wrap", "Card", "Homecoming", "photo", "box"])
 })
 
 check("the twisty still expands and collapses a branch", () => {
   const twisty = rows()[5].querySelector(".de-layer-twisty")
   twisty.dispatchEvent(new window.MouseEvent("click", { bubbles: true }))
-  assert.deepEqual(names(), ["Page", "div", "Card", "Homecoming", "img", "div", "Deep"])
+  assert.deepEqual(names(), ["Page", "wrap", "Card", "Homecoming", "photo", "box", "Deep"])
   rows()[5]
     .querySelector(".de-layer-twisty")
     .dispatchEvent(new window.MouseEvent("click", { bubbles: true }))
-  assert.deepEqual(names(), ["Page", "div", "Card", "Homecoming", "img", "div"])
+  assert.deepEqual(names(), ["Page", "wrap", "Card", "Homecoming", "photo", "box"])
 })
 
 check("arrow keys still rove without changing the selection", () => {
@@ -394,23 +399,22 @@ check("both actions say which way they will go, and start unpressed", () => {
   assert.equal(eye.dataset.glyph, "EyeOpen")
 })
 
-check("the strip is reserved, not mounted on hover — only opacity moves", () => {
-  assert.match(layersCss, /\.de-layer-actions \{[^}]*opacity: 0;[^}]*\}/s)
-  // Nothing in the reveal may change the box: `display` or `width` here is the
-  // difference between a row that holds still and one that jumps under the
-  // cursor at the moment it is being aimed at.
+check("the strip lies over the row end, and only opacity moves", () => {
+  // Over the row, not reserved beside the name: names keep the full width and
+  // nothing reflows when the strip appears.
+  assert.match(layersCss, /\.de-layer-actions \{[^}]*position: absolute;[^}]*opacity: 0;[^}]*pointer-events: none;[^}]*\}/s)
+  assert.ok(layersCss.includes("background: var(--de-row-fill);"), "the strip paints the row's own fill")
   assert.ok(!/\.de-layer-actions \{[^}]*display: none/s.test(layersCss))
   // The kit's reveal (MICRO-INTERACTIONS § 4): hover only under a fine pointer,
-  // keyboard focus and a drag always, a coarse pointer permanently, and the
-  // hidden cluster inert so it cannot take a click.
-  assert.match(layersCss, /\.de-layer-actions \{[^}]*pointer-events: none;[^}]*\}/s)
+  // keyboard focus and a drag always, a coarse pointer permanently.
   assert.match(
     layersCss,
     /@media \(hover: hover\) and \(pointer: fine\) \{\s*\.de-layer:hover \.de-layer-actions \{ opacity: 1; pointer-events: auto; \}/
   )
   assert.match(layersCss, /\.de-layer:is\(:focus-visible, :has\(:focus-visible\)\) \.de-layer-actions,/)
-  assert.match(layersCss, /\.de-layer\[aria-selected="true"\] \.de-layer-actions,/)
+  assert.doesNotMatch(layersCss, /\.de-layer\[aria-selected="true"\] \.de-layer-actions/)
   assert.match(layersCss, /\.de-layer--hidden \.de-layer-actions \{ opacity: 1; pointer-events: auto; \}/)
+  assert.match(layersCss, /\.de-layer-action:not\(\[aria-pressed="true"\]\) \{ visibility: hidden; \}/)
   assert.match(layersCss, /@media \(pointer: coarse\) \{\s*\.de-layer-actions \{ opacity: 1; pointer-events: auto; \}/)
 })
 
@@ -450,7 +454,7 @@ check("the eye goes through the writer, not straight onto the element", () => {
   assert.equal(window.getComputedStyle($("photo")).display, "none")
   const eye = action(4, "eye")
   assert.equal(eye.getAttribute("aria-pressed"), "true")
-  assert.equal(eye.getAttribute("aria-label"), "Show img")
+  assert.equal(eye.getAttribute("aria-label"), "Show photo")
   assert.ok(rows()[4].classList.contains("de-layer--hidden"))
 
   press(action(4, "eye"))
@@ -459,7 +463,7 @@ check("the eye goes through the writer, not straight onto the element", () => {
   // never a blanket `block`, which would restack a flex row's children.
   assert.notEqual(queued[1].operation.updates[0].tailwindToken, "hidden")
   assert.notEqual(window.getComputedStyle($("photo")).display, "none")
-  assert.equal(action(4, "eye").getAttribute("aria-label"), "Hide img")
+  assert.equal(action(4, "eye").getAttribute("aria-label"), "Hide photo")
 })
 
 check("the eye tells every panel, not just the tree, that the page changed", () => {
@@ -501,7 +505,7 @@ check("the lock is session state: no source write, still selectable", () => {
   assert.ok(isLocked($("box")), "the canvas can now ask the store to skip it")
   assert.deepEqual(queued, [], "a lock is not a fact about the user's app")
   assert.equal(action(5, "lock").getAttribute("aria-pressed"), "true")
-  assert.equal(action(5, "lock").getAttribute("aria-label"), "Unlock div")
+  assert.equal(action(5, "lock").getAttribute("aria-label"), "Unlock box")
   assert.equal(action(5, "lock").dataset.glyph, "Lock")
   assert.ok(rows()[5].classList.contains("de-layer--locked"))
 
@@ -511,7 +515,7 @@ check("the lock is session state: no source write, still selectable", () => {
 
   press(action(5, "lock"))
   assert.ok(!isLocked($("box")))
-  assert.equal(action(5, "lock").getAttribute("aria-label"), "Lock div")
+  assert.equal(action(5, "lock").getAttribute("aria-label"), "Lock box")
 })
 
 /*

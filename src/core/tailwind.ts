@@ -110,7 +110,104 @@ const KEYWORDS: Record<string, Record<string, string>> = {
     italic: "italic",
     normal: "not-italic",
   },
+  // Figma's Clip content, its visibility eye and its blend mode menu.
+  overflow: {
+    hidden: "overflow-hidden",
+    visible: "overflow-visible",
+    clip: "overflow-clip",
+    auto: "overflow-auto",
+    scroll: "overflow-scroll",
+  },
+  visibility: {
+    visible: "visible",
+    hidden: "invisible",
+    collapse: "collapse",
+  },
+  "mix-blend-mode": {
+    normal: "mix-blend-normal",
+    multiply: "mix-blend-multiply",
+    screen: "mix-blend-screen",
+    overlay: "mix-blend-overlay",
+    darken: "mix-blend-darken",
+    lighten: "mix-blend-lighten",
+    "color-dodge": "mix-blend-color-dodge",
+    "color-burn": "mix-blend-color-burn",
+    "hard-light": "mix-blend-hard-light",
+    "soft-light": "mix-blend-soft-light",
+    difference: "mix-blend-difference",
+    exclusion: "mix-blend-exclusion",
+    hue: "mix-blend-hue",
+    saturation: "mix-blend-saturation",
+    color: "mix-blend-color",
+    luminosity: "mix-blend-luminosity",
+    "plus-darker": "mix-blend-plus-darker",
+    "plus-lighter": "mix-blend-plus-lighter",
+  },
+  // Figma's type settings: case and decoration.
+  "text-transform": {
+    uppercase: "uppercase",
+    lowercase: "lowercase",
+    capitalize: "capitalize",
+    none: "normal-case",
+  },
+  "text-decoration-line": {
+    underline: "underline",
+    "line-through": "line-through",
+    overline: "overline",
+    none: "no-underline",
+  },
+  "text-decoration": {
+    underline: "underline",
+    "line-through": "line-through",
+    overline: "overline",
+    none: "no-underline",
+  },
+  // A text layer's auto width keeps its words on one line.
+  "white-space": {
+    normal: "whitespace-normal",
+    nowrap: "whitespace-nowrap",
+    pre: "whitespace-pre",
+    "pre-line": "whitespace-pre-line",
+    "pre-wrap": "whitespace-pre-wrap",
+  },
+  /*
+   * Transitions, in Tailwind's names. `all` lands as `transition`, Tailwind's
+   * list of the properties a state change animates, which is what Figma's
+   * Smart animate means. `transition-all` reads back as the same property
+   * (see below).
+   */
+  "transition-property": {
+    all: "transition",
+    "color, background-color, border-color, outline-color, text-decoration-color, fill, stroke": "transition-colors",
+    opacity: "transition-opacity",
+    "transform, translate, scale, rotate": "transition-transform",
+    "box-shadow": "transition-shadow",
+    none: "transition-none",
+  },
+  // Tailwind's curves, keyed by the cubic-bezier each one compiles to, so the
+  // inline preview moves the way the shipped class will. The CSS keywords map
+  // to the same classes for a value typed by hand.
+  "transition-timing-function": {
+    linear: "ease-linear",
+    "cubic-bezier(0.4, 0, 1, 1)": "ease-in",
+    "cubic-bezier(0, 0, 0.2, 1)": "ease-out",
+    "cubic-bezier(0.4, 0, 0.2, 1)": "ease-in-out",
+    "ease-in": "ease-in",
+    "ease-out": "ease-out",
+    "ease-in-out": "ease-in-out",
+  },
 }
+
+/** Classes that set a keyword property without being one of its written values. */
+const KEYWORD_ALIASES: Record<string, string[]> = {
+  "transition-property": ["transition-all"],
+}
+
+/**
+ * Durations Tailwind v3's default scale names; v4 compiles any integer. Inside
+ * this set `duration-200` works under both, so it is written by name.
+ */
+const DURATION_STEPS = new Set([0, 75, 100, 150, 200, 300, 500, 700, 1000])
 
 /**
  * Properties Tailwind has no utility for, written as an arbitrary-property
@@ -118,7 +215,18 @@ const KEYWORDS: Record<string, Record<string, string>> = {
  * stylesheet carries its variable-font axes, and without this every pick of
  * one reported its axes as preview only.
  */
-const ARBITRARY_PROPERTIES = new Set(["font-variation-settings", "font-feature-settings"])
+const ARBITRARY_PROPERTIES = new Set([
+  "font-variation-settings",
+  "font-feature-settings",
+  // Figma's flips. Tailwind's `-scale-x-100` drives `--tw-scale-*` variables
+  // that differ between v3 and v4; the raw property reads the same under both.
+  "scale",
+])
+
+const GRID_TRACKS: Record<string, string> = {
+  "grid-template-columns": "grid-cols",
+  "grid-template-rows": "grid-rows",
+}
 
 const FONT_WEIGHT_PATTERN =
   "^font-(thin|extralight|light|normal|medium|semibold|bold|extrabold|black|\\[(?:[1-9]\\d{0,2}|1000|number:var\\(--[\\w-]+\\))\\])$"
@@ -160,9 +268,9 @@ const SCALARS: Record<
   "line-height": { prefix: "leading" },
   "letter-spacing": { prefix: "tracking" },
   "box-shadow": { prefix: "shadow" },
-  // `duration` consults no spacing scale, so a token duration lands as an
-  // arbitrary `duration-[150ms]`. That class compiles under any theme, where
-  // the bare-number form depends on what the host's scale happens to name.
+  // A step on Tailwind v3's default scale lands by name (`duration-200`, see
+  // `DURATION_STEPS`); anything else is an arbitrary `duration-[240ms]`, which
+  // compiles under any theme.
   "transition-duration": { prefix: "duration" },
 
   /*
@@ -174,6 +282,13 @@ const SCALARS: Record<
   color: { prefix: "text", pattern: colorClass("text") },
   "font-size": { prefix: "text", pattern: `^text-(\\[(?:[^\\]]*(?:px|rem|em|ch|%)|length:var\\(--[\\w-]+\\))\\]|${config.tailwind.fontSizes.join("|")})$` },
   "border-width": { prefix: "border", pattern: "^border(-\\[[^\\]]*px\\]|-\\d+)?$" },
+  // Figma's individual strokes. Width-only patterns, so `border-t-red-500` survives.
+  "border-top-width": { prefix: "border-t", pattern: "^border-t(-\\[[^\\]]*px\\]|-\\d+)?$" },
+  "border-right-width": { prefix: "border-r", pattern: "^border-r(-\\[[^\\]]*px\\]|-\\d+)?$" },
+  "border-bottom-width": { prefix: "border-b", pattern: "^border-b(-\\[[^\\]]*px\\]|-\\d+)?$" },
+  "border-left-width": { prefix: "border-l", pattern: "^border-l(-\\[[^\\]]*px\\]|-\\d+)?$" },
+  // Figma's Rotation field. Tailwind v4's `rotate-[45deg]` sets `rotate` itself.
+  rotate: { prefix: "rotate", pattern: "^rotate-(\\d+|\\[[^\\]]+\\])$" },
   "border-color": { prefix: "border", pattern: colorClass("border") },
   // A ring in Tailwind v4 is a box-shadow driven by this custom property, so
   // recolouring one writes the variable rather than a border it does not have.
@@ -232,6 +347,14 @@ function spacingToken(prefix: string, value: string): string | null {
   return token == null ? null : `${px < 0 ? "-" : ""}${token}`
 }
 
+/** `200ms` or `0.2s` -> `200` when Tailwind's scale names it. */
+function durationToken(value: string): string | null {
+  const match = /^(\d+(?:\.\d+)?)(ms|s)$/.exec(value.trim())
+  if (!match) return null
+  const ms = Math.round(Number(match[1]) * (match[2] === "s" ? 1000 : 1))
+  return DURATION_STEPS.has(ms) ? String(ms) : null
+}
+
 /**
  * Stable per-property key. The engine uses it to replace an earlier pending
  * edit to the same property instead of stacking a second class onto the node.
@@ -255,6 +378,24 @@ export function toClassUpdate(property: string, rawValue: string): ClassUpdate |
     }
   }
 
+  /*
+   * Figma's grid flow writes track counts. `repeat(n, minmax(0, 1fr))` is
+   * exactly what Tailwind's `grid-cols-n` compiles to, so it lands as the named
+   * class; any other track list stays an arbitrary value on the same stem.
+   */
+  const tracks = GRID_TRACKS[property]
+  if (tracks) {
+    const count = /^repeat\(\s*(\d+)\s*,\s*minmax\(\s*0(?:px)?\s*,\s*1fr\s*\)\s*\)$/.exec(value)
+    const className = count ? `${tracks}-${count[1]}` : `${tracks}-[${toArbitrary(value)}]`
+    return {
+      tailwindPrefix: className,
+      tailwindToken: className,
+      value,
+      standalone: true,
+      classPattern: `^${tracks}-(\\d+|none|subgrid|\\[.+\\])$`,
+    }
+  }
+
   const keywords = KEYWORDS[property]
   if (keywords) {
     const token = keywords[value]
@@ -274,7 +415,7 @@ export function toClassUpdate(property: string, rawValue: string): ClassUpdate |
       }
     }
     if (!token) return null
-    const alternatives = Object.values(keywords)
+    const alternatives = [...new Set([...Object.values(keywords), ...(KEYWORD_ALIASES[property] ?? [])])]
       .map((cls) => cls.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
       .join("|")
     return {
@@ -289,7 +430,7 @@ export function toClassUpdate(property: string, rawValue: string): ClassUpdate |
   const scalar = SCALARS[property]
   if (!scalar) return null
 
-  const token = spacingToken(scalar.prefix, value)
+  const token = property === "transition-duration" ? durationToken(value) : spacingToken(scalar.prefix, value)
   const typedValue = property === "font-size" && /^var\(--[\w-]+\)$/.test(value)
     ? `length:${toArbitrary(value)}`
     : toArbitrary(value)
@@ -347,6 +488,9 @@ export function propertyForClass(className: string): string | null {
     for (const [property, values] of Object.entries(KEYWORDS)) {
       for (const token of Object.values(values)) keywordIndex.set(token, property)
     }
+    for (const [property, aliases] of Object.entries(KEYWORD_ALIASES)) {
+      for (const token of aliases) keywordIndex.set(token, property)
+    }
     patterned = Object.entries(SCALARS)
       .filter(([, scalar]) => scalar.pattern)
       .map(([property, scalar]) => [property, new RegExp(scalar.pattern as string)])
@@ -357,6 +501,9 @@ export function propertyForClass(className: string): string | null {
       .sort((a, b) => b[1].length - a[1].length)
   }
 
+  for (const [property, stem] of Object.entries(GRID_TRACKS)) {
+    if (cls.startsWith(`${stem}-`)) return property
+  }
   const keyword = keywordIndex.get(cls)
   if (keyword) return keyword
   if (new RegExp(FONT_WEIGHT_PATTERN).test(cls)) return "font-weight"

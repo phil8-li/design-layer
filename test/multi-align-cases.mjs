@@ -15,7 +15,9 @@
  *    Which axis is which flips with the parent's direction, and getting that
  *    backwards is invisible until someone selects inside a column;
  *  - a selection spanning two parents is refused with a sentence rather than
- *    with six buttons that would write something other than what they draw.
+ *    with six buttons that would write something other than what they draw;
+ *  - Position reads "Mixed" where the picks differ, and rotation and flips act
+ *    on every selected element as one step.
  *
  * The strip itself is asserted against the single-selection one it replaces:
  * same six marks, same order, a different `aria-label` so `position-cases.mjs`
@@ -57,6 +59,7 @@ for (const key of [
   "Event",
   "CustomEvent",
   "MouseEvent",
+  "KeyboardEvent",
 ]) {
   Object.defineProperty(globalThis, key, { value: window[key], configurable: true, writable: true })
 }
@@ -75,6 +78,8 @@ for (const key of [
  */
 const realComputed = window.getComputedStyle.bind(window)
 const layouts = new WeakMap()
+// Per-element `rotate`/`scale`, served ahead of jsdom, which computes neither.
+const extras = new WeakMap()
 globalThis.getComputedStyle = (node) => {
   const layout = layouts.get(node) ?? {}
   const real = realComputed(node)
@@ -84,7 +89,7 @@ globalThis.getComputedStyle = (node) => {
     justifyContent: layout.justifyContent ?? "normal",
     alignItems: layout.alignItems ?? "normal",
     alignSelf: node.style?.getPropertyValue("align-self") || layout.alignSelf || "normal",
-    getPropertyValue: (property) => real.getPropertyValue(property),
+    getPropertyValue: (property) => extras.get(node)?.[property] ?? real.getPropertyValue(property),
   }
 }
 
@@ -270,10 +275,11 @@ check("a second selected element swaps one strip for the other", () => {
 })
 
 check("it is the same six marks, in the same order", () => {
+  // `.de-agroup` because the row's action column holds distribute as well.
   const strip = scene().strip("Align selection")
-  assert.equal(strip.querySelectorAll("button").length, 6)
+  assert.equal(strip.querySelectorAll(".de-agroup button").length, 6)
   assert.deepEqual(
-    Array.from(strip.querySelectorAll("button"), (node) => node.getAttribute("aria-label")),
+    Array.from(strip.querySelectorAll(".de-agroup button"), (node) => node.getAttribute("aria-label")),
     SIX
   )
 })
@@ -295,11 +301,36 @@ check("distribute survives the swap, because spreading a row is a multi verb", (
   assert.equal(view.writes[0].target, view.parent)
 })
 
-check("the header count is not this section's job, so the frame is untouched", () => {
+check("distribute is the alignment row's trailing action, where Figma puts tidy", () => {
+  const button = scene({ count: 3 }).button("Distribute horizontally")
+  assert.ok(button.closest(".de-prow-trail"), "distribute is not in the row's action column")
+  assert.equal(button.closest(".de-prow").getAttribute("aria-label"), "Align selection")
+})
+
+check("a column parent distributes vertically, and a spread parent shows it", () => {
+  const column = scene({ parent: { display: "flex", flexDirection: "column" } })
+  assert.equal(column.button("Distribute horizontally"), null)
+  column.press("Distribute vertically")
+  assert.deepEqual(column.writes[0].styles, [{ property: "justify-content", value: "space-between" }])
+  const spread = scene({ parent: { ...ROW, justifyContent: "space-between" } })
+  assert.equal(spread.button("Distribute horizontally").getAttribute("aria-pressed"), "true")
+  assert.equal(scene().button("Distribute horizontally").getAttribute("aria-pressed"), "false")
+})
+
+check("X and Y read Mixed when the picks sit apart, and W and H are Layout's", () => {
   const view = scene()
+  view.elements.forEach((element, index) => {
+    element.getBoundingClientRect = () => ({ x: index * 50, y: 20, width: 40, height: 40 })
+  })
+  view.render()
+  const row = view.node().querySelector('[data-de-row="position.xy"]')
   assert.deepEqual(
-    Array.from(view.node().querySelectorAll(".de-field-label"), (node) => node.textContent),
-    ["X", "Y", "W", "H"]
+    Array.from(row.querySelectorAll(".de-field-label"), (node) => node.textContent),
+    ["X", "Y"]
+  )
+  assert.deepEqual(
+    Array.from(row.querySelectorAll(".de-field-value"), (node) => node.textContent),
+    ["Mixed", "20"]
   )
 })
 
@@ -402,7 +433,7 @@ check("a selection spanning two parents draws a sentence and no strip", () => {
 check("a shared parent that is not flex offers the way in", () => {
   const view = scene({ parent: { display: "block" } })
   assert.equal(view.strip("Align selection"), null)
-  assert.match(view.text(), /is not a flex container/)
+  assert.match(view.button("Make parent auto layout").getAttribute("aria-description"), /is not a flex container/)
   view.press("Make parent auto layout")
   assert.deepEqual(view.writes[0].styles, [{ property: "display", value: "flex" }])
   assert.equal(view.writes[0].target, view.parent)
@@ -415,10 +446,13 @@ check("a scattered selection offers no distribute either", () => {
   assert.equal(scene({ count: 3, split: true }).button("Distribute horizontally"), null)
 })
 
-check("the hint says which three marks place the elements one by one", () => {
-  assert.match(scene().text(), /Top, middle and bottom align each element/)
-  const column = scene({ parent: { display: "flex", flexDirection: "column" } })
-  assert.match(column.text(), /Left, center and right align each element/)
+check("the tooltips say which three marks place the elements one by one", () => {
+  const row = scene().strip("Align selection")
+  assert.match(row.getAttribute("aria-description"), /Top, middle and bottom align each element/)
+  assert.match(scene().button("Align top").getAttribute("data-de-tip"), /^Align top\. Top, middle/)
+  assert.doesNotMatch(scene().text(), /align each element/, "the helper sentence is still under the row")
+  const column = scene({ parent: { display: "flex", flexDirection: "column" } }).strip("Align selection")
+  assert.match(column.getAttribute("aria-description"), /Left, center and right align each element/)
 })
 
 /* ---------- the timeline ---------- */
@@ -467,6 +501,68 @@ check("an element already in place is left out of the step", () => {
     ["flex-start", "auto", "auto"],
     "undo reverted an element the press never moved"
   )
+})
+
+/* ---------- rotation ---------- */
+
+console.log("\nRotation across a selection")
+
+const rotationField = (view) => view.node().querySelector('[data-de-field="position.rotation"]')
+
+check("differing angles read Mixed, matching ones read the angle", () => {
+  const view = scene()
+  extras.set(view.elements[1], { rotate: "45deg" })
+  view.render()
+  assert.equal(rotationField(view).value, "")
+  assert.equal(rotationField(view).placeholder, "Mixed")
+  for (const element of view.elements) extras.set(element, { rotate: "45deg" })
+  view.render()
+  assert.equal(rotationField(view).value, "45")
+})
+
+check("a typed angle rotates every selected element in one batch", () => {
+  const view = scene({ count: 3 })
+  const input = rotationField(view)
+  input.value = "15"
+  input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+  assert.equal(view.batches.length, 1)
+  assert.equal(view.writes.length, 0)
+  assert.deepEqual(view.batches[0].edits.map((edit) => edit.selection.element), view.elements)
+  for (const edit of view.batches[0].edits) {
+    assert.deepEqual(edit.writes, [{ property: "rotate", value: "15deg" }])
+  }
+})
+
+check("rotate 90° right turns each element from its own angle", () => {
+  const view = scene({ count: 2 })
+  extras.set(view.elements[1], { rotate: "30deg" })
+  view.render().press("Rotate 90° right")
+  assert.deepEqual(
+    view.batches[0].edits.map((edit) => edit.writes[0].value),
+    ["90deg", "120deg"]
+  )
+})
+
+check("a flip is pressed only when every pick is mirrored, and flips them all", () => {
+  const view = scene({ count: 2 })
+  extras.set(view.elements[0], { scale: "-1 1" })
+  view.render()
+  assert.equal(view.button("Flip horizontal").getAttribute("aria-pressed"), "false")
+  view.press("Flip horizontal")
+  assert.deepEqual(view.batches[0].edits.map((edit) => edit.writes[0].value), ["-1 1", "-1 1"])
+})
+
+check("a real writer records a selection's rotation as one undo step", () => {
+  const view = scene({ count: 3, real: true })
+  const input = rotationField(view)
+  input.value = "20"
+  input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+  assert.equal(history.canUndo(), true)
+  assert.equal(history.undo(), "Rotate")
+  assert.equal(history.canUndo(), false, "the rotation landed as more than one step")
+  // `rotate` has a utility (`rotate-[20deg]`), so the edit reaches source and,
+  // like any direct edit that does, says nothing.
+  assert.equal(view.toasts.length, 0, view.toasts.map((entry) => entry.message).join(" | "))
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

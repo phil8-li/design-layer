@@ -8,17 +8,16 @@
  * is `100%`, and all three reach source.
  *
  * The mode rides INSIDE the field, in its trailing slot — `W 708 ⌄`, and
- * `W 708 Fill` once the mode is worth a word. It was a second row of segmented
- * controls under the pair, and the cost of that was structural rather than
- * decorative: two rows of chrome for one property, with the mode parked a whole
- * control away from the number it governs. Figma spells it the first way
- * (measured spec §5) and this now matches.
+ * `W 708 Fill` once the mode is worth a word — and pressing it opens a menu of
+ * the three modes, as Figma's does. The number stays editable in every mode:
+ * typing a length is how Figma switches an axis back to Fixed.
  */
 
 import { el } from "../../core/dom"
 import { icon } from "../../core/icons"
 import { tokens } from "../../core/tokens"
-import { group, numberField } from "./field"
+import { isExpanded, numberField, propRow, setExpanded, trailingToggle } from "./field"
+import { mixedNumber, sharedValue } from "./multi"
 import type { SectionContext } from "./index"
 import type { LayerElement } from "../../core/types"
 
@@ -30,22 +29,15 @@ const FILL = "100%"
 
 const STEM: Record<Axis, string> = { width: "w", height: "h" }
 
-/**
- * The cycle the trailing button walks, and how each stop is spoken.
- *
- * A click steps to the next mode rather than opening a menu. Three states is
- * short enough that the furthest one is two clicks away, and a popover here
- * would be the panel's only one — a dismissal, focus-return and outside-click
- * problem bought for a choice with three answers. The price of cycling is that
- * the control cannot show where it is going, so the accessible name says it
- * outright: which mode the axis is in now, and which one pressing reaches.
- */
-const MODE_ORDER: Mode[] = ["fixed", "hug", "fill"]
+/** Panel-level, like the per-side toggles: the lock survives the rebuild each write causes. */
+const ASPECT_LOCK = "layout.aspect-lock"
+
 const MODE_WORD: Record<Mode, string> = { fixed: "Fixed", hug: "Hug", fill: "Fill" }
-const MODE_MEANING: Record<Mode, string> = {
-  fixed: "a fixed length",
-  hug: `hug contents (${HUG})`,
-  fill: `fill container (${FILL})`,
+
+/** Figma's menu items, word for word. */
+const MODE_ITEM: Record<Axis, Record<Mode, string>> = {
+  width: { fixed: "Fixed width", hug: "Hug contents", fill: "Fill container" },
+  height: { fixed: "Fixed height", hug: "Hug contents", fill: "Fill container" },
 }
 
 /**
@@ -65,67 +57,155 @@ function modeOf(element: LayerElement, axis: Axis): Mode {
     if (name === `${stem}-fit` || name === `${stem}-auto` || name === `${stem}-[${HUG}]`) return "hug"
     if (name.startsWith(`${stem}-`)) return "fixed"
   }
-  return "hug"
+  return stretchesIn(element, axis) ? "fill" : "hug"
 }
 
 /**
- * The `Dimensions` group: two fields, each one control end to end.
- *
- * Returns the group rather than a whole inspector section, because Layout is
- * one section made of two blocks and this is the first of them — see
- * `section-unified-layout.ts`.
+ * Whether a flex parent makes this unsized axis fill: `flex-grow` along the
+ * main axis, stretch across it. Figma reads both as Fill container, and a row
+ * in a vertical list showing `Hug` while it spans the list would be wrong.
  */
-export function sizeControls({ selection, writer, invalidate }: SectionContext): HTMLElement {
+function stretchesIn(element: LayerElement, axis: Axis): boolean {
+  const parent = element.parentElement
+  if (!parent) return false
+  const outer = getComputedStyle(parent)
+  if (outer.display !== "flex" && outer.display !== "inline-flex") return false
+  const column = (outer.flexDirection ?? "").startsWith("column")
+  const own = getComputedStyle(element)
+  if ((axis === "height") === column) return Number.parseFloat(own.flexGrow) > 0
+  const self = own.alignSelf
+  if (self === "stretch") return true
+  const items = outer.alignItems
+  return (self === "auto" || self === "normal" || !self) && (items === "stretch" || items === "normal")
+}
+
+/**
+ * A menu in a field's trailing slot: Figma's `Hug ⌄` and the gap's `⌄`.
+ *
+ * The face is drawn by us and a transparent native `<select>` lies over it, so
+ * the slot can show a single word or a chevron while the menu, its keyboard
+ * handling and its dismissal stay the platform's.
+ */
+export function fieldMenu(options: {
+  label: string
+  face: string | Node
+  value: string
+  /** `action` marks an entry that does something rather than naming a state, like "Apply token…". */
+  items: Array<{ value: string; label: string; action?: boolean }>
+  onPick(value: string): void
+}): HTMLElement {
+  const select = el("select", { class: "de-lay-menu-select", "aria-label": options.label }) as HTMLSelectElement
+  for (const item of options.items) {
+    const node = el("option", { value: item.value }, [item.label]) as HTMLOptionElement
+    if (item.value === options.value) node.selected = true
+    select.append(node)
+  }
+  select.addEventListener("change", () => {
+    const picked = select.value
+    // An action is not a state the field can be in, so the menu goes back to the
+    // value it shows; a cancelled action then leaves nothing stale behind.
+    if (options.items.some((item) => item.value === picked && item.action)) select.value = options.value
+    options.onPick(picked)
+  })
+  return el("span", { class: "de-field-trailing de-lay-menu", title: options.label }, [
+    el("span", { class: "de-lay-menu-face", "aria-hidden": "true" }, [options.face]),
+    select,
+  ])
+}
+
+/**
+ * Whether this element's size is governed by a flex or grid layout, its own or
+ * its parent's. Figma calls the row `Resizing` then and `Dimensions` otherwise.
+ */
+function inAutoLayout(element: LayerElement, computed: CSSStyleDeclaration): boolean {
+  const lays = (display: string) => /^(inline-)?(flex|grid)$/.test(display)
+  if (element.childElementCount > 0 && lays(computed.display)) return true
+  const parent = element.parentElement
+  return parent ? lays(getComputedStyle(parent).display) : false
+}
+
+/**
+ * The `Dimensions` / `Resizing` row: [W] [H] and the aspect lock.
+ *
+ * Returns the row rather than a whole inspector section, because Layout is one
+ * section built from several files — see `section-unified-layout.ts`.
+ */
+export function sizeControls(context: SectionContext): HTMLElement {
+  const { selection, computed, writer, invalidate } = context
   const element = selection.element
   const rect = element.getBoundingClientRect()
+  const locked = isExpanded(ASPECT_LOCK)
+  // Measured at render, so a commit scales the other axis by the box as it was
+  // drawn rather than by a ratio a previous locked edit already rounded.
+  const ratio = rect.width > 0 && rect.height > 0 ? rect.height / rect.width : null
 
   const write = (axis: Axis, value: string, summary: string) => {
     writer.applyStyles(selection, [{ property: axis, value }], summary)
     invalidate()
   }
 
-  const axisField = (axis: Axis, label: string, measured: number) => {
-    const title = `${axis[0].toUpperCase()}${axis.slice(1)}`
-    const mode = modeOf(element, axis)
-    const next = MODE_ORDER[(MODE_ORDER.indexOf(mode) + 1) % MODE_ORDER.length]
+  /** The length writes for one axis, plus the other axis while the lock is on. */
+  const lengths = (axis: Axis, value: number) => {
+    const writes = [{ property: axis, value: `${Math.round(value)}px` }]
+    if (locked && ratio) {
+      const other: Axis = axis === "width" ? "height" : "width"
+      const scaled = axis === "width" ? value * ratio : value / ratio
+      writes.push({ property: other, value: `${Math.round(scaled)}px` })
+    }
+    return writes
+  }
 
-    const trailing = el(
-      "button",
-      {
-        class: "de-field-trailing",
-        type: "button",
-        title: `${title}: ${MODE_WORD[mode]}. Press to set ${MODE_MEANING[next]}`,
-        "aria-label": `${title} sizing: ${MODE_WORD[mode]}. Press to set ${MODE_MEANING[next]}`,
-        onclick: () => {
-          if (next === "hug") write(axis, HUG, `Hug ${axis}`)
-          else if (next === "fill") write(axis, FILL, `Fill ${axis}`)
-          else write(axis, `${Math.round(measured)}px`, `Fixed ${axis}`)
-        },
-      },
+  const axisField = (axis: Axis, label: string, measured: number) => {
+    const title = axis === "width" ? "Horizontal resizing" : "Vertical resizing"
+    const mode = modeOf(element, axis)
+    // Across a multi-selection: one shared size or "Mixed", and the mode word
+    // only when every layer has that mode.
+    const size = sharedValue(context, (_, entry) => Math.round(entry.element.getBoundingClientRect()[axis]))
+    const sharedMode = sharedValue(context, (_, entry) => modeOf(entry.element, axis))
+
+    const trailing = fieldMenu({
+      label: `${title}: ${MODE_ITEM[axis][mode]}`,
       // The word only where it carries something. `Fixed` beside a number is the
-      // number said twice, so that case draws the chevron Figma draws and the
-      // two interesting modes spend the space on their own name.
-      [mode === "fixed" ? icon("ChevronDown", tokens.icon.marker) : MODE_WORD[mode]]
-    )
+      // number said twice, so that case draws the chevron Figma draws.
+      face: mode === "fixed" || sharedMode === null ? icon("ChevronDown", tokens.icon.marker) : MODE_WORD[mode],
+      value: mode,
+      items: (["fixed", "hug", "fill"] as Mode[]).map((value) => ({ value, label: MODE_ITEM[axis][value] })),
+      onPick: (next) => {
+        if (next === "hug") write(axis, HUG, `Hug ${axis}`)
+        else if (next === "fill") write(axis, FILL, `Fill ${axis}`)
+        else write(axis, `${Math.round(measured)}px`, `Fixed ${axis}`)
+      },
+    })
 
     return numberField({
       id: `size.${axis}`,
       label,
       title,
-      value: Math.round(measured),
+      ...mixedNumber(size),
       min: 0,
-      disabled: mode !== "fixed",
-      onPreview: (value) => element.style.setProperty(axis, `${Math.round(value)}px`),
-      onCommit: (value) => write(axis, `${Math.round(value)}px`, `Set ${axis}`),
+      onPreview: (value) => {
+        for (const entry of lengths(axis, value)) element.style.setProperty(entry.property, entry.value)
+      },
+      onCommit: (value) => {
+        writer.applyStyles(selection, lengths(axis, value), `Set ${axis}`)
+        invalidate()
+      },
       trailing,
     })
   }
 
-  return group(
-    "Dimensions",
-    el("div", { class: "de-row--split" }, [
-      axisField("width", "W", rect.width),
-      axisField("height", "H", rect.height),
-    ])
-  )
+  return propRow({
+    id: "layout.size",
+    caption: inAutoLayout(element, computed) ? "Resizing" : "Dimensions",
+    cells: [axisField("width", "W", rect.width), axisField("height", "H", rect.height)],
+    trailing: trailingToggle({
+      label: "Lock aspect ratio",
+      glyph: icon("Constrain", tokens.icon.action),
+      pressed: locked,
+      onClick: () => {
+        setExpanded(ASPECT_LOCK, !locked)
+        invalidate()
+      },
+    }),
+  })
 }
