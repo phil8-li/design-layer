@@ -1,7 +1,7 @@
 /**
  * The `react-rewrite-cli@0.1.1` overlay patch.
  *
- * 27 exact-once splices, 38 pinned identifiers, and one injected interaction
+ * 31 exact-once splices, 38 pinned identifiers, and one injected interaction
  * block. All of it is coupling to the pinned VENDOR BUILD, not to any host app,
  * so it ships as-is; only the values that used to encode one particular host —
  * the chrome selectors, the docked-panel geometry, the CSS variable names — are
@@ -403,6 +403,22 @@ export function patchOverlay(source, config) {
     'document.readyState==="loading"?document.addEventListener("DOMContentLoaded",vc):vc();',
     "window.__DESIGNLAYER_VENDOR_BOOT__=function(){window.__DESIGNLAYER_VENDOR_BOOT__=void 0,vc()};",
     "deferred boot"
+  )
+  /*
+   * The vendor boots in a frame too.
+   *
+   * Its boot returns at once when `window !== window.top`, and the Mac app's
+   * desk frames every editor, so there the engine never started: no socket
+   * (no edit reached the source) and no double-click handler (a text
+   * layer could not be edited). The frames it was keeping out — board frames
+   * and frames the host app makes — never get this far: `guardBoardFrames`
+   * skips the whole overlay in any frame whose parent is same-origin.
+   */
+  source = replaceOnce(
+    source,
+    "function lp(){if(window!==window.top)return;",
+    "function lp(){",
+    "boot in a cross-origin frame"
   )
   source = replaceOnce(
     source,

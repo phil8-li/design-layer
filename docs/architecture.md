@@ -105,7 +105,7 @@ runtime/last-pages.mjs      the page each app was last used on, one file per app
 runtime/mcp-hub.mjs         the start screen's MCP endpoint, for "Stay on between apps"
 runtime/launcher.mjs        vendor resolution, monkey-patches, route mount, the cached overlay
 runtime/bundle-stamp.mjs    what the last build compiled from, so a launch can skip the check
-runtime/vendor-patch.mjs    the 30 splices against react-rewrite-cli 0.1.1
+runtime/vendor-patch.mjs    the 31 splices against react-rewrite-cli 0.1.1
 tools/build-icons.mjs       vendors src/core/icons.ts from Phosphor; owns the name mapping
 tools/icon-sticker-sheet.mjs  before/after sheet of the glyph set, written to .demos/icons/
 server/angular-source.mjs   Angular component index, template scan, template writer

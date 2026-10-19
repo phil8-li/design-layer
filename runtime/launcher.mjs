@@ -43,6 +43,7 @@ import { buildStampIsCurrent } from "./bundle-stamp.mjs"
 import { patchProxyRetries } from "./proxy-retry.mjs"
 import { patchOverlay } from "./vendor-patch.mjs"
 import { deferVendorTransform } from "./vendor-lazy.mjs"
+import { installVendorServerPatch } from "./vendor-server-patch.mjs"
 // Required, not imported: an ES import of `node:http` reads its lazy getters
 // and loads undici (~8ms) on the launch path. See runtime/start-screen.mjs.
 const http = createRequire(import.meta.url)("node:http")
@@ -867,6 +868,10 @@ export async function launch(config, { appPort, host, open, verbose = false, onR
       return listener.call(this, data, ...args)
     })
   }
+
+  // Two elements edited in one commit must each keep their own updates (see
+  // vendor-server-patch.mjs). Before anything imports the vendor's batch writer.
+  installVendorServerPatch()
 
   // jscodeshift loads on the first write instead of with the vendor (see
   // vendor-lazy.mjs) — installed before anything imports the vendor's

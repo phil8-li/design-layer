@@ -19,7 +19,7 @@
   than read back from the OS, and the containment guard and control defaults
   degrade instead of refusing.
 - The package installs `react-rewrite-cli@0.1.1` exactly. The runtime patches
-  that build's minified bundle at serve time against 25 pinned anchors; a
+  that build's minified bundle at serve time against 31 pinned anchors; a
   different version will not patch, and the launcher tells you so instead.
 
 ## Install
