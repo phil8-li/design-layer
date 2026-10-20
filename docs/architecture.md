@@ -103,6 +103,8 @@ runtime/local-apps.mjs      port scan, project inspection, folder listing
 runtime/editor-ports.mjs    each app's proxy and socket ports, remembered across restarts
 runtime/last-pages.mjs      the page each app was last used on, one file per app
 runtime/mcp-hub.mjs         the start screen's MCP endpoint, for "Stay on between apps"
+runtime/updater.mjs         checks GitHub for a newer main, updates this copy, restarts it
+runtime/payload.mjs         the files a copy without .git runs from (the Mac download, an update)
 runtime/launcher.mjs        vendor resolution, monkey-patches, route mount, the cached overlay
 runtime/bundle-stamp.mjs    what the last build compiled from, so a launch can skip the check
 runtime/vendor-patch.mjs    the 31 splices against react-rewrite-cli 0.1.1

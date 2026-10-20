@@ -41,6 +41,8 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import zlib from "node:zlib"
 
+import { SOURCE_STAMP, copyPayload } from "../../runtime/payload.mjs"
+
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(HERE, "..", "..")
 const PRODUCT = "Design Layer"
@@ -53,25 +55,6 @@ const flag = (name) => argv.includes(name)
 const outIndex = argv.indexOf("--out")
 if (outIndex !== -1 && !argv[outIndex + 1]) fail("--out needs a directory")
 const OUT_DIR = outIndex === -1 ? path.join(REPO_ROOT, "landing", "downloads") : path.resolve(argv[outIndex + 1])
-
-/** What the payload carries, relative to the repo root. Directories are copied whole, minus EXCLUDE. */
-const PAYLOAD_FILES = [
-  "LICENSE",
-  "README.md",
-  "THIRD_PARTY_NOTICES.md",
-  "build.mjs",
-  "cli.mjs",
-  "config.mjs",
-  "designlayer.config.example.mjs",
-  "package.json",
-  "package-lock.json",
-  "tsconfig.json",
-  // build.mjs imports these two; nothing else under tools/ is read at run time.
-  "tools/sonner-plugin.mjs",
-  "tools/strip-css-comments.mjs",
-]
-const PAYLOAD_DIRS = ["runtime", "server", "src", "desktop/mac"]
-const EXCLUDE = new Set(["node_modules", "test", ".DS_Store", ".git", ".local", ".demos", ".check", ".cache", "package.mjs"])
 
 const TEMP = path.join(os.tmpdir(), "designlayer-mac-package")
 const STAGE = path.join(TEMP, "stage")
@@ -89,20 +72,14 @@ function run(cmd, args, options = {}) {
   if (result.status !== 0) fail(`${cmd} ${args.join(" ")} exited with ${result.status}`)
 }
 
-function copyPayload() {
-  for (const file of PAYLOAD_FILES) {
-    const from = path.join(REPO_ROOT, file)
-    if (!fs.existsSync(from)) fail(`missing ${file}`)
-    fs.mkdirSync(path.dirname(path.join(PAYLOAD, file)), { recursive: true })
-    fs.copyFileSync(from, path.join(PAYLOAD, file))
-    fs.chmodSync(path.join(PAYLOAD, file), fs.statSync(from).mode & 0o777)
-  }
-  for (const dir of PAYLOAD_DIRS) {
-    fs.cpSync(path.join(REPO_ROOT, dir), path.join(PAYLOAD, dir), {
-      recursive: true,
-      filter: (src) => !EXCLUDE.has(path.basename(src)) && !src.endsWith(".log"),
-    })
-  }
+function stampSource() {
+  // The updater compares this commit with the repo's main branch; a copy
+  // without one cannot tell whether it is current (runtime/updater.mjs).
+  const git = (args) => spawnSync("git", args, { cwd: REPO_ROOT, encoding: "utf8" })
+  const commit = git(["rev-parse", "HEAD"]).stdout?.trim()
+  if (!/^[0-9a-f]{40}$/.test(commit ?? "")) fail("package.mjs needs a git checkout: the zip records the commit it was built from")
+  const date = git(["show", "-s", "--format=%cI", "HEAD"]).stdout.trim()
+  fs.writeFileSync(path.join(PAYLOAD, SOURCE_STAMP), `${JSON.stringify({ commit, date }, null, 2)}\n`)
 }
 
 /** node_modules to build against: this checkout's, or a clean install when it has none. */
@@ -460,7 +437,12 @@ try {
   fs.rmSync(TEMP, { recursive: true, force: true })
   fs.mkdirSync(PAYLOAD, { recursive: true })
   console.log(`Assembling ${PRODUCT} ${version} in ${TOP}`)
-  copyPayload()
+  try {
+    copyPayload(REPO_ROOT, PAYLOAD)
+  } catch (error) {
+    fail(error.message)
+  }
+  stampSource()
   buildDist()
   writeScripts()
   fs.mkdirSync(OUT_DIR, { recursive: true })

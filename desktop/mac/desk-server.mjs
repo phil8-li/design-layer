@@ -29,6 +29,7 @@ import { DEFAULT_DESK_PORT } from "../../runtime/mac-desk.mjs"
 import { PREFERRED_START_SCREEN_PORT } from "../../runtime/start-screen.mjs"
 import { appName } from "../../runtime/app-name.mjs"
 import { lastPage } from "../../runtime/last-pages.mjs"
+import { currentCommit } from "../../runtime/updater.mjs"
 import { APP_FEATURES, CHROME_BINARY, chromeProfileDir, profileChromeCommand, quitProfileChrome } from "./chrome-pipe.mjs"
 import { offlinePage, shellPage } from "./shell-page.mjs"
 
@@ -154,6 +155,8 @@ export function createSupervisor({ repoRoot = REPO_ROOT, port = PREFERRED_START_
     detail: null,
     editing: null,
     editors: [],
+    // The start screen's update status (GET /api/update), or null.
+    update: null,
   }
   let child = null
   let spawnedUrl = null
@@ -165,7 +168,8 @@ export function createSupervisor({ repoRoot = REPO_ROOT, port = PREFERRED_START_
   const probeUrl = () => spawnedUrl ?? `http://${LOOPBACK}:${port}`
 
   async function probe() {
-    const answer = await getJson(`${probeUrl()}/api/status`)
+    const [answer, update] = await Promise.all([getJson(`${probeUrl()}/api/status`), getJson(`${probeUrl()}/api/update`)])
+    state.update = update?.status === 200 && update.body?.state && update.body.state !== "off" ? update.body : null
     // The start screen's /api/status always carries `ready`; anything else on the port is not it.
     if (answer?.status === 200 && answer.body && "ready" in answer.body) {
       state.url = probeUrl()
@@ -200,7 +204,9 @@ export function createSupervisor({ repoRoot = REPO_ROOT, port = PREFERRED_START_
     child = spawn(process.execPath, args, {
       cwd: os.homedir(),
       stdio: ["ignore", "pipe", out],
-      env: { ...process.env, FORCE_COLOR: "0" },
+      // DESIGNLAYER_DESK_CHILD: after an update, the desk's own restart
+      // restarts this start screen, so it does not restart itself (cli.mjs).
+      env: { ...process.env, FORCE_COLOR: "0", DESIGNLAYER_DESK_CHILD: "1" },
     })
     fs.closeSync(out)
     startedAt = Date.now()
@@ -527,6 +533,9 @@ export async function createDeskServer({
   const handoff = createHandoff()
   const tabStore = createTabStore(path.join(stateDir, "desk-tabs.json"))
   const startedAt = Date.now()
+  // The commit the desk runs. An update restarts the desk, and the window
+  // reloads when the commit it was served with is no longer this one.
+  const version = currentCommit(repoRoot)
   const iconsDir = path.join(HERE, "icons")
   const origin = () => `http://${DESK_HOST}:${server.address().port}`
   // The desk page itself, on either host name: an editor is a loopback origin
@@ -569,7 +578,7 @@ export async function createDeskServer({
 
   const routes = {
     "GET /": (_req, res) =>
-      send(res, 200, "text/html; charset=utf-8", shellPage({ repoRoot }), {
+      send(res, 200, "text/html; charset=utf-8", shellPage({ repoRoot, version }), {
         "content-security-policy": "frame-ancestors 'none'",
         "x-frame-options": "DENY",
       }),
@@ -588,6 +597,7 @@ export async function createDeskServer({
         uptimeMs: Date.now() - startedAt,
         node: process.execPath,
         repoRoot,
+        version,
         startScreen: {
           state: s.state,
           ready: s.ready,
@@ -598,6 +608,7 @@ export async function createDeskServer({
           detail: s.detail,
           editing: s.editing,
           editors: s.editors,
+          update: s.update,
         },
         app: { installed: shimInstalled(), windows: handoff.listening },
       })

@@ -720,6 +720,39 @@ a.primary { text-decoration: none; }
 }
 @keyframes pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 
+/*
+ * A NEWER DESIGNLAYER, last in the card under a rule: it belongs to the tool,
+ * not to the app being chosen, so it sits apart from the three groups above.
+ * The heading is a step below the card's title, and the changes are the
+ * commit subjects, which this repo writes as plain sentences for users.
+ */
+.update {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+.update-title {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--size-body);
+  font-weight: var(--weight-value);
+}
+.update-changes {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--size-label);
+}
+.update-changes:empty { display: none; }
+.update-more { color: var(--text-muted); list-style: none; }
+.update > .actions { margin-top: 0; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .pulse { opacity: 1; }

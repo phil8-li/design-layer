@@ -421,6 +421,14 @@ export async function createStartScreen({
    * the count without serving MCP, tests among them.
    */
   onEditorsChanged = null,
+  /*
+   * The updater (runtime/updater.mjs) whose status this screen shows, or null
+   * for none. Only the supervisor passes one, with `onRestart`: what to do
+   * once an update is on disk. It is called with the editors to start again
+   * after the restart, as `resume` takes them.
+   */
+  updater = null,
+  onRestart = null,
 } = {}) {
   if (!isLoopbackHost(host)) throw new Error(`The start screen is loopback-only and cannot bind ${host}`)
 
@@ -534,6 +542,15 @@ export async function createStartScreen({
     return { ...proxy, editing: null, stopped }
   }
 
+  /** The editors to start again after a restart, in start order, as `resume` takes them. */
+  function resumable() {
+    return [...editors.values()].map((record) => ({
+      url: record.appUrl + (record.path ?? ""),
+      projectRoot: record.projectRoot,
+      devScript: record.devScript ?? null,
+    }))
+  }
+
   function editorRow(record) {
     return {
       id: record.id,
@@ -631,6 +648,89 @@ export async function createStartScreen({
     return scanning
   }
 
+  /*
+   * A choice of app: from the page's POST /api/start, or from `resume` after
+   * a restart. Throws a 4xx error for a choice that cannot start.
+   */
+  function startChoice(body) {
+    const { appUrl, appPort, appPath } = parseAppUrl(body.url)
+    const { projectRoot, manifest, packageName } = resolveProject(body.projectRoot)
+    const devScript = resolveDevScript(body.devScript, projectRoot, manifest)
+    /*
+     * A bare address — a row click, or an origin typed alone — opens the page
+     * that app was last used on. Copies of one template share a home page,
+     * so opening the root of the app picked looked like a different app.
+     */
+    const remembered = lastPage({ port: appPort, projectRoot })
+
+    /*
+     * One app, one editor. A second press for an app already starting or
+     * running — a double click, a page reloaded mid-boot, a second tab — is
+     * that editor, and nothing is started or stopped for it.
+     *
+     * Every answer is `{ ok, id, existing, replaced, url }`. `url` is the
+     * editor's address with its landing page once it is up, else null; a
+     * caller handed `id: null` has no editor here to poll, and goes to `url`.
+     */
+    const sameApp = [...editors.values()].find(
+      (record) => record.appPort === appPort && realFolder(record.projectRoot) === realFolder(projectRoot)
+    )
+    if (sameApp) {
+      sameApp.path = appPath || (remembered ?? sameApp.path)
+      latest = sameApp.id
+      return { ok: true, id: sameApp.id, existing: true, replaced: null, url: browserUrl(sameApp) }
+    }
+
+    /*
+     * An editor this screen did not start counts too. `/api/apps` marks a
+     * row as edited when the registry has one for it, so starting a second
+     * here would put two editors on one app. That editor has no id on this
+     * screen, so the answer carries its address instead.
+     */
+    const elsewhere = registryEditorFor(appPort, projectRoot)
+    if (elsewhere) {
+      return {
+        ok: true,
+        id: null,
+        existing: true,
+        replaced: null,
+        url: inBrowser(elsewhere.url ?? `http://${LOOPBACK}:${elsewhere.proxyPort}`) + (appPath || (remembered ?? "")),
+      }
+    }
+
+    // The same port from another folder is another app, and the port can only
+    // be proxied for one of them: the old editor is replaced, and only it.
+    const displaced = [...editors.values()].find((record) => record.appPort === appPort)
+    if (displaced) {
+      endEditor(displaced.id, `The editor for ${appName(displaced)} was replaced by ${appName({ projectRoot, packageName })}.`)
+      // One still starting may be waiting in the queue, and spawning it only
+      // to kill it can start its dev server for nothing. It is cancelled
+      // the way Stop cancels it; a spawned one is stopped by either path.
+      if (displaced.state === "starting") stops.push({ id: displaced.id })
+    }
+
+    const id = String(nextId++)
+    const choice = { id, appUrl, appPort, projectRoot, devScript, packageName, replaces: displaced?.id ?? null }
+    editors.set(id, {
+      id,
+      state: "starting",
+      appUrl,
+      appPort,
+      projectRoot,
+      packageName,
+      devScript,
+      path: appPath || (remembered ?? ""),
+      url: null,
+      editing: null,
+    })
+    latest = id
+    liveCountChanged()
+    log(`[designlayer] editing ${appUrl}${appPath} from ${projectRoot}`)
+    resolveChosen(choice)
+    choices.push(choice)
+    return { ok: true, id, existing: false, replaced: choice.replaces, url: null }
+  }
+
   // The page is a pure function of modules already loaded, so it is built once,
   // on the first ask, rather than as ~73KB of template on every load.
   let page = null
@@ -705,84 +805,7 @@ export async function createStartScreen({
     "POST /api/start": async (req, res) => {
       const body = await readJsonBody(req)
       if (!body) throw badRequest("Choose an app and a project folder before starting.")
-      const { appUrl, appPort, appPath } = parseAppUrl(body.url)
-      const { projectRoot, manifest, packageName } = resolveProject(body.projectRoot)
-      const devScript = resolveDevScript(body.devScript, projectRoot, manifest)
-      /*
-       * A bare address — a row click, or an origin typed alone — opens the page
-       * that app was last used on. Copies of one template share a home page,
-       * so opening the root of the app picked looked like a different app.
-       */
-      const remembered = lastPage({ port: appPort, projectRoot })
-
-      /*
-       * One app, one editor. A second press for an app already starting or
-       * running — a double click, a page reloaded mid-boot, a second tab — is
-       * that editor, and nothing is started or stopped for it.
-       *
-       * Every answer is `{ ok, id, existing, replaced, url }`. `url` is the
-       * editor's address with its landing page once it is up, else null; a
-       * caller handed `id: null` has no editor here to poll, and goes to `url`.
-       */
-      const sameApp = [...editors.values()].find(
-        (record) => record.appPort === appPort && realFolder(record.projectRoot) === realFolder(projectRoot)
-      )
-      if (sameApp) {
-        sameApp.path = appPath || (remembered ?? sameApp.path)
-        latest = sameApp.id
-        sendJson(res, 200, { ok: true, id: sameApp.id, existing: true, replaced: null, url: browserUrl(sameApp) })
-        return
-      }
-
-      /*
-       * An editor this screen did not start counts too. `/api/apps` marks a
-       * row as edited when the registry has one for it, so starting a second
-       * here would put two editors on one app. That editor has no id on this
-       * screen, so the answer carries its address instead.
-       */
-      const elsewhere = registryEditorFor(appPort, projectRoot)
-      if (elsewhere) {
-        sendJson(res, 200, {
-          ok: true,
-          id: null,
-          existing: true,
-          replaced: null,
-          url: inBrowser(elsewhere.url ?? `http://${LOOPBACK}:${elsewhere.proxyPort}`) + (appPath || (remembered ?? "")),
-        })
-        return
-      }
-
-      // The same port from another folder is another app, and the port can only
-      // be proxied for one of them: the old editor is replaced, and only it.
-      const displaced = [...editors.values()].find((record) => record.appPort === appPort)
-      if (displaced) {
-        endEditor(displaced.id, `The editor for ${appName(displaced)} was replaced by ${appName({ projectRoot, packageName })}.`)
-        // One still starting may be waiting in the queue, and spawning it only
-        // to kill it can start its dev server for nothing. It is cancelled
-        // the way Stop cancels it; a spawned one is stopped by either path.
-        if (displaced.state === "starting") stops.push({ id: displaced.id })
-      }
-
-      const id = String(nextId++)
-      const choice = { id, appUrl, appPort, projectRoot, devScript, packageName, replaces: displaced?.id ?? null }
-      editors.set(id, {
-        id,
-        state: "starting",
-        appUrl,
-        appPort,
-        projectRoot,
-        packageName,
-        devScript,
-        path: appPath || (remembered ?? ""),
-        url: null,
-        editing: null,
-      })
-      latest = id
-      liveCountChanged()
-      log(`[designlayer] editing ${appUrl}${appPath} from ${projectRoot}`)
-      resolveChosen(choice)
-      choices.push(choice)
-      sendJson(res, 200, { ok: true, id, existing: false, replaced: choice.replaces, url: null })
+      sendJson(res, 200, startChoice(body))
     },
     /*
      * Stop one editor, and only that one. The supervisor does the killing; the
@@ -810,6 +833,32 @@ export async function createStartScreen({
       const hub = hubFor(req)
       const body = (await readJsonBody(req)) ?? {}
       sendJson(res, 200, await hub.stay(body.on === true, Array.isArray(body.pending) ? body.pending : []))
+    },
+    /*
+     * Updates (runtime/updater.mjs). `openEditors` lets the page say what a
+     * restart touches. `off` means this screen was started without an
+     * updater, which only tests and embedders do.
+     */
+    "GET /api/update": (_req, res) =>
+      sendJson(res, 200, updater ? { ...updater.status(), openEditors: editors.size } : { state: "off" }),
+    "POST /api/update/check": async (_req, res) => {
+      if (!updater) throw badRequest("This start screen has no updater.", 404)
+      sendJson(res, 200, { ...(await updater.check()), openEditors: editors.size })
+    },
+    /*
+     * Update, then restart: one press. It answers at once, since an update
+     * takes up to a few minutes; the page follows along on GET /api/update,
+     * and through the restart, when this server is briefly gone.
+     */
+    "POST /api/update/apply": (_req, res) => {
+      if (!updater) throw badRequest("This start screen has no updater.", 404)
+      void updater.apply().then((status) => {
+        if (status.state !== "updated" || !onRestart) return
+        log("[designlayer] restarting to run the update")
+        // A moment for the page's next poll to see "updated" before the restart.
+        setTimeout(() => onRestart(resumable()), 600)
+      })
+      sendJson(res, 202, { ...updater.status(), openEditors: editors.size })
     },
   }
 
@@ -907,6 +956,21 @@ export async function createStartScreen({
      */
     nextStop() {
       return stops.next()
+    },
+
+    /**
+     * Starts again the editors a restart stopped (`resumable` above, through
+     * runtime/updater.mjs `saveResume`). One that can no longer start, such
+     * as a deleted folder, is skipped and logged.
+     */
+    resume(entries) {
+      for (const entry of entries) {
+        try {
+          startChoice(entry)
+        } catch (error) {
+          log(`[designlayer] could not reopen ${entry.url} after the restart: ${error.message}`)
+        }
+      }
     },
 
     /** Where the launcher will write the proxy's ports, once one exists. */

@@ -2203,6 +2203,7 @@ await check("losing contact stops the screen promising progress", async () => {
         return { ok: true, status: 200, json: async () => ({ project: projectSaid(KNOWN) }) }
       }
       if (url.pathname === "/api/start") return { ok: true, status: 200, json: async () => ({ ok: true }) }
+      if (url.pathname === "/api/update") return { ok: false, status: 404, json: async () => ({}) }
       // The editor never answers again once the start has been accepted.
       asked += 1
       if (asked > 1) throw new TypeError("Failed to fetch")
@@ -2245,6 +2246,185 @@ await check("the tab shows DesignLayer's icon, inline like the style", async () 
   assert.ok(link, "no inline SVG icon in the head")
   const favicon = fs.readFileSync(new URL("../runtime/favicon.svg", import.meta.url), "utf8")
   assert.equal(Buffer.from(link[1], "base64").toString("utf8"), favicon)
+})
+
+
+console.log("\nUpdates")
+
+/** An updater as the screen sees one (runtime/updater.mjs `createUpdater`). */
+function fakeUpdater(status) {
+  const calls = []
+  return {
+    calls,
+    status: () => status,
+    check: async () => (calls.push("check"), status),
+    apply: async () => {
+      calls.push("apply")
+      status = { ...status, state: "updated", updatedTo: "bbbbbbb" }
+      return status
+    },
+  }
+}
+const AVAILABLE = {
+  state: "available",
+  kind: "git",
+  running: "a".repeat(40),
+  current: { commit: "a".repeat(40), short: "aaaaaaa" },
+  latest: { commit: "b".repeat(40), short: "bbbbbbb", subject: "Tokens show their source" },
+  behind: 5,
+  changes: [
+    { commit: "bbbbbbb", subject: "Tokens show their source" },
+    { commit: "ccccccc", subject: "Layers scroll sideways" },
+    { commit: "ddddddd", subject: "Notes keep their order" },
+    { commit: "eeeeeee", subject: "Fourth" },
+  ],
+  reason: null,
+  error: null,
+  failed: null,
+}
+
+await check("the screen serves the update status, and runs the update then the restart", async () => {
+  const updater = fakeUpdater(AVAILABLE)
+  const restarts = []
+  const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {}, updater, onRestart: (resume) => restarts.push(resume) })
+  const dir = fixture("update-resume")
+  try {
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "shop", scripts: { dev: "vite" }, dependencies: { react: "19" } }))
+    const got = await fetch(`${screen.url}/api/update`).then((r) => r.json())
+    assert.equal(got.state, "available")
+    assert.equal(got.openEditors, 0)
+
+    // A form post from any loopback page must not start an update.
+    const form = await fetch(`${screen.url}/api/update/apply`, { method: "POST", body: "x", headers: { "content-type": "text/plain" } })
+    assert.equal(form.status, 415)
+    assert.deepEqual(updater.calls, [])
+
+    screen.resume([{ url: "http://127.0.0.1:5173/cart", projectRoot: dir, devScript: "dev" }, { url: "nonsense", projectRoot: dir }])
+    const choice = await screen.nextChoice()
+    assert.equal(choice.appPort, 5173)
+    assert.equal(choice.devScript, "dev")
+
+    const started = await fetch(`${screen.url}/api/update/apply`, { method: "POST", body: "{}", headers: { "content-type": "application/json" } })
+    assert.equal(started.status, 202)
+    assert.equal((await started.json()).openEditors, 1)
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    assert.deepEqual(updater.calls, ["apply"])
+    assert.deepEqual(restarts, [[{ url: "http://127.0.0.1:5173/cart", projectRoot: dir, devScript: "dev" }]], "the open editor is handed to the restart")
+  } finally {
+    screen.close()
+  }
+})
+
+await check("a screen started without an updater says so", async () => {
+  const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {} })
+  try {
+    assert.deepEqual(await fetch(`${screen.url}/api/update`).then((r) => r.json()), { state: "off" })
+    const apply = await fetch(`${screen.url}/api/update/apply`, { method: "POST", body: "{}", headers: { "content-type": "application/json" } })
+    assert.equal(apply.status, 404)
+  } finally {
+    screen.close()
+  }
+})
+
+const updateText = (dom) => {
+  const $ = (id) => dom.window.document.getElementById(id)
+  return {
+    shown: !$("update").hidden,
+    title: $("update-title-text").textContent,
+    changes: [...$("update-changes").children].map((li) => li.textContent),
+    note: $("update-note").hidden ? "" : $("update-note").textContent,
+    error: $("update-error").hidden ? "" : $("update-error").textContent,
+    button: $("update-actions").hidden ? null : $("update-apply").textContent,
+  }
+}
+
+await check("an available update lists what changed and what the restart touches", async () => {
+  const dom = await mountPage([], {}, {}, { "/api/update": () => ({ ...AVAILABLE, openEditors: 2 }) })
+  try {
+    assert.deepEqual(updateText(dom), {
+      shown: true,
+      title: "Update available",
+      changes: ["Tokens show their source", "Layers scroll sideways", "Notes keep their order", "and 2 more changes"],
+      note: "Restarts DesignLayer and 2 open editors. Apply or send their changes first.",
+      error: "",
+      button: "Update and restart",
+    })
+  } finally {
+    dom.window.close()
+  }
+})
+
+await check("nothing shows while current, unchecked, offline, or without an updater", async () => {
+  for (const status of [{ state: "current" }, { state: "idle" }, { state: "off" }, { state: "error", failed: "check", error: "Could not check" }, null]) {
+    const dom = await mountPage([], {}, {}, { "/api/update": () => status })
+    try {
+      assert.equal(updateText(dom).shown, false, JSON.stringify(status))
+    } finally {
+      dom.window.close()
+    }
+  }
+})
+
+await check("a checkout that cannot update itself says why, with no button", async () => {
+  const reason = "This checkout has uncommitted changes. Commit or stash them, then update."
+  const dom = await mountPage([], {}, {}, { "/api/update": () => ({ ...AVAILABLE, state: "blocked", reason, openEditors: 0 }) })
+  try {
+    const shown = updateText(dom)
+    assert.equal(shown.note, reason)
+    assert.equal(shown.button, null)
+  } finally {
+    dom.window.close()
+  }
+})
+
+await check("pressing Update follows the update through the restart, then reloads", async () => {
+  let phase = { ...AVAILABLE, openEditors: 0 }
+  let down = false
+  const dom = await mountPage([], {}, {}, {
+    "/api/update": () => {
+      if (down) throw new TypeError("Failed to fetch")
+      return phase
+    },
+    "/api/update/apply": () => (phase = { ...AVAILABLE, state: "updating", step: "Installing dependencies", openEditors: 0 }),
+  })
+  try {
+    assert.match(updateText(dom).note, /^Restarts DesignLayer\. It takes about a minute\.$/)
+    dom.window.document.getElementById("update-apply").click()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.deepEqual(dom.requests.filter((r) => r.path === "/api/update/apply").map((r) => r.method), ["POST"])
+    let shown = updateText(dom)
+    assert.equal(shown.title, "Updating DesignLayer")
+    assert.equal(shown.note, "Installing dependencies…")
+    assert.equal(shown.button, null)
+
+    phase = { ...phase, state: "updated" }
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    down = true
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    shown = updateText(dom)
+    assert.equal(shown.title, "Restarting DesignLayer")
+    assert.equal(shown.note, "This page reloads when DesignLayer is back.")
+    assert.equal(dom.navigations.length, 0, "no reload while the server is down")
+
+    down = false
+    phase = { state: "idle", running: "b".repeat(40), openEditors: 0 }
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    assert.equal(dom.navigations.length, 1, "the page reloads once the new server answers")
+  } finally {
+    dom.window.close()
+  }
+})
+
+await check("a failed update says what failed and offers to try again", async () => {
+  const error = "The update did not finish. npm ci failed: ENOTFOUND registry.npmjs.org"
+  const dom = await mountPage([], {}, {}, { "/api/update": () => ({ ...AVAILABLE, state: "error", failed: "update", error, openEditors: 0 }) })
+  try {
+    const shown = updateText(dom)
+    assert.equal(shown.error, error)
+    assert.equal(shown.button, "Try again")
+  } finally {
+    dom.window.close()
+  }
 })
 
 app.close()

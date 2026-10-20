@@ -73,6 +73,35 @@ dependency; its prepare script builds the browser bundle on install.
    .local/designlayer/
    ```
 
+## Updating
+
+DesignLayer checks GitHub for new commits on `main` a few seconds after the
+start screen opens, then every six hours. When it finds some, the start screen
+shows **Update available** with what changed, and the Mac app shows the same
+in its title bar. **Update and restart** brings this copy up to date, rebuilds
+it, and restarts it. Editors that were open start again on the same ports, so
+a tab that showed one only needs a reload. Unapplied edits in an open editor
+are lost, so apply or send them first.
+
+From a terminal:
+
+```sh
+npx designlayer --check-update   # say whether main has new commits
+npx designlayer --update         # update, then restart designlayer yourself
+```
+
+What gets updated depends on how DesignLayer was installed:
+
+| Install | Update |
+| --- | --- |
+| A git clone (the README, the landing page, `npm i -D ../design-layer`) | Fast-forwards `main`, then runs `npm ci` if the lockfile changed, else the build. A failed build puts the clone back on the commit it was on. |
+| The Mac download (`Design-Layer-for-Mac.zip`) | Downloads that commit's archive from GitHub, installs and checks it beside the app, then swaps the folders. The running copy is untouched until the swap. |
+| A packed `.tgz` | Not updated. Install the new version the way you installed this one. |
+
+A clone with uncommitted changes, on another branch, or with commits that
+`main` does not have is never touched: the start screen says why, and you
+update it with git. Set `DESIGNLAYER_NO_UPDATE_CHECK=1` to turn the check off.
+
 ## Start
 
 ```sh

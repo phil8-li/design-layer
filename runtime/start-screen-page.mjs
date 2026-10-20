@@ -1157,6 +1157,121 @@ async function boot() {
   } else render()
 }
 
+/*
+ * UPDATES. The server checks GitHub on its own (runtime/updater.mjs); this
+ * shows what it found and runs the update on one press. The update restarts
+ * the server under this page, so the page follows it through the gap and
+ * reloads once the server answers with the new commit.
+ */
+const update = {
+  root: $("update"), pulse: $("update-pulse"), title: $("update-title-text"), changes: $("update-changes"),
+  note: $("update-note"), error: $("update-error"), actions: $("update-actions"), apply: $("update-apply"),
+}
+const CHANGES_LISTED = 3
+// The commit this page was served from, once known: the restart is over when
+// the server reports another one.
+let updateFrom = null
+let updateTimer = 0
+let restarting = false
+
+async function readUpdate() {
+  const response = await fetch("/api/update", { cache: "no-store" }).catch(() => null)
+  if (!response || !response.ok) return null
+  return response.json().catch(() => null)
+}
+
+const plural = (n, one, many) => n + " " + (n === 1 ? one : many)
+
+function showUpdate(status) {
+  const state = status && status.state
+  const offered = state === "available" || state === "blocked" || (state === "error" && status.failed === "update")
+  const working = state === "updating" || state === "updated" || restarting
+  update.root.hidden = !offered && !working
+  if (update.root.hidden) return
+  update.pulse.hidden = !working
+  update.actions.hidden = working || state === "blocked"
+  show(update.error, state === "error" && !working ? status.error : "")
+  update.changes.replaceChildren()
+  if (working) {
+    update.title.textContent = state === "updating" ? "Updating DesignLayer" : "Restarting DesignLayer"
+    show(update.note, state === "updating" ? (status.step || "Updating") + "…" : "This page reloads when DesignLayer is back.")
+    return
+  }
+  update.title.textContent = "Update available"
+  const changes = Array.isArray(status.changes) ? status.changes : []
+  for (const change of changes.slice(0, CHANGES_LISTED)) {
+    const item = document.createElement("li")
+    item.textContent = change.subject
+    update.changes.append(item)
+  }
+  const more = (status.behind || changes.length) - Math.min(changes.length, CHANGES_LISTED)
+  if (more > 0) {
+    const item = document.createElement("li")
+    item.className = "update-more"
+    item.textContent = "and " + plural(more, "more change", "more changes")
+    update.changes.append(item)
+  }
+  update.apply.textContent = state === "error" ? "Try again" : "Update and restart"
+  const open = Number(status.openEditors) || 0
+  show(
+    update.note,
+    state === "blocked"
+      ? status.reason
+      : open
+        ? "Restarts DesignLayer and " + plural(open, "open editor", "open editors") + ". Apply or send their changes first."
+        : "Restarts DesignLayer. It takes about a minute."
+  )
+}
+
+/* While an update runs, and through the restart, ask every second. */
+async function followUpdate() {
+  clearTimeout(updateTimer)
+  const status = await readUpdate()
+  if (status && status.running && updateFrom === null) updateFrom = status.running
+  if (restarting && status && status.running && status.running !== updateFrom) {
+    location.reload()
+    return
+  }
+  if (status && status.state === "updated") restarting = true
+  // The server went away mid-restart: say so, and keep asking.
+  if (!status && restarting) showUpdate({ state: "updated" })
+  else showUpdate(status)
+  updateTimer = restarting || (status && status.state === "updating") ? setTimeout(followUpdate, 1000) : 0
+}
+
+update.apply.addEventListener("click", async () => {
+  update.apply.disabled = true
+  const response = await fetch("/api/update/apply", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  }).catch(() => null)
+  update.apply.disabled = false
+  const status = response ? await response.json().catch(() => null) : null
+  if (!response || !response.ok || !status) {
+    show(update.error, (status && status.error) || "Could not start the update. Try again.")
+    return
+  }
+  updateFrom = status.running || updateFrom
+  showUpdate(status)
+  followUpdate()
+})
+
+/*
+ * On load, then every ten minutes: the server checks GitHub far less often.
+ * Every five seconds while the server's first check is still to come.
+ */
+async function watchUpdate() {
+  const status = await readUpdate()
+  if (restarting) return
+  if (status && status.running) updateFrom = status.running
+  showUpdate(status)
+  if (status && (status.state === "updating" || status.state === "updated") && !updateTimer) followUpdate()
+  const pending = status && (status.state === "idle" || status.state === "checking")
+  setTimeout(watchUpdate, pending ? 5000 : 10 * 60 * 1000)
+}
+
+watchUpdate()
 boot()
 `
 
@@ -1317,6 +1432,26 @@ export function startScreenPage() {
       <button type="button" class="ghost" id="waiting-stop" hidden>Stop</button>
     </div>
   </div>
+
+  <!--
+    A newer DesignLayer on GitHub (runtime/updater.mjs). Last in the card and
+    under a rule: it is never the task this screen is for, and it stays put
+    across every face so it cannot be missed either. Hidden while there is
+    nothing to say, which includes a check that failed: being offline is not
+    news. The button is a ghost, because "Start editing" is the card's one
+    loud control.
+  -->
+  <section class="update" id="update" aria-labelledby="update-title" hidden>
+    <h2 class="update-title" id="update-title">
+      <span class="pulse" id="update-pulse" aria-hidden="true" hidden></span><span id="update-title-text"></span>
+    </h2>
+    <ul class="update-changes" id="update-changes"></ul>
+    <p class="note" id="update-note" role="status"></p>
+    <p class="error" id="update-error" role="alert" hidden></p>
+    <div class="actions" id="update-actions" hidden>
+      <button type="button" class="ghost" id="update-apply">Update and restart</button>
+    </div>
+  </section>
 </main>
 <script type="module">${CLIENT}</script>
 </body>

@@ -87,7 +87,14 @@ await check("--dev-script implies --dev", () => {
     verify: false,
     printConfig: false,
     verbose: false,
+    update: false,
+    checkUpdate: false,
   })
+})
+
+await check("--update and --check-update are DesignLayer's own, and need no app", () => {
+  assert.equal(parseArgs(["--update"]).update, true)
+  assert.equal(parseArgs(["--check-update"]).checkUpdate, true)
 })
 
 await check("--dev alone leaves the script to the config", () => {

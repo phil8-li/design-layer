@@ -22,7 +22,9 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-export const DESK_LABEL = "dev.designlayer.desk"
+// DESIGNLAYER_DESK_LABEL runs a second desk beside the installed one, under a
+// LaunchAgent of its own, so a test can restart it without touching the app.
+export const DESK_LABEL = process.env.DESIGNLAYER_DESK_LABEL || "dev.designlayer.desk"
 export const DEFAULT_DESK_PORT = 3454
 
 export function deskPlistPath(home = os.homedir()) {

@@ -55,7 +55,7 @@ export function isDeskTitle(title) {
 /** Where the page saves its tabs in its own storage; install.mjs reads it too. */
 export const TABS_KEY = "designlayer.desk.tabs.v1"
 
-export function shellPage({ repoRoot }) {
+export function shellPage({ repoRoot, version = null }) {
   const startCommand = `node ${repoRoot}/desktop/mac/install.mjs --start`
   return `<!doctype html>
 <html lang="en">
@@ -132,6 +132,14 @@ export function shellPage({ repoRoot }) {
   .status i { width: 6px; height: 6px; border-radius: 50%; background: #5bb974; }
   .status.warn i { background: #fbbc04; }
   .status.down i { background: var(--danger); }
+  /* Shown while the start screen has an update to offer, or is running one.
+     It opens Home, where the update is described and started. */
+  .update { -webkit-app-region: no-drag; app-region: no-drag; display: flex; align-items: center; gap: 6px;
+    height: 22px; padding: 0 8px; border: 0; border-radius: 6px; flex: none; white-space: nowrap;
+    background: rgba(12,140,233,.16); color: var(--accent); font-size: 11px; }
+  .update:hover { background: rgba(12,140,233,.26); }
+  .update:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .update[hidden] { display: none; }
 
   .frames { position: fixed; left: 0; right: 0; bottom: 0; top: calc(var(--strip-h) + 1px); background: var(--ground); }
   .frames iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--ground); }
@@ -167,6 +175,7 @@ export function shellPage({ repoRoot }) {
   <nav class="tabs" id="tabs" role="tablist" aria-label="Open tabs"></nav>
   <button class="icon-btn" id="newTab" title="New Home tab (⌘T)" aria-label="New Home tab">${glyph("add", 20)}</button>
   <div class="spacer"></div>
+  <button class="update" id="update" title="Open Home to see what changed and update" hidden>Update available</button>
   <div class="status" id="status" role="status"><i></i><span>Starting</span></div>
   <div class="tools">
     <button class="icon-btn" id="reload" title="Reload this tab" aria-label="Reload this tab">${glyph("refresh", 20)}</button>
@@ -188,6 +197,8 @@ export function shellPage({ repoRoot }) {
 <script>
 (() => {
   const KEY = ${JSON.stringify(TABS_KEY)}
+  // The commit the desk ran when it served this page (runtime/updater.mjs).
+  const VERSION = ${JSON.stringify(version)}
   const $ = (id) => document.getElementById(id)
   const tabsEl = $("tabs"), framesEl = $("frames")
   let health = null, editors = [], offers = [], homeUrl = null, deskDown = false
@@ -405,6 +416,8 @@ export function shellPage({ repoRoot }) {
         fetch("/api/health", { cache: "no-store" }).then((r) => r.json()),
         fetch("/api/editors", { cache: "no-store" }).then((r) => r.json()),
       ])
+      // An update restarted the desk on new files: this page is the old one.
+      if (VERSION && h.version && h.version !== VERSION) { location.reload(); return }
       deskDown = false; health = h; editors = (list.editors || []).map((e) => ({ ...e, url: onLocalhost(e.url) }))
       if (restoring) await restore()
     } catch {
@@ -420,7 +433,20 @@ export function shellPage({ repoRoot }) {
     render()
   }
 
+  function applyUpdate() {
+    const u = deskDown ? null : health?.startScreen?.update
+    const label = { available: "Update available", updating: "Updating…", updated: "Restarting…" }[u?.state]
+    $("update").hidden = !label
+    if (label) $("update").textContent = label
+  }
+  // Home is where the update is described and started.
+  $("update").onclick = () => {
+    const home = tabs.find((t) => t.kind === "home")
+    if (home) select(home.id); else newHome()
+  }
+
   function applyHealth() {
+    applyUpdate()
     const s = $("status"), label = s.querySelector("span")
     const ss = health?.startScreen
     if (deskDown) {

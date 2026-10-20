@@ -499,6 +499,29 @@ await check("health lists every editor the start screen runs, and keeps editing"
   }
 })
 
+// The start screen owns the update (runtime/updater.mjs); the desk relays it
+// so the title bar can offer it while no Home tab is open.
+await check("health relays the start screen's update status, and the commit the desk runs", async () => {
+  const update = { state: "available", behind: 3, changes: [] }
+  const screen = http.createServer((req, res) => {
+    res.setHeader("content-type", "application/json")
+    if (req.url === "/api/update") return res.end(JSON.stringify(update))
+    res.end(JSON.stringify({ ready: false, url: null, editing: null, stopped: null, editors: [] }))
+  })
+  await new Promise((resolve) => screen.listen(0, "127.0.0.1", resolve))
+  const supervised = await createDeskServer({ port: 0, startScreenPort: screen.address().port, logDir: path.join(tempHome, "logs"), log: () => {} })
+  try {
+    const res = await request(supervised.port, { pathname: "/api/health" })
+    assert.deepEqual(res.json.startScreen.update, update)
+    assert.match(res.json.version, /^[0-9a-f]{40}$/, "the desk runs from this checkout, so it knows its commit")
+    const page = await request(supervised.port, { pathname: "/" })
+    assert.ok(page.body.toString("utf8").includes(`const VERSION = "${res.json.version}"`), "the window knows which commit served it")
+  } finally {
+    await supervised.close()
+    await new Promise((resolve) => screen.close(resolve))
+  }
+})
+
 await desk.close()
 
 console.log("title bar")
@@ -820,16 +843,24 @@ await check("a tab is named by the app its frame says it shows", async () => {
  * there. `url` is the desk page's own address: localhost since the window
  * moved there, 127.0.0.1 for a window installed before.
  */
-async function multiDesk({ tabs, active, lists, remote, url: pageUrl = "http://127.0.0.1:3454/", setup }) {
-  const { JSDOM } = await import("jsdom")
+async function multiDesk({ tabs, active, lists, remote, url: pageUrl = "http://127.0.0.1:3454/", setup, version = null, health = () => ({}) }) {
+  const { JSDOM, VirtualConsole } = await import("jsdom")
   const { shellPage } = await import("../shell-page.mjs")
+  // jsdom cannot navigate, and says so: each reload the page asks for lands here.
+  const navigations = []
+  const virtualConsole = new VirtualConsole()
+  virtualConsole.on("jsdomError", (error) => {
+    if (error.type === "not-implemented" && /navigation/i.test(error.message)) navigations.push(error.message)
+    else console.error(error.message)
+  })
   let polls = 0
   let poller = null
   const streams = []
   const puts = []
-  const dom = new JSDOM(shellPage({ repoRoot: "/r" }), {
+  const dom = new JSDOM(shellPage({ repoRoot: "/r", version }), {
     url: pageUrl,
     runScripts: "dangerously",
+    virtualConsole,
     beforeParse(window) {
       if (tabs) window.localStorage.setItem("designlayer.desk.tabs.v1", JSON.stringify({ tabs, active }))
       setup?.(window)
@@ -849,7 +880,9 @@ async function multiDesk({ tabs, active, lists, remote, url: pageUrl = "http://1
         if (list === "hang") return new Promise(() => {})
         return {
           json: async () =>
-            String(url).includes("/api/editors") ? { editors: list } : { ok: true, startScreen: { ready: true, url: "http://127.0.0.1:3455" } },
+            String(url).includes("/api/editors")
+              ? { editors: list }
+              : { ok: true, ...health(), startScreen: { ready: true, url: "http://127.0.0.1:3455", ...health().startScreen } },
         }
       }
       const every = window.setInterval.bind(window)
@@ -873,6 +906,7 @@ async function multiDesk({ tabs, active, lists, remote, url: pageUrl = "http://1
     win,
     doc,
     frame,
+    navigations,
     srcs: () => Object.fromEntries([...doc.querySelectorAll("iframe")].map((f) => [f.dataset.id, f.src])),
     labels: () => [...doc.querySelectorAll(".tab:not(.offer) .label")].map((node) => node.textContent),
     offered: () => [...doc.querySelectorAll(".tab.offer .label")].map((node) => node.textContent),
@@ -1378,6 +1412,53 @@ await check("⌘. typed in the shell is handed to the editor in the active tab, 
 })
 
 console.log("the launcher's view of the desk")
+
+
+await check("an update on offer shows in the title bar, and opens Home", async () => {
+  let update = null
+  const d = await multiDesk({
+    tabs: [tabOn("a", SHOP)],
+    active: "a",
+    lists: [[SHOP]],
+    url: "http://localhost:3454/",
+    health: () => ({ startScreen: { update } }),
+  })
+  try {
+    const button = d.doc.getElementById("update")
+    assert.equal(button.hidden, true, "nothing to offer yet")
+    update = { state: "available", behind: 2 }
+    await d.poll()
+    assert.equal(button.hidden, false)
+    assert.equal(button.textContent, "Update available")
+    button.click()
+    assert.equal(d.selected(), "Home", "the button opens a Home tab, where the update is")
+    assert.deepEqual(d.labels(), ["shop", "Home"])
+    update = { state: "updating", step: "Installing dependencies" }
+    await d.poll()
+    assert.equal(button.textContent, "Updating…")
+    button.click()
+    assert.deepEqual(d.labels(), ["shop", "Home"], "an open Home tab is reused")
+    update = { state: "current" }
+    await d.poll()
+    assert.equal(button.hidden, true)
+  } finally {
+    d.close()
+  }
+})
+
+await check("the window reloads once the desk runs another commit", async () => {
+  let version = "a".repeat(40)
+  const d = await multiDesk({ tabs: [{ id: "h", kind: "home" }], active: "h", lists: [[]], version, health: () => ({ version }) })
+  try {
+    await d.poll()
+    assert.equal(d.navigations.length, 0, "the same commit is not a reason to reload")
+    version = "b".repeat(40)
+    await d.poll()
+    assert.equal(d.navigations.length, 1, "an update restarted the desk: the page reloads to get the new one")
+  } finally {
+    d.close()
+  }
+})
 
 await check("the label and the plist path have one definition", () => {
   assert.equal(LABEL, DESK_LABEL)

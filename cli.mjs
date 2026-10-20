@@ -54,6 +54,8 @@ const USAGE = `Usage: designlayer [appPort] [options]
   --host <host>           Dev server host (default: 127.0.0.1)
   --open / --no-open      Open the editing URL on start (default: no)
   --verify                Check the vendor patch still applies, then exit
+  --check-update          Say whether a newer DesignLayer is on GitHub, then exit
+  --update                Update this copy of DesignLayer to the latest, then exit
   --print-config          Print the resolved config as JSON, then exit
   --help
 `
@@ -83,6 +85,8 @@ export function parseArgs(argv) {
     verify: false,
     printConfig: false,
     verbose: false,
+    update: false,
+    checkUpdate: false,
   }
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -113,6 +117,8 @@ export function parseArgs(argv) {
     else if (arg === "--verbose") options.verbose = true
     else if (arg === "--verify") options.verify = true
     else if (arg === "--print-config") options.printConfig = true
+    else if (arg === "--update") options.update = true
+    else if (arg === "--check-update") options.checkUpdate = true
     else if (arg === "--help" || arg === "-h") options.help = true
     else if (/^\d+$/.test(arg)) options.appPort = Number(arg)
     else throw new Error(`Unknown option: ${arg}`)
@@ -160,6 +166,7 @@ export async function main(argv = process.argv.slice(2)) {
     process.stdout.write(USAGE)
     return
   }
+  if (options.update || options.checkUpdate) return updateFromTerminal(options)
 
   /*
    * The start screen without a config, when there is no config to load.
@@ -354,25 +361,91 @@ async function supervise(options) {
   // lines that every editor launch — the supervisor's children included —
   // would otherwise parse before binding anything, for a screen only this
   // role serves.
-  const { createStartScreen } = await import("./runtime/start-screen.mjs")
+  const [{ createStartScreen }, updates] = await Promise.all([
+    import("./runtime/start-screen.mjs"),
+    import("./runtime/updater.mjs"),
+  ])
+  // The supervisor is the one process that lives as long as the session, so
+  // it owns the update check. DESIGNLAYER_NO_UPDATE_CHECK=1 turns it off.
+  const updater = process.env.DESIGNLAYER_NO_UPDATE_CHECK === "1" ? null : updates.createUpdater({ log: console.log })
+  let editors = null
   // `mcp: {}` lets this screen serve MCP between apps when the designer turns
   // that on. It is the only screen that outlives its editors.
-  const screen = await createStartScreen({ port: options.startScreenPort, mcp: {} })
+  const screen = await createStartScreen({
+    port: options.startScreenPort,
+    mcp: {},
+    updater,
+    onRestart: (resume) => restartAfterUpdate({ screen, editors, resume, updates }),
+  })
   holdUntilExit(screen.close)
 
   const { allocatePorts } = await import("./runtime/editor-ports.mjs")
-  const editors = runEditors(screen, { options, allocatePorts })
+  editors = runEditors(screen, { options, allocatePorts })
   // Ctrl+C here is Ctrl+C for every editor too. Each child is a process of its
   // own, so nothing takes them down on the way out unless this line does.
   holdUntilExit(editors.killAll)
 
   console.log(`[designlayer] open ${screen.url} to choose an app`)
+  // The editors the restart that started this process stopped, back on the
+  // ports they had (runtime/editor-ports.mjs remembers each app's pair).
+  screen.resume(updates.takeResume())
+  updater?.start()
   if (options.open !== false) {
     const { openBrowser } = await import("./runtime/open-browser.mjs")
     openBrowser(screen.url)
   }
 
   await editors.done
+}
+
+/**
+ * Runs the update the start screen just put on disk.
+ *
+ * The open editors are written down first, so the new supervisor starts them
+ * again. Then, when the Mac app's desk runs from this copy, launchd restarts
+ * it, and the desk starts its start screen again. A start screen the desk
+ * started is stopped by that restart; any other one restarts itself: it
+ * closes everything and runs the new cli.mjs in its place, on the same
+ * terminal, staying as the parent so the terminal and Ctrl+C keep working.
+ */
+async function restartAfterUpdate({ screen, editors, resume, updates }) {
+  updates.saveResume(resume)
+  const desk = updates.deskRunsFrom()
+  if (desk) updates.restartDesk()
+  if (desk && process.env.DESIGNLAYER_DESK_CHILD === "1") return
+  screen.close()
+  await editors?.stopAll()
+  const argv = process.argv.slice(2).filter((arg) => arg !== "--open" && arg !== "--no-open")
+  const child = spawn(process.execPath, [CLI_PATH, ...argv, "--no-open"], { stdio: "inherit", env: process.env })
+  holdUntilExit(() => child.kill("SIGTERM"))
+  child.once("exit", (code, signal) => process.exit(signal ? 1 : (code ?? 0)))
+}
+
+/** `designlayer --check-update` and `designlayer --update`, for a terminal. */
+async function updateFromTerminal(options) {
+  const updates = await import("./runtime/updater.mjs")
+  const updater = updates.createUpdater({ log: options.update ? console.log : () => {} })
+  const status = await updater.check()
+  const say = (line) => console.log(`[designlayer] ${line}`)
+  if (status.state === "current") return say(`up to date (${status.current?.short ?? status.version})`)
+  if (status.state !== "available") {
+    process.exitCode = 1
+    return say(status.error ?? status.reason ?? `cannot update (${status.state})`)
+  }
+  say(`${status.behind ?? "new"} change${status.behind === 1 ? "" : "s"} on main since ${status.current?.short ?? "this copy"}:`)
+  for (const change of status.changes) console.log(`  ${change.commit}  ${change.subject}`)
+  if (!options.update) return say("run `npx designlayer --update` to update")
+  const done = await updater.apply()
+  if (done.state !== "updated") {
+    process.exitCode = 1
+    return say(done.error)
+  }
+  if (updates.deskRunsFrom()) {
+    updates.restartDesk()
+    say(`updated to ${done.updatedTo}; the Mac app restarted with it`)
+  } else {
+    say(`updated to ${done.updatedTo}; restart designlayer to use it`)
+  }
 }
 
 /**
@@ -480,6 +553,10 @@ export function runEditors(
   return {
     running,
     done: Promise.all([choiceLoop(), stopLoop()]).then(() => {}),
+    /** Stops every editor and waits for each to exit. */
+    stopAll() {
+      return Promise.all([...running.values()].map(stop))
+    },
     /** Synchronous, because it runs from the process's `exit` handler. */
     killAll() {
       for (const entry of running.values()) {
