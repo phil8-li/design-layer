@@ -1255,6 +1255,47 @@ await check("the tab in front loads its editor when that editor comes back, once
   }
 })
 
+await check("hovering a tab shows its full name, and the tip outlives the poll that redraws the strip", async () => {
+  const LONG = { ...SHOP, name: "customer-onboarding-dashboard-experiment", appUrl: "http://127.0.0.1:3041" }
+  const d = await multiDesk({
+    tabs: [{ id: "h1", kind: "home" }, tabOn("a", LONG), tabOn("b", DOCS)],
+    active: "a",
+    lists: [[LONG, DOCS]],
+  })
+  try {
+    await d.poll()
+    const tip = d.doc.getElementById("tip")
+    const hover = (el) => el.dispatchEvent(new d.win.MouseEvent("pointerover", { bubbles: true }))
+    const [, a] = d.doc.querySelectorAll(".tab")
+    assert.equal(a.title, "", "a native title tip would show beside this one")
+    hover(a.querySelector(".label"))
+    assert.equal(tip.classList.contains("open"), true)
+    assert.equal(tip.querySelector(".tip-name").textContent, LONG.name)
+    assert.equal(tip.querySelector(".tip-detail").textContent, "localhost:3041", "the tip names the app address, not the folder")
+    await d.poll()
+    assert.equal(tip.classList.contains("open"), true, "the redraw closed the tip under the pointer")
+    assert.equal(tip.querySelector(".tip-name").textContent, LONG.name)
+
+    const next = d.doc.querySelectorAll(".tab")[2]
+    next.dispatchEvent(new d.win.MouseEvent("pointerout", { bubbles: true, relatedTarget: d.doc.querySelectorAll(".tab")[0] }))
+    hover(d.doc.querySelectorAll(".tab")[0])
+    assert.equal(tip.querySelector(".tip-name").textContent, "Home")
+    assert.equal(tip.querySelector(".tip-detail").textContent, "Start screen — choose an app")
+
+    d.doc.querySelectorAll(".tab")[2].dispatchEvent(new d.win.MouseEvent("pointerdown", { bubbles: true }))
+    assert.equal(tip.classList.contains("open"), false, "a press leaves the tip open")
+    hover(d.doc.querySelectorAll(".tab")[2])
+    assert.equal(tip.classList.contains("open"), false, "the tip came back before the pointer left the pressed tab")
+    d.doc.querySelectorAll(".tab")[2].dispatchEvent(new d.win.MouseEvent("pointerout", { bubbles: true, relatedTarget: d.doc.body }))
+    hover(d.doc.querySelectorAll(".tab")[2])
+    assert.equal(tip.querySelector(".tip-name").textContent, "docs")
+    d.doc.querySelectorAll(".tab")[2].dispatchEvent(new d.win.MouseEvent("pointerout", { bubbles: true, relatedTarget: d.doc.body }))
+    assert.equal(tip.classList.contains("open"), false, "the tip stayed after the pointer left the strip")
+  } finally {
+    d.close()
+  }
+})
+
 await check("a stopped editor's tab is drawn stopped while the others stay live, and ⌘1–9, ⌘W, ⌘T act on tabs", async () => {
   const d = await multiDesk({
     tabs: [{ id: "h1", kind: "home" }, tabOn("a", SHOP), tabOn("b", DOCS)],
@@ -1265,7 +1306,7 @@ await check("a stopped editor's tab is drawn stopped while the others stay live,
     await d.poll()
     const [, a, b] = d.doc.querySelectorAll(".tab")
     assert.equal(a.classList.contains("dead"), true)
-    assert.match(a.title, /\(stopped\)$/)
+    assert.match(a.dataset.tipDetail, /Stopped$/)
     assert.equal(b.classList.contains("dead"), false)
     assert.deepEqual(d.offered(), [])
 

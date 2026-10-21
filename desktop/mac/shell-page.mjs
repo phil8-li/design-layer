@@ -117,6 +117,21 @@ export function shellPage({ repoRoot, version = null }) {
     box-shadow: 0 0 0 3px rgba(12,140,233,.25); }
   .tab.offer { color: var(--ink-3); border: 1px dashed var(--hair-2); }
   .tab.offer:hover { color: var(--ink); border-color: var(--accent); }
+  /* A tab's tooltip: its full name, then the app address it shows or what it does. The page
+     draws it because render() rebuilds the strip on every poll, and a native
+     title tip closes when the element under the pointer is replaced. Drawn as
+     the editor's tip (src/core/css/tooltip.ts): panel ground, body ink, the
+     popover hairline and cast, 6x12 padding on a 12px corner, 6px off the tab.
+     It opens instantly and fades out in 150ms. */
+  .tip { position: fixed; left: 0; top: 0; z-index: 10; width: max-content;
+    max-width: min(320px, calc(100vw - 16px)); padding: 5px 11px; border: 1px solid var(--hair-2);
+    border-radius: 12px; background: var(--raised); color: var(--ink); box-shadow: 0 10px 30px rgba(0,0,0,.36);
+    font-size: 12px; line-height: 16px; white-space: pre-line; overflow-wrap: anywhere; pointer-events: none;
+    opacity: 0; visibility: hidden; transition: opacity .15s cubic-bezier(.22,1,.36,1), visibility 0s linear .15s; }
+  .tip.open { opacity: 1; visibility: visible; transition: none; }
+  .tip-detail { color: var(--ink-2); }
+  .tip-detail[hidden] { display: none; }
+  @media (prefers-reduced-motion: reduce) { .tip { transition: none; } }
   /* Full white at rest, like Chrome's own buttons. Reload and the folder sit 40px
      apart, the spacing of Chrome's own buttons, so the corner reads as one row. */
   .icon-btn { width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent;
@@ -194,6 +209,7 @@ export function shellPage({ repoRoot, version = null }) {
   </section>
 </main>
 <div class="toast" id="toast" role="status" hidden></div>
+<div class="tip" id="tip" aria-hidden="true"><div class="tip-name"></div><div class="tip-detail"></div></div>
 <script>
 (() => {
   const KEY = ${JSON.stringify(TABS_KEY)}
@@ -296,7 +312,7 @@ export function shellPage({ repoRoot, version = null }) {
       const dead = t.kind === "editor" && t.key !== null && !editors.some((e) => e.url === t.url)
       if (dead && health) b.classList.add("dead")
       const name = t.kind === "home" ? "Home" : t.name || t.url
-      b.title = t.kind === "home" ? "Start screen — choose an app" : (t.projectRoot || name) + (dead ? " (stopped)" : "")
+      tipData(b, "tab:" + t.id, name, t.kind === "home" ? ["Start screen — choose an app"] : [appAddress(editors.find((e) => e.url === t.url)), dead && "Stopped"])
       b.innerHTML = '<span class="glyph">' + (t.kind === "home" ? HOME_GLYPH : EDIT_GLYPH) + '</span><span class="label"></span>' +
         (i < 9 ? '<span class="num">⌘' + (i + 1) + '</span>' : "") +
         (tabs.length > 1 ? '<span class="close" role="button" aria-label="Close tab">' + X + "</span>" : "")
@@ -315,15 +331,75 @@ export function shellPage({ repoRoot, version = null }) {
       const b = document.createElement("button")
       // An editor's socket takes one client, so opening it here disconnects any
       // other window showing it. That is why running editors are offered, not opened.
-      b.className = "tab offer"; b.title = "Open " + e.name + " in a tab (" + e.projectRoot + "). Any other window showing this editor disconnects."
+      b.className = "tab offer"
+      tipData(b, "offer:" + editorKey(e), e.name, [appAddress(e), "Opens in a tab. Any other window showing this editor disconnects."])
       b.innerHTML = '<span class="dot"></span><span class="label"></span>'
       b.querySelector(".label").textContent = e.name
       b.onclick = () => { offers = offers.filter((o) => o !== e); openEditor(e, true) }
       tabsEl.append(b)
     }
+    // The tab under the pointer is a new element now: keep its tip on it.
+    if (tipFor) {
+      const el = [...tabsEl.children].find((c) => c.dataset.tipId === tipFor)
+      if (el) showTip(el); else hideTip()
+    }
     syncFrames()
     persist()
   }
+
+  const tipEl = $("tip")
+  let tipFor = null, tipQuiet = null
+  // The app the editor shows, as the browser opens it: two editors on one
+  // project share a name and differ only here. Apps run on localhost
+  // (runtime/launcher.mjs, BROWSER_HOST), whatever host the registry says.
+  function appAddress(e) {
+    if (!e || !e.appUrl) return null
+    try { const u = new URL(e.appUrl); return "localhost" + (u.port ? ":" + u.port : "") } catch { return null }
+  }
+  function tipData(el, id, name, detail) {
+    el.dataset.tipId = id
+    el.dataset.tipName = name
+    el.dataset.tipDetail = detail.filter(Boolean).join("\\n")
+  }
+  function showTip(el) {
+    tipFor = el.dataset.tipId
+    tipEl.firstChild.textContent = el.dataset.tipName
+    tipEl.lastChild.textContent = el.dataset.tipDetail
+    tipEl.lastChild.hidden = !el.dataset.tipDetail
+    const r = el.getBoundingClientRect()
+    const x = Math.max(8, Math.min(r.left, innerWidth - tipEl.offsetWidth - 8))
+    tipEl.style.transform = "translate(" + Math.round(x) + "px, " + Math.round(r.bottom + 6) + "px)"
+    tipEl.classList.add("open")
+  }
+  function hideTip() { tipFor = null; tipEl.classList.remove("open") }
+  tabsEl.addEventListener("pointerover", (ev) => {
+    const el = ev.target.closest(".tab")
+    if (el && el.dataset.tipId !== tipFor && el.dataset.tipId !== tipQuiet) showTip(el)
+  })
+  tabsEl.addEventListener("pointerout", (ev) => {
+    const to = ev.relatedTarget && ev.relatedTarget.closest ? ev.relatedTarget.closest(".tab") : null
+    if (to && to.dataset.tipId === ev.target.closest(".tab")?.dataset.tipId) return
+    tipQuiet = null
+    if (!to) hideTip()
+  })
+  // A press closes the tip, as a native one closes, until the pointer leaves the tab.
+  tabsEl.addEventListener("pointerdown", (ev) => {
+    tipQuiet = ev.target.closest(".tab")?.dataset.tipId ?? null
+    hideTip()
+  })
+  // A name cut short must be readable from the keyboard too.
+  tabsEl.addEventListener("focusin", (ev) => {
+    const el = ev.target.closest(".tab")
+    let keyboard = false
+    try { keyboard = el.matches(":focus-visible") } catch {}
+    if (el && keyboard) showTip(el)
+  })
+  tabsEl.addEventListener("focusout", (ev) => {
+    if (!tabsEl.contains(ev.relatedTarget) && !tabsEl.querySelector(".tab:hover")) hideTip()
+  })
+  // Closed when the app goes to the background, not when an editor frame takes
+  // focus: that blurs this page too, and editors focus themselves as they load.
+  addEventListener("blur", () => { if (document.activeElement?.tagName !== "IFRAME") hideTip() })
 
   function syncFrames() {
     const live = new Set(tabs.map((t) => t.id))
