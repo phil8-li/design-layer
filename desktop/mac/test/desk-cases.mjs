@@ -125,6 +125,7 @@ function stream(port, query = "") {
 
 let pickerCalls = 0
 const activations = []
+const openedWindows = []
 const stateDir = path.join(tempHome, "state")
 const desk = await createDeskServer({
   port: 0,
@@ -140,6 +141,11 @@ const desk = await createDeskServer({
   activate: (deskUrl, context) => {
     activations.push({ deskUrl, ...context })
     return true
+  },
+  // Records instead of starting Chrome.
+  openWindow: (url) => {
+    openedWindows.push(url)
+    return { ok: true }
   },
 })
 const port = desk.port
@@ -172,6 +178,8 @@ await check("shell page is the DesignLayer window with a manifest link and WCO s
   assert.match(html, /titlebar-area-width/)
   assert.match(html, /clipboard-read; clipboard-write; fullscreen/)
   assert.equal(res.headers["x-frame-options"], "DENY")
+  // Phil had the green dot and editor count taken out of the title bar.
+  assert.doesNotMatch(html, /id="status"/)
 })
 
 await check("every glyph in the strip comes from symbols/ at the 20px title-bar size", async () => {
@@ -335,6 +343,57 @@ await check("the desk keeps a copy of the window's tabs, written only by the des
   assert.equal(back.active, "a")
   // In the app's own folder, not in a project.
   assert.ok(fs.existsSync(path.join(stateDir, "desk-tabs.json")))
+})
+
+await check("the desk keeps each window's tabs apart, forgets a window that is gone, and lists them all", async () => {
+  const put = (body) => request(port, { method: "PUT", pathname: "/api/tabs", headers: { origin: `http://localhost:${port}` }, body: JSON.stringify(body) })
+  assert.equal((await put({ window: "wab12", tabs: [{ id: "x", kind: "home" }], active: "x", savedAt: 5, closedAt: 9 })).status, 200)
+  assert.equal((await put({ window: "../evil", tabs: [] })).status, 400, "a window id that is not one was saved")
+  const one = (await request(port, { pathname: "/api/tabs?window=wab12" })).json
+  assert.deepEqual(one.tabs.map((t) => t.id), ["x"])
+  assert.equal(one.closedAt, 9)
+  // The main window's copy is still the one the bare route answers with.
+  assert.deepEqual((await request(port, { pathname: "/api/tabs" })).json.tabs.map((t) => t.id), ["h1", "a"])
+  assert.deepEqual(Object.keys((await request(port, { pathname: "/api/tabs?all=1" })).json.windows).sort(), ["main", "wab12"])
+  // A save that arrives after a newer one is dropped.
+  assert.equal((await put({ window: "wab12", tabs: [{ id: "old", kind: "home" }], active: "old", savedAt: 4 })).status, 200)
+  assert.deepEqual((await request(port, { pathname: "/api/tabs?window=wab12" })).json.tabs.map((t) => t.id), ["x"])
+  assert.equal((await put({ window: "wab12", gone: true, savedAt: 20 })).status, 200)
+  assert.deepEqual((await request(port, { pathname: "/api/tabs?window=wab12" })).json, {})
+  assert.deepEqual(Object.keys((await request(port, { pathname: "/api/tabs?all=1" })).json.windows), ["main"])
+  // The list says when the window went, for a page that still holds a copy of it.
+  assert.deepEqual((await request(port, { pathname: "/api/tabs?all=1" })).json.gone, { wab12: 20 })
+  // Found in the real app: a window's last save landed after the note that it
+  // was gone, and the window came back on the next launch.
+  assert.equal((await put({ window: "wab12", tabs: [{ id: "x", kind: "home" }], active: "x", savedAt: 19 })).status, 200)
+  assert.deepEqual(Object.keys((await request(port, { pathname: "/api/tabs?all=1" })).json.windows), ["main"], "a late save brought a closed window back")
+  // A newer window on the same id is a window again.
+  assert.equal((await put({ window: "wab12", tabs: [{ id: "y", kind: "home" }], active: "y", savedAt: 30 })).status, 200)
+  assert.deepEqual((await request(port, { pathname: "/api/tabs?window=wab12" })).json.tabs.map((t) => t.id), ["y"])
+  await put({ window: "wab12", gone: true, savedAt: 31 })
+})
+
+await check("a file from before there were several windows is the main window's", async () => {
+  const file = path.join(stateDir, "desk-tabs.json")
+  const was = fs.readFileSync(file, "utf8")
+  try {
+    fs.writeFileSync(file, JSON.stringify({ tabs: [{ id: "old", kind: "home" }], active: "old" }))
+    assert.deepEqual((await request(port, { pathname: "/api/tabs" })).json.tabs.map((t) => t.id), ["old"])
+    assert.deepEqual(Object.keys((await request(port, { pathname: "/api/tabs?all=1" })).json.windows), ["main"])
+  } finally {
+    fs.writeFileSync(file, was)
+  }
+})
+
+await check("the desk page, and only the desk page, can ask the desk to open a saved window", async () => {
+  const open = (body, origin) =>
+    request(port, { method: "POST", pathname: "/api/windows/open", headers: origin ? { origin } : {}, body: JSON.stringify(body) })
+  assert.equal((await open({ window: "wab12" }, "http://localhost:4101")).status, 403)
+  assert.equal((await open({ window: "javascript:alert(1)" }, `http://localhost:${port}`)).status, 400)
+  assert.deepEqual(openedWindows, [])
+  const res = await open({ window: "wab12" }, `http://localhost:${port}`)
+  assert.equal(res.status, 200)
+  assert.deepEqual(openedWindows, [`http://localhost:${port}/?window=wab12`])
 })
 
 await check("the desk answers on localhost and hands out a localhost address", async () => {
@@ -624,7 +683,7 @@ await check("a handed-over page opens in a named frame, and the next one for tha
     await sleep(30)
     assert.equal(streams.length, 1)
     assert.equal(streams[0].url, "/api/events?window=app")
-    assert.ok(doc.querySelector(".tab.offer"), "the running editor should be offered before the hand-off")
+    assert.equal(doc.querySelectorAll(".tab").length, 1, "the running editor had a tab before it was handed over")
     const hand = (url) => streams[0].listeners["open-url"]({ data: JSON.stringify({ id: 1, url }) })
 
     hand("http://127.0.0.1:4100/studio")
@@ -634,7 +693,6 @@ await check("a handed-over page opens in a named frame, and the next one for tha
     assert.match(frame.name, /^designlayer-desk:/, "the editor inside cannot tell it is in the app")
     assert.equal(frame.hidden, false, "the new tab is not the one showing")
     assert.equal(doc.querySelector('.tab[aria-selected="true"] .label').textContent, "shop-web")
-    assert.equal(doc.querySelector(".tab.offer"), null, "the editor is still offered after it opened")
     const frames = doc.querySelectorAll("iframe").length
 
     hand("http://127.0.0.1:4100/settings")
@@ -647,9 +705,10 @@ await check("a handed-over page opens in a named frame, and the next one for tha
   }
 })
 
-// Copies of one template share a home page, so an editor tab opened on the
-// root looks like a different app. It opens on the page that app was last on.
-await check("an offered editor opens on the page its app was last used on", async () => {
+// The strip used to add a dashed tab for each running editor with no tab.
+// Phil had them removed: Home lists every running editor, and the strip shows
+// only the tabs a person opened.
+await check("a running editor with no tab gets no tab, dashed or otherwise, and no frame", async () => {
   const { JSDOM } = await import("jsdom")
   const { shellPage } = await import("../shell-page.mjs")
   const dom = new JSDOM(shellPage({ repoRoot: "/r" }), {
@@ -671,9 +730,8 @@ await check("an offered editor opens on the page its app was last used on", asyn
   try {
     const doc = dom.window.document
     await sleep(30)
-    doc.querySelector(".tab.offer").click()
-    const srcs = [...doc.querySelectorAll("iframe")].map((f) => f.src)
-    assert.ok(srcs.includes("http://localhost:4100/#/cart?step=2"), `no frame on the remembered page: ${srcs}`)
+    assert.deepEqual([...doc.querySelectorAll("#tabs > *")].map((node) => node.textContent.replace(/⌘\d/, "")), ["Home"])
+    assert.ok(![...doc.querySelectorAll("iframe")].some((f) => f.src.includes("4100")), "the running editor was loaded unasked")
   } finally {
     dom.window.close()
   }
@@ -908,8 +966,7 @@ async function multiDesk({ tabs, active, lists, remote, url: pageUrl = "http://1
     frame,
     navigations,
     srcs: () => Object.fromEntries([...doc.querySelectorAll("iframe")].map((f) => [f.dataset.id, f.src])),
-    labels: () => [...doc.querySelectorAll(".tab:not(.offer) .label")].map((node) => node.textContent),
-    offered: () => [...doc.querySelectorAll(".tab.offer .label")].map((node) => node.textContent),
+    labels: () => [...doc.querySelectorAll(".tab[data-id] .label")].map((node) => node.textContent),
     selected: () => doc.querySelector('.tab[aria-selected="true"] .label').textContent,
     saved: () => JSON.parse(win.localStorage.getItem("designlayer.desk.tabs.v1")),
     puts,
@@ -948,7 +1005,8 @@ await check("go from a Home tab: an app with a tab is selected and the Home tab 
     // The start screen is framed on localhost like the page, whatever address
     // the desk reaches it on: one site, so its cookies and storage are its own.
     assert.equal(d.frame("h1").src, "http://localhost:3455/")
-    assert.deepEqual(d.offered(), ["studio"])
+    // studio runs too, and gets no tab until it is asked for.
+    assert.deepEqual(d.labels(), ["Home", "shop", "docs", "Home"])
     const before = d.srcs()
     d.say("h1", { type: "designlayer-desk:go", url: "http://localhost:4102/guide" }, "http://localhost:3455")
     assert.equal(d.selected(), "docs")
@@ -960,7 +1018,6 @@ await check("go from a Home tab: an app with a tab is selected and the Home tab 
     assert.equal(d.selected(), "studio")
     assert.deepEqual(d.labels(), ["shop", "docs", "studio"])
     assert.deepEqual(d.srcs(), { a: before.a, b: before.b, h2: "http://localhost:4103/#/canvas" })
-    assert.deepEqual(d.offered(), [], "the editor that now has a tab is still offered")
     assert.equal(d.saved().tabs[2].url, "http://localhost:4103")
   } finally {
     d.close()
@@ -1030,7 +1087,7 @@ await check("go from an editor tab never replaces its editor: an app with a tab 
     assert.ok(Object.values(d.srcs()).includes("http://localhost:4104/"), "the new tab has no frame on the page")
     assert.equal(d.doc.querySelectorAll(".tab")[1].classList.contains("dead"), false, "a tab not yet listed is drawn stopped")
     await d.poll()
-    assert.deepEqual(d.offered(), [], "the asking editor lost its tab")
+    assert.ok(d.labels().includes("shop"), "the asking editor lost its tab")
 
     const settled = JSON.stringify([d.srcs(), d.labels(), d.selected()])
     d.say(null, { type: "designlayer-desk:go", url: "http://localhost:4101/" }, "http://localhost:4102")
@@ -1080,7 +1137,6 @@ await check("a tab that moved to another editor is not emptied by the next list"
     await d.poll()
     assert.notEqual(d.frame("a").src, "about:blank")
     assert.deepEqual(d.labels(), ["Home", "docs"])
-    assert.deepEqual(d.offered(), ["shop"])
   } finally {
     d.close()
   }
@@ -1098,7 +1154,6 @@ await check("the first editor list that arrives moves every saved tab to its own
     assert.deepEqual(d.srcs(), { a: "http://localhost:4101/", b: "http://localhost:4102/old" })
     await d.poll()
     assert.deepEqual(d.srcs(), { a: "http://localhost:4101/#/cart", b: "http://localhost:4102/guide" })
-    assert.deepEqual(d.offered(), ["studio"])
   } finally {
     d.close()
   }
@@ -1209,8 +1264,8 @@ await check("a newer copy on the desk wins over older storage, and an older one 
     setup: (window) => window.localStorage.setItem("designlayer.desk.tabs.v1", JSON.stringify(older)),
   })
   try {
-    // Only the shop tab, plus the offer for docs, which has no tab any more.
-    assert.equal(lost.doc.querySelectorAll(".tab:not(.offer)").length, 1)
+    // Only the shop tab: docs has no tab any more.
+    assert.equal(lost.doc.querySelectorAll(".tab").length, 1)
     assert.deepEqual(lost.saved().tabs.map((t) => t.id), ["a"], "the older storage won over the desk's newer copy")
     assert.ok(lost.puts.every((p) => p.tabs.length === 1), "the older copy was pushed over the newer one")
   } finally {
@@ -1255,32 +1310,50 @@ await check("the tab in front loads its editor when that editor comes back, once
   }
 })
 
-await check("hovering a tab shows its full name, and the tip outlives the poll that redraws the strip", async () => {
+/*
+ * Phil: a tip that repeats a name the tab already shows in full says nothing.
+ * It names the tab only when the tab cuts the name short, and always gives
+ * the localhost address of what the tab shows.
+ */
+await check("hovering a tab gives its localhost address, and its full name only when the tab cuts it short", async () => {
   const LONG = { ...SHOP, name: "customer-onboarding-dashboard-experiment", appUrl: "http://127.0.0.1:3041" }
+  const SHORT = { ...DOCS, appUrl: "http://127.0.0.1:5173" }
   const d = await multiDesk({
-    tabs: [{ id: "h1", kind: "home" }, tabOn("a", LONG), tabOn("b", DOCS)],
+    tabs: [{ id: "h1", kind: "home" }, tabOn("a", LONG), tabOn("b", SHORT)],
     active: "a",
-    lists: [[LONG, DOCS]],
+    lists: [[LONG, SHORT]],
+    // jsdom lays nothing out: a label 7px a letter wide in a 120px tab body.
+    setup(window) {
+      Object.defineProperty(window.HTMLElement.prototype, "scrollWidth", {
+        get() {
+          return this.classList.contains("label") ? this.textContent.length * 7 : 0
+        },
+      })
+      Object.defineProperty(window.HTMLElement.prototype, "clientWidth", {
+        get() {
+          return this.classList.contains("label") ? 120 : 0
+        },
+      })
+    },
   })
   try {
     await d.poll()
     const tip = d.doc.getElementById("tip")
+    const shown = () => [...tip.children].filter((line) => !line.hidden).map((line) => line.textContent)
     const hover = (el) => el.dispatchEvent(new d.win.MouseEvent("pointerover", { bubbles: true }))
     const [, a] = d.doc.querySelectorAll(".tab")
     assert.equal(a.title, "", "a native title tip would show beside this one")
     hover(a.querySelector(".label"))
     assert.equal(tip.classList.contains("open"), true)
-    assert.equal(tip.querySelector(".tip-name").textContent, LONG.name)
-    assert.equal(tip.querySelector(".tip-detail").textContent, "localhost:3041", "the tip names the app address, not the folder")
+    assert.deepEqual(shown(), [LONG.name, "localhost:3041"], "a name cut short is not given in full, or the address is not the app's")
     await d.poll()
     assert.equal(tip.classList.contains("open"), true, "the redraw closed the tip under the pointer")
-    assert.equal(tip.querySelector(".tip-name").textContent, LONG.name)
+    assert.deepEqual(shown(), [LONG.name, "localhost:3041"])
 
     const next = d.doc.querySelectorAll(".tab")[2]
     next.dispatchEvent(new d.win.MouseEvent("pointerout", { bubbles: true, relatedTarget: d.doc.querySelectorAll(".tab")[0] }))
     hover(d.doc.querySelectorAll(".tab")[0])
-    assert.equal(tip.querySelector(".tip-name").textContent, "Home")
-    assert.equal(tip.querySelector(".tip-detail").textContent, "Start screen — choose an app")
+    assert.deepEqual(shown(), ["localhost:3455"], "Home, shown in full, was named again")
 
     d.doc.querySelectorAll(".tab")[2].dispatchEvent(new d.win.MouseEvent("pointerdown", { bubbles: true }))
     assert.equal(tip.classList.contains("open"), false, "a press leaves the tip open")
@@ -1288,7 +1361,7 @@ await check("hovering a tab shows its full name, and the tip outlives the poll t
     assert.equal(tip.classList.contains("open"), false, "the tip came back before the pointer left the pressed tab")
     d.doc.querySelectorAll(".tab")[2].dispatchEvent(new d.win.MouseEvent("pointerout", { bubbles: true, relatedTarget: d.doc.body }))
     hover(d.doc.querySelectorAll(".tab")[2])
-    assert.equal(tip.querySelector(".tip-name").textContent, "docs")
+    assert.deepEqual(shown(), ["localhost:5173"])
     d.doc.querySelectorAll(".tab")[2].dispatchEvent(new d.win.MouseEvent("pointerout", { bubbles: true, relatedTarget: d.doc.body }))
     assert.equal(tip.classList.contains("open"), false, "the tip stayed after the pointer left the strip")
   } finally {
@@ -1306,9 +1379,7 @@ await check("a stopped editor's tab is drawn stopped while the others stay live,
     await d.poll()
     const [, a, b] = d.doc.querySelectorAll(".tab")
     assert.equal(a.classList.contains("dead"), true)
-    assert.match(a.dataset.tipDetail, /Stopped$/)
     assert.equal(b.classList.contains("dead"), false)
-    assert.deepEqual(d.offered(), [])
 
     d.press({ key: "3" })
     assert.equal(d.selected(), "docs")
@@ -1449,6 +1520,646 @@ await check("⌘. typed in the shell is handed to the editor in the active tab, 
     assert.deepEqual(posted, [], "the Home tab is not an editor, and was handed a key")
   } finally {
     dom.window.close()
+  }
+})
+
+console.log("several windows")
+
+/**
+ * Desk windows side by side, as the app runs them: one origin's storage, one
+ * BroadcastChannel, one desk. jsdom shares neither storage nor a channel
+ * between two windows, so `desk.storage` and a bus stand in for them. jsdom
+ * lays nothing out either: here tabs are 100px wide, 2px apart from x 80, and
+ * the strip is the top 38px of a 1024x768 window whose top left corner is at
+ * `at` on screen.
+ */
+function fakeApp({ lists = [[SHOP, DOCS, STUDIO]], windows = {}, openOk = true, tabWidth = () => 100, measure = false } = {}) {
+  const channels = new Set()
+  const desk = { windows: structuredClone(windows), opened: [], puts: [], storage: new Map() }
+  const opened = []
+  return {
+    desk,
+    closeAll: () => opened.forEach((w) => w.close()),
+    async open({ url = "http://localhost:3454/", at = { x: 0, y: 0 }, focused = true, popupsBlocked = false, movable = true, tabs } = {}) {
+      const { JSDOM } = await import("jsdom")
+      const { shellPage } = await import("../shell-page.mjs")
+      const popups = []
+      const moves = []
+      const streams = []
+      let closed = false
+      const dom = new JSDOM(shellPage({ repoRoot: "/r" }), {
+        url,
+        runScripts: "dangerously",
+        beforeParse(window) {
+          const store = desk.storage
+          if (tabs) store.set("designlayer.desk.tabs.v1", JSON.stringify(tabs))
+          Object.defineProperty(window, "localStorage", {
+            value: {
+              getItem: (k) => (store.has(k) ? store.get(k) : null),
+              setItem: (k, v) => store.set(k, String(v)),
+              removeItem: (k) => store.delete(k),
+              key: (i) => [...store.keys()][i] ?? null,
+              get length() {
+                return store.size
+              },
+            },
+          })
+          window.BroadcastChannel = class {
+            constructor(name) {
+              this.name = name
+              this.window = window
+              channels.add(this)
+            }
+            postMessage(data) {
+              // A closed window says nothing more; jsdom keeps its timers running.
+              if (this.window.closed) return
+              const copy = structuredClone(data)
+              for (const c of channels) if (c !== this && c.name === this.name) setTimeout(() => c.onmessage?.({ data: copy }))
+            }
+          }
+          Object.defineProperty(window, "screenX", { value: at.x, configurable: true })
+          Object.defineProperty(window, "screenY", { value: at.y, configurable: true })
+          Object.defineProperty(window, "closed", { get: () => closed, configurable: true })
+          window.close = () => {
+            closed = true
+            for (const c of channels) if (c.window === window) channels.delete(c)
+          }
+          window.document.hasFocus = () => focused
+          const rect = (left, top, width, height) => ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top })
+          // A tab is as wide as the page set it, or as `tabWidth` says.
+          const widthOf = (el) => parseFloat(el.style.width) || tabWidth(el)
+          window.Element.prototype.getBoundingClientRect = function () {
+            if (this.id === "strip") return rect(0, 0, 1024, 38)
+            if (this.id === "tabs") return rect(80, 6, 800, 26)
+            if (this.id === "measure") return rect(0, 0, measure ? this.textContent.length * 7 : 0, 14)
+            if (this.parentElement?.id === "tabs") {
+              const before = [...this.parentElement.children].slice(0, [...this.parentElement.children].indexOf(this))
+              return rect(80 + before.reduce((x, el) => x + widthOf(el) + 2, 0), 6, widthOf(this), 26)
+            }
+            return rect(0, 0, 0, 0)
+          }
+          window.requestAnimationFrame = (fn) => setTimeout(fn, 0)
+          window.cancelAnimationFrame = (id) => clearTimeout(id)
+          // A window the page may move (one it opened), or one it may not.
+          window.moveTo = (x, y) => {
+            moves.push([x, y])
+            if (!movable) return
+            Object.defineProperty(window, "screenX", { value: x, configurable: true })
+            Object.defineProperty(window, "screenY", { value: y, configurable: true })
+          }
+          window.Element.prototype.setPointerCapture = () => {}
+          window.Element.prototype.releasePointerCapture = () => {}
+          window.fetch = async (u, init = {}) => {
+            const req = new URL(String(u), "http://localhost:3454")
+            const answer = (body) => ({ ok: true, json: async () => body })
+            if (req.pathname === "/api/tabs") {
+              if (init.method === "PUT") {
+                const body = JSON.parse(init.body)
+                desk.puts.push(body)
+                desk.windows[body.window ?? "main"] = body
+                return answer({})
+              }
+              if (req.searchParams.get("all") === "1") {
+                const live = Object.entries(desk.windows).filter(([, w]) => !w.gone)
+                const gone = Object.entries(desk.windows).filter(([, w]) => w.gone).map(([id, w]) => [id, w.savedAt])
+                return answer({ windows: Object.fromEntries(live), gone: Object.fromEntries(gone) })
+              }
+              return answer(desk.windows[req.searchParams.get("window") ?? "main"] ?? {})
+            }
+            if (req.pathname === "/api/windows/open") {
+              desk.opened.push(JSON.parse(init.body).window)
+              return answer({ ok: openOk })
+            }
+            if (req.pathname === "/api/editors") return answer({ editors: lists[0] })
+            return answer({ ok: true, startScreen: { ready: true, url: "http://127.0.0.1:3455" } })
+          }
+          window.open = (href, target, features) => {
+            popups.push({ href, features })
+            return popupsBlocked ? null : {}
+          }
+          window.matchMedia = () => ({ matches: false })
+          window.focus = () => {}
+          window.EventSource = class {
+            constructor() {
+              streams.push(this)
+            }
+            addEventListener(type, fn) {
+              this[type] = fn
+            }
+          }
+        },
+      })
+      const win = dom.window
+      const doc = win.document
+      const handle = {
+        win,
+        doc,
+        popups,
+        moves,
+        id: () => new URLSearchParams(win.location.search).get("window"),
+        closed: () => closed,
+        labels: () => [...doc.querySelectorAll(".tab[data-id] .label")].map((n) => n.textContent),
+        selected: () => doc.querySelector('.tab[aria-selected="true"] .label')?.textContent,
+        tab: (label) => [...doc.querySelectorAll(".tab[data-id]")].find((n) => n.querySelector(".label").textContent === label),
+        frames: () => [...doc.querySelectorAll("iframe")].map((f) => f.src),
+        hand: (href) => streams[0]?.["open-url"]({ data: JSON.stringify({ id: 1, url: href }) }),
+        // A drag, as Chrome delivers it to a captured tab: client coordinates
+        // in this window, screen coordinates anywhere.
+        drag(label, path) {
+          const el = handle.tab(label)
+          const fire = (type, [x, y]) =>
+            el.dispatchEvent(new win.PointerEvent(type, { bubbles: true, cancelable: true, button: 0, pointerId: 1, clientX: x, clientY: y, screenX: x + at.x, screenY: y + at.y }))
+          fire("pointerdown", path[0])
+          for (const point of path.slice(1)) fire("pointermove", point)
+          fire("pointerup", path.at(-1))
+        },
+        // The window closing itself, as the page does; closeAll tears jsdom down.
+        close: () => win.close(),
+      }
+      opened.push({ close: () => dom.window.close() })
+      // Long enough for the window to learn its id and hear the others.
+      await sleep(260)
+      return handle
+    },
+  }
+}
+
+await check("a tab dragged along the strip lands where it is let go, and a press without a drag only selects", async () => {
+  const app = fakeApp()
+  try {
+    const a = await app.open({ tabs: { tabs: [tabOn("a", SHOP), tabOn("b", DOCS), { id: "h1", kind: "home" }], active: "b" } })
+    assert.equal(a.id(), "main", "the app's first window is the main window, and its address says so")
+    // From over shop (x 130) to x 300: past docs' middle (232), short of Home's (334).
+    a.drag("shop", [[130, 19], [140, 20], [220, 20], [300, 19]])
+    assert.deepEqual(a.labels(), ["docs", "shop", "Home"])
+    assert.equal(a.selected(), "shop", "the dragged tab is the one showing")
+    assert.deepEqual(JSON.parse(app.desk.storage.get("designlayer.desk.tabs.v1")).tabs.map((t) => t.id), ["b", "a", "h1"])
+    // Back to the start, then a press that never moves.
+    a.drag("shop", [[232, 19], [200, 19], [100, 19]])
+    assert.deepEqual(a.labels(), ["shop", "docs", "Home"])
+    a.drag("Home", [[334, 19]])
+    assert.deepEqual(a.labels(), ["shop", "docs", "Home"])
+    // Escape puts a dragged tab back.
+    const el = a.tab("docs")
+    const fire = (type, x) => el.dispatchEvent(new a.win.PointerEvent(type, { bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: 19 }))
+    fire("pointerdown", 232)
+    fire("pointermove", 400)
+    a.win.dispatchEvent(new a.win.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))
+    fire("pointerup", 400)
+    assert.deepEqual(a.labels(), ["shop", "docs", "Home"])
+  } finally {
+    app.closeAll()
+  }
+})
+
+/*
+ * Measured in Chrome 155 and read in its source (TabContainerImpl): after a
+ * click on a close button the tabs keep their width while the pointer stays
+ * on the strip, so the next close button is under the pointer, and clicking
+ * on the spot closes tab after tab.
+ */
+await check("closing tabs with the mouse puts each next close button under the pointer, until the pointer leaves", async () => {
+  // Tabs as wide as their names: 10px a letter and 50px besides.
+  const app = fakeApp({ tabWidth: (el) => el.querySelector(".label").textContent.length * 10 + 50 })
+  try {
+    const a = await app.open({ tabs: { tabs: [tabOn("c", STUDIO), tabOn("b", DOCS), tabOn("a", SHOP), { id: "h1", kind: "home" }], active: "c" } })
+    const tabsEl = a.doc.getElementById("tabs")
+    const x = (label) => a.tab(label).querySelector(".close").click()
+    const width = (label) => a.tab(label).style.width
+    assert.equal(width("docs"), "")
+    // studio (110px) hands its width to docs (90px), which slides into its
+    // place: docs' close button is where studio's was.
+    x("studio")
+    assert.deepEqual(a.labels(), ["docs", "shop", "Home"])
+    assert.equal(width("docs"), "110px")
+    assert.equal(width("shop"), "90px")
+    assert.equal(tabsEl.style.width, "270px")
+    x("docs")
+    assert.equal(width("shop"), "110px")
+    // The last tab shares its 90px, less the 10px overlap, with the rest.
+    x("Home")
+    assert.deepEqual(a.labels(), ["shop"])
+    assert.equal(width("shop"), "", "one tab left has no next close button to line up")
+  } finally {
+    app.closeAll()
+  }
+  const more = fakeApp({ tabWidth: (el) => el.querySelector(".label").textContent.length * 10 + 50 })
+  try {
+    const a = await more.open({ tabs: { tabs: [tabOn("a", SHOP), tabOn("b", DOCS), tabOn("c", STUDIO)], active: "a" } })
+    const tabsEl = a.doc.getElementById("tabs")
+    const width = (label) => a.tab(label).style.width
+    a.tab("studio").querySelector(".close").click()
+    assert.deepEqual([width("shop"), width("docs")], ["140px", "140px"], "the last tab's room did not go to the others")
+    // A pointer that slips off the strip and back keeps them; one that stays off ends it.
+    tabsEl.dispatchEvent(new a.win.PointerEvent("pointerleave"))
+    await sleep(100)
+    tabsEl.dispatchEvent(new a.win.PointerEvent("pointerenter"))
+    await sleep(300)
+    assert.equal(width("shop"), "140px")
+    tabsEl.dispatchEvent(new a.win.PointerEvent("pointerleave"))
+    await sleep(350)
+    assert.equal(width("shop"), "", "the tabs kept their held widths after the pointer left the strip")
+    // A close from the keyboard is not a close under the pointer.
+    a.win.dispatchEvent(new a.win.KeyboardEvent("keydown", { key: "w", metaKey: true, bubbles: true, cancelable: true }))
+    assert.deepEqual(a.labels(), ["docs"])
+    assert.equal(width("docs"), "")
+    // A new tab ends it too.
+    a.doc.getElementById("newTab").click()
+    a.doc.getElementById("newTab").click()
+    a.tab("docs").querySelector(".close").click()
+    assert.notEqual(a.doc.querySelector(".tab[data-id]").style.width, "")
+    a.doc.getElementById("newTab").click()
+    assert.ok([...a.doc.querySelectorAll(".tab[data-id]")].every((el) => el.style.width === ""))
+  } finally {
+    more.closeAll()
+  }
+})
+
+/*
+ * Phil: show the whole name when there is room. A tab is as wide as its name
+ * needs; short of room the shortcuts go, then the widest names are cut first.
+ */
+await check("a tab is as wide as its whole name while there is room, and the widest give way first", async () => {
+  const LONG = { ...SHOP, name: "gemini-app-builder-cujs-integrations" }
+  const app = fakeApp({ measure: true, lists: [[LONG, DOCS, STUDIO]] })
+  try {
+    const a = await app.open({ tabs: { tabs: [tabOn("a", LONG), { id: "h1", kind: "home" }], active: "a" } })
+    const tabsEl = a.doc.getElementById("tabs")
+    const widths = () => [...a.doc.querySelectorAll(".tab[data-id]")].map((el) => parseFloat(el.style.width))
+    // 7px a letter here. Both tabs have a glyph, a shortcut and a close
+    // button, so they differ by their names alone.
+    const [long, home] = widths()
+    assert.equal(long - home, (LONG.name.length - "Home".length) * 7, "a tab is not as wide as its name")
+    assert.ok(home > 72)
+    assert.equal(tabsEl.classList.contains("tight"), false)
+    // Eight more Home tabs: no room for the shortcuts, then the long name is cut first.
+    for (let i = 0; i < 8; i++) a.doc.getElementById("newTab").click()
+    const crowded = widths()
+    assert.equal(tabsEl.classList.contains("tight"), true, "the shortcuts kept their room")
+    assert.ok(crowded[0] < long, "the long name was not cut")
+    assert.ok(crowded.slice(1).every((w) => w === crowded[1]), "the Home tabs differ")
+    assert.ok(crowded.reduce((t, w) => t + w, 0) - 10 * (crowded.length - 1) <= 1024, "the row overflows the strip")
+    assert.ok(crowded[1] >= home - 6 - 2 * 7 - 1, "a short name was cut while a long one could give way")
+  } finally {
+    app.closeAll()
+  }
+})
+
+await check("⌘⇧← and ⌘⇧→ move the focused tab, so a tab moves without a drag", async () => {
+  const app = fakeApp()
+  try {
+    const a = await app.open({ tabs: { tabs: [tabOn("a", SHOP), tabOn("b", DOCS), { id: "h1", kind: "home" }], active: "a" } })
+    const key = (label, k) =>
+      a.tab(label).dispatchEvent(new a.win.KeyboardEvent("keydown", { key: k, metaKey: true, shiftKey: true, bubbles: true, cancelable: true }))
+    key("shop", "ArrowRight")
+    assert.deepEqual(a.labels(), ["docs", "shop", "Home"])
+    key("shop", "ArrowRight")
+    assert.deepEqual(a.labels(), ["docs", "Home", "shop"])
+    key("shop", "ArrowRight")
+    assert.deepEqual(a.labels(), ["docs", "Home", "shop"], "the last tab wrapped around")
+    key("docs", "ArrowLeft")
+    assert.deepEqual(a.labels(), ["docs", "Home", "shop"])
+  } finally {
+    app.closeAll()
+  }
+})
+
+await check("a tab pulled out of the strip opens in a new window where it is let go, with only that tab", async () => {
+  const app = fakeApp()
+  try {
+    const a = await app.open({ tabs: { tabs: [tabOn("a", SHOP), tabOn("b", DOCS, { src: "http://localhost:4102/guide" }), { id: "h1", kind: "home" }], active: "a" } })
+    assert.ok(a.frames().includes("http://localhost:4102/guide"))
+    a.drag("docs", [[232, 19], [235, 60], [240, 400]])
+    assert.deepEqual(a.labels(), ["shop", "Home"])
+    assert.ok(!a.frames().includes("http://localhost:4102/guide"), "the old window kept its frame, and with it the editor's socket")
+    assert.equal(a.popups.length, 1)
+    const { href, features } = a.popups[0]
+    const w = new URL(href, "http://localhost:3454").searchParams.get("window")
+    assert.match(w, /^w[a-z0-9]+$/)
+    // Under the pointer: the tab was held 50px into it, and it is the first tab at x 80.
+    assert.match(features, /^popup,left=110,top=381,width=1024,height=768$/)
+    const handed = JSON.parse(app.desk.storage.get(`designlayer.desk.tabs.v1:${w}`))
+    assert.deepEqual(handed.tabs.map((t) => t.id), ["b"])
+
+    const b = await app.open({ url: `http://localhost:3454${href}`, at: { x: 110, y: 381 } })
+    assert.equal(b.id(), w)
+    assert.deepEqual(b.labels(), ["docs"])
+    assert.ok(b.frames().includes("http://localhost:4102/guide"), "the new window did not load the tab's page")
+
+    // A window's only tab has nowhere to go but another window's strip.
+    b.drag("docs", [[130, 19], [130, 200], [130, 500]])
+    assert.deepEqual(b.labels(), ["docs"])
+    assert.equal(b.popups.length, 0)
+  } finally {
+    app.closeAll()
+  }
+})
+
+await check("a tab let go over another window's strip moves into it there, and a window left empty closes", async () => {
+  const app = fakeApp()
+  try {
+    const a = await app.open({ tabs: { tabs: [tabOn("a", SHOP), tabOn("b", DOCS)], active: "a" }, focused: true })
+    app.desk.storage.set("designlayer.desk.tabs.v1:wright", JSON.stringify({ tabs: [{ id: "h9", kind: "home" }, tabOn("c", STUDIO)], active: "h9" }))
+    const b = await app.open({ url: "http://localhost:3454/?window=wright", at: { x: 1100, y: 0 }, focused: false })
+    await sleep(1100)
+    // Over the other window's strip at its x 150 (screen 1250): past its first tab's middle.
+    const el = a.tab("docs")
+    const fire = (type, x, y) =>
+      el.dispatchEvent(new a.win.PointerEvent(type, { bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: y, screenX: x, screenY: y }))
+    fire("pointerdown", 232, 19)
+    fire("pointermove", 600, 19)
+    fire("pointermove", 1250, 19)
+    await until(() => b.doc.querySelector(".tab.incoming")).catch(() => {})
+    assert.ok(b.doc.querySelector(".tab.incoming"), "the other window shows no slot where the tab will land")
+    assert.equal(b.doc.querySelector(".tab.incoming .label").textContent, "docs")
+    assert.equal(a.doc.querySelector(".tab-ghost .hint").textContent, "Move to window with Home and 1 other tab")
+    fire("pointerup", 1250, 19)
+    await until(() => a.labels().length === 1).catch(() => {})
+    assert.equal(b.doc.querySelector(".tab.incoming"), null)
+    assert.equal(b.labels()[1], "docs")
+    assert.equal(b.selected(), "docs")
+    assert.deepEqual(a.labels(), ["shop"])
+
+    // The last tab of a window moves too, and the window it left closes.
+    const last = a.tab("shop")
+    const go = (type, x) => last.dispatchEvent(new a.win.PointerEvent(type, { bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: 19, screenX: x, screenY: 19 }))
+    go("pointerdown", 130)
+    go("pointermove", 1180)
+    go("pointerup", 1180)
+    await until(() => a.closed()).catch(() => {})
+    assert.equal(b.labels()[0], "shop")
+    assert.ok(a.closed(), "the empty window stayed open")
+    assert.equal(app.desk.storage.get("designlayer.desk.tabs.v1"), undefined, "the closed window's tabs would come back")
+    assert.ok(app.desk.puts.some((p) => p.window === "main" && p.gone))
+  } finally {
+    app.closeAll()
+  }
+})
+
+await check("a window's only tab drags the whole window, which hangs below another window's strip while its tab can drop there", async () => {
+  const app = fakeApp()
+  try {
+    const main = await app.open({ tabs: { tabs: [tabOn("a", SHOP), tabOn("b", DOCS)], active: "a" } })
+    app.desk.storage.set("designlayer.desk.tabs.v1:wsolo", JSON.stringify({ tabs: [tabOn("c", STUDIO)], active: "c" }))
+    const solo = await app.open({ url: "http://localhost:3454/?window=wsolo", at: { x: 300, y: 400 } })
+    await sleep(1100)
+    const el = solo.tab("studio")
+    const fire = (type, sx, sy) =>
+      el.dispatchEvent(new solo.win.PointerEvent(type, { bubbles: true, button: 0, pointerId: 1, clientX: sx - solo.win.screenX, clientY: sy - solo.win.screenY, screenX: sx, screenY: sy }))
+    // Held 50px into the window at (300, 400): the window follows the pointer.
+    fire("pointerdown", 430, 419)
+    fire("pointermove", 500, 450)
+    await sleep(20)
+    assert.deepEqual(solo.moves.at(-1), [370, 431])
+    // Over the main window's strip it hangs below it (strip bottom 38, plus 6).
+    fire("pointermove", 200, 20)
+    await sleep(20)
+    assert.deepEqual(solo.moves.at(-1), [70, 44])
+    assert.ok(main.doc.querySelector(".tab.incoming"), "the main window shows no slot")
+    fire("pointerup", 200, 20)
+    await until(() => solo.closed()).catch(() => {})
+    assert.deepEqual(main.labels(), ["shop", "studio", "docs"])
+    assert.ok(solo.closed())
+  } finally {
+    app.closeAll()
+  }
+  // Escape puts the window back; a window the page may not move falls back to the copy.
+  const again = fakeApp()
+  try {
+    const main = await again.open({ tabs: { tabs: [tabOn("a", SHOP)], active: "a" } })
+    again.desk.storage.set("designlayer.desk.tabs.v1:wsolo", JSON.stringify({ tabs: [tabOn("c", STUDIO)], active: "c" }))
+    const solo = await again.open({ url: "http://localhost:3454/?window=wsolo", at: { x: 300, y: 400 } })
+    await sleep(1100)
+    const el = solo.tab("studio")
+    const fire = (type, sx, sy) =>
+      el.dispatchEvent(new solo.win.PointerEvent(type, { bubbles: true, button: 0, pointerId: 1, clientX: sx - 300, clientY: sy - 400, screenX: sx, screenY: sy }))
+    fire("pointerdown", 430, 419)
+    fire("pointermove", 600, 600)
+    await sleep(20)
+    solo.win.dispatchEvent(new solo.win.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))
+    assert.deepEqual(solo.moves.at(-1), [300, 400], "Escape left the window where it was dragged")
+    assert.deepEqual(main.labels(), ["shop"])
+    const stuck = await again.open({ url: "http://localhost:3454/?window=wstuck", at: { x: 300, y: 400 }, movable: false })
+    await sleep(1100)
+    const tab = stuck.doc.querySelector(".tab[data-id]")
+    const go = (type, sx, sy) =>
+      tab.dispatchEvent(new stuck.win.PointerEvent(type, { bubbles: true, button: 0, pointerId: 1, clientX: sx - 300, clientY: sy - 400, screenX: sx, screenY: sy }))
+    go("pointerdown", 430, 419)
+    for (let i = 1; i <= 4; i++) { go("pointermove", 430 + i * 40, 419 + i * 40); await sleep(20) }
+    go("pointermove", 200, 20)
+    await sleep(20)
+    assert.ok(main.doc.querySelector(".tab.incoming"), "a window that cannot move could not reach the main strip")
+    go("pointerup", 200, 20)
+    await until(() => stuck.closed()).catch(() => {})
+    assert.deepEqual(main.labels(), ["shop", "Home"])
+    // Found in the real app: the desk reopened a window exactly on top of the
+    // main one, where it could not move, and its tab could not reach the
+    // strip underneath. The strip under the pointer counts, below the window too.
+    again.desk.storage.set("designlayer.desk.tabs.v1:wover", JSON.stringify({ tabs: [tabOn("d", DOCS)], active: "d" }))
+    const over = await again.open({ url: "http://localhost:3454/?window=wover", movable: false })
+    await sleep(1100)
+    const top = over.tab("docs")
+    const press = (type, x) => top.dispatchEvent(new over.win.PointerEvent(type, { bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: 19, screenX: x, screenY: 19 }))
+    press("pointerdown", 130)
+    for (let x = 160; x <= 320; x += 40) { press("pointermove", x); await sleep(20) }
+    assert.ok(main.doc.querySelector(".tab.incoming"), "the strip under the window got no slot")
+    assert.match(over.doc.querySelector(".tab-ghost .hint")?.textContent ?? "", /^Move to window with /)
+    press("pointerup", 320)
+    await until(() => over.closed()).catch(() => {})
+    assert.deepEqual(main.labels(), ["shop", "Home", "docs"])
+  } finally {
+    again.closeAll()
+  }
+})
+
+await check("a tab's menu moves it to a new window or into another window", async () => {
+  const app = fakeApp()
+  try {
+    const a = await app.open({ tabs: { tabs: [tabOn("a", SHOP), tabOn("b", DOCS), { id: "h1", kind: "home" }], active: "a" } })
+    const b = await app.open({ url: "http://localhost:3454/?window=wother", at: { x: 1100, y: 0 } })
+    await sleep(1100)
+    const menu = (label) => {
+      a.tab(label).dispatchEvent(new a.win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 30 }))
+      return [...a.doc.querySelectorAll("#menu button")]
+    }
+    let items = menu("docs")
+    assert.deepEqual(items.map((i) => i.textContent), ["Move to new window", "Move to window with Home", "Close tab"])
+    items[1].click()
+    await until(() => a.labels().length === 2).catch(() => {})
+    assert.deepEqual(a.labels(), ["shop", "Home"])
+    assert.deepEqual(b.labels(), ["Home", "docs"])
+    assert.ok(a.doc.getElementById("menu").hidden)
+    items = menu("shop")
+    items[0].click()
+    assert.deepEqual(a.labels(), ["Home"])
+    assert.equal(a.popups.length, 1)
+    assert.match(a.popups[0].features, /^popup,left=40,top=40,/, "a moved tab opens beside the window")
+    // A window's only tab cannot leave by its menu for a new window, or be closed.
+    items = menu("Home")
+    assert.equal(items[0].disabled, true)
+    assert.equal(items.at(-1).disabled, true)
+  } finally {
+    app.closeAll()
+  }
+})
+
+await check("a long drag that outlives Chrome's popup permission asks the desk for the window", async () => {
+  const app = fakeApp()
+  try {
+    const a = await app.open({ tabs: { tabs: [tabOn("a", SHOP), tabOn("b", DOCS)], active: "a" }, popupsBlocked: true })
+    a.drag("docs", [[232, 19], [232, 300]])
+    await until(() => a.labels().length === 1).catch(() => {})
+    assert.equal(app.desk.opened.length, 1)
+    assert.match(app.desk.opened[0], /^w[a-z0-9]+$/)
+    assert.deepEqual(a.labels(), ["shop"])
+  } finally {
+    app.closeAll()
+  }
+  const refused = fakeApp({ openOk: false })
+  try {
+    const a = await refused.open({ tabs: { tabs: [tabOn("a", SHOP), tabOn("b", DOCS)], active: "a" }, popupsBlocked: true })
+    a.drag("docs", [[232, 19], [232, 300]])
+    await sleep(100)
+    assert.deepEqual(a.labels(), ["shop", "docs"], "a tab with no window to go to was lost")
+    assert.ok(![...refused.desk.storage.keys()].some((k) => k.includes(":w")), "the window that never opened kept its tabs")
+  } finally {
+    refused.closeAll()
+  }
+})
+
+await check("a window opened while the app is up is a new window with a Home tab, and loads no other window's editors", async () => {
+  const app = fakeApp()
+  try {
+    const main = await app.open({ tabs: { tabs: [tabOn("a", SHOP)], active: "a" } })
+    const fresh = await app.open()
+    assert.equal(main.id(), "main")
+    assert.match(fresh.id(), /^w[a-z0-9]+$/)
+    assert.deepEqual(fresh.labels(), ["Home"])
+    assert.ok(!fresh.frames().some((src) => src.includes("4101")), "the new window took the main window's editor")
+    assert.deepEqual(main.labels(), ["shop"])
+  } finally {
+    app.closeAll()
+  }
+})
+
+await check("the app's first window reopens the windows that closed with it, and forgets one closed long before", async () => {
+  const windows = {
+    main: { tabs: [tabOn("a", SHOP)], active: "a", savedAt: 10, closedAt: 100_000 },
+    wquit: { tabs: [tabOn("b", DOCS)], active: "b", savedAt: 10, closedAt: 98_000 },
+    wolder: { tabs: [tabOn("c", STUDIO)], active: "c", savedAt: 10, closedAt: 10_000 },
+  }
+  const app = fakeApp({ windows })
+  try {
+    const main = await app.open()
+    await until(() => app.desk.opened.length === 1).catch(() => {})
+    assert.deepEqual(main.labels(), ["shop"])
+    assert.deepEqual(app.desk.opened, ["wquit"])
+    assert.ok(app.desk.windows.wolder.gone, "a window closed on its own came back")
+  } finally {
+    app.closeAll()
+  }
+  // A desk that cannot open a window: its tabs join the first one.
+  const folded = fakeApp({ windows, openOk: false })
+  try {
+    const main = await folded.open()
+    await until(() => main.labels().length === 2).catch(() => {})
+    assert.deepEqual(main.labels(), ["shop", "docs"])
+    assert.ok(folded.desk.windows.wquit.gone)
+  } finally {
+    folded.closeAll()
+  }
+  // Found in the real app: Chrome dropped a closed window's last write to the
+  // page's storage when the app quit, and that copy brought it back.
+  const stale = fakeApp({ windows: { main: windows.main, wmerged: { gone: true, savedAt: 60 } } })
+  try {
+    stale.desk.storage.set("designlayer.desk.tabs.v1:wmerged", JSON.stringify({ tabs: [tabOn("b", DOCS)], active: "b", savedAt: 50 }))
+    const main = await stale.open()
+    await sleep(150)
+    assert.deepEqual(stale.desk.opened, [], "a window that had closed was opened again")
+    assert.deepEqual(main.labels(), ["shop"])
+    assert.equal(stale.desk.storage.has("designlayer.desk.tabs.v1:wmerged"), false)
+  } finally {
+    stale.closeAll()
+  }
+  // The main window closed first, on its own: the app opens as the window that was still up.
+  const moved = fakeApp({ windows: { main: { ...windows.main, closedAt: 10_000 }, wquit: windows.wquit } })
+  try {
+    const main = await moved.open()
+    await until(() => main.labels()[0] === "docs").catch(() => {})
+    assert.deepEqual(main.labels(), ["docs"])
+    assert.deepEqual(moved.desk.opened, [])
+  } finally {
+    moved.closeAll()
+  }
+})
+
+/*
+ * Found in the real app: Chrome drops a request a closing window sends, so a
+ * window closed on its own stayed saved and came back on the next launch.
+ * The windows still up tell the desk instead.
+ */
+await check("a window closed while another stays up is forgotten, and a window that reloads is not", async () => {
+  const app = fakeApp()
+  try {
+    const main = await app.open({ tabs: { tabs: [tabOn("a", SHOP)], active: "a" } })
+    app.desk.storage.set("designlayer.desk.tabs.v1:wshut", JSON.stringify({ tabs: [tabOn("b", DOCS)], active: "b", savedAt: 1 }))
+    const shut = await app.open({ url: "http://localhost:3454/?window=wshut" })
+    app.desk.storage.set("designlayer.desk.tabs.v1:wload", JSON.stringify({ tabs: [tabOn("c", STUDIO)], active: "c", savedAt: 1 }))
+    const load = await app.open({ url: "http://localhost:3454/?window=wload" })
+    await sleep(1100)
+    for (const w of [shut, load]) {
+      w.win.dispatchEvent(new w.win.Event("pagehide"))
+      w.close()
+    }
+    // The reload: the same window, back within the wait.
+    const back = await app.open({ url: "http://localhost:3454/?window=wload" })
+    await sleep(2300)
+    assert.ok(app.desk.windows.wshut?.gone, "a window closed on its own stayed saved")
+    assert.equal(app.desk.storage.has("designlayer.desk.tabs.v1:wshut"), false)
+    assert.ok(!app.desk.windows.wload?.gone, "a window that reloaded was forgotten")
+    assert.deepEqual(back.labels(), ["studio"])
+    assert.deepEqual(main.labels(), ["shop"])
+  } finally {
+    app.closeAll()
+  }
+})
+
+await check("a page from Open in Mac app opens once: in the window showing its editor, or else the window used last", async () => {
+  const app = fakeApp()
+  try {
+    const a = await app.open({ tabs: { tabs: [tabOn("a", SHOP)], active: "a" }, focused: false })
+    const b = await app.open({ url: "http://localhost:3454/?window=wlast", focused: true })
+    await sleep(1100)
+    for (const w of [a, b]) w.hand("http://localhost:4102/guide")
+    assert.deepEqual(a.labels(), ["shop"])
+    assert.ok(b.labels().includes("docs"))
+    for (const w of [a, b]) w.hand("http://localhost:4101/cart")
+    assert.ok(a.frames().includes("http://localhost:4101/cart"))
+    assert.ok(!b.labels().includes("shop"))
+  } finally {
+    app.closeAll()
+  }
+})
+
+await check("a window asked for an editor another window shows leaves its tabs alone and has that window show it", async () => {
+  const app = fakeApp()
+  try {
+    const a = await app.open({ tabs: { tabs: [{ id: "h1", kind: "home" }], active: "h1" } })
+    app.desk.storage.set("designlayer.desk.tabs.v1:wdocs", JSON.stringify({ tabs: [tabOn("h2", { name: "x", url: "http://localhost:4199", pid: 9 }), tabOn("b", DOCS)], active: "h2" }))
+    const c = await app.open({ url: "http://localhost:3454/?window=wdocs", focused: false })
+    await sleep(1100)
+    a.win.dispatchEvent(
+      new a.win.MessageEvent("message", {
+        data: { type: "designlayer-desk:go", url: "http://localhost:4102/guide" },
+        origin: "http://localhost:3455",
+        source: a.doc.querySelector('iframe[data-id="h1"]').contentWindow,
+      })
+    )
+    await until(() => c.selected() === "docs").catch(() => {})
+    assert.deepEqual(a.labels(), ["Home"])
+    assert.equal(c.selected(), "docs")
+  } finally {
+    app.closeAll()
   }
 })
 

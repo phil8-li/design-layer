@@ -73,6 +73,8 @@ export function shellPage({ repoRoot, version = null }) {
     --hair: rgba(255,255,255,.08); --hair-2: rgba(255,255,255,.14);
     --accent: #7cc4f8; --fill: #0c8ce9; --danger: #f28b82;
     --strip-h: env(titlebar-area-height, 38px);
+    /* Tab geometry (see .tabs). */
+    --ext: 8px; --overlap: 10px; --tab-top: 5px;
     color-scheme: dark;
   }
   * { box-sizing: border-box; }
@@ -88,36 +90,99 @@ export function shellPage({ repoRoot, version = null }) {
      lights; without it (a normal tab, or overlay toggled off) it is a top bar. */
   .strip { position: fixed; top: env(titlebar-area-y, 0); left: env(titlebar-area-x, 0);
     width: env(titlebar-area-width, 100%); height: var(--strip-h);
-    display: flex; align-items: center; gap: 2px; padding: 0 6px 0 8px;
+    display: flex; align-items: center; gap: 2px; padding: 0 6px 0 0;
     -webkit-app-region: drag; app-region: drag; user-select: none; }
   .strip::after { content: ""; position: fixed; left: 0; right: 0; top: var(--strip-h);
     border-top: 1px solid var(--hair); pointer-events: none; }
-  body:not(.wco) .strip { padding-left: 10px; }
-  .tabs { display: flex; align-items: center; gap: 2px; min-width: 0; flex: 0 1 auto; overflow: hidden; }
+  body:not(.wco) .strip { padding-left: 2px; }
+  /* Tabs, drawn as Chrome draws them (horizontal_tab_style_views.cc). Each
+     tab is as wide as its whole name needs (layoutTabs below); short of room
+     the widest give way first, down to 72px. Without that script's widths
+     they share the strip equally, up to 216px. A tab's
+     box reaches --ext past its body on each side, and neighbours overlap by
+     --overlap, so the bodies sit 6px apart with a separator between them. The
+     active tab's body runs down to the bottom edge, over the hairline, and
+     flares into it with two concave feet of radius --ext. A hovered tab gets
+     a detached pill. Separators hide beside any tab with a fill. */
+  /* The row is as wide as its --n tabs at full width, and shrinks from there
+     when the strip is short of room; the tabs share what it gets. */
+  .tabs { position: relative; z-index: 1; display: flex; align-items: stretch; align-self: flex-start;
+    width: calc(var(--n, 1) * 216px - (var(--n, 1) - 1) * var(--overlap));
+    height: calc(var(--strip-h) + 1px); min-width: 0; flex: 0 1 auto; overflow-x: clip;
+    -webkit-app-region: no-drag; app-region: no-drag; }
   .tab, .icon-btn { -webkit-app-region: no-drag; app-region: no-drag; }
-  .tab { position: relative; display: flex; align-items: center; gap: 6px; height: 26px;
-    min-width: 0; max-width: 200px; padding: 0 6px 0 9px; border: 0; border-radius: 6px;
-    background: transparent; color: var(--ink-2); cursor: default; flex: 0 1 auto;
-    font-size: 12px; transition: background .12s, color .12s; }
-  .tab:hover { background: rgba(255,255,255,.05); color: var(--ink); }
-  .tab[aria-selected="true"] { background: var(--tab); color: var(--ink);
-    box-shadow: inset 0 0 0 1px var(--hair); }
-  .tab:focus-visible, .icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  /* Level with the tabs' contents, which sit in the body below --tab-top. */
+  #newTab { align-self: flex-start; margin-top: calc(var(--tab-top) + (var(--strip-h) + 1px - var(--tab-top) - 28px) / 2); }
+  .tab { position: relative; display: flex; align-items: center; gap: 6px; flex: 0 1 216px; min-width: 72px;
+    padding: var(--tab-top) calc(var(--ext) + 6px) 0 calc(var(--ext) + 9px); border: 0; background: transparent;
+    color: var(--ink-2); cursor: default; font-size: 12px; transition: color .12s; }
+  .tab + .tab { margin-left: calc(-1 * var(--overlap)); }
+  .tab::before { content: ""; position: absolute; z-index: -1; left: var(--ext); right: var(--ext);
+    top: var(--tab-top); bottom: 5px; border-radius: 8px; transition: background-color .12s; }
+  .tab:hover { color: var(--ink); }
+  .tab:hover::before { background: rgba(255,255,255,.06); }
+  .tab[aria-selected="true"] { color: var(--ink);
+    background: radial-gradient(circle at 0 0, transparent calc(var(--ext) - .5px), var(--tab) var(--ext)) left bottom / var(--ext) var(--ext) no-repeat,
+      radial-gradient(circle at 100% 0, transparent calc(var(--ext) - .5px), var(--tab) var(--ext)) right bottom / var(--ext) var(--ext) no-repeat; }
+  .tab[aria-selected="true"]::before { background: var(--tab); bottom: 0; border-radius: 8px 8px 0 0; }
+  .tab::after { content: ""; position: absolute; left: calc(var(--overlap) / 2 - 1px); top: 14px; width: 2px; height: 16px;
+    border-radius: 1px; background: var(--hair-2); transition: opacity .12s; }
+  .tab:first-child::after, .tab[aria-selected="true"]::after, .tab:hover::after, .tab.lifted::after, .tab.incoming::after,
+  .tab[aria-selected="true"] + .tab::after, .tab:hover + .tab::after, .tab.lifted + .tab::after, .tab.incoming + .tab::after { opacity: 0; }
+  .tab:focus-visible { outline: none; }
+  .tab:focus-visible::before { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   /* A tab's glyphs take the tab's text color: one color, like Chrome's. */
   .tab .glyph { width: 16px; height: 16px; flex: none; display: grid; place-items: center; }
-  .tab .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tab .label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tab .num { font-size: 10px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  /* The shortcut and the close button keep to the tab's end, so a close
+     button is always the same distance from its tab's right edge. */
+  .tab .num, .tab .close { margin-left: auto; }
+  .tabs:not(.tight) .tab .num + .close { margin-left: 0; }
+  /* Short of room for every name with its shortcut, the shortcuts go first. */
+  .tabs.tight .tab .num { display: none; }
+  /* Measures a tab's name at the tab's own type size (layoutTabs). */
+  #measure { position: absolute; left: -10000px; top: 0; visibility: hidden; white-space: nowrap; pointer-events: none; }
+  #measure.measure-label { font-size: 12px; }
+  #measure.measure-num { font-size: 10px; font-variant-numeric: tabular-nums; }
   .tab .close { width: 16px; height: 16px; border-radius: 4px; display: grid; place-items: center;
     opacity: 0; flex: none; }
   .tab:hover .close, .tab[aria-selected="true"] .close { opacity: 1; }
   .tab .close:hover { background: rgba(255,255,255,.1); }
   .tab.dead .glyph { color: var(--ink-3); }
   .tab.dead .label { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--ink-3); }
-  .tab .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fill); flex: none;
-    box-shadow: 0 0 0 3px rgba(12,140,233,.25); }
-  .tab.offer { color: var(--ink-3); border: 1px dashed var(--hair-2); }
-  .tab.offer:hover { color: var(--ink); border-color: var(--accent); }
-  /* A tab's tooltip: its full name, then the app address it shows or what it does. The page
+  /* Dragging a tab. The tab follows the pointer with no easing; the tabs it
+     passes slide aside to show where it will land. Pulled below or out of the
+     strip it leaves the row, which closes up, and a copy follows the pointer. */
+  .tabs.reordering .tab:not(.lifted) { transition: transform .15s cubic-bezier(.23,1,.32,1), color .12s; }
+  .tab.lifted { z-index: 2; color: var(--ink); }
+  .tab.lifted.away { opacity: 0; }
+  .tab.settling { transition: transform .15s cubic-bezier(.23,1,.32,1); }
+  /* Where a tab dragged from another window will land. */
+  .tab.incoming { color: var(--ink); }
+  .tab.incoming::before { background: rgba(12,140,233,.16); box-shadow: inset 0 0 0 1px rgba(124,196,248,.5); }
+  .tab-ghost { position: fixed; left: 0; top: 0; z-index: 11; pointer-events: none; display: grid; gap: 6px; justify-items: start; }
+  .tab-ghost .tab { height: 30px; padding-top: 0; margin: 0; background: none; color: var(--ink); }
+  .tab-ghost .tab::before { top: 0; bottom: 0; border-radius: 8px; background: var(--tab);
+    box-shadow: 0 0 0 1px var(--hair-2), 0 10px 30px rgba(0,0,0,.36); }
+  .tab-ghost .tab::after { display: none; }
+  .tab-ghost .hint { margin-left: var(--ext); }
+  .tab-ghost .hint { padding: 3px 8px; border-radius: 6px; border: 1px solid var(--hair-2); background: var(--raised);
+    color: var(--ink-2); font-size: 11px; white-space: nowrap; }
+  body.dragging-tab .frames iframe { pointer-events: none; }
+  @media (prefers-reduced-motion: reduce) { .tabs.reordering .tab:not(.lifted), .tab.settling { transition: none; } }
+  /* A tab's menu: the way to move a tab without dragging it. */
+  .menu { position: fixed; left: 0; top: 0; z-index: 12; min-width: 200px; max-width: 320px; padding: 4px;
+    border: 1px solid var(--hair-2); border-radius: 10px; background: var(--raised); box-shadow: 0 10px 30px rgba(0,0,0,.36); }
+  .menu[hidden] { display: none; }
+  .menu button { display: block; width: 100%; height: 28px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent;
+    color: var(--ink); text-align: left; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .menu button:hover:not(:disabled), .menu button:focus-visible { background: rgba(255,255,255,.07); outline: none; }
+  .menu button:disabled { color: var(--ink-3); }
+  .menu hr { border: 0; border-top: 1px solid var(--hair); margin: 4px 6px; }
+  /* A tab's tooltip: the localhost address of what it shows, under its full
+     name when the tab cuts that name short. The page
      draws it because render() rebuilds the strip on every poll, and a native
      title tip closes when the element under the pointer is replaced. Drawn as
      the editor's tip (src/core/css/tooltip.ts): panel ground, body ink, the
@@ -129,8 +194,8 @@ export function shellPage({ repoRoot, version = null }) {
     font-size: 12px; line-height: 16px; white-space: pre-line; overflow-wrap: anywhere; pointer-events: none;
     opacity: 0; visibility: hidden; transition: opacity .15s cubic-bezier(.22,1,.36,1), visibility 0s linear .15s; }
   .tip.open { opacity: 1; visibility: visible; transition: none; }
-  .tip-detail { color: var(--ink-2); }
-  .tip-detail[hidden] { display: none; }
+  .tip-name:not([hidden]) + .tip-detail { color: var(--ink-2); }
+  .tip-name[hidden], .tip-detail[hidden] { display: none; }
   @media (prefers-reduced-motion: reduce) { .tip { transition: none; } }
   /* Full white at rest, like Chrome's own buttons. Reload and the folder sit 40px
      apart, the spacing of Chrome's own buttons, so the corner reads as one row. */
@@ -142,11 +207,6 @@ export function shellPage({ repoRoot, version = null }) {
      beside them (measured: about 31% white on this ground). */
   body.inactive .icon-btn:not(:hover) { color: rgba(255,255,255,.31); }
   .spacer { flex: 1; min-width: 24px; height: 100%; }
-  .status { display: flex; align-items: center; gap: 6px; color: var(--ink-3); font-size: 11px;
-    padding: 0 6px; white-space: nowrap; }
-  .status i { width: 6px; height: 6px; border-radius: 50%; background: #5bb974; }
-  .status.warn i { background: #fbbc04; }
-  .status.down i { background: var(--danger); }
   /* Shown while the start screen has an update to offer, or is running one.
      It opens Home, where the update is described and started. */
   .update { -webkit-app-region: no-drag; app-region: no-drag; display: flex; align-items: center; gap: 6px;
@@ -191,7 +251,6 @@ export function shellPage({ repoRoot, version = null }) {
   <button class="icon-btn" id="newTab" title="New Home tab (⌘T)" aria-label="New Home tab">${glyph("add", 20)}</button>
   <div class="spacer"></div>
   <button class="update" id="update" title="Open Home to see what changed and update" hidden>Update available</button>
-  <div class="status" id="status" role="status"><i></i><span>Starting</span></div>
   <div class="tools">
     <button class="icon-btn" id="reload" title="Reload this tab" aria-label="Reload this tab">${glyph("refresh", 20)}</button>
     <button class="icon-btn" id="pickFolder" title="Choose a project folder and copy its path" aria-label="Choose a project folder">${glyph("folder", 20)}</button>
@@ -210,6 +269,8 @@ export function shellPage({ repoRoot, version = null }) {
 </main>
 <div class="toast" id="toast" role="status" hidden></div>
 <div class="tip" id="tip" aria-hidden="true"><div class="tip-name"></div><div class="tip-detail"></div></div>
+<div class="menu" id="menu" role="menu" aria-label="Tab" hidden></div>
+<span id="measure" aria-hidden="true"></span>
 <script>
 (() => {
   const KEY = ${JSON.stringify(TABS_KEY)}
@@ -217,8 +278,8 @@ export function shellPage({ repoRoot, version = null }) {
   const VERSION = ${JSON.stringify(version)}
   const $ = (id) => document.getElementById(id)
   const tabsEl = $("tabs"), framesEl = $("frames")
-  let health = null, editors = [], offers = [], homeUrl = null, deskDown = false
-  let tabs, active, dismissed
+  let health = null, editors = [], homeUrl = null, deskDown = false
+  let tabs, active
 
   function uid() { return Math.random().toString(36).slice(2, 9) }
   const editorKey = (e) => e.url + "#" + e.pid
@@ -240,13 +301,40 @@ export function shellPage({ repoRoot, version = null }) {
     } catch { return u }
   }
 
+  // Windows. Each window of the app names itself in its address (?window=):
+  // "main" is the one the app opens with, and a tab pulled out of a window
+  // opens a window of its own. Each keeps its tabs under its own key. The
+  // windows tell each other what they show over a BroadcastChannel: which
+  // editors have a tab, where each window's tab strip is on screen (to drop a
+  // tab dragged from another window), and which window was used last.
+  const params = new URLSearchParams(location.search)
+  const launched = !params.get("window")
+  let wid = params.get("window") || "main"
+  const keyOf = (w) => (w === "main" ? KEY : KEY + ":" + w)
+  const readLocal = (k) => { try { return JSON.parse(localStorage.getItem(k)) } catch { return null } }
+  const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("designlayer-desk") : null
+  // Other windows, by id: { tabs, title, focusedAt, geo, seen }.
+  const peers = new Map()
+  // Until this window knows its id, it speaks under a name nobody else has.
+  const probeId = "?" + Math.random().toString(36).slice(2, 9)
+  let identified = !channel
+  // Two windows that open at once both ask before either answers. The one
+  // with the higher probe name lets the other have the id they both want.
+  let yielded = false
+  let focusedAt = document.hasFocus() ? Date.now() : 0
+  // Set once this window gave its last tab away and is closing.
+  let gone = false
+  // Whether this window opened on saved tabs, and when that record says it closed.
+  let hadRecord = false, closedAt = 0
+
   function adopt(s) {
     tabs = Array.isArray(s?.tabs) && s.tabs.length ? s.tabs : [{ id: uid(), kind: "home" }]
     active = tabs.some((t) => t.id === s?.active) ? s.active : tabs[0].id
-    dismissed = new Set(s?.dismissed ?? [])
+    hadRecord = Boolean(Array.isArray(s?.tabs) && s.tabs.length)
+    closedAt = hadRecord ? s.closedAt || 0 : 0
     for (const t of tabs) { t.url = onLocalhost(t.url); t.src = onLocalhost(t.src) }
   }
-  const saved = (() => { try { return JSON.parse(localStorage.getItem(KEY)) } catch { return null } })()
+  let saved = readLocal(keyOf(wid))
   adopt(saved)
   // The desk keeps a copy of the tabs (PUT /api/tabs, below), stamped with
   // when it was saved. The page's own storage can be older than that copy: the
@@ -259,7 +347,7 @@ export function shellPage({ repoRoot, version = null }) {
   async function restore() {
     const ask = new AbortController(), timer = setTimeout(() => ask.abort(), 1500)
     try {
-      const s = await fetch("/api/tabs", { cache: "no-store", signal: ask.signal }).then((r) => r.json())
+      const s = await fetch("/api/tabs?window=" + wid, { cache: "no-store", signal: ask.signal }).then((r) => r.json())
       const mine = Array.isArray(saved?.tabs) && saved.tabs.length ? saved.savedAt || 0 : -1
       if (Array.isArray(s?.tabs) && s.tabs.length && (s.savedAt || 0) > mine) adopt(s)
       restoring = false
@@ -268,22 +356,147 @@ export function shellPage({ repoRoot, version = null }) {
       if (Array.isArray(saved?.tabs) && saved.tabs.length) restoring = false
     }
     clearTimeout(timer)
+    if (!restoring && launched && channel) await reopenWindows()
   }
 
+  // Which window this is. The app's first window opens on "/", and so does a
+  // window from File › New Window: the first is "main" and reopens the
+  // windows saved with it; a new one, opened while other windows are up, gets
+  // an id and a Home tab of its own. Its address then names it, so a reload
+  // keeps it.
+  const identifying = (async () => {
+    if (!channel) return
+    post({ t: "hello", want: wid })
+    await new Promise((r) => setTimeout(r, 150))
+    if ((launched && peers.size) || peers.has(wid) || yielded) {
+      wid = "w" + uid()
+      saved = null
+      adopt(null)
+      restoring = false
+    }
+    identified = true
+    try { history.replaceState(history.state, "", location.pathname + "?window=" + wid + location.hash) } catch {}
+    announce()
+  })()
+
+  // Every window saved here besides this one: the desk's copy, or the page's
+  // own when that is newer.
+  async function savedWindows() {
+    let all = {}, goneAt = {}
+    try {
+      const r = await fetch("/api/tabs?all=1", { cache: "no-store" }).then((x) => x.json())
+      all = r.windows || {}
+      goneAt = r.gone || {}
+    } catch {}
+    const keys = []
+    for (let i = 0; i < localStorage.length; i++) keys.push(localStorage.key(i))
+    for (const k of keys) {
+      if (!k || !k.startsWith(KEY + ":")) continue
+      const s = readLocal(k), w = k.slice(KEY.length + 1)
+      // A copy of a window that closed after it was saved: Chrome dropped
+      // that window's last write to this storage when the app quit.
+      if (s && goneAt[w] >= (s.savedAt || 0)) { localStorage.removeItem(k); continue }
+      if (s && (!all[w] || (s.savedAt || 0) > (all[w].savedAt || 0))) all[w] = s
+    }
+    delete all[wid]
+    // A window that is up already is not opened again.
+    for (const w of peers.keys()) delete all[w]
+    return Object.entries(all).filter(([, s]) => Array.isArray(s?.tabs) && s.tabs.length)
+  }
+  function forget(w) {
+    localStorage.removeItem(keyOf(w))
+    return fetch("/api/tabs", { method: "PUT", body: JSON.stringify({ window: w, gone: true, savedAt: Date.now() }) }).catch(() => {})
+  }
+  // The app started again. Chrome reopens only its first window, so that
+  // window asks the desk to reopen the others saved with it. Windows that
+  // closed within a few seconds of the last one were the app quitting, and
+  // come back; one closed on its own before that does not. A window the desk
+  // cannot open gives its tabs to this one, so no tab is lost.
+  async function reopenWindows() {
+    const others = await savedWindows()
+    if (!others.length) return
+    const latest = Math.max(closedAt, ...others.map(([, s]) => s.closedAt || 0))
+    const recent = (at) => !at || at >= latest - 5000
+    const keep = others.filter(([, s]) => recent(s.closedAt))
+    for (const [w] of others) if (!keep.some(([k]) => k === w)) forget(w)
+    // This window closed on its own before the others did: it opens as the
+    // window that was still up.
+    if ((!hadRecord || !recent(closedAt)) && keep.length) {
+      const [w, s] = keep.shift()
+      adopt({ ...s, closedAt: 0 })
+      forget(w)
+    }
+    for (const [w, s] of keep) {
+      const ok = await fetch("/api/windows/open", { method: "POST", body: JSON.stringify({ window: w }) })
+        .then((r) => r.json()).then((r) => r.ok === true).catch(() => false)
+      if (ok) continue
+      for (const t of s.tabs) if (!(t.kind === "editor" && tabs.some((x) => x.kind === "editor" && x.url === onLocalhost(t.url)))) {
+        tabs.push({ ...t, url: onLocalhost(t.url), src: onLocalhost(t.src) })
+      }
+      forget(w)
+    }
+    render()
+  }
+
+  const tabState = () => ({
+    tabs: tabs.map(({ id, kind, url, src, name, key }) => ({ id, kind, url, src, name, key })),
+    active,
+  })
   let mirrored = null
   function persist() {
-    if (restoring) return
-    const state = {
-      tabs: tabs.map(({ id, kind, url, src, name, key }) => ({ id, kind, url, src, name, key })),
-      active, dismissed: [...dismissed].slice(-50),
-    }
+    if (restoring || gone || !identified) return
+    const state = tabState()
     // Stamped only when something changed: render runs on every poll.
     const body = JSON.stringify(state)
     if (body === mirrored) return
     mirrored = body
-    const json = JSON.stringify({ ...state, savedAt: Date.now() })
-    localStorage.setItem(KEY, json)
-    fetch("/api/tabs", { method: "PUT", body: json, keepalive: true }).catch(() => { mirrored = null })
+    const stamped = { ...state, savedAt: Date.now() }
+    localStorage.setItem(keyOf(wid), JSON.stringify(stamped))
+    fetch("/api/tabs", { method: "PUT", body: JSON.stringify({ ...stamped, window: wid }), keepalive: true }).catch(() => { mirrored = null })
+  }
+  // A window that closes says when, in this origin's storage, so the app
+  // reopens it only with the windows that closed with it (reopenWindows). A
+  // reload writes it too, and the page that loads next saves over it. Chrome
+  // drops a request a closing window sends, so the desk's copy hears of it
+  // from the windows still up (see "bye" below).
+  let leaving = false
+  addEventListener("pageshow", () => { leaving = false })
+  addEventListener("pagehide", () => {
+    leaving = true
+    post({ t: "bye" })
+    if (restoring || gone || !identified) return
+    const stamped = { ...tabState(), savedAt: Date.now(), closedAt: Date.now() }
+    localStorage.setItem(keyOf(wid), JSON.stringify(stamped))
+    fetch("/api/tabs", { method: "PUT", body: JSON.stringify({ ...stamped, window: wid }), keepalive: true }).catch(() => {})
+  })
+
+  function post(message) {
+    if (channel) try { channel.postMessage({ ...message, from: identified ? wid : probeId }) } catch {}
+  }
+  // What the other windows need to know about this one.
+  function announce() {
+    if (!identified || gone) return
+    const cur = tabs.find((t) => t.id === active)
+    const name = cur ? (cur.kind === "home" ? "Home" : cur.name || cur.url) : "Home"
+    post({ t: "state", tabs: tabs.map(({ id, kind, url }) => ({ id, kind, url })),
+      title: tabs.length > 1 ? name + " and " + (tabs.length - 1) + (tabs.length === 2 ? " other tab" : " other tabs") : name, focusedAt, geo: geometry() })
+  }
+  // Where this page's viewport and tab strip are on screen. Measured from a
+  // pointer event when there has been one; until then, the window's frame is
+  // taken to be all above the page, as it is with no title bar.
+  let calibrated = null
+  function geometry() {
+    const r = $("strip").getBoundingClientRect()
+    const cal = calibrated || { x: 0, y: outerHeight - innerHeight }
+    return { x: screenX + cal.x, y: screenY + cal.y, w: innerWidth, h: innerHeight,
+      strip: { left: r.left, right: r.right, top: r.top, bottom: r.bottom } }
+  }
+  addEventListener("pointermove", (ev) => {
+    calibrated = { x: ev.screenX - ev.clientX - screenX, y: ev.screenY - ev.clientY - screenY }
+  }, { passive: true })
+  const editorPeer = (url) => [...peers].find(([, p]) => (p.tabs || []).some((t) => t.kind === "editor" && t.url === url))?.[0]
+  function prunePeers() {
+    for (const [id, p] of peers) if (Date.now() - p.seen > 3500) peers.delete(id)
   }
 
   // An editor tab gets no frame until the first editor list names its app's
@@ -302,42 +515,47 @@ export function shellPage({ repoRoot, version = null }) {
   const X = ${JSON.stringify(glyph("close", 16))}
 
   function render() {
+    // A tab being pressed or dragged keeps its element: the strip is rebuilt
+    // when the drag ends.
+    if (press || drag) { syncFrames(); persist(); announce(); return }
     tabsEl.textContent = ""
     tabs.forEach((t, i) => {
+      if (incoming && incoming.index === i) tabsEl.append(incomingTab())
       const b = document.createElement("div")
       b.className = "tab"; b.setAttribute("role", "tab"); b.tabIndex = t.id === active ? 0 : -1
+      b.dataset.id = t.id
       b.setAttribute("aria-selected", String(t.id === active))
       // A tab with no key yet was just sent to an editor the next list will
       // name; until then it is new, not stopped.
       const dead = t.kind === "editor" && t.key !== null && !editors.some((e) => e.url === t.url)
       if (dead && health) b.classList.add("dead")
       const name = t.kind === "home" ? "Home" : t.name || t.url
-      tipData(b, "tab:" + t.id, name, t.kind === "home" ? ["Start screen — choose an app"] : [appAddress(editors.find((e) => e.url === t.url)), dead && "Stopped"])
+      tipData(b, "tab:" + t.id, name, t.kind === "home" ? hostOf(homeUrl) : appAddress(editors.find((e) => e.url === t.url)))
       b.innerHTML = '<span class="glyph">' + (t.kind === "home" ? HOME_GLYPH : EDIT_GLYPH) + '</span><span class="label"></span>' +
         (i < 9 ? '<span class="num">⌘' + (i + 1) + '</span>' : "") +
         (tabs.length > 1 ? '<span class="close" role="button" aria-label="Close tab">' + X + "</span>" : "")
       b.querySelector(".label").textContent = name
-      b.onmousedown = (ev) => { if (ev.button === 1) { ev.preventDefault(); close(t.id) } }
-      b.onclick = (ev) => { if (ev.target.closest(".close")) close(t.id); else select(t.id) }
+      b.onmousedown = (ev) => { if (ev.button === 1) { ev.preventDefault(); closeByMouse(t.id) } }
+      b.onclick = (ev) => { if (ev.target.closest(".close")) closeByMouse(t.id); else select(t.id) }
+      b.oncontextmenu = (ev) => { ev.preventDefault(); openMenu(t.id, ev.clientX, ev.clientY) }
       b.onkeydown = (ev) => {
         if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") {
+          ev.preventDefault()
+          // ⌘⇧← and ⌘⇧→ move the tab; the arrows alone move between tabs.
+          if ((ev.metaKey || ev.ctrlKey) && ev.shiftKey) return moveTab(t.id, ev.key === "ArrowRight" ? 1 : -1)
           const n = (i + (ev.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length
-          select(tabs[n].id); tabsEl.children[n]?.focus()
+          select(tabs[n].id); focusTab(tabs[n].id)
+        } else if (ev.key === "ContextMenu" || (ev.key === "F10" && ev.shiftKey)) {
+          ev.preventDefault()
+          const r = b.getBoundingClientRect()
+          openMenu(t.id, r.left, r.bottom + 4, true)
         }
       }
       tabsEl.append(b)
     })
-    for (const e of offers) {
-      const b = document.createElement("button")
-      // An editor's socket takes one client, so opening it here disconnects any
-      // other window showing it. That is why running editors are offered, not opened.
-      b.className = "tab offer"
-      tipData(b, "offer:" + editorKey(e), e.name, [appAddress(e), "Opens in a tab. Any other window showing this editor disconnects."])
-      b.innerHTML = '<span class="dot"></span><span class="label"></span>'
-      b.querySelector(".label").textContent = e.name
-      b.onclick = () => { offers = offers.filter((o) => o !== e); openEditor(e, true) }
-      tabsEl.append(b)
-    }
+    if (incoming && incoming.index >= tabs.length) tabsEl.append(incomingTab())
+    tabsEl.style.setProperty("--n", String(tabs.length + (incoming ? 1 : 0)))
+    layoutTabs()
     // The tab under the pointer is a new element now: keep its tip on it.
     if (tipFor) {
       const el = [...tabsEl.children].find((c) => c.dataset.tipId === tipFor)
@@ -345,29 +563,36 @@ export function shellPage({ repoRoot, version = null }) {
     }
     syncFrames()
     persist()
+    announce()
   }
+  const focusTab = (id) => tabsEl.querySelector('.tab[data-id="' + id + '"]')?.focus()
 
   const tipEl = $("tip")
   let tipFor = null, tipQuiet = null
   // The app the editor shows, as the browser opens it: two editors on one
   // project share a name and differ only here. Apps run on localhost
   // (runtime/launcher.mjs, BROWSER_HOST), whatever host the registry says.
-  function appAddress(e) {
-    if (!e || !e.appUrl) return null
-    try { const u = new URL(e.appUrl); return "localhost" + (u.port ? ":" + u.port : "") } catch { return null }
-  }
-  function tipData(el, id, name, detail) {
+  const hostOf = (url) => { try { const u = new URL(url); return "localhost" + (u.port ? ":" + u.port : "") } catch { return null } }
+  const appAddress = (e) => (e && e.appUrl ? hostOf(e.appUrl) : null)
+  function tipData(el, id, name, address) {
     el.dataset.tipId = id
     el.dataset.tipName = name
-    el.dataset.tipDetail = detail.filter(Boolean).join("\\n")
+    el.dataset.tipDetail = address || ""
   }
+  // The tip names the tab only when its name is cut short; a name shown in
+  // full is not said twice. The address of what the tab shows is always there.
   function showTip(el) {
+    const label = el.querySelector(".label")
+    const cut = Boolean(label) && label.scrollWidth > label.clientWidth
+    if (closing || (!cut && !el.dataset.tipDetail)) { hideTip(); return }
     tipFor = el.dataset.tipId
     tipEl.firstChild.textContent = el.dataset.tipName
+    tipEl.firstChild.hidden = !cut
     tipEl.lastChild.textContent = el.dataset.tipDetail
     tipEl.lastChild.hidden = !el.dataset.tipDetail
-    const r = el.getBoundingClientRect()
-    const x = Math.max(8, Math.min(r.left, innerWidth - tipEl.offsetWidth - 8))
+    // Under the tab's body, which starts --ext into its box.
+    const r = el.getBoundingClientRect(), inset = el.matches(".tab") ? 8 : 0
+    const x = Math.max(8, Math.min(r.left + inset, innerWidth - tipEl.offsetWidth - 8))
     tipEl.style.transform = "translate(" + Math.round(x) + "px, " + Math.round(r.bottom + 6) + "px)"
     tipEl.classList.add("open")
   }
@@ -407,7 +632,10 @@ export function shellPage({ repoRoot, version = null }) {
     for (const t of tabs) {
       let f = framesEl.querySelector('iframe[data-id="' + t.id + '"]')
       // A stale tab is made empty, for the same reason applyEditors empties one.
-      const url = t.kind === "editor" && !listed ? null : t.stale ? "about:blank" : tabUrl(t)
+      // Nothing loads before the window knows which window it is: a second
+      // window opening on "/" would otherwise load the main window's editors
+      // and take their sockets.
+      const url = !identified || (t.kind === "editor" && !listed) ? null : t.stale ? "about:blank" : tabUrl(t)
       if (!f && url) {
         f = document.createElement("iframe")
         f.dataset.id = t.id
@@ -422,7 +650,7 @@ export function shellPage({ repoRoot, version = null }) {
       if (f) f.hidden = t.id !== active
     }
     const cur = tabs.find((t) => t.id === active)
-    const waiting = !cur || (cur.kind === "home" && !homeUrl) || (cur.kind === "editor" && !listed) || deskDown
+    const waiting = !cur || !identified || (cur.kind === "home" && !homeUrl) || (cur.kind === "editor" && !listed) || deskDown
     $("boot").hidden = !waiting
     document.title = cur && cur.kind === "editor" ? (cur.name || "Editor") + " — DesignLayer" : "DesignLayer"
   }
@@ -438,24 +666,128 @@ export function shellPage({ repoRoot, version = null }) {
     render()
   }
   function newHome() { const t = { id: uid(), kind: "home" }; tabs.push(t); select(t.id) }
+
+  // ---- Tab widths ----
+  //
+  // Each tab is as wide as its whole name needs, so a name shows in full
+  // while the strip has room for it. Short of room, the shortcuts go first,
+  // then the widest tabs give way, down to equal widths and on to the 72px
+  // minimum, as Chrome's tabs shrink (tab_strip_layout.cc). A page with no
+  // layout to measure (a test) keeps the stylesheet's equal widths.
+  const measureEl = $("measure")
+  const px = (value, fallback) => (Number.isFinite(parseFloat(value)) ? parseFloat(value) : fallback)
+  const overlapPx = () => px(getComputedStyle(tabsEl).getPropertyValue("--overlap"), 10)
+  function textWidth(text, cls) {
+    measureEl.className = cls
+    measureEl.textContent = text
+    return measureEl.getBoundingClientRect().width
+  }
+  // The strip's width less everything else in it, the spacer at its least.
+  function roomForTabs() {
+    const strip = $("strip"), cs = getComputedStyle(strip)
+    let room = strip.getBoundingClientRect().width - px(cs.paddingLeft, 0) - px(cs.paddingRight, 6), shown = 0
+    for (const c of strip.children) {
+      if (c !== tabsEl && (c.hidden || getComputedStyle(c).display === "none")) continue
+      shown += 1
+      if (c === tabsEl) continue
+      const ccs = getComputedStyle(c)
+      room -= c.classList.contains("spacer") ? px(ccs.minWidth, 24) : c.getBoundingClientRect().width + px(ccs.marginLeft, 0) + px(ccs.marginRight, 0)
+    }
+    return room - px(cs.columnGap, 2) * (shown - 1)
+  }
+  // Widths no wider than each tab needs, capped so the row fits the room: the
+  // cap falls until it does, so only the widest tabs are cut.
+  function fitWidths(wants, room, least, overlap) {
+    const budget = room + overlap * (wants.length - 1)
+    const sum = (cap) => wants.reduce((total, want) => total + Math.max(least, Math.min(want, cap)), 0)
+    if (sum(Infinity) <= budget) return wants.map((want) => Math.max(least, want))
+    let lo = least, hi = Math.max(...wants)
+    for (let k = 0; k < 30; k += 1) { const mid = (lo + hi) / 2; if (sum(mid) <= budget) lo = mid; else hi = mid }
+    return wants.map((want) => Math.max(least, Math.min(want, Math.floor(lo * 100) / 100)))
+  }
+  function setWidths(els, widths, overlap) {
+    els.forEach((el, i) => { el.style.flex = "none"; el.style.width = widths[i] + "px" })
+    tabsEl.style.width = widths.reduce((total, w) => total + w, 0) - overlap * (widths.length - 1) + "px"
+  }
+  function layoutTabs() {
+    const els = [...tabsEl.children]
+    if (closing && (tabs.length > closing.count || tabs.length < 2)) closing = null
+    if (closing) {
+      tabsEl.classList.toggle("tight", closing.tight)
+      return setWidths(els, els.map((el) => closing.widths.get(el.dataset.id) ?? el.getBoundingClientRect().width), overlapPx())
+    }
+    tabsEl.classList.remove("tight")
+    for (const el of els) { el.style.flex = ""; el.style.width = "" }
+    tabsEl.style.width = ""
+    if (!els.length) return
+    const names = els.map((el) => textWidth(el.querySelector(".label")?.textContent || "", "measure-label"))
+    if (!names.some((w) => w > 0)) return
+    const cs = getComputedStyle(els[0])
+    const gap = px(cs.columnGap, 6), sides = px(cs.paddingLeft, 17) + px(cs.paddingRight, 14), least = px(cs.minWidth, 72)
+    const overlap = overlapPx()
+    const wants = els.map((el, i) => {
+      // The glyph, the name (a pixel spare, so rounding never cuts it), and the close button.
+      const bare = sides + 16 + gap + Math.ceil(names[i]) + 1 + (el.querySelector(".close") ? gap + 16 : 0)
+      const num = el.querySelector(".num")
+      return { bare, full: bare + (num ? gap + Math.ceil(textWidth(num.textContent, "measure-num")) : 0) }
+    })
+    const room = roomForTabs()
+    let widths = wants.map((w) => Math.max(least, w.full))
+    if (widths.reduce((t, w) => t + w, 0) - overlap * (widths.length - 1) > room) {
+      tabsEl.classList.add("tight")
+      widths = fitWidths(wants.map((w) => w.bare), room, least, overlap)
+    }
+    setWidths(els, widths, overlap)
+  }
+  addEventListener("resize", () => { if (!closing && !press && !drag) render() })
+
+  // Closing tabs with the mouse, as Chrome does (TabContainerImpl,
+  // EnterTabClosingMode and UpdateClosingModeOnRemovedTab). While the pointer
+  // stays on the strip after a click on a close button, the tabs keep the
+  // widths they had. A tab closed before the last hands its width to the tab
+  // after it, which slides into its place, so that tab's close button is
+  // where the one just clicked was. The last tab shares its width out among
+  // the rest, so the new last tab's close button lands under the pointer.
+  // Either way the next click closes the next tab. The tabs take their own
+  // widths again once the pointer leaves the strip or a tab opens.
+  let closing = null
+  function closeByMouse(id) {
+    const i = tabs.findIndex((t) => t.id === id)
+    if (i < 0) return
+    if (tabs.length > 1) {
+      const els = [...tabsEl.querySelectorAll(".tab[data-id]")]
+      const widths = closing ? closing.widths : new Map(els.map((el) => [el.dataset.id, el.getBoundingClientRect().width]))
+      const width = widths.get(id) ?? 0
+      widths.delete(id)
+      if (i < tabs.length - 1) widths.set(tabs[i + 1].id, width)
+      else {
+        const share = (width - overlapPx()) / (tabs.length - 1)
+        for (const [key, w] of widths) widths.set(key, w + share)
+      }
+      closing = { widths, count: tabs.length - 1, tight: closing ? closing.tight : tabsEl.classList.contains("tight") }
+    }
+    close(id)
+  }
+  function endClosing() {
+    clearTimeout(endClosing.t)
+    if (!closing) return
+    closing = null
+    render()
+  }
+  // The strip region is the tabs and the new-tab button beside them. A
+  // pointer that slips off it for a moment, below into a frame or across the
+  // 2px between them, comes back before the tabs move.
+  for (const el of [tabsEl, $("newTab")]) {
+    el.addEventListener("pointerleave", () => { if (closing) { clearTimeout(endClosing.t); endClosing.t = setTimeout(endClosing, 300) } })
+    el.addEventListener("pointerenter", () => clearTimeout(endClosing.t))
+  }
+  addEventListener("blur", () => endClosing())
+  addEventListener("resize", () => endClosing())
   function close(id) {
     const i = tabs.findIndex((t) => t.id === id); if (i < 0) return
-    const t = tabs[i]
-    if (t.kind === "editor" && t.key) dismissed.add(t.key)
     tabs.splice(i, 1)
     if (!tabs.length) tabs.push({ id: uid(), kind: "home" })
     if (active === id) active = (tabs[i] || tabs[i - 1] || tabs[0]).id
-    render()
-  }
-  function openEditor(e, focus) {
-    const existing = tabs.find((t) => t.kind === "editor" && t.url === e.url)
-    if (existing) { if (focus) select(existing.id); return }
-    // On the page that app was last used on: copies of one template share a
-    // home page, so the root alone looks like a different app.
-    const src = e.page ? onLocalhost(originOf(e.url) + e.page) : undefined
-    const t = { id: uid(), kind: "editor", url: e.url, src, name: e.name, key: editorKey(e), projectRoot: e.projectRoot }
-    tabs.push(t)
-    if (focus) active = t.id
     render()
   }
 
@@ -476,7 +808,6 @@ export function shellPage({ repoRoot, version = null }) {
     }
     // Loaded now, so not again when the tab is next selected.
     t.src = href; t.stale = false
-    offers = offers.filter((o) => originOf(o.url) !== origin)
     active = t.id
     render()
     // Loaded again even when this frame already shows the editor: the browser
@@ -486,7 +817,19 @@ export function shellPage({ repoRoot, version = null }) {
     window.focus()
   }
 
+  // The desk sends a page to every window; one opens it. The window that
+  // shows its editor, or else the window used last.
+  function opensHere(href) {
+    if (!channel) return true
+    prunePeers()
+    const origin = localOrigin(href)
+    if (tabs.some((t) => t.kind === "editor" && t.url === origin)) return true
+    if (origin && editorPeer(origin)) return false
+    return ![...peers].some(([id, p]) => p.focusedAt > focusedAt || (p.focusedAt === focusedAt && id < wid))
+  }
+
   async function poll() {
+    await identifying
     try {
       const [h, list] = await Promise.all([
         fetch("/api/health", { cache: "no-store" }).then((r) => r.json()),
@@ -523,10 +866,10 @@ export function shellPage({ repoRoot, version = null }) {
 
   function applyHealth() {
     applyUpdate()
-    const s = $("status"), label = s.querySelector("span")
+    // What the desk and the start screen are doing shows on the boot sheet,
+    // over the tab that waits for them; the title bar carries no status.
     const ss = health?.startScreen
     if (deskDown) {
-      s.className = "status down"; label.textContent = "Offline"
       $("bootSpin").hidden = true; $("bootTitle").textContent = "Can’t connect"
       $("bootText").hidden = false; $("bootCmd").hidden = false
       return
@@ -542,9 +885,7 @@ export function shellPage({ repoRoot, version = null }) {
           const t = tabs.find((x) => x.id === f.dataset.id); if (t?.kind === "home") f.src = homeUrl
         }
       }
-      s.className = "status"; label.textContent = editors.length ? editors.length + (editors.length === 1 ? " editor" : " editors") : "Ready"
     } else {
-      s.className = "status warn"; label.textContent = "Starting"
       // The restart reason and log path stay in the desk log; the window only says what is happening.
       $("bootTitle").textContent = ss?.state === "backoff" ? "Restarting…" : "Starting…"
     }
@@ -592,7 +933,8 @@ export function shellPage({ repoRoot, version = null }) {
       tabs.splice(tabs.indexOf(other), 1)
       if (active === other.id) active = t.id
     }
-    offers = offers.filter((o) => o.url !== origin)
+    // Other windows drop their tab on it too.
+    post({ t: "claimed", url: origin })
     render()
   })
 
@@ -617,8 +959,15 @@ export function shellPage({ repoRoot, version = null }) {
     if (sender === startScreen && !fromHome) return
     const url = onLocalhost(data.url)
     const e = editors.find((x) => x.url === origin)
-    offers = offers.filter((o) => o.url !== origin)
     const shown = tabs.find((x) => x.kind === "editor" && x.url === origin)
+    // Another window shows that editor: that window selects its tab, as the
+    // tab here would have been. This tab stays as it is.
+    const elsewhere = !shown && editorPeer(origin)
+    if (elsewhere) {
+      post({ t: "reveal", to: elsewhere, url })
+      toast((e ? e.name : new URL(url).host) + " is open in another window")
+      return
+    }
     if (shown) {
       // The Home tab did its job; a second one left behind is clutter.
       if (fromHome) tabs.splice(tabs.indexOf(t), 1)
@@ -645,7 +994,7 @@ export function shellPage({ repoRoot, version = null }) {
       active = t.id
     } else {
       // From an editor, never in its own tab: its unapplied edits would go, and
-      // its editor would come back only as an offer. A new tab beside it.
+      // its editor would be left with no tab. A new tab beside it.
       const n = { id: uid(), ...target }
       tabs.splice(tabs.indexOf(t) + 1, 0, n)
       active = n.id
@@ -658,12 +1007,9 @@ export function shellPage({ repoRoot, version = null }) {
   let listedBefore = null
   function applyEditors() {
     const was = listedBefore
-    const open = new Set(tabs.filter((t) => t.kind === "editor").map((t) => t.url))
-    const fresh = editors.filter((e) => !open.has(e.url) && !dismissed.has(editorKey(e)))
-    // Editors that were already running are offered, never opened unasked: the
-    // vendor socket keeps one client, so a tab here would disconnect whichever
-    // browser tab (or agent) is using that editor now.
-    offers = fresh
+    // An editor with no tab here is never opened unasked: the vendor socket
+    // keeps one client, so a tab here would disconnect whichever browser tab
+    // (or agent) is using that editor now. Home lists every running editor.
     for (const t of tabs) {
       const e = t.kind === "editor" && editors.find((x) => x.url === t.url)
       if (!e) continue
@@ -712,7 +1058,7 @@ export function shellPage({ repoRoot, version = null }) {
   // ⌘1–9, ⌘T, ⌘W reach this page when focus is on the strip or the page itself.
   // A cross-origin frame keeps its own keystrokes, and Chrome may reserve ⌘T/⌘W.
   addEventListener("keydown", (ev) => {
-    if (!(ev.metaKey || ev.ctrlKey) || ev.altKey) return
+    if (ev.defaultPrevented || !(ev.metaKey || ev.ctrlKey) || ev.altKey) return
     if (/^[1-9]$/.test(ev.key)) {
       const t = ev.key === "9" ? tabs[tabs.length - 1] : tabs[Number(ev.key) - 1]
       if (t) { ev.preventDefault(); select(t.id) }
@@ -766,12 +1112,471 @@ export function shellPage({ repoRoot, version = null }) {
   }
   // Dims the buttons with Chrome's while the window is in the background. Focus
   // inside an editor frame never blurs this window again, so this also polls.
-  const syncActive = () => document.body.classList.toggle("inactive", !document.hasFocus())
+  // The window used last is the one a page from "Open in Mac app" opens in.
+  const syncActive = () => {
+    const has = document.hasFocus()
+    document.body.classList.toggle("inactive", !has)
+    if (has && !syncActive.had) { focusedAt = Date.now(); announce() }
+    syncActive.had = has
+  }
   addEventListener("focus", syncActive)
   addEventListener("blur", () => setTimeout(syncActive))
   setInterval(syncActive, 250)
   syncActive()
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {})
+
+  // ---- Windows talking to each other ----
+
+  if (channel) {
+    channel.onmessage = (ev) => {
+      const m = ev.data
+      if (!m || typeof m !== "object" || m.from === (identified ? wid : probeId)) return
+      if (m.to && m.to !== wid) return
+      if (m.t === "hello") {
+        if (identified) announce()
+        else if (m.want === wid && String(m.from) < probeId) yielded = true
+        return
+      }
+      if (m.t === "state") {
+        peers.set(m.from, { tabs: Array.isArray(m.tabs) ? m.tabs : [], title: String(m.title || ""), focusedAt: m.focusedAt || 0, geo: m.geo, seen: Date.now() })
+        return
+      }
+      if (!identified || gone) return
+      if (m.t === "bye") {
+        // A window closed while this one stays up: closed on its own, so it
+        // does not come back with the app. A reload says hello again within
+        // the wait, and when the app quits every window goes at once, so
+        // nobody is left to forget anybody.
+        const w = m.from
+        peers.delete(w)
+        setTimeout(() => { if (!gone && !leaving && !peers.has(w)) forget(w) }, 2000)
+      } else if (m.t === "claimed" && typeof m.url === "string") dropTabsOn(m.url)
+      else if (m.t === "reveal" && typeof m.url === "string") reveal(m.url)
+      else if (m.t === "hover") hovered(m)
+      else if (m.t === "adopt") adoptTab(m)
+      else if (m.t === "adopted") movesWaiting.get(m.req)?.()
+    }
+    setInterval(() => { prunePeers(); announce() }, 1000)
+  }
+
+  // Another window's frame took this editor's socket: the tab here would only
+  // show it disconnected.
+  function dropTabsOn(url) {
+    const doomed = tabs.filter((x) => x.kind === "editor" && x.url === url)
+    if (!doomed.length) return
+    for (const x of doomed) tabs.splice(tabs.indexOf(x), 1)
+    if (!tabs.length) tabs.push({ id: uid(), kind: "home" })
+    if (!tabs.some((x) => x.id === active)) active = tabs[0].id
+    render()
+  }
+
+  // Another window was asked for an editor this window shows.
+  function reveal(href) {
+    const origin = localOrigin(href)
+    const t = origin && tabs.find((x) => x.kind === "editor" && x.url === origin)
+    if (!t) return
+    const e = editors.find((x) => x.url === origin)
+    if (!(e && t.key === editorKey(e))) {
+      Object.assign(t, { src: onLocalhost(href), stale: false, key: e ? editorKey(e) : null })
+      const f = framesEl.querySelector('iframe[data-id="' + t.id + '"]')
+      if (f) f.src = t.src
+    }
+    select(t.id)
+    window.focus()
+  }
+
+  // The fields a tab carries to another window. Its frame cannot go with it:
+  // a frame moved to another document loads again, so the other window loads
+  // the page the editor last reported.
+  const carry = (t) => ({ id: t.id, kind: t.kind, url: t.url, src: t.src, name: t.name, key: t.key, projectRoot: t.projectRoot })
+  function cleanTab(x) {
+    if (!x || typeof x !== "object" || typeof x.id !== "string" || (x.kind !== "home" && x.kind !== "editor")) return null
+    const str = (v) => (typeof v === "string" ? v : undefined)
+    const t = { id: x.id, kind: x.kind }
+    if (x.kind === "editor") {
+      const origin = localOrigin(x.url)
+      if (!origin) return null
+      const src = str(x.src) && localOrigin(x.src) === origin ? onLocalhost(x.src) : undefined
+      Object.assign(t, { url: origin, src, name: str(x.name)?.slice(0, 80), key: str(x.key) ?? null, projectRoot: str(x.projectRoot) ?? null })
+    }
+    return t
+  }
+
+  // The tab position under a point on this window's strip.
+  // Measured as if the slot for an incoming tab were not there, so the slot
+  // does not push the tabs after it past the pointer and back.
+  function indexAt(x) {
+    const slot = tabsEl.querySelector(".tab.incoming")
+    const shift = slot ? slot.getBoundingClientRect().width + 2 : 0
+    let after = false, n = 0
+    for (const el of tabsEl.children) {
+      if (el === slot) { after = true; continue }
+      if (!el.dataset.id) continue
+      const r = el.getBoundingClientRect()
+      if (r.left - (after ? shift : 0) + r.width / 2 < x) n += 1
+    }
+    return n
+  }
+
+  // A tab from another window, dragged over this window's strip: a slot shows
+  // where it will land. The drag says where it is every move; a slot nobody
+  // updates for a second and a half belonged to a drag that went away.
+  let incoming = null
+  function incomingTab() {
+    const b = document.createElement("div")
+    b.className = "tab incoming"
+    b.innerHTML = '<span class="glyph">' + (incoming.kind === "home" ? HOME_GLYPH : EDIT_GLYPH) + '</span><span class="label"></span>'
+    b.querySelector(".label").textContent = incoming.name
+    return b
+  }
+  function hovered(m) {
+    clearTimeout(hovered.t)
+    const next = typeof m.x === "number" ? { index: indexAt(m.x), name: String(m.name || "Tab").slice(0, 80), kind: m.kind } : null
+    if (next) hovered.t = setTimeout(() => hovered({}), 1500)
+    if (JSON.stringify(next) === JSON.stringify(incoming)) return
+    incoming = next
+    render()
+  }
+
+  // A tab dropped on this window's strip from another window.
+  function adoptTab(m) {
+    const t = cleanTab(m.tab)
+    if (!t) return
+    clearTimeout(hovered.t)
+    const index = typeof m.x === "number" ? indexAt(m.x) : tabs.length
+    incoming = null
+    // One editor, one tab.
+    if (t.kind === "editor") for (const x of tabs.filter((x) => x.kind === "editor" && x.url === t.url)) tabs.splice(tabs.indexOf(x), 1)
+    if (tabs.some((x) => x.id === t.id)) t.id = uid()
+    tabs.splice(Math.min(index, tabs.length), 0, t)
+    active = t.id
+    post({ t: "adopted", to: m.from, req: m.req })
+    render()
+    window.focus()
+  }
+
+  // ---- Moving tabs ----
+
+  const movesWaiting = new Map()
+  // Gives a tab to another window, which answers once the tab is in it. A
+  // window that does not answer (it closed meanwhile) leaves the tab here.
+  function moveToWindow(id, to, x) {
+    const t = tabs.find((x) => x.id === id)
+    if (!t) return Promise.resolve(false)
+    return new Promise((resolve) => {
+      const req = uid()
+      const timer = setTimeout(() => { movesWaiting.delete(req); toast("That window did not answer"); render(); resolve(false) }, 1500)
+      movesWaiting.set(req, () => { clearTimeout(timer); movesWaiting.delete(req); takeOut(id); resolve(true) })
+      post({ t: "adopt", to, req, x, tab: carry(t) })
+    })
+  }
+
+  // A tab that left for another window. A window left with no tabs closes.
+  function takeOut(id) {
+    const i = tabs.findIndex((x) => x.id === id)
+    if (i < 0) return
+    tabs.splice(i, 1)
+    framesEl.querySelector('iframe[data-id="' + id + '"]')?.remove()
+    if (!tabs.length) return closeWindow()
+    if (active === id) active = (tabs[i] || tabs[i - 1]).id
+    render()
+  }
+  function closeWindow() {
+    gone = true
+    post({ t: "bye" })
+    for (const f of framesEl.querySelectorAll("iframe")) f.remove()
+    // The desk hears first: a request sent as the window closes is dropped.
+    Promise.race([forget(wid), new Promise((r) => setTimeout(r, 1000))]).then(() => {
+      window.close()
+      // A page Chrome will not let a script close (one opened by hand in a
+      // browser tab) carries on with a Home tab. Chrome can take more than
+      // half a second to close an app window, and a page that took that for a
+      // refusal saved itself again and came back on the next launch, so this
+      // waits, and never runs once the page is going away.
+      setTimeout(() => {
+        if (window.closed || leaving) return
+        gone = false; mirrored = null
+        tabs = [{ id: uid(), kind: "home" }]; active = tabs[0].id
+        render()
+      }, 2000)
+    })
+  }
+
+  // Pulls a tab out into a window of its own, at a point on screen or beside
+  // this window. The new window reads its tabs from this origin's storage,
+  // written here first. Chrome lets a page open a window only for a few
+  // seconds after a press; past that (a long drag) the desk opens it.
+  async function tearOut(id, at) {
+    const t = tabs.find((x) => x.id === id)
+    if (!t || tabs.length < 2) return
+    const w = "w" + uid()
+    const state = { tabs: [carry(t)], active: t.id, savedAt: Date.now() }
+    localStorage.setItem(keyOf(w), JSON.stringify(state))
+    fetch("/api/tabs", { method: "PUT", body: JSON.stringify({ ...state, window: w }), keepalive: true }).catch(() => {})
+    const left = Math.round(at ? at.left : screenX + 40), top = Math.round(at ? at.top : screenY + 40)
+    // The size of this window, as in Chrome; but a window that fills the
+    // screen would open a copy of itself right on top of it (macOS keeps it on
+    // screen), hiding the strip its tab could go back to. That one opens at
+    // four fifths of the screen.
+    const fills = screen.availWidth > 0 && outerWidth >= screen.availWidth - 16 && outerHeight >= screen.availHeight - 16
+    const width = fills ? Math.round(screen.availWidth * 0.8) : outerWidth
+    const height = fills ? Math.round(screen.availHeight * 0.8) : outerHeight
+    let opened = null
+    try { opened = window.open("/?window=" + w, "_blank", "popup,left=" + left + ",top=" + top + ",width=" + width + ",height=" + height) } catch {}
+    if (!opened) {
+      const r = await fetch("/api/windows/open", { method: "POST", body: JSON.stringify({ window: w }) }).then((x) => x.json()).catch(() => null)
+      if (!r || r.ok !== true) { forget(w); toast("Could not open a new window"); return }
+    }
+    takeOut(id)
+  }
+
+  function moveTab(id, by) {
+    const i = tabs.findIndex((x) => x.id === id), j = i + by
+    if (i < 0 || j < 0 || j >= tabs.length) return
+    const [t] = tabs.splice(i, 1)
+    tabs.splice(j, 0, t)
+    render()
+    focusTab(id)
+  }
+
+  // ---- Dragging a tab ----
+  //
+  // Along the strip the tab reorders. Pulled out of the strip, it leaves the
+  // row: let go over another window's strip and it moves there; let go
+  // anywhere else and it opens in a new window there. The pointer is
+  // captured, so the page keeps getting its moves outside the window, in
+  // screen coordinates, and finds another window's strip from where each
+  // window says its strip is.
+  let press = null, drag = null
+  const PULL = 28
+  tabsEl.addEventListener("pointerdown", (ev) => {
+    const el = ev.target.closest(".tab[data-id]")
+    if (!el || ev.button !== 0 || ev.ctrlKey || ev.target.closest(".close") || drag) return
+    closeMenu()
+    press = { el, id: el.dataset.id, x: ev.clientX, y: ev.clientY, sx: ev.screenX, sy: ev.screenY, pointerId: ev.pointerId }
+    try { el.setPointerCapture(ev.pointerId) } catch {}
+  })
+  tabsEl.addEventListener("pointermove", (ev) => {
+    if (!press || ev.pointerId !== press.pointerId) return
+    if (!drag && Math.hypot(ev.clientX - press.x, ev.clientY - press.y) < 5) return
+    if (!drag) beginDrag()
+    if (drag) moveDrag(ev)
+  })
+  tabsEl.addEventListener("pointerup", (ev) => { if (press && ev.pointerId === press.pointerId) endDrag(ev, false) })
+  tabsEl.addEventListener("pointercancel", (ev) => { if (press && ev.pointerId === press.pointerId) endDrag(ev, true) })
+  tabsEl.addEventListener("lostpointercapture", (ev) => { if (drag && ev.pointerId === press?.pointerId) endDrag(ev, true) })
+  // A tab that was dragged is not also clicked.
+  tabsEl.addEventListener("click", (ev) => { if (endDrag.just) { ev.stopPropagation(); endDrag.just = false } }, true)
+
+  function beginDrag() {
+    const t = tabs.find((x) => x.id === press.id)
+    if (!t) { press = null; return }
+    const els = [...tabsEl.querySelectorAll(".tab[data-id]")]
+    const from = els.indexOf(press.el)
+    const rects = els.map((el) => el.getBoundingClientRect())
+    const step = els.length > 1 ? (from < els.length - 1 ? rects[from + 1].left - rects[from].left : rects[from].left - rects[from - 1].left) : rects[from].width
+    drag = { t, els, rects, from, index: from, step, grabX: press.x - rects[from].left, out: false, target: null, ghost: null }
+    hideTip()
+    if (active !== t.id) {
+      select(t.id)
+      for (const el of els) { el.setAttribute("aria-selected", String(el === press.el)); el.tabIndex = el === press.el ? 0 : -1 }
+    }
+    tabsEl.classList.add("reordering")
+    document.body.classList.add("dragging-tab")
+    press.el.classList.add("lifted")
+  }
+
+  // The window whose strip is under a point on screen, and the point on it.
+  // This window is in front while its tab is dragged, so a point inside it is
+  // its own. Of the others, the one used last is taken to be in front.
+  // A window dragged by its only tab moves under the pointer, so for that drag
+  // this window does not count (self is false).
+  function windowAt(sx, sy, cx, cy, self = true) {
+    if (self && cx >= 0 && cy >= 0 && cx <= innerWidth && cy <= innerHeight) return null
+    let best = null
+    for (const [id, p] of peers) {
+      const g = p.geo
+      if (!g || !g.strip) continue
+      const x = sx - g.x, y = sy - g.y
+      if (x < g.strip.left || x > g.strip.right || y < g.strip.top - 8 || y > g.strip.bottom + 8) continue
+      if (!best || p.focusedAt > best.focusedAt) best = { id, x, title: p.title, focusedAt: p.focusedAt, below: g.y + g.strip.bottom }
+    }
+    return best
+  }
+
+  // A window's only tab drags the whole window, as in Chrome, so the window
+  // can be taken to another window's strip and its tab dropped in. Over that
+  // strip the window hangs just below it, so the strip and the slot where the
+  // tab will land stay in view. A window Chrome will not let a script move
+  // (one the desk reopened) falls back to the copy that follows the pointer.
+  function dragWindow(ev) {
+    const d = drag
+    if (!d.win) d.win = { dx: press.sx - screenX, dy: press.sy - screenY, x: screenX, y: screenY, tries: 0 }
+    const target = windowAt(ev.screenX, ev.screenY, ev.clientX, ev.clientY, false)
+    const name = d.t.kind === "home" ? "Home" : d.t.name || d.t.url
+    if (d.target && d.target.id !== target?.id) post({ t: "hover", to: d.target.id })
+    if (target) post({ t: "hover", to: target.id, x: target.x, name, kind: d.t.kind })
+    d.target = target
+    d.win.next = [Math.round(ev.screenX - d.win.dx), Math.round(target ? target.below + 6 : ev.screenY - d.win.dy)]
+    if (d.win.frame) return
+    d.win.frame = requestAnimationFrame(() => {
+      if (drag !== d) return
+      d.win.frame = 0
+      const [left, top] = d.win.next
+      if (Math.abs(left - d.win.x) + Math.abs(top - d.win.y) > 4) d.win.tries += 1
+      try { moveTo(left, top) } catch {}
+      // Asked to move a few times and still where it started: not movable.
+      if (d.win.tries >= 3 && screenX === d.win.x && screenY === d.win.y) d.canMove = false
+    })
+  }
+
+  function moveDrag(ev) {
+    const d = drag
+    if (tabs.length < 2 && d.canMove !== false && peers.size) return dragWindow(ev)
+    const strip = $("strip").getBoundingClientRect()
+    let out = ev.clientY < strip.top - PULL || ev.clientY > strip.bottom + PULL || ev.clientX < -PULL || ev.clientX > innerWidth + PULL
+    // A window's only tab has nowhere to go but another window's strip, which
+    // can lie under this window (one the desk reopened on top of the first).
+    const solo = tabs.length < 2
+    const target = out || solo ? windowAt(ev.screenX, ev.screenY, ev.clientX, ev.clientY, !solo) : null
+    if (solo) out = Boolean(target)
+    const name = d.t.kind === "home" ? "Home" : d.t.name || d.t.url
+    if (d.target && d.target.id !== target?.id) post({ t: "hover", to: d.target.id })
+    if (target) post({ t: "hover", to: target.id, x: target.x, name, kind: d.t.kind })
+    d.target = target
+    d.out = out
+    press.el.classList.toggle("away", out)
+    if (out) {
+      if (!d.ghost) {
+        d.ghost = document.createElement("div")
+        d.ghost.className = "tab-ghost"
+        const copy = press.el.cloneNode(true)
+        copy.classList.remove("lifted", "away")
+        copy.style.transform = ""
+        copy.style.width = d.rects[d.from].width + "px"
+        copy.removeAttribute("data-id")
+        d.ghost.append(copy, Object.assign(document.createElement("div"), { className: "hint" }))
+        document.body.append(d.ghost)
+      }
+      d.ghost.lastChild.textContent = target ? "Move to window with " + target.title : "Open in a new window"
+      d.ghost.style.transform = "translate(" + Math.round(ev.clientX - d.grabX) + "px, " + Math.round(ev.clientY - 13) + "px)"
+      // The row closes up behind the tab that left it.
+      d.els.forEach((el, i) => { if (i !== d.from) el.style.transform = i > d.from ? "translateX(" + -d.step + "px)" : "" })
+      return
+    }
+    if (d.ghost) { d.ghost.remove(); d.ghost = null }
+    const first = d.rects[0], last = d.rects[d.rects.length - 1], own = d.rects[d.from]
+    const dx = Math.max(first.left - own.left, Math.min(last.right - own.right, ev.clientX - press.x))
+    press.el.style.transform = "translateX(" + dx + "px)"
+    const center = own.left + dx + own.width / 2
+    let index = 0
+    d.rects.forEach((r, i) => { if (i !== d.from && r.left + r.width / 2 < center) index += 1 })
+    d.index = index
+    d.els.forEach((el, i) => {
+      if (i === d.from) return
+      const shift = d.from < index && i > d.from && i <= index ? -d.step : d.from > index && i >= index && i < d.from ? d.step : 0
+      el.style.transform = shift ? "translateX(" + shift + "px)" : ""
+    })
+  }
+
+  function endDrag(ev, cancel) {
+    const d = drag, p = press
+    press = null
+    drag = null
+    try { p.el.releasePointerCapture(p.pointerId) } catch {}
+    if (!d) return
+    endDrag.just = true
+    setTimeout(() => { endDrag.just = false })
+    d.ghost?.remove()
+    tabsEl.classList.remove("reordering")
+    document.body.classList.remove("dragging-tab")
+    if (d.target) post({ t: "hover", to: d.target.id })
+    if (d.win) {
+      cancelAnimationFrame(d.win.frame)
+      render()
+      // Escape puts the window back where it was.
+      if (cancel) { try { moveTo(d.win.x, d.win.y) } catch {} return }
+      if (d.target) moveToWindow(d.t.id, d.target.id, d.target.x)
+      return
+    }
+    const was = p.el.getBoundingClientRect().left
+    if (cancel || !d.out) {
+      if (!cancel && d.index !== d.from) {
+        tabs.splice(tabs.indexOf(d.t), 1)
+        tabs.splice(d.index, 0, d.t)
+      }
+      render()
+      // The dropped tab settles into its slot from where it was let go.
+      const el = tabsEl.querySelector('.tab[data-id="' + d.t.id + '"]')
+      if (el && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        const by = was - el.getBoundingClientRect().left
+        if (Math.abs(by) > 1) {
+          el.style.transform = "translateX(" + by + "px)"
+          el.getBoundingClientRect()
+          el.classList.add("settling")
+          el.style.transform = ""
+          setTimeout(() => el.classList.remove("settling"), 200)
+        }
+      }
+      return
+    }
+    render()
+    if (d.target) { moveToWindow(d.t.id, d.target.id, d.target.x); return }
+    // The new window opens with the tab under the pointer, where it was held.
+    const strip = $("strip").getBoundingClientRect(), list = tabsEl.getBoundingClientRect()
+    const cal = calibrated || { x: 0, y: outerHeight - innerHeight }
+    tearOut(d.t.id, { left: ev.screenX - list.left - d.grabX - cal.x, top: ev.screenY - strip.top - strip.height / 2 - cal.y })
+  }
+
+  // ---- A tab's menu ----
+
+  const menuEl = $("menu")
+  function openMenu(id, x, y, fromKeyboard) {
+    const t = tabs.find((x) => x.id === id)
+    if (!t) return
+    hideTip()
+    prunePeers()
+    menuEl.textContent = ""
+    const item = (label, run, disabled) => {
+      const b = document.createElement("button")
+      b.setAttribute("role", "menuitem")
+      b.textContent = label
+      b.disabled = Boolean(disabled)
+      b.onclick = () => { closeMenu(); run() }
+      menuEl.append(b)
+    }
+    item("Move to new window", () => tearOut(id), tabs.length < 2)
+    for (const [peer, p] of peers) item("Move to window with " + p.title, () => moveToWindow(id, peer))
+    menuEl.append(document.createElement("hr"))
+    item("Close tab", () => close(id), tabs.length < 2)
+    menuEl.hidden = false
+    const w = menuEl.offsetWidth, h = menuEl.offsetHeight
+    menuEl.style.transform = "translate(" + Math.round(Math.max(8, Math.min(x, innerWidth - w - 8))) + "px, " + Math.round(Math.max(8, Math.min(y, innerHeight - h - 8))) + "px)"
+    menuEl.dataset.tab = id
+    if (fromKeyboard) menuEl.querySelector("button:not(:disabled)")?.focus()
+  }
+  function closeMenu() {
+    if (menuEl.hidden) return
+    const id = menuEl.dataset.tab
+    const had = menuEl.contains(document.activeElement)
+    menuEl.hidden = true
+    if (had) focusTab(id)
+  }
+  menuEl.addEventListener("keydown", (ev) => {
+    const items = [...menuEl.querySelectorAll("button:not(:disabled)")]
+    const i = items.indexOf(document.activeElement)
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      ev.preventDefault()
+      items[(i + (ev.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus()
+    } else if (ev.key === "Escape" || ev.key === "Tab") { ev.preventDefault(); closeMenu() }
+  })
+  addEventListener("pointerdown", (ev) => { if (!menuEl.contains(ev.target)) closeMenu() }, true)
+  addEventListener("blur", () => { if (document.activeElement?.tagName !== "IFRAME") closeMenu() })
+  addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape") return
+    if (drag) { ev.preventDefault(); endDrag(ev, true) }
+    else if (!menuEl.hidden) { ev.preventDefault(); closeMenu() }
+  })
 
   render()
   setInterval(poll, 2000)
@@ -784,7 +1589,7 @@ export function shellPage({ repoRoot, version = null }) {
     if (!("EventSource" in window)) return
     const kind = matchMedia("(display-mode: browser)").matches ? "tab" : "app"
     new EventSource("/api/events?window=" + kind).addEventListener("open-url", (ev) => {
-      try { openUrl(JSON.parse(ev.data).url) } catch {}
+      try { const url = JSON.parse(ev.data).url; if (opensHere(url)) openUrl(url) } catch {}
     })
   })
 })()

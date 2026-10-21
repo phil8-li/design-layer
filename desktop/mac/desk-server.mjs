@@ -472,45 +472,132 @@ function pickFolder() {
   return picking
 }
 
+/** A window's id in its address (`/?window=<id>`): "main" for the one the app opens with. */
+export const WINDOW_ID = /^(main|w[a-z0-9]{1,24})$/
+
 /**
- * The window's saved tabs, kept by the desk as well as in the page's storage.
+ * The windows' saved tabs, kept by the desk as well as in the page's storage.
  *
  * The page's storage belongs to its origin, and the window moved from
  * 127.0.0.1 to localhost: the page on the new origin cannot read what the old
  * one saved. So every page mirrors its tabs here, and a page whose storage is
  * empty takes them from here once. The file sits beside the app's Chrome
  * profile, in the app's own folder, not in any project.
+ *
+ * One entry per window. A tab pulled out of a window makes a window of its
+ * own, and Chrome reopens only the app's first window when the app starts
+ * again, so that window reopens the others from these entries. A file from
+ * before there were several windows holds one window's tabs at its top level:
+ * that is the main window's.
  */
 export function createTabStore(file) {
+  // Every entry, including the marks left by windows that are gone.
+  function readEntries() {
+    try {
+      const saved = JSON.parse(fs.readFileSync(file, "utf8"))
+      if (saved && saved.windows && typeof saved.windows === "object") return saved.windows
+      return saved && Array.isArray(saved.tabs) ? { main: saved } : {}
+    } catch {
+      return {}
+    }
+  }
+  function readAll() {
+    return Object.fromEntries(Object.entries(readEntries()).filter(([, entry]) => entry && Array.isArray(entry.tabs)))
+  }
+  // When each window that is gone went: a page's own storage can still hold
+  // a copy of one (Chrome can drop a page's last write on quit), and a copy
+  // older than this is not a window to reopen.
+  function readGone() {
+    return Object.fromEntries(Object.entries(readEntries()).filter(([, entry]) => entry?.gone).map(([id, entry]) => [id, entry.savedAt]))
+  }
+  function writeAll(windows) {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    // Written whole, then renamed: a desk stopped mid-write leaves the last copy.
+    fs.writeFileSync(`${file}.tmp`, JSON.stringify({ windows }))
+    fs.renameSync(`${file}.tmp`, file)
+  }
+  const windowOf = (value) => {
+    const id = value ?? "main"
+    if (typeof id !== "string" || !WINDOW_ID.test(id)) throw Object.assign(new Error("Unknown window id"), { status: 400 })
+    return id
+  }
   return {
-    read() {
-      try {
-        const saved = JSON.parse(fs.readFileSync(file, "utf8"))
-        return saved && Array.isArray(saved.tabs) ? saved : null
-      } catch {
-        return null
-      }
+    read(window) {
+      return readAll()[windowOf(window)] ?? null
     },
+    readAll,
+    readGone,
     write(saved) {
-      if (!saved || typeof saved !== "object" || !Array.isArray(saved.tabs) || saved.tabs.length > 100) {
+      if (!saved || typeof saved !== "object") throw Object.assign(new Error("Saved tabs need a tabs list"), { status: 400 })
+      const id = windowOf(saved.window)
+      const windows = readEntries()
+      const at = Number.isFinite(saved.savedAt) ? saved.savedAt : 0
+      // The page sends its saves without waiting for answers, so one can
+      // arrive after a later one: a window's last save landed after the note
+      // that it was gone, and the window came back on the next launch. A copy
+      // older than the one kept here is dropped.
+      const kept = windows[id]
+      if (kept && at < (kept.savedAt || 0)) return kept.gone ? { window: id, gone: true } : kept
+      // A window that gave its last tab away, or whose tabs are gone for good,
+      // leaves a mark for a day, so a late save cannot bring it back.
+      if (saved.gone === true) {
+        windows[id] = { gone: true, savedAt: at, goneAt: Date.now() }
+        for (const [key, entry] of Object.entries(windows)) if (entry?.gone && !(Date.now() - entry.goneAt < 86_400_000)) delete windows[key]
+        writeAll(windows)
+        return { window: id, gone: true }
+      }
+      if (!Array.isArray(saved.tabs) || saved.tabs.length > 100) {
         throw Object.assign(new Error("Saved tabs need a tabs list"), { status: 400 })
       }
       const tabs = saved.tabs.filter((t) => t && typeof t === "object" && typeof t.id === "string" && (t.kind === "home" || t.kind === "editor"))
       const clean = {
         tabs: tabs.map(({ id, kind, url, src, name, key }) => ({ id, kind, url, src, name, key })),
         active: typeof saved.active === "string" ? saved.active : null,
-        dismissed: Array.isArray(saved.dismissed) ? saved.dismissed.filter((k) => typeof k === "string").slice(-50) : [],
         // When the page saved this copy, so a page whose own storage lost its
         // last write can tell this copy is newer (see the page's restore).
         savedAt: Number.isFinite(saved.savedAt) ? saved.savedAt : 0,
       }
-      fs.mkdirSync(path.dirname(file), { recursive: true })
-      // Written whole, then renamed: a desk stopped mid-write leaves the last copy.
-      fs.writeFileSync(`${file}.tmp`, JSON.stringify(clean))
-      fs.renameSync(`${file}.tmp`, file)
+      // When the window closed: windows closed together were the app quitting,
+      // and come back; one closed on its own earlier does not.
+      if (Number.isFinite(saved.closedAt)) clean.closedAt = saved.closedAt
+      windows[id] = clean
+      writeAll(windows)
       return clean
     },
   }
+}
+
+/**
+ * Opens one more app window on `url` (a desk page for one saved window).
+ *
+ * A page can open a window itself only during a click or a press, and Chrome
+ * reopens only the app's first window when the app starts, so the desk opens
+ * the rest. A second Chrome run on the app's profile hands its command line to
+ * the Chrome already running there, which opens the app on that URL in a new
+ * window. Without the app shim (the `--app-window` fallback) it opens an app
+ * window on the URL instead.
+ */
+function openAppWindow(url) {
+  if (!CHROME_BINARY || !fs.existsSync(CHROME_BINARY)) return { ok: false, error: "Chrome is not installed" }
+  let args
+  if (shimInstalled()) {
+    let appId = ""
+    try {
+      appId = execFileSync("/usr/bin/plutil", ["-extract", "CrAppModeShortcutID", "raw", path.join(SHIM, "Contents", "Info.plist")], { encoding: "utf8" }).trim()
+    } catch {}
+    if (!/^[a-p]{32}$/.test(appId)) return { ok: false, error: "The app shim names no app" }
+    args = [`--app-id=${appId}`, `--app-launch-url-for-shortcuts-menu-item=${url}`]
+  } else {
+    args = [`--app=${url}`]
+  }
+  const child = spawn(
+    CHROME_BINARY,
+    [`--user-data-dir=${chromeProfileDir()}`, ...args, "--no-first-run", "--no-default-browser-check", APP_FEATURES],
+    { detached: true, stdio: "ignore" }
+  )
+  child.on("error", (error) => console.warn(`${new Date().toISOString()} [desk] could not open a window: ${error.message}`))
+  child.unref()
+  return { ok: true }
 }
 
 export async function createDeskServer({
@@ -528,6 +615,7 @@ export async function createDeskServer({
   // restart it. Both are replaced in tests.
   appChromeCommand = () => (shimInstalled() ? profileChromeCommand(chromeProfileDir()) : null),
   relaunch = relaunchApp,
+  openWindow = openAppWindow,
 } = {}) {
   const supervisor = createSupervisor({ repoRoot, port: startScreenPort, logDir, enabled: supervise, log })
   const handoff = createHandoff()
@@ -614,10 +702,25 @@ export async function createDeskServer({
       })
     },
     "GET /api/editors": (_req, res) => sendJson(res, 200, { editors: normalizeEditors(listEditors()) }),
-    "GET /api/tabs": (_req, res) => sendJson(res, 200, tabStore.read() ?? {}),
+    // One window's tabs (?window=<id>, the main window's by default), or
+    // every window's (?all=1) for the first window to reopen the others.
+    "GET /api/tabs": (_req, res, url) => {
+      if (url.searchParams.get("all") === "1") return sendJson(res, 200, { windows: tabStore.readAll(), gone: tabStore.readGone() })
+      sendJson(res, 200, tabStore.read(url.searchParams.get("window") ?? undefined) ?? {})
+    },
     "PUT /api/tabs": async (req, res) => {
       if (!fromDeskPage(req)) return sendJson(res, 403, { error: "Only the desk page saves its tabs" })
       sendJson(res, 200, tabStore.write(await readBody(req, 64 * 1024)))
+    },
+    // A desk page asking for one more app window, on a saved window's tabs.
+    "POST /api/windows/open": async (req, res) => {
+      if (!fromDeskPage(req)) return sendJson(res, 403, { error: "Only the desk page opens windows" })
+      const body = await readBody(req)
+      const id = body && typeof body === "object" ? body.window : null
+      if (typeof id !== "string" || !WINDOW_ID.test(id)) return sendJson(res, 400, { error: "Unknown window id" })
+      const result = await openWindow(`${origin()}/?window=${id}`)
+      log(`[desk] open window ${id}: ${result?.ok ? "ok" : result?.error ?? "failed"}`)
+      sendJson(res, result?.ok ? 200 : 500, result?.ok ? { ok: true } : { ok: false, error: result?.error ?? "Could not open a window" })
     },
     "POST /api/pick-folder": async (_req, res) => {
       const result = await picker()
