@@ -1685,9 +1685,10 @@ await check("inside the desk, a ready editor is asked of the desk, not loaded in
     await pressStart(dom)
     assert.deepEqual(sent, [{ message: { type: "designlayer-desk:go", url: READY_E9.url }, target: DESK }])
     assert.deepEqual(dom.navigations, [], "the Home tab loaded the editor itself")
-    // In case the desk keeps this tab, it shows the same editor's Continue.
-    assert.equal($("current").hidden, false)
-    assert.equal(dom.window.document.activeElement, $("current-name"))
+    // In case the desk keeps this tab, it shows the chooser, not the card.
+    assert.equal($("current").hidden, true)
+    assert.equal($("form").hidden, false)
+    assert.equal(dom.window.document.activeElement, $("url"))
   } finally {
     dom.window.close()
   }
@@ -1705,26 +1706,29 @@ await check("inside the desk, a ready editor is asked of the desk, not loaded in
   }
 })
 
-await check("Continue inside the desk asks the desk; in a browser tab it stays a link", async () => {
-  const click = (dom, link, init = {}) =>
-    link.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ...init }))
+/*
+ * The desk's + opens a Home tab to add an app. Every running editor is already
+ * a tab there, or an Editing row in the list, so the card is skipped.
+ */
+await check("a Home tab in the desk opens on the chooser even with editors running", async () => {
   const sent = []
-  const dom = await mountPage([], {}, {}, { "/api/status": () => statusOf([SHOP]) }, deskFrame(sent))
+  const dom = await mountPage(ROWS, { [KNOWN]: projectSaid(KNOWN) }, {}, { "/api/status": () => statusOf([SHOP]) }, deskFrame(sent))
   try {
-    const link = dom.window.document.querySelector("#editors a.primary")
-    assert.equal(link.getAttribute("href"), SHOP.url)
-    assert.equal(click(dom, link), false, "the click still navigated this frame")
-    assert.deepEqual(sent, [{ message: { type: "designlayer-desk:go", url: SHOP.url }, target: DESK }])
-    assert.deepEqual(dom.navigations, [])
-    // A modified click is the person asking for the link itself.
-    assert.equal(click(dom, link, { metaKey: true }), true)
-    assert.equal(sent.length, 1)
+    const $ = (id) => dom.window.document.getElementById(id)
+    assert.equal($("current").hidden, true, "the Continue card came up in the desk")
+    assert.equal($("choose-title").hidden, false)
+    assert.equal($("form").hidden, false)
+    assert.deepEqual(sent, [])
   } finally {
     dom.window.close()
   }
 
+  // A browser tab still gets the card, and its Continue stays a plain link.
+  const click = (dom, link) =>
+    link.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }))
   const tab = await mountPage([], {}, {}, { "/api/status": () => statusOf([SHOP]) })
   try {
+    assert.equal(tab.window.document.getElementById("current").hidden, false)
     assert.equal(click(tab, tab.window.document.querySelector("#editors a.primary")), true)
   } finally {
     tab.window.close()

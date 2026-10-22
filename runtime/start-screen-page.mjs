@@ -99,6 +99,14 @@ function deskOrigin() {
   }
 }
 
+/*
+ * A Home tab in the desk opens on the chooser, never on the "Continue editing?"
+ * card. The desk's + button opens a Home tab to add an app, and every running
+ * editor is already a tab there or an "Editing" row in the chooser's list, so
+ * the card was one more press between + and the list.
+ */
+const IN_DESK = deskOrigin() !== null
+
 /** Asks the desk to show \`url\`. False outside the desk; the caller navigates. */
 function handToDesk(url) {
   const target = deskOrigin()
@@ -812,11 +820,11 @@ function showChooser() {
 
 /*
  * The card when anything is running, else the chooser. False when it fell back
- * to the chooser. Focus goes to the card's heading because the control that had
- * it was on the face just hidden.
+ * to the chooser, which a desk Home tab always does. Focus goes to the card's
+ * heading because the control that had it was on the face just hidden.
  */
 async function showRunning() {
-  const status = await readStatus()
+  const status = IN_DESK ? null : await readStatus()
   if (!editorsOf(status).length) {
     showChooser()
     return false
@@ -829,8 +837,8 @@ async function showRunning() {
 /*
  * Where a Start ends. A browser tab becomes the editor. A desk tab asks the
  * desk, which either turns this tab into the editor or selects the tab that
- * already shows it; in case it does neither, the card is left up with a
- * Continue for the same editor.
+ * already shows it; in case it does neither, the chooser is left up, where
+ * that app's row says Editing.
  */
 function openEditor(url) {
   if (!handToDesk(url)) {
@@ -1087,7 +1095,7 @@ async function boot() {
   // constrain. A throw here used to take the app scan down with it and leave
   // the page on "Looking for dev servers…" with no error anywhere on screen.
   try {
-    if (editorsOf(status).length) showCurrent(status)
+    if (editorsOf(status).length && !IN_DESK) showCurrent(status)
     else if (status && status.stopped) show(el.stopped, status.stopped)
   } catch {
     show(el.stopped, "Could not read what is running. Pick an app below to start one.")
