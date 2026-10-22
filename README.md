@@ -2,6 +2,10 @@
 
 # DesignLayer
 
+[![CI](https://github.com/phil8-li/design-layer/actions/workflows/ci.yml/badge.svg)](https://github.com/phil8-li/design-layer/actions/workflows/ci.yml)
+[![MIT License](https://img.shields.io/github/license/phil8-li/design-layer)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/phil8-li/design-layer)](https://github.com/phil8-li/design-layer/releases)
+
 **Edit your running React or Angular app like a Figma file. Every change lands in your source code.**
 
 DesignLayer sits in front of your dev server as a proxy. Select anything on the
@@ -95,5 +99,6 @@ Security reports go through [SECURITY.md](SECURITY.md), not public issues.
 
 ## License
 
-[MIT](LICENSE) © Phil Li. Third-party code is listed in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+[MIT](LICENSE) © Haoyang (Phil) Li. Third-party code is listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). What shipped is in
+[CHANGELOG.md](CHANGELOG.md).

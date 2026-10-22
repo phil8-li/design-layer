@@ -36,7 +36,7 @@ tool on 20.9.
 
 ```sh
 git clone https://github.com/phil8-li/design-layer.git
-cd designlayer
+cd design-layer
 npm install
 ```
 
@@ -108,7 +108,7 @@ already exists. A few load-bearing rules:
 
 - `cli.mjs` owns the argv contract. `config.mjs` owns defaults, discovery, and
   resolution.
-- `runtime/vendor-patch.mjs` holds 30 pinned splices against
+- `runtime/vendor-patch.mjs` holds 31 pinned splices against
   `react-rewrite-cli@0.1.1`, exactly. If you bump that dependency, the patches
   are the work — the launcher is written to tell the user it could not patch
   rather than to serve a half-patched bundle.
