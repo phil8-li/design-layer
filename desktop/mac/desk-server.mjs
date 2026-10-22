@@ -551,7 +551,7 @@ export function createTabStore(file) {
       }
       const tabs = saved.tabs.filter((t) => t && typeof t === "object" && typeof t.id === "string" && (t.kind === "home" || t.kind === "editor"))
       const clean = {
-        tabs: tabs.map(({ id, kind, url, src, name, key }) => ({ id, kind, url, src, name, key })),
+        tabs: tabs.map(({ id, kind, url, src, name, key, app }) => ({ id, kind, url, src, name, key, app })),
         active: typeof saved.active === "string" ? saved.active : null,
         // When the page saved this copy, so a page whose own storage lost its
         // last write can tell this copy is newer (see the page's restore).
@@ -563,6 +563,46 @@ export function createTabStore(file) {
       windows[id] = clean
       writeAll(windows)
       return clean
+    },
+  }
+}
+
+/**
+ * Names a person gave apps' tabs in the window, by app: its project folder and
+ * app port ("<folder>|<port>"), or the editor's address for a tab whose app is
+ * not known yet.
+ *
+ * Kept here and not in the app: an app's name everywhere else is its folder
+ * (runtime/app-name.mjs), and renaming the folder would move the project out
+ * from under its running dev server. A tab's name is the window's to choose,
+ * so it lives with the window's tabs and follows the app into any tab and any
+ * window that shows it.
+ */
+export const TAB_NAME_MAX = 80
+export function createNameStore(file) {
+  function read() {
+    try {
+      const saved = JSON.parse(fs.readFileSync(file, "utf8"))
+      return saved && saved.names && typeof saved.names === "object" ? saved.names : {}
+    } catch {
+      return {}
+    }
+  }
+  return {
+    read,
+    // One app's name; an empty name gives the tab back its folder's name.
+    write(body) {
+      const app = body && typeof body === "object" ? body.app : null
+      if (typeof app !== "string" || !app || app.length > 4096) throw Object.assign(new Error("A name needs an app"), { status: 400 })
+      const name = typeof body.name === "string" ? body.name.trim().slice(0, TAB_NAME_MAX) : ""
+      const names = read()
+      if (name) names[app] = name
+      else delete names[app]
+      if (Object.keys(names).length > 500) throw Object.assign(new Error("Too many tab names"), { status: 400 })
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(`${file}.tmp`, JSON.stringify({ names }))
+      fs.renameSync(`${file}.tmp`, file)
+      return names
     },
   }
 }
@@ -620,6 +660,7 @@ export async function createDeskServer({
   const supervisor = createSupervisor({ repoRoot, port: startScreenPort, logDir, enabled: supervise, log })
   const handoff = createHandoff()
   const tabStore = createTabStore(path.join(stateDir, "desk-tabs.json"))
+  const nameStore = createNameStore(path.join(stateDir, "desk-names.json"))
   const startedAt = Date.now()
   // The commit the desk runs. An update restarts the desk, and the window
   // reloads when the commit it was served with is no longer this one.
@@ -711,6 +752,11 @@ export async function createDeskServer({
     "PUT /api/tabs": async (req, res) => {
       if (!fromDeskPage(req)) return sendJson(res, 403, { error: "Only the desk page saves its tabs" })
       sendJson(res, 200, tabStore.write(await readBody(req, 64 * 1024)))
+    },
+    "GET /api/names": (_req, res) => sendJson(res, 200, { names: nameStore.read() }),
+    "PUT /api/names": async (req, res) => {
+      if (!fromDeskPage(req)) return sendJson(res, 403, { error: "Only the desk page names its tabs" })
+      sendJson(res, 200, { names: nameStore.write(await readBody(req)) })
     },
     // A desk page asking for one more app window, on a saved window's tabs.
     "POST /api/windows/open": async (req, res) => {

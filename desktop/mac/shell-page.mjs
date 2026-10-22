@@ -135,6 +135,12 @@ export function shellPage({ repoRoot, version = null }) {
   /* A tab's glyphs take the tab's text color: one color, like Chrome's. */
   .tab .glyph { width: 16px; height: 16px; flex: none; display: grid; place-items: center; }
   .tab .label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Renaming a tab: the name becomes a field in its place, ringed in the
+     accent, and the shortcut steps aside to give it room. */
+  .tab .rename { flex: 1 1 auto; min-width: 0; width: 100%; height: 20px; margin: 0 -4px; padding: 0 4px;
+    border: 0; border-radius: 4px; outline: 2px solid var(--accent); outline-offset: -2px;
+    background: var(--ground); color: var(--ink); font: inherit; }
+  .tab.renaming .num { display: none; }
   .tab .num { font-size: 10px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
   /* The shortcut and the close button keep to the tab's end, so a close
      button is always the same distance from its tab's right edge. */
@@ -282,6 +288,33 @@ export function shellPage({ repoRoot, version = null }) {
   let tabs, active
 
   function uid() { return Math.random().toString(36).slice(2, 9) }
+
+  // Names a person gave apps' tabs, by app: its project folder and app port,
+  // the pair that also keeps each app's editor ports (runtime/editor-ports.mjs).
+  // One folder can run two apps (a front end and its agent server), and each
+  // tab gets a name of its own. A tab whose app is not known yet is named by
+  // its editor's address. The desk keeps them
+  // (GET/PUT /api/names); this origin's storage holds a copy for the first
+  // paint, and the windows tell each other of a rename at once.
+  const NAMES_KEY = KEY + ".names"
+  let names = (() => { try { return JSON.parse(localStorage.getItem(NAMES_KEY)) || {} } catch { return {} } })()
+  let namesLoaded = false
+  const appOf = (e) => {
+    if (!e || !e.projectRoot || !e.appUrl) return null
+    try { const u = new URL(e.appUrl); return e.projectRoot + "|" + (u.port || (u.protocol === "https:" ? "443" : "80")) } catch { return null }
+  }
+  const nameKey = (t) => appOf(editors.find((e) => e.url === t.url)) || t.app || t.url
+  const customName = (t) => (t.kind === "editor" ? names[nameKey(t)] || names[t.url] || null : null)
+  // What a tab is called everywhere in the window: the strip, the tip, the
+  // window title, menus, and a dragged copy.
+  const labelOf = (t) => (t.kind === "home" ? "Home" : customName(t) || t.name || t.url)
+  function takeNames(next) {
+    if (!next || typeof next !== "object") return false
+    const same = JSON.stringify(next) === JSON.stringify(names)
+    names = next
+    try { localStorage.setItem(NAMES_KEY, JSON.stringify(names)) } catch {}
+    return !same
+  }
   const editorKey = (e) => e.url + "#" + e.pid
   // An editor tab is addressed by its editor's origin (url); src is the page in
   // it to load, when one was asked for — "Open in Mac app" hands over a path.
@@ -439,7 +472,7 @@ export function shellPage({ repoRoot, version = null }) {
   }
 
   const tabState = () => ({
-    tabs: tabs.map(({ id, kind, url, src, name, key }) => ({ id, kind, url, src, name, key })),
+    tabs: tabs.map(({ id, kind, url, src, name, key, app }) => ({ id, kind, url, src, name, key, app })),
     active,
   })
   let mirrored = null
@@ -477,7 +510,7 @@ export function shellPage({ repoRoot, version = null }) {
   function announce() {
     if (!identified || gone) return
     const cur = tabs.find((t) => t.id === active)
-    const name = cur ? (cur.kind === "home" ? "Home" : cur.name || cur.url) : "Home"
+    const name = cur ? labelOf(cur) : "Home"
     post({ t: "state", tabs: tabs.map(({ id, kind, url }) => ({ id, kind, url })),
       title: tabs.length > 1 ? name + " and " + (tabs.length - 1) + (tabs.length === 2 ? " other tab" : " other tabs") : name, focusedAt, geo: geometry() })
   }
@@ -517,7 +550,9 @@ export function shellPage({ repoRoot, version = null }) {
   function render() {
     // A tab being pressed or dragged keeps its element: the strip is rebuilt
     // when the drag ends.
-    if (press || drag) { syncFrames(); persist(); announce(); return }
+    // A tab being renamed keeps its field, and what is typed in it, until the
+    // name is saved or let go.
+    if (press || drag || renaming) { syncFrames(); persist(); announce(); return }
     tabsEl.textContent = ""
     tabs.forEach((t, i) => {
       if (incoming && incoming.index === i) tabsEl.append(incomingTab())
@@ -529,7 +564,7 @@ export function shellPage({ repoRoot, version = null }) {
       // name; until then it is new, not stopped.
       const dead = t.kind === "editor" && t.key !== null && !editors.some((e) => e.url === t.url)
       if (dead && health) b.classList.add("dead")
-      const name = t.kind === "home" ? "Home" : t.name || t.url
+      const name = labelOf(t)
       tipData(b, "tab:" + t.id, name, t.kind === "home" ? hostOf(homeUrl) : appAddress(editors.find((e) => e.url === t.url)))
       b.innerHTML = '<span class="glyph">' + (t.kind === "home" ? HOME_GLYPH : EDIT_GLYPH) + '</span><span class="label"></span>' +
         (i < 9 ? '<span class="num">⌘' + (i + 1) + '</span>' : "") +
@@ -538,6 +573,9 @@ export function shellPage({ repoRoot, version = null }) {
       b.onmousedown = (ev) => { if (ev.button === 1) { ev.preventDefault(); closeByMouse(t.id) } }
       b.onclick = (ev) => { if (ev.target.closest(".close")) closeByMouse(t.id); else select(t.id) }
       b.oncontextmenu = (ev) => { ev.preventDefault(); openMenu(t.id, ev.clientX, ev.clientY) }
+      // A double-click on the name renames the tab, as in Figma's and VS
+      // Code's tabs; Home is always Home.
+      b.ondblclick = (ev) => { if (!ev.target.closest(".close")) startRename(t.id) }
       b.onkeydown = (ev) => {
         if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") {
           ev.preventDefault()
@@ -545,6 +583,9 @@ export function shellPage({ repoRoot, version = null }) {
           if ((ev.metaKey || ev.ctrlKey) && ev.shiftKey) return moveTab(t.id, ev.key === "ArrowRight" ? 1 : -1)
           const n = (i + (ev.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length
           select(tabs[n].id); focusTab(tabs[n].id)
+        } else if (ev.key === "F2") {
+          ev.preventDefault()
+          startRename(t.id)
         } else if (ev.key === "ContextMenu" || (ev.key === "F10" && ev.shiftKey)) {
           ev.preventDefault()
           const r = b.getBoundingClientRect()
@@ -566,6 +607,76 @@ export function shellPage({ repoRoot, version = null }) {
     announce()
   }
   const focusTab = (id) => tabsEl.querySelector('.tab[data-id="' + id + '"]')?.focus()
+
+  // ---- Renaming a tab ----
+  //
+  // The name turns into a field on the tab. Enter or a click elsewhere saves
+  // it, Escape lets it go, and an empty name gives the tab back its folder's
+  // name. The name belongs to the app, not to this one tab: it follows the app
+  // into any tab and any window that shows it, and survives the app quitting.
+  let renaming = null
+  function startRename(id) {
+    const t = tabs.find((x) => x.id === id)
+    if (!t || t.kind !== "editor" || drag) return
+    closeMenu()
+    hideTip()
+    endClosing()
+    if (renaming) finishRename(true)
+    if (active !== id) select(id)
+    else render()
+    const el = tabsEl.querySelector('.tab[data-id="' + id + '"]')
+    const label = el?.querySelector(".label")
+    if (!label) return
+    renaming = id
+    el.classList.add("renaming")
+    const input = document.createElement("input")
+    input.className = "rename"
+    input.value = labelOf(t)
+    input.maxLength = 80
+    input.spellcheck = false
+    input.setAttribute("aria-label", "Tab name")
+    input.placeholder = t.name || ""
+    // Keys typed here are the field's: not the tab's arrows, ⌘W, or the editor's.
+    input.onkeydown = (ev) => {
+      ev.stopPropagation()
+      if (ev.key === "Enter") { ev.preventDefault(); finishRename(true) }
+      else if (ev.key === "Escape") { ev.preventDefault(); finishRename(false) }
+    }
+    input.onblur = () => finishRename(true)
+    input.onclick = (ev) => ev.stopPropagation()
+    input.ondblclick = (ev) => ev.stopPropagation()
+    label.replaceWith(input)
+    input.focus()
+    input.select()
+  }
+  function finishRename(save) {
+    const id = renaming
+    if (!id) return
+    renaming = null
+    const input = tabsEl.querySelector("input.rename")
+    const t = tabs.find((x) => x.id === id)
+    if (save && t && input) setName(t, input.value)
+    const had = input && document.activeElement === input
+    render()
+    if (had) focusTab(id)
+  }
+  function setName(t, value) {
+    const name = String(value).trim().slice(0, 80)
+    const key = nameKey(t)
+    if (!key) return
+    const next = { ...names }
+    // A name saved before the app was known gives way to one under the app.
+    const stale = t.url !== key && t.url in next
+    if (stale) delete next[t.url]
+    // The folder's own name is no name of the person's: the tab follows the folder again.
+    if (!name || name === t.name) delete next[key]
+    else next[key] = name
+    if (!takeNames(next)) return
+    post({ t: "names", names })
+    const put = (app, name) => fetch("/api/names", { method: "PUT", body: JSON.stringify({ app, name }), keepalive: true }).then((r) => r.json())
+    if (stale) put(t.url, "").catch(() => {})
+    put(key, next[key] || "").then((r) => { if (r && r.names && takeNames(r.names)) render() }).catch(() => {})
+  }
 
   const tipEl = $("tip")
   let tipFor = null, tipQuiet = null
@@ -643,7 +754,7 @@ export function shellPage({ repoRoot, version = null }) {
         // leaves "Open in Mac app" out of its toolbar (src/shell/desk.ts).
         f.name = "designlayer-desk:" + t.id
         f.allow = "clipboard-read; clipboard-write; fullscreen"
-        f.title = t.kind === "home" ? "DesignLayer start screen" : t.name || "Editor"
+        f.title = t.kind === "home" ? "DesignLayer start screen" : labelOf(t) || "Editor"
         f.src = url
         framesEl.append(f)
       }
@@ -652,7 +763,7 @@ export function shellPage({ repoRoot, version = null }) {
     const cur = tabs.find((t) => t.id === active)
     const waiting = !cur || !identified || (cur.kind === "home" && !homeUrl) || (cur.kind === "editor" && !listed) || deskDown
     $("boot").hidden = !waiting
-    document.title = cur && cur.kind === "editor" ? (cur.name || "Editor") + " — DesignLayer" : "DesignLayer"
+    document.title = cur && cur.kind === "editor" ? (labelOf(cur) || "Editor") + " — DesignLayer" : "DesignLayer"
   }
 
   function select(id) {
@@ -813,7 +924,7 @@ export function shellPage({ repoRoot, version = null }) {
     // Loaded again even when this frame already shows the editor: the browser
     // tab took the editor's one socket from it, and only a fresh load takes it back.
     if (frame) frame.src = href
-    toast("Opened " + t.name + " from the browser")
+    toast("Opened " + labelOf(t) + " from the browser")
     window.focus()
   }
 
@@ -838,6 +949,11 @@ export function shellPage({ repoRoot, version = null }) {
       // An update restarted the desk on new files: this page is the old one.
       if (VERSION && h.version && h.version !== VERSION) { location.reload(); return }
       deskDown = false; health = h; editors = (list.editors || []).map((e) => ({ ...e, url: onLocalhost(e.url) }))
+      // The desk's names win over this origin's copy; asked until it answers.
+      if (!namesLoaded) {
+        const r = await fetch("/api/names", { cache: "no-store" }).then((x) => x.json()).catch(() => null)
+        if (r && r.names && typeof r.names === "object") { takeNames(r.names); namesLoaded = true }
+      }
       if (restoring) await restore()
     } catch {
       deskDown = true
@@ -965,7 +1081,7 @@ export function shellPage({ repoRoot, version = null }) {
     const elsewhere = !shown && editorPeer(origin)
     if (elsewhere) {
       post({ t: "reveal", to: elsewhere, url })
-      toast((e ? e.name : new URL(url).host) + " is open in another window")
+      toast((e ? labelOf({ kind: "editor", ...e }) : new URL(url).host) + " is open in another window")
       return
     }
     if (shown) {
@@ -1046,6 +1162,8 @@ export function shellPage({ repoRoot, version = null }) {
         if (f) f.src = tabUrl(t)
       }
       t.name = e.name; t.projectRoot = e.projectRoot; t.key = key
+      // Kept with the tab, so a tab whose editor stopped keeps its name.
+      t.app = appOf(e) ?? t.app
     }
     // Only a list that arrived counts as the first: a desk still coming up
     // answers nothing, and the saved tabs would then keep their saved pages.
@@ -1151,6 +1269,7 @@ export function shellPage({ repoRoot, version = null }) {
         peers.delete(w)
         setTimeout(() => { if (!gone && !leaving && !peers.has(w)) forget(w) }, 2000)
       } else if (m.t === "claimed" && typeof m.url === "string") dropTabsOn(m.url)
+      else if (m.t === "names") { if (takeNames(m.names)) render() }
       else if (m.t === "reveal" && typeof m.url === "string") reveal(m.url)
       else if (m.t === "hover") hovered(m)
       else if (m.t === "adopt") adoptTab(m)
@@ -1188,7 +1307,7 @@ export function shellPage({ repoRoot, version = null }) {
   // The fields a tab carries to another window. Its frame cannot go with it:
   // a frame moved to another document loads again, so the other window loads
   // the page the editor last reported.
-  const carry = (t) => ({ id: t.id, kind: t.kind, url: t.url, src: t.src, name: t.name, key: t.key, projectRoot: t.projectRoot })
+  const carry = (t) => ({ id: t.id, kind: t.kind, url: t.url, src: t.src, name: t.name, key: t.key, projectRoot: t.projectRoot, app: t.app })
   function cleanTab(x) {
     if (!x || typeof x !== "object" || typeof x.id !== "string" || (x.kind !== "home" && x.kind !== "editor")) return null
     const str = (v) => (typeof v === "string" ? v : undefined)
@@ -1197,7 +1316,7 @@ export function shellPage({ repoRoot, version = null }) {
       const origin = localOrigin(x.url)
       if (!origin) return null
       const src = str(x.src) && localOrigin(x.src) === origin ? onLocalhost(x.src) : undefined
-      Object.assign(t, { url: origin, src, name: str(x.name)?.slice(0, 80), key: str(x.key) ?? null, projectRoot: str(x.projectRoot) ?? null })
+      Object.assign(t, { url: origin, src, name: str(x.name)?.slice(0, 80), key: str(x.key) ?? null, projectRoot: str(x.projectRoot) ?? null, app: str(x.app) ?? null })
     }
     return t
   }
@@ -1351,7 +1470,7 @@ export function shellPage({ repoRoot, version = null }) {
   const PULL = 28
   tabsEl.addEventListener("pointerdown", (ev) => {
     const el = ev.target.closest(".tab[data-id]")
-    if (!el || ev.button !== 0 || ev.ctrlKey || ev.target.closest(".close") || drag) return
+    if (!el || ev.button !== 0 || ev.ctrlKey || ev.target.closest(".close, .rename") || drag) return
     closeMenu()
     press = { el, id: el.dataset.id, x: ev.clientX, y: ev.clientY, sx: ev.screenX, sy: ev.screenY, pointerId: ev.pointerId }
     try { el.setPointerCapture(ev.pointerId) } catch {}
@@ -1375,7 +1494,7 @@ export function shellPage({ repoRoot, version = null }) {
     const from = els.indexOf(press.el)
     const rects = els.map((el) => el.getBoundingClientRect())
     const step = els.length > 1 ? (from < els.length - 1 ? rects[from + 1].left - rects[from].left : rects[from].left - rects[from - 1].left) : rects[from].width
-    drag = { t, els, rects, from, index: from, step, grabX: press.x - rects[from].left, out: false, target: null, ghost: null }
+    drag = { t, els, rects, from, index: from, step, grabX: press.x - rects[from].left, lastX: press.x, out: false, target: null, ghost: null }
     hideTip()
     if (active !== t.id) {
       select(t.id)
@@ -1413,7 +1532,7 @@ export function shellPage({ repoRoot, version = null }) {
     const d = drag
     if (!d.win) d.win = { dx: press.sx - screenX, dy: press.sy - screenY, x: screenX, y: screenY, tries: 0 }
     const target = windowAt(ev.screenX, ev.screenY, ev.clientX, ev.clientY, false)
-    const name = d.t.kind === "home" ? "Home" : d.t.name || d.t.url
+    const name = labelOf(d.t)
     if (d.target && d.target.id !== target?.id) post({ t: "hover", to: d.target.id })
     if (target) post({ t: "hover", to: target.id, x: target.x, name, kind: d.t.kind })
     d.target = target
@@ -1440,7 +1559,7 @@ export function shellPage({ repoRoot, version = null }) {
     const solo = tabs.length < 2
     const target = out || solo ? windowAt(ev.screenX, ev.screenY, ev.clientX, ev.clientY, !solo) : null
     if (solo) out = Boolean(target)
-    const name = d.t.kind === "home" ? "Home" : d.t.name || d.t.url
+    const name = labelOf(d.t)
     if (d.target && d.target.id !== target?.id) post({ t: "hover", to: d.target.id })
     if (target) post({ t: "hover", to: target.id, x: target.x, name, kind: d.t.kind })
     d.target = target
@@ -1468,10 +1587,25 @@ export function shellPage({ repoRoot, version = null }) {
     const first = d.rects[0], last = d.rects[d.rects.length - 1], own = d.rects[d.from]
     const dx = Math.max(first.left - own.left, Math.min(last.right - own.right, ev.clientX - press.x))
     press.el.style.transform = "translateX(" + dx + "px)"
-    const center = own.left + dx + own.width / 2
-    let index = 0
-    d.rects.forEach((r, i) => { if (i !== d.from && r.left + r.width / 2 < center) index += 1 })
-    d.index = index
+    // Chrome's rule (TabStrip CalculateInsertionIndex): the tab goes to the
+    // slot whose resting place is nearest its left edge, so a neighbour steps
+    // aside as soon as the tab covers half of it. Waiting for the tab's middle
+    // to pass the neighbour's middle took half the tab's own width more: with
+    // a wide tab, three times the push. A new slot is taken only once the
+    // pointer has moved a few pixels since the last one, 16px for a full-width
+    // tab (DraggingTabsSession kHorizontalMoveThreshold), so the row does not
+    // jitter at a boundary.
+    const overlap = d.rects.length > 1 ? first.right - d.rects[1].left : 0
+    const others = d.rects.filter((_, i) => i !== d.from)
+    let slot = 0, nearest = Infinity
+    for (let k = 0, x = first.left; k <= others.length; k += 1) {
+      const distance = Math.abs(own.left + dx - x)
+      if (distance < nearest) { nearest = distance; slot = k }
+      if (k < others.length) x += others[k].width - overlap
+    }
+    const threshold = Math.max(4, Math.round((16 * (others[Math.min(slot, others.length - 1)] || own).width) / 216))
+    if (slot !== d.index && Math.abs(ev.clientX - d.lastX) > threshold) { d.index = slot; d.lastX = ev.clientX }
+    const index = d.index
     d.els.forEach((el, i) => {
       if (i === d.from) return
       const shift = d.from < index && i > d.from && i <= index ? -d.step : d.from > index && i >= index && i < d.from ? d.step : 0
@@ -1501,9 +1635,13 @@ export function shellPage({ repoRoot, version = null }) {
     }
     const was = p.el.getBoundingClientRect().left
     if (cancel || !d.out) {
-      if (!cancel && d.index !== d.from) {
-        tabs.splice(tabs.indexOf(d.t), 1)
-        tabs.splice(d.index, 0, d.t)
+      // By id: a window still restoring its tabs can replace the list while
+      // a tab is dragged, and splicing at the old object's index (-1) took
+      // the last tab out instead.
+      const at = tabs.findIndex((x) => x.id === d.t.id)
+      if (!cancel && d.index !== d.from && at >= 0) {
+        const [moved] = tabs.splice(at, 1)
+        tabs.splice(Math.min(d.index, tabs.length), 0, moved)
       }
       render()
       // The dropped tab settles into its slot from where it was let go.
@@ -1544,6 +1682,11 @@ export function shellPage({ repoRoot, version = null }) {
       b.disabled = Boolean(disabled)
       b.onclick = () => { closeMenu(); run() }
       menuEl.append(b)
+    }
+    if (t.kind === "editor") {
+      item("Rename tab…", () => startRename(id))
+      if (customName(t)) item("Use folder name", () => { setName(t, ""); render() })
+      menuEl.append(document.createElement("hr"))
     }
     item("Move to new window", () => tearOut(id), tabs.length < 2)
     for (const [peer, p] of peers) item("Move to window with " + p.title, () => moveToWindow(id, peer))

@@ -345,6 +345,21 @@ await check("the desk keeps a copy of the window's tabs, written only by the des
   assert.ok(fs.existsSync(path.join(stateDir, "desk-tabs.json")))
 })
 
+await check("the desk keeps the names given to apps' tabs, written only by the desk page", async () => {
+  const put = (body, origin = `http://localhost:${port}`) =>
+    request(port, { method: "PUT", pathname: "/api/names", headers: { origin }, body: JSON.stringify(body) })
+  assert.deepEqual((await request(port, { pathname: "/api/names" })).json, { names: {} })
+  assert.equal((await put({ app: "/p/shop", name: "Checkout" }, "http://localhost:4101")).status, 403, "an editor renamed a tab")
+  assert.equal((await put({ name: "No app" })).status, 400)
+  assert.deepEqual((await put({ app: "/p/shop", name: "  Checkout v2  " })).json, { names: { "/p/shop": "Checkout v2" } })
+  assert.equal((await put({ app: "/p/docs", name: "x".repeat(200) })).json.names["/p/docs"].length, 80)
+  // An empty name gives the tab back its folder's name.
+  assert.deepEqual((await put({ app: "/p/docs", name: "" })).json, { names: { "/p/shop": "Checkout v2" } })
+  assert.deepEqual((await request(port, { pathname: "/api/names" })).json, { names: { "/p/shop": "Checkout v2" } })
+  assert.ok(fs.existsSync(path.join(stateDir, "desk-names.json")))
+  await put({ app: "/p/shop", name: "" })
+})
+
 await check("the desk keeps each window's tabs apart, forgets a window that is gone, and lists them all", async () => {
   const put = (body) => request(port, { method: "PUT", pathname: "/api/tabs", headers: { origin: `http://localhost:${port}` }, body: JSON.stringify(body) })
   assert.equal((await put({ window: "wab12", tabs: [{ id: "x", kind: "home" }], active: "x", savedAt: 5, closedAt: 9 })).status, 200)
@@ -1535,7 +1550,7 @@ console.log("several windows")
  */
 function fakeApp({ lists = [[SHOP, DOCS, STUDIO]], windows = {}, openOk = true, tabWidth = () => 100, measure = false } = {}) {
   const channels = new Set()
-  const desk = { windows: structuredClone(windows), opened: [], puts: [], storage: new Map() }
+  const desk = { windows: structuredClone(windows), opened: [], puts: [], storage: new Map(), names: {} }
   const opened = []
   return {
     desk,
@@ -1626,6 +1641,14 @@ function fakeApp({ lists = [[SHOP, DOCS, STUDIO]], windows = {}, openOk = true, 
               }
               return answer(desk.windows[req.searchParams.get("window") ?? "main"] ?? {})
             }
+            if (req.pathname === "/api/names") {
+              if (init.method === "PUT") {
+                const body = JSON.parse(init.body)
+                if (body.name) desk.names[body.app] = body.name
+                else delete desk.names[body.app]
+              }
+              return answer({ names: { ...desk.names } })
+            }
             if (req.pathname === "/api/windows/open") {
               desk.opened.push(JSON.parse(init.body).window)
               return answer({ ok: openOk })
@@ -1684,29 +1707,43 @@ function fakeApp({ lists = [[SHOP, DOCS, STUDIO]], windows = {}, openOk = true, 
   }
 }
 
-await check("a tab dragged along the strip lands where it is let go, and a press without a drag only selects", async () => {
+/*
+ * Phil: reordering was less sensitive than Chrome's; a neighbour moved only
+ * once the dragged tab's middle passed the neighbour's middle. Chrome moves a
+ * tab to the slot nearest its left edge (TabStrip CalculateInsertionIndex),
+ * so a neighbour steps aside once the tab covers half of it, and takes a new
+ * slot only after the pointer moves past a small threshold
+ * (DraggingTabsSession kHorizontalMoveThreshold), so the row does not jitter.
+ */
+await check("a dragged tab swaps with a neighbour once it covers half of it, does not jitter back, and a press without a drag only selects", async () => {
   const app = fakeApp()
   try {
     const a = await app.open({ tabs: { tabs: [tabOn("a", SHOP), tabOn("b", DOCS), { id: "h1", kind: "home" }], active: "b" } })
     assert.equal(a.id(), "main", "the app's first window is the main window, and its address says so")
-    // From over shop (x 130) to x 300: past docs' middle (232), short of Home's (334).
-    a.drag("shop", [[130, 19], [140, 20], [220, 20], [300, 19]])
-    assert.deepEqual(a.labels(), ["docs", "shop", "Home"])
+    // Tabs here are 100px wide, 102px apart. shop moves 60px right: past half
+    // of docs, though its middle (190) is still short of docs' middle (232).
+    a.drag("shop", [[130, 19], [140, 20], [190, 19]])
+    assert.deepEqual(a.labels(), ["docs", "shop", "Home"], "docs did not step aside once shop covered half of it")
     assert.equal(a.selected(), "shop", "the dragged tab is the one showing")
     assert.deepEqual(JSON.parse(app.desk.storage.get("designlayer.desk.tabs.v1")).tabs.map((t) => t.id), ["b", "a", "h1"])
-    // Back to the start, then a press that never moves.
-    a.drag("shop", [[232, 19], [200, 19], [100, 19]])
-    assert.deepEqual(a.labels(), ["shop", "docs", "Home"])
-    a.drag("Home", [[334, 19]])
-    assert.deepEqual(a.labels(), ["shop", "docs", "Home"])
+    // Back over half of docs, then 4px the other way, inside the threshold:
+    // the tab keeps its new slot.
+    a.drag("shop", [[232, 19], [200, 19], [180, 19], [184, 19]])
+    assert.deepEqual(a.labels(), ["shop", "docs", "Home"], "the tab jittered back across the boundary")
+    // Most of the way over Home: the last slot.
+    a.drag("shop", [[130, 19], [200, 19], [300, 19]])
+    assert.deepEqual(a.labels(), ["docs", "Home", "shop"])
+    // A press that never moves.
+    a.drag("Home", [[232, 19]])
+    assert.deepEqual(a.labels(), ["docs", "Home", "shop"])
     // Escape puts a dragged tab back.
     const el = a.tab("docs")
     const fire = (type, x) => el.dispatchEvent(new a.win.PointerEvent(type, { bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: 19 }))
-    fire("pointerdown", 232)
+    fire("pointerdown", 130)
     fire("pointermove", 400)
     a.win.dispatchEvent(new a.win.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))
     fire("pointerup", 400)
-    assert.deepEqual(a.labels(), ["shop", "docs", "Home"])
+    assert.deepEqual(a.labels(), ["docs", "Home", "shop"])
   } finally {
     app.closeAll()
   }
@@ -1800,6 +1837,25 @@ await check("a tab is as wide as its whole name while there is room, and the wid
     assert.ok(crowded.slice(1).every((w) => w === crowded[1]), "the Home tabs differ")
     assert.ok(crowded.reduce((t, w) => t + w, 0) - 10 * (crowded.length - 1) <= 1024, "the row overflows the strip")
     assert.ok(crowded[1] >= home - 6 - 2 * 7 - 1, "a short name was cut while a long one could give way")
+  } finally {
+    app.closeAll()
+  }
+})
+
+// The list can change under a drag: here another window takes the dragged
+// tab's editor. The drop used to splice at index -1 and take the last tab out.
+await check("a tab that leaves the list mid-drag is not dropped back, and takes no other tab with it", async () => {
+  const app = fakeApp()
+  try {
+    const a = await app.open({ tabs: { tabs: [tabOn("a", SHOP), tabOn("b", DOCS), { id: "h1", kind: "home" }], active: "a" } })
+    const el = a.tab("shop")
+    const fire = (type, x) => el.dispatchEvent(new a.win.PointerEvent(type, { bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: 19 }))
+    fire("pointerdown", 130)
+    fire("pointermove", 200)
+    new a.win.BroadcastChannel("designlayer-desk").postMessage({ t: "claimed", url: SHOP.url, from: "wother" })
+    await sleep(20)
+    fire("pointerup", 200)
+    assert.deepEqual(a.labels(), ["docs", "Home"], "the drop brought the claimed tab back, or took another out")
   } finally {
     app.closeAll()
   }
@@ -1983,13 +2039,14 @@ await check("a tab's menu moves it to a new window or into another window", asyn
       return [...a.doc.querySelectorAll("#menu button")]
     }
     let items = menu("docs")
-    assert.deepEqual(items.map((i) => i.textContent), ["Move to new window", "Move to window with Home", "Close tab"])
+    assert.deepEqual(items.map((i) => i.textContent), ["Rename tab…", "Move to new window", "Move to window with Home", "Close tab"])
+    items = items.slice(1)
     items[1].click()
     await until(() => a.labels().length === 2).catch(() => {})
     assert.deepEqual(a.labels(), ["shop", "Home"])
     assert.deepEqual(b.labels(), ["Home", "docs"])
     assert.ok(a.doc.getElementById("menu").hidden)
-    items = menu("shop")
+    items = menu("shop").slice(1)
     items[0].click()
     assert.deepEqual(a.labels(), ["Home"])
     assert.equal(a.popups.length, 1)
@@ -1998,6 +2055,69 @@ await check("a tab's menu moves it to a new window or into another window", asyn
     items = menu("Home")
     assert.equal(items[0].disabled, true)
     assert.equal(items.at(-1).disabled, true)
+  } finally {
+    app.closeAll()
+  }
+})
+
+await check("a tab renamed by a double-click, F2 or its menu keeps the name for its app in every window", async () => {
+  // One folder running two apps, a front end and its agent server: each tab is named on its own.
+  const WEB = { ...SHOP, appUrl: "http://127.0.0.1:3041" }
+  const AGENT = { name: "shop", url: "http://localhost:4103", pid: 3, projectRoot: "/p/shop", appUrl: "http://127.0.0.1:8002" }
+  const app = fakeApp({ lists: [[WEB, AGENT, DOCS]] })
+  try {
+    const a = await app.open({ tabs: { tabs: [tabOn("a", WEB), tabOn("b", DOCS), tabOn("c", AGENT), { id: "h1", kind: "home" }], active: "a" } })
+    await sleep(100)
+    const field = () => a.doc.querySelector(".tab input.rename")
+    const key = (el, k) => el.dispatchEvent(new a.win.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }))
+    a.tab("shop").dispatchEvent(new a.win.MouseEvent("dblclick", { bubbles: true }))
+    assert.ok(field(), "a double-click left the name as it was")
+    assert.equal(field().value, "shop")
+    assert.equal(a.doc.activeElement, field())
+    field().value = "  Checkout  "
+    key(field(), "Enter")
+    assert.equal(field(), null)
+    assert.deepEqual(a.labels(), ["Checkout", "docs", "shop", "Home"])
+    assert.equal(a.doc.title, "Checkout — DesignLayer")
+    assert.deepEqual(app.desk.names, { "/p/shop|3041": "Checkout" }, "the name is the app's, kept by the desk")
+    // The strip is rebuilt on every poll; a name being typed survives it.
+    key(a.tab("docs"), "F2")
+    field().value = "Guide"
+    await sleep(2200)
+    assert.equal(field()?.value, "Guide")
+    key(field(), "Escape")
+    assert.deepEqual(a.labels(), ["Checkout", "docs", "shop", "Home"], "Escape saved the name")
+    // Home has no name to change.
+    a.tab("Home").dispatchEvent(new a.win.MouseEvent("dblclick", { bubbles: true }))
+    assert.equal(field(), null)
+    const menu = (label) => {
+      a.tab(label).dispatchEvent(new a.win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 30 }))
+      return [...a.doc.querySelectorAll("#menu button")]
+    }
+    assert.equal(menu("Home")[0].textContent, "Move to new window")
+    let items = menu("Checkout")
+    assert.deepEqual(items.slice(0, 2).map((i) => i.textContent), ["Rename tab…", "Use folder name"])
+    items[1].click()
+    assert.deepEqual(a.labels(), ["shop", "docs", "shop", "Home"])
+    assert.deepEqual(app.desk.names, {})
+    // An empty name is the folder's name too.
+    menu("shop")[0].click()
+    field().value = "Cart"
+    key(field(), "Enter")
+    key(a.tab("Cart"), "F2")
+    field().value = ""
+    key(field(), "Enter")
+    assert.deepEqual(a.labels(), ["shop", "docs", "shop", "Home"])
+    menu("shop")[0].click()
+    field().value = "Cart"
+    key(field(), "Enter")
+    // Another window, with nothing of this origin's copy, takes the desk's names.
+    app.desk.storage.delete("designlayer.desk.tabs.v1.names")
+    const b = await app.open({ url: "http://localhost:3454/?window=wother", at: { x: 1100, y: 0 } })
+    await sleep(1100)
+    menu("Cart").find((i) => i.textContent === "Move to window with Home").click()
+    await until(() => b.labels().includes("Cart"))
+    assert.deepEqual(b.labels(), ["Home", "Cart"])
   } finally {
     app.closeAll()
   }
