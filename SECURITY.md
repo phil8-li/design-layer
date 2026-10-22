@@ -8,8 +8,8 @@ it has write access to the project it is pointed at. It is not hardened for
 any other use, and it should never run in production, in CI against real
 source, or on a shared or public-facing machine.
 
-The design it does defend, described in more detail under "Security model" in
-the [README](README.md):
+The design it does defend, described in more detail under
+[Security model](docs/architecture.md#security-model):
 
 - every route refuses a request that is not loopback — checked by peer address,
   `Host`, and `Origin`;
