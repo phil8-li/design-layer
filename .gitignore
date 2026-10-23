@@ -37,6 +37,3 @@ test/.icon-set-fixture/
 # One line naming somebody's dev box — theirs, not this repository's, and the
 # launcher refuses to run rather than falling back to a hostname baked in here.
 launch/.env
-
-# Python bytecode from the film sound tools.
-__pycache__/

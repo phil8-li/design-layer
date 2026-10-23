@@ -19,4 +19,4 @@
 
 - [Angular hosts](docs/angular.md)
 - [Mac app](desktop/mac/README.md)
-- [Landing page module](landing/README.md)
+- [Landing page](https://github.com/phil8-li/design-layer-landing-page): its own repository

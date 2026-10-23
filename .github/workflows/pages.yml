@@ -1,0 +1,64 @@
+name: Pages
+
+# The landing page lives in phil8-li/design-layer-landing-page. This address
+# keeps the Mac download, built from main on every push, and sends every other
+# path to the new site.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths: ["desktop/mac/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One queue per branch, and only a superseded pull request run is cancelled. A
+# shared group let any pull request's run cancel the deploy from main, so the
+# site could stay on an old build while every check on main read green.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  SITE: https://phil8-li.github.io/design-layer-landing-page/
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      # For people without git; never committed, rebuilt every deploy.
+      - run: node desktop/mac/package.mjs --out _site/downloads
+
+      # index.html and 404.html both forward, keeping the #fragment, so old
+      # links such as /design-layer/#start land on the same section.
+      - name: Redirect pages
+        run: |
+          page="<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>DesignLayer</title><meta name=\"robots\" content=\"noindex\"><link rel=\"canonical\" href=\"$SITE\"><script>location.replace(\"$SITE\" + location.hash)</script><meta http-equiv=\"refresh\" content=\"0; url=$SITE\"><p>DesignLayer's page moved to <a href=\"$SITE\">$SITE</a>.</p></html>"
+          printf '%s\n' "$page" > _site/index.html
+          printf '%s\n' "$page" > _site/404.html
+
+      - uses: actions/upload-pages-artifact@v5
+        if: github.event_name != 'pull_request'
+        with:
+          path: _site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

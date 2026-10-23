@@ -191,9 +191,9 @@ and it narrows things down fast.
 
 ## The landing page
 
-The marketing site lives in [`landing/`](landing/) and has its own
-[README](landing/README.md). It shares no code with the tool, and a change to it
-needs `node landing/check.mjs`, not `npm test`.
+The marketing site lives in its own repository,
+[phil8-li/design-layer-landing-page](https://github.com/phil8-li/design-layer-landing-page).
+It shares no code with the tool; open changes to it there.
 
 ## Security
 

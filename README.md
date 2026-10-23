@@ -79,16 +79,11 @@ Working on this repo with an agent? Point it at [AGENTS.md](AGENTS.md).
 
 ## Landing page
 
-The marketing site is hosted on GitHub Pages at
-**[phil8-li.github.io/design-layer](https://phil8-li.github.io/design-layer/)**. Its
-source and launch films live in [`landing/`](landing/), a standalone module with
-its own README and deploy workflow.
-
-![Landing page hero: "Bring the design layer to your vibe-coded apps" over the editor mockup](docs/images/landing-hero.webp)
-
-| Design like Figma, on the real thing | Running in 2 minutes |
-| --- | --- |
-| ![Landing page "Design like Figma" section on its Measure tab, beside Direct edit, Align and Hide Design Layer](docs/images/landing-features.webp) | ![Landing page get-started section: browser and Mac install commands](docs/images/landing-start.webp) |
+The marketing site is at
+**[phil8-li.github.io/design-layer-landing-page](https://phil8-li.github.io/design-layer-landing-page/)**.
+Its source and launch films live in
+[phil8-li/design-layer-landing-page](https://github.com/phil8-li/design-layer-landing-page),
+so a clone of this repository is the tool alone.
 
 ## Contributing
 

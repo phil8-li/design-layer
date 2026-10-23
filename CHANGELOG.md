@@ -12,6 +12,21 @@ release announcement.
 
 ## [Unreleased]
 
+### Changed
+
+- The landing page, its launch films and the film archive moved to
+  [phil8-li/design-layer-landing-page](https://github.com/phil8-li/design-layer-landing-page),
+  served at https://phil8-li.github.io/design-layer-landing-page/. A clone of
+  this repository checks out the tool alone. The old address redirects there,
+  and the Mac download keeps its address.
+
+### Fixed
+
+- Cloning the repository works on a Mac whose `~/.gitconfig` requires Git LFS
+  but whose Terminal has no `git-lfs`. The clone stopped at the first launch
+  film cut and left a `design-layer` folder with no `package.json`, so
+  `npm install` failed.
+
 ## [0.1.0] - 2026-10-22
 
 ### Added
