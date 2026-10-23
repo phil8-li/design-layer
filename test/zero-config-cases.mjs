@@ -386,7 +386,7 @@ console.log("\nHow the port is handed over")
         "setTimeout(() => {",
         "  clearInterval(tick)",
         "  require('http').createServer((_q, s) => { s.writeHead(200, {'content-type':'text/html'}); s.end('<title>up</title>') }).listen(Number(port), '127.0.0.1')",
-        "}, 1200)",
+        "}, 3000)",
       ].join("\n"),
     })
     const app = await ensureAppRunning({
@@ -397,7 +397,9 @@ console.log("\nHow the port is handed over")
       portFlag: "--port",
       // Shorter than the build it is waiting on. It survives because the child
       // keeps printing, which is the whole point of the quiet-timeout model.
-      timeoutMs: 500,
+      // The quiet clock starts at spawn, so this also has to cover `npm run`
+      // printing its first line: 0.5 s did not on a loaded machine.
+      timeoutMs: 1500,
       log: () => {},
     })
     assert.equal(app.started, true)
