@@ -7,9 +7,9 @@ If you are an agent *using* DesignLayer to edit someone's app (not editing
 DesignLayer itself), read [docs/agent-handoff.md](docs/agent-handoff.md)
 instead.
 
-Editor design rules (icons and keyboard included) live in `DESIGN.md`,
-landing-page rules in `landing/DESIGN.md`. Read the matching one before any UI
-edit, and add new rules there.
+Editor design rules (icons and keyboard included) live in `DESIGN.md`. Read it
+before any UI edit, and add new rules there. The landing page is its own
+repository, phil8-li/design-layer-landing-page.
 
 ## What this is
 
@@ -52,7 +52,6 @@ browser tab before you say it works.
 | `test/` | one `*-cases.mjs` file per area; `test/host.mjs` locates the optional host app |
 | `tools/` | generators (`build-icons`, `build-notices`, `build-sonner-css`), perf and e2e harnesses |
 | `desktop/mac/` | the Mac Dock app (LaunchAgent + Chrome web app) |
-| `landing/` | the marketing site and launch films; independent of the tool, see `landing/AGENTS.md` |
 | `docs/` | user documentation |
 
 Full file list: [docs/architecture.md](docs/architecture.md#layout).
@@ -62,6 +61,10 @@ Full file list: [docs/architecture.md](docs/architecture.md#layout).
 - **The host app never imports this package, and this package never imports a
   host.** A change that breaks this will not be merged.
 - **Never commit `dist/`**, `node_modules/`, or `.local/`.
+- **No Git LFS files.** People install by cloning `main`, and a clone that
+  meets an LFS file stops short on a Mac whose Git LFS setup is incomplete.
+  Large media belongs in phil8-li/design-layer-landing-page;
+  `test/updater-cases.mjs` fails on an LFS path.
 - **Generated files:** `src/core/icons.ts` (from `tools/build-icons.mjs`), the
   Sonner CSS (`tools/build-sonner-css.mjs`) and `THIRD_PARTY_NOTICES.md`
   (`tools/build-notices.mjs`). Edit the generator, re-run it, and let

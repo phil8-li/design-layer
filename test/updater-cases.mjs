@@ -23,6 +23,7 @@ import {
   deskRunsFrom,
   installKind,
   repoOf,
+  ROOT,
   runCommand,
   saveResume,
   takeResume,
@@ -326,6 +327,28 @@ await check("the desk counts as this copy only when its LaunchAgent runs from th
   fs.writeFileSync(path.join(agents, "dev.designlayer.desk.plist"), plist(path.join(TMP, "elsewhere")))
   assert.equal(deskRunsFrom(here, { platform: "darwin", home }), false)
 })
+
+// The README and the landing page install by cloning main, and the updater
+// fast-forwards that clone. git hands every filter=lfs path to git-lfs, and on a
+// Mac whose ~/.gitconfig requires LFS (GitHub Desktop and Sourcetree set that
+// up) but whose Terminal has no git-lfs, the clone stops at the first one and
+// leaves a design-layer folder with no package.json. The launch films live in
+// phil8-li/design-layer-landing-page for that reason.
+if (installKind(ROOT) === "git") {
+  await check("main holds no Git LFS files, so cloning or updating it never needs git-lfs", () => {
+    const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: ROOT, encoding: "utf8" })
+    const fields = execFileSync("git", ["check-attr", "--stdin", "-z", "filter"], { cwd: ROOT, input: tracked, encoding: "utf8" }).split("\0")
+    const filtered = []
+    for (let i = 0; i + 2 < fields.length; i += 3) if (fields[i + 2] === "lfs") filtered.push(fields[i])
+    assert.deepEqual(filtered, [], "paths marked filter=lfs")
+    const pointers = tracked.split("\0").filter((file) => {
+      const full = path.join(ROOT, file)
+      if (!file || !fs.existsSync(full) || fs.statSync(full).size > 200) return false
+      return fs.readFileSync(full, "utf8").startsWith("version https://git-lfs.github.com/spec/")
+    })
+    assert.deepEqual(pointers, [], "Git LFS pointer files")
+  })
+} else console.log("  skip main holds no Git LFS files: this copy is not a git clone")
 
 fs.rmSync(TMP, { recursive: true, force: true })
 console.log(`\n${passed} passed, ${failed} failed`)
