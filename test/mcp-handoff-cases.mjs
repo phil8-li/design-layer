@@ -938,6 +938,10 @@ globalThis.fetch = async (url, init) => {
   if (String(url).endsWith("/mcp/status")) {
     return { ok: true, status: 200, json: async () => MCP_STATUS }
   }
+  // A note also lands in scoped storage, which POSTs /storage 250 ms later, so
+  // a case that wrote one can drop that flush into the next case's window. On a
+  // slow runner it arrived beside the send and failed `posted.length === 1`.
+  if (!String(url).endsWith("/agent")) return { ok: true, status: 200, json: async () => ({ ok: true }) }
   posted.push({ url: String(url), body: JSON.parse(init.body) })
   return { ok: true, status: 200, json: async () => reply }
 }
