@@ -5,7 +5,7 @@
  * behaviour lands everywhere at once instead of drifting section by section.
  */
 
-import { el, round } from "../../core/dom"
+import { el, holdTransitions, isChrome, round } from "../../core/dom"
 import { icon } from "../../core/icons"
 import {
   installIconSegmentThumb,
@@ -230,6 +230,64 @@ const midSentence = (name: string): string => name.charAt(0).toLowerCase() + nam
 const accessibleName = (title: string | undefined, label: string | Node): string =>
   title ?? (typeof label === "string" ? label : "")
 
+/**
+ * The inline styles a scrub's previews wrote, rewound before its commit.
+ *
+ * A preview writes straight onto the element, and `writer.applyStyles` reads
+ * the element to learn what an edit changed FROM. So a scrub that ended on the
+ * value its last preview drew committed a change from that value to itself: no
+ * undo step and no row in the Changes tab, and anything the preview wrote that
+ * the commit did not, such as a W scrub's `shrink-0`, stayed on the element.
+ * The canvas gesture rewinds before it commits (`canvas/transform.ts`); this is
+ * the same rewind for every field, whatever its preview touches.
+ *
+ * Only `style` writes made inside a preview call are kept. The app goes on
+ * animating while a scrub runs, and rewinding its writes would undo them.
+ */
+function previewLog(): { record(preview: () => void): void; rewind(commit: () => void): void } {
+  const originals = new Map<HTMLElement | SVGElement, string | null>()
+  let observer: MutationObserver | null = null
+  return {
+    record(preview) {
+      if (!observer && typeof MutationObserver === "function") {
+        // Read only through `takeRecords`, so the callback has nothing to do.
+        observer = new MutationObserver(() => {})
+        observer.observe(document.documentElement, {
+          subtree: true,
+          attributes: true,
+          attributeFilter: ["style"],
+          attributeOldValue: true,
+        })
+      }
+      observer?.takeRecords()
+      preview()
+      for (const record of observer?.takeRecords() ?? []) {
+        const target = record.target
+        if (!(target instanceof HTMLElement || target instanceof SVGElement)) continue
+        if (originals.has(target) || isChrome(target)) continue
+        originals.set(target, record.oldValue)
+      }
+    },
+    rewind(commit) {
+      observer?.disconnect()
+      observer = null
+      // Back as it was with transitions held, so neither the rewind nor the
+      // commit after it animates: the last value painted was the preview's.
+      const releases = [...originals].map(([element, style]) => {
+        if (style === null) element.removeAttribute("style")
+        else element.setAttribute("style", style)
+        return holdTransitions(element)
+      })
+      originals.clear()
+      try {
+        commit()
+      } finally {
+        for (const release of releases) release()
+      }
+    },
+  }
+}
+
 /** Figma-style scrubbable number input: drag the label, or type a value. */
 export function numberField(options: NumberFieldOptions): HTMLElement {
   if (options.token?.bound) return boundNumberField(options, options.token)
@@ -252,7 +310,10 @@ export function numberField(options: NumberFieldOptions): HTMLElement {
     if (parsed === null) return
     const next = clampValue(parsed)
     // Show the result, not the expression — the field is now the value again.
+    // As its default too: a committed value is no longer typing in progress,
+    // which is what holds the panel's geometry repaints off (`follow.ts`).
     input.value = String(round(next))
+    input.defaultValue = input.value
     options.onCommit(next)
   }
 
@@ -306,6 +367,7 @@ export function numberField(options: NumberFieldOptions): HTMLElement {
     const startValue = evaluateNumeric(input.value) ?? 0
     let latest = startValue
     let frame = 0
+    const previews = previewLog()
 
     // Say that the gesture is what is driving the number. The lit label is the
     // pressed-control appearance from `css/panels.ts`; the field's own accent
@@ -322,7 +384,7 @@ export function numberField(options: NumberFieldOptions): HTMLElement {
       // One preview per frame: the value changes faster than the app can paint.
       frame = requestAnimationFrame(() => {
         frame = 0
-        options.onPreview?.(latest)
+        previews.record(() => options.onPreview?.(latest))
       })
     }
     const onUp = () => {
@@ -334,7 +396,9 @@ export function numberField(options: NumberFieldOptions): HTMLElement {
       label.removeEventListener("pointermove", onMove)
       label.removeEventListener("pointerup", onUp)
       label.removeEventListener("pointercancel", onUp)
-      if (latest !== startValue) options.onCommit(latest)
+      previews.rewind(() => {
+        if (latest !== startValue) options.onCommit(latest)
+      })
     }
     label.addEventListener("pointermove", onMove)
     label.addEventListener("pointerup", onUp)

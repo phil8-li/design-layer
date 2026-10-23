@@ -163,6 +163,20 @@ async function translationCases() {
     assert.equal(top.tailwindPrefix, "border-t")
     assert.equal(new RegExp(top.classPattern).test("border-t-red-500"), false)
   })
+  check("a resize's flex companions reach source as Tailwind's own classes", () => {
+    // `core/sizing.ts` writes these beside a length on a flex line's main axis.
+    assert.equal(toClassUpdate("flex", "none").tailwindToken, "flex-none")
+    assert.equal(new RegExp(toClassUpdate("flex", "none").classPattern).test("flex-1"), true)
+    assert.equal(toClassUpdate("flex", "1 1 0%").tailwindToken, "flex-1")
+    // Fill lets a fixed width go as Tailwind's own class, not `w-[auto]`.
+    assert.equal(toClassUpdate("width", "auto").tailwindToken, "auto")
+    const shrink = toClassUpdate("flex-shrink", "0")
+    assert.equal(shrink.tailwindToken, "shrink-0")
+    // The v2 spelling a v3 project may still carry is replaced, not doubled.
+    assert.equal(new RegExp(shrink.classPattern).test("flex-shrink"), true)
+    assert.equal(new RegExp(shrink.classPattern).test("shrink-0"), true)
+    assert.equal(propertyForClass("shrink-0"), "flex-shrink")
+  })
   check("a text style's italic and axes reach source rather than staying preview only", () => {
     assert.equal(toClassUpdate("font-style", "italic").tailwindToken, "italic")
     assert.equal(toClassUpdate("font-style", "normal").tailwindToken, "not-italic")

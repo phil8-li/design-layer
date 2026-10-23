@@ -235,21 +235,6 @@ export const annotationsCss = `/* ---------- annotation overlay ---------- */
   border-radius: 50%;
 }
 /*
- * An EDIT's pin: the same fill, number and states, on a rounded square.
- *
- * Notes and edits share one numbering and one colour, so the colour cannot be
- * what tells them apart — and it must not be, because a pin sits over product
- * pixels of any hue and in front of readers who may not see the difference.
- * Shape survives both. The disc is a remark about the page; the square is a
- * change already made to it, and the corner is the kit's tightest so the two
- * still read as one family at ${MARKER}px.
- *
- * \`.de-ann-marker\` is on \`css/base.ts\`'s round opt-out list because the disc
- * is a circle; the square is not, so it takes the chrome's squircle back.
- */
-.de-ann-marker--edit { border-radius: ${t.radius.xs}; corner-shape: ${t.cornerShape}; }
-.de-ann-marker--edit::before { border-radius: ${t.radius.xs}; corner-shape: ${t.cornerShape}; }
-/*
  * Hover grows the pin itself — Agentation's 1.1, not a ring.
  *
  * This used to paint a 3px halo of the marker's own colour, on the reasoning
@@ -583,19 +568,12 @@ export const annotationsCss = `/* ---------- annotation overlay ---------- */
 }
 
 /*
- * One row, two species.
+ * One row, one species.
  *
- * A note is something the designer WROTE; an edit is something the editor DID.
- * Reading them as one list is the whole value of the outbox, and mistaking one
- * for the other is the whole risk — so the kind has to land before the text is
- * read, not from it.
- *
- * The left rule is a pseudo-element rather than a \`border-left\`, for the same
- * reason layers.ts draws its indent guides that way: it lets the mark be a
- * SHAPE. Note is a continuous bar, edit is a broken one, and broken against
- * whole is legible in greyscale and legible when the user has picked the
- * editor accent as their marker colour. Colour here is reinforcement; it is
- * never the distinction.
+ * A note is something the designer wrote; an edit is a note the editor wrote
+ * for them when they changed the page in the Design panel. Both go to the agent
+ * as requests, so both rows wear the same disc and the same sentence line. The
+ * words tell them apart.
  */
 .de-ann-item {
   position: relative;
@@ -667,9 +645,7 @@ export const annotationsCss = `/* ---------- annotation overlay ---------- */
  * There was one, in three variants: solid for a note, broken for an unwritten
  * edit, closed-up for a written one. Each said something true, and together
  * they put a coloured bar down the left of every row in a 260px panel to
- * restate what the row's own words already said. The kinds are still told apart
- * — by the note's numbered disc, by the mono face on an edit's body, and by the
- * written state's own words — none of which costs a column of ink.
+ * restate what the row's own words already said. The row's words are enough.
  */
 
 /* Metadata rung: the row's quietest line, under the body it introduces. */
@@ -681,14 +657,9 @@ export const annotationsCss = `/* ---------- annotation overlay ---------- */
   color: ${t.color.textDim};
 }
 /*
- * The number, and only notes carry one.
- *
- * Its presence is the third channel telling the two kinds apart, and the
- * cheapest one to read: an edit has no pin on the canvas, so it has no number,
- * so the column of discs down the list IS the set of things you can go and look
- * at. Same fill as the marker for the same reason, and — since it is the same
- * object — the same fixed white ink and contact shadow, for the reason spelled
- * out up there. This disc does not even get the pin's ring to fall back on.
+ * The number: the row's copy of its pin on the canvas, for a note and an edit
+ * alike. Same fill as the marker, and — since it is the same object — the same
+ * fixed white ink, for the reason spelled out up there.
  */
 .de-ann-index {
   flex: none;
@@ -705,83 +676,6 @@ export const annotationsCss = `/* ---------- annotation overlay ---------- */
   font-size: ${t.type.micro}; font-weight: ${t.type.weightSection};
   line-height: ${t.type.leadingFlush};
 }
-/* An edit's row number takes the edit pin's square, so row and pin still read
-   as one object — and the squircle back, since only the disc is round. */
-.de-ann-item--edit .de-ann-index { border-radius: ${t.radius.xs}; corner-shape: ${t.cornerShape}; }
-/*
- * Outlined at rest; the filled version below is reserved for "written".
- *
- * \`flex: 0 1 auto\` and not \`none\`: a badge is short today, but a \`none\` chip
- * beside a \`none\` disc in a flex row has nothing left that can give, so one
- * longer word would have pushed the head past the row's right edge and under
- * the actions column instead of ellipsising like everything else here.
- */
-.de-ann-badge {
-  flex: 0 1 auto; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis;
-  padding: 0 ${t.space["2xs"]}px;
-  border: 1px solid ${t.color.borderInteractive}; border-radius: ${t.radius.xs};
-  background: transparent;
-  color: ${t.color.textDim};
-  font-size: ${t.type.body};
-  /* The row leading (12/16), where a literal 14px sat off every type role. */
-  line-height: ${t.type.leadingRow};
-  white-space: nowrap;
-}
-/*
- * THREE STATES, AND THE COLOUR HAS TO AGREE WITH THE WORD.
- *
- * Keyed on \`data-de-state\`, not on \`.de-ann-item--written\`, because that class
- * is true of two different rows. The writer sets \`written\` the moment it knows
- * it CAN spell a change, so a queued edit and a committed one both carried it —
- * and both came out filled green. Screenshotted, the tab said a change was done
- * when the file had never been touched, in the most reassuring colour the
- * chrome owns. That is the failure this rule exists to prevent, so it reads the
- * same attribute the badge's own text is chosen from and the two cannot drift.
- *
- * Filled green is spent on ONE state — the only one that is finished. Green
- * means "nothing further is owed here" and can mean nothing else in this list.
- */
-.de-ann-badge[data-de-state="written"] {
-  border-color: transparent;
-  background: ${t.color.success};
-  color: ${t.color.onSemantic};
-}
-/*
- * Ready is OUTLINED in the accent, not filled by it.
- *
- * It is the most common state in a live session — every writable edit sits here
- * until Apply — so a filled chip would put a saturated block on nearly every
- * row and leave the list with no quiet ground to read against. Outlined reads
- * as "armed, not done", which is exactly the claim, and it keeps the filled
- * treatment meaning finished.
- */
-.de-ann-badge[data-de-state="ready"] {
-  /* The BORDER stays \`accent\` — a stroke owes 3:1, and on the resting row it
-     is 3.3:1 dark and 6.7:1 light (2.9:1 on a hovered dark row). The WORD takes
-     \`accentText\`, the same indigo in light and a lighter rung in dark, where
-     plain \`accent\` falls short of the 4.5 a label owes: 5.3:1 against 3.3:1
-     on the resting row. */
-  border-color: ${t.color.accent};
-  background: transparent;
-  color: ${t.color.accentText};
-}
-/*
- * Needs-the-agent is AMBER, and the reason it is not \`danger\` is the same
- * reason the audit's severities are not: nothing is broken. The change is real
- * and simply cannot be written mechanically.
- *
- * It must not inherit the default \`textDim\` either, which is what it did when
- * it was first drawn. Dim ink on a transparent ground is the chrome's disabled
- * treatment, so the one row that needs a decision looked like the one row that
- * could not be acted on — precisely inverted.
- */
-.de-ann-badge[data-de-state="agent"] {
-  border-color: ${t.color.lintWarning};
-  background: transparent;
-  color: ${t.color.lintWarning};
-}
-
 /*
  * One line, ellipsised, whole value in the \`title\`. A note can be a paragraph
  * and an edit's value can be a four-part box-shadow; either one wrapping in a
@@ -839,24 +733,18 @@ export const annotationsCss = `/* ---------- annotation overlay ---------- */
  * ignore red lines.
  *
  * Amber is the same hue the audit spends on "a warning the page still renders",
- * which is precisely this situation, and it is already the badge colour for a
- * row the editor cannot write. One amber vocabulary across the tab: this needs
- * your attention before you press the button.
- *
- * Set back to the body font on purpose. The rest of an edit row is mono because
- * it is a property and two values; this is a sentence, and a sentence in mono
- * inside a 260px column wraps badly and reads as data.
+ * which is precisely this situation: this needs your attention before you
+ * press the button.
  */
 .de-ann-item-shared {
   margin-top: ${t.space["3xs"]}px;
-  font-family: ${t.font.ui};
   color: ${t.color.lintWarning};
   /*
    * The one child of an edit row allowed to WRAP.
    *
    * .de-ann-item-body > * sets nowrap and an ellipsis on every child,
-   * which is right for a property and two values — one line, whole value in
-   * the title attribute. This is a sentence, and a sentence clipped at
+   * which is right for the row's one line — whole value in the title
+   * attribute. This is a sentence, and a sentence clipped at
    * "…used in 13 other pla…" has lost the number, which is the only part of
    * it anybody needs. It gets two lines instead.
    */
@@ -929,19 +817,9 @@ export const annotationsCss = `/* ---------- annotation overlay ---------- */
  * \`.a-after\` and \`.a-after-2\`, the parser kept three and dropped
  * \`.a-after\` entirely.
  *
- * What it had been eating since 5d43657 is the mono treatment directly below,
- * so every edit row in the Changes tab has been setting its body in the UI face
- * while the comment beside it explained why that had to be mono. Nothing was
- * lost by deleting the orphan itself: neither declaration had ever applied.
+ * Nothing was lost by deleting the orphan itself: neither declaration had
+ * ever applied.
  */
-/*
- * An edit's body is a property and two values, so it is set in mono — the
- * fourth channel, and the one that reads before any mark does, because a
- * change of typeface is visible in peripheral vision.
- */
-.de-ann-item--edit .de-ann-item-body {
-  font-family: ${t.font.mono};
-}
 /*
  * A trailing column, always in the DOM, faded in on the same three states the
  * row highlights on.

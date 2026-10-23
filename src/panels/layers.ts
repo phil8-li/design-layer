@@ -17,6 +17,7 @@ import { isDeepSelect } from "../core/keymap"
 import { getResolver } from "../core/resolve"
 import { scrollerFor } from "../core/scroll"
 import { elementKey } from "../core/store"
+import { elementName } from "../annotations/identify"
 // The tree shows a count of saved styles per row — see `savedKeys`. This is the
 // only thing the layers panel takes from the options subsystem, and it takes a
 // reader rather than a verb: acting on a saved style is the right panel's job.
@@ -1199,9 +1200,18 @@ export function installLayersPanel(context: EditorContext): void {
     const pending = drag
     endDrag()
     if (!pending?.to) return
-    // The vendor's own socket listener already toasts `reorderComplete` errors.
-    const { filePath, fromLine } = pending.ref
-    context.bridge.send({ type: "reorder", filePath, fromLine, toLine: pending.to })
+    // A note for the agent, not the engine's `reorder`: nothing moves on the
+    // page, and the source is the agent's to change. The drop line names the
+    // sibling the layer goes in front of.
+    const target = visible.find((row) => row.parent === pending.parent && row.meta.drag?.fromLine === pending.to)
+    if (!target) return
+    let name = target.element.tagName.toLowerCase()
+    try {
+      name = elementName(target.element) || name
+    } catch {
+      // A node the namer cannot read still has a tag.
+    }
+    writer.noteReorder(describe(pending.element), `before:${name}`)
   })
   tree.addEventListener("dragend", endDrag)
   search.addEventListener("input", request)

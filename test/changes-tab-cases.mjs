@@ -3,8 +3,8 @@
  *
  * 1. Notes and edits are ONE list under one heading, interleaved in the order
  *    they happened, numbered with the same run the canvas pins and the brief
- *    use. One primary button finishes the session: "Apply to code" when only
- *    writable edits are pending, "Send to agent" when anything needs the agent.
+ *    use. One primary button finishes the session: "Send to agent", which
+ *    hands every note and edit over and writes nothing to source.
  *    One Copy, shared with the toolbar's `notes.copy` chord. One undo timeline,
  *    so a deleted note comes back from Cmd+Z and from the toast alike.
  *
@@ -299,19 +299,18 @@ await check("notes and edits are ONE section, interleaved in time order, numbere
 await check("an edits-only session still gets the section, with no placeholder line", async () => {
   reset()
   const element = mount('<button class="btn">Go</button>')
-  // `filter` has no Tailwind spelling, so no commit will ever write it. It is
-  // still a row in the one list; its BADGE says who finishes it.
+  // `filter` has no Tailwind spelling. It is still a note in the one list.
   ui.createWriter(bridge).applyStyles(selectionOf(element), [{ property: "filter", value: "blur(2px)" }], "Blur")
   await settle()
   tab.update()
 
   const [outbox] = groups()
   assert.equal(outbox.title, "Notes and edits")
-  assert.ok(outbox.rows.some((line) => line.includes("filter")))
+  assert.ok(outbox.rows.some((line) => line.includes("Add a layer blur of 2px")))
   assert.ok(!tab.node.textContent.includes("No notes yet"))
 })
 
-await check("ONE primary button: 'Apply to code' for writable edits, 'Send to agent' once anything needs the agent", async () => {
+await check("ONE primary button, Send to agent, even for an edit the codemod could write", async () => {
   reset()
   const element = mount('<button class="btn">Go</button>')
   const writer = ui.createWriter(bridge)
@@ -319,18 +318,65 @@ await check("ONE primary button: 'Apply to code' for writable edits, 'Send to ag
   await settle()
   tab.update()
 
-  // Exactly two labelled buttons: the primary and Copy.
-  assert.deepEqual(ctaLabels(), ["Apply to code", "Copy"])
-  assert.equal(primary().disabled, false, "a queued writable edit left the button disabled")
-  assert.equal(primary().querySelector("svg"), null, "Apply to code carries the Send mark")
+  // Exactly two labelled buttons: the primary and Copy. No Apply to code.
+  assert.deepEqual(ctaLabels(), ["Send to agent", "Copy"])
+  assert.equal(primary().disabled, false, "an edit left the button disabled")
+  assert.equal(primary().querySelector("svg"), null, "Send to agent carries a mark")
+  assert.doesNotMatch(primary().title, /write/i, "the title still says the editor writes files")
 
-  // A note needs the agent, so the SAME button now sends — and writes first.
   pin("Tighten this")
   tab.update()
   assert.deepEqual(ctaLabels(), ["Send to agent", "Copy"])
-  assert.equal(primary().querySelector("svg"), null, "Send to agent carries a mark")
-  assert.match(primary().title, /write/i, "the title does not say the writable edits are written first")
   assert.equal(tab.node.querySelectorAll(".de-ann-ctas .de-button--primary").length, 1)
+})
+
+await check("an edit row is a note: a disc and a sentence, no state badge", async () => {
+  reset()
+  const element = mount('<button class="btn">Go</button>')
+  ui.createWriter(bridge).applyStyles(selectionOf(element), [{ property: "width", value: "200px" }], "Width")
+  await settle()
+  tab.update()
+  const row = tab.node.querySelector(".de-ann-item--edit")
+  assert.ok(row, "the edit has no row")
+  assert.equal(row.querySelector(".de-ann-index")?.textContent, "1")
+  assert.equal(row.querySelector(".de-ann-badge"), null, "the row still carries a state badge")
+  assert.match(row.querySelector(".de-ann-item-line").textContent, /^(Set the width to 200px|Change the width to 200px \(was .+\))$/)
+  for (const word of ["Ready", "In your files", "Needs the agent", "Apply to code"]) {
+    assert.ok(!tab.node.textContent.includes(word), `the tab still says "${word}"`)
+  }
+})
+
+await check("Send to agent posts every note and edit, and sends no commit to the source writer", async () => {
+  const real = globalThis.fetch
+  const posted = []
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/agent")) {
+      posted.push(JSON.parse(init.body))
+      return { ok: true, status: 200, json: async () => ({ ok: true, message: "Sent to your agent" }) }
+    }
+    return real(input, init)
+  }
+  try {
+    reset()
+    const sent = []
+    bridge.send = (message) => sent.push(message)
+    const element = mount('<button class="btn">Go</button>')
+    ui.createWriter(bridge).applyStyles(selectionOf(element), [{ property: "opacity", value: "0.5" }], "Opacity")
+    pin("Tighten this")
+    await settle()
+    tab.update()
+    primary().click()
+    await settle()
+    assert.equal(posted.length, 1, "nothing reached the agent route")
+    assert.match(posted[0].prompt, /^1 note and 1 edit from DesignLayer$/)
+    assert.match(posted[0].brief, /\*\*Change:\*\* (Change|Set) the opacity to 50%/)
+    assert.match(posted[0].brief, /^- Set `opacity: 0\.5` on this element\./m)
+    assert.match(posted[0].brief, /\*\*Feedback:\*\* Tighten this/)
+    assert.deepEqual(sent, [], "the send also wrote source")
+    assert.equal(bridge.queued.size > 0, true, "the preview's queue was drained as if committed")
+  } finally {
+    globalThis.fetch = real
+  }
 })
 
 await check("an unwritable edit alone makes the button send", async () => {
@@ -404,28 +450,27 @@ await check("with no agent connected, Send to agent is never offered", async () 
     assert.deepEqual(ctaLabels(), ["Copy"])
     assert.equal(primary().hidden, true)
 
-    // A writable edit beside the note: the button writes, and says so.
+    // An edit beside the note changes nothing: the editor never writes it.
     const element = mount('<button class="btn">Go</button>')
     ui.createWriter(bridge).applyStyles(selectionOf(element), [{ property: "opacity", value: "0.5" }], "Opacity")
     await settle()
     tab.update()
-    assert.deepEqual(ctaLabels(), ["Apply to code", "Copy"])
+    assert.deepEqual(ctaLabels(), ["Copy"])
   } finally {
     mcpStatus = AGENT_ATTACHED
   }
 })
 
-await check("with nothing pending, the primary button is disabled", async () => {
+await check("an edit the old codemod marked written is still sent", async () => {
   reset()
   const element = mount('<button class="btn">Go</button>')
   ui.createWriter(bridge).applyStyles(selectionOf(element), [{ property: "opacity", value: "0.5" }], "Opacity")
   await settle()
-  // Committed: the row stays, "In your files", and nothing is owed.
   ui.markEditsWritten()
   bridge.queued.clear()
   tab.update()
-  assert.equal(primary().textContent.trim(), "Apply to code")
-  assert.equal(primary().disabled, true, "the button is live over a session with nothing to do")
+  assert.equal(primary().textContent.trim(), "Send to agent")
+  assert.equal(primary().disabled, false, "a written-off edit is no longer offered to the agent")
 })
 
 console.log("\nOne copy")

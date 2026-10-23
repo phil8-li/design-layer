@@ -136,22 +136,16 @@ export function shellPage({ repoRoot, version = null }) {
   .tab .glyph { width: 16px; height: 16px; flex: none; display: grid; place-items: center; }
   .tab .label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* Renaming a tab: the name becomes a field in its place, ringed in the
-     accent, and the shortcut steps aside to give it room. */
+     accent. */
   .tab .rename { flex: 1 1 auto; min-width: 0; width: 100%; height: 20px; margin: 0 -4px; padding: 0 4px;
     border: 0; border-radius: 4px; outline: 2px solid var(--accent); outline-offset: -2px;
     background: var(--ground); color: var(--ink); font: inherit; }
-  .tab.renaming .num { display: none; }
-  .tab .num { font-size: 10px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
-  /* The shortcut and the close button keep to the tab's end, so a close
-     button is always the same distance from its tab's right edge. */
-  .tab .num, .tab .close { margin-left: auto; }
-  .tabs:not(.tight) .tab .num + .close { margin-left: 0; }
-  /* Short of room for every name with its shortcut, the shortcuts go first. */
-  .tabs.tight .tab .num { display: none; }
+  /* The close button keeps to the tab's end, so it is always the same
+     distance from its tab's right edge. */
+  .tab .close { margin-left: auto; }
   /* Measures a tab's name at the tab's own type size (layoutTabs). */
   #measure { position: absolute; left: -10000px; top: 0; visibility: hidden; white-space: nowrap; pointer-events: none; }
   #measure.measure-label { font-size: 12px; }
-  #measure.measure-num { font-size: 10px; font-variant-numeric: tabular-nums; }
   .tab .close { width: 16px; height: 16px; border-radius: 4px; display: grid; place-items: center;
     opacity: 0; flex: none; }
   .tab:hover .close, .tab[aria-selected="true"] .close { opacity: 1; }
@@ -567,7 +561,6 @@ export function shellPage({ repoRoot, version = null }) {
       const name = labelOf(t)
       tipData(b, "tab:" + t.id, name, t.kind === "home" ? hostOf(homeUrl) : appAddress(editors.find((e) => e.url === t.url)))
       b.innerHTML = '<span class="glyph">' + (t.kind === "home" ? HOME_GLYPH : EDIT_GLYPH) + '</span><span class="label"></span>' +
-        (i < 9 ? '<span class="num">⌘' + (i + 1) + '</span>' : "") +
         (tabs.length > 1 ? '<span class="close" role="button" aria-label="Close tab">' + X + "</span>" : "")
       b.querySelector(".label").textContent = name
       b.onmousedown = (ev) => { if (ev.button === 1) { ev.preventDefault(); closeByMouse(t.id) } }
@@ -824,10 +817,8 @@ export function shellPage({ repoRoot, version = null }) {
     const els = [...tabsEl.children]
     if (closing && (tabs.length > closing.count || tabs.length < 2)) closing = null
     if (closing) {
-      tabsEl.classList.toggle("tight", closing.tight)
       return setWidths(els, els.map((el) => closing.widths.get(el.dataset.id) ?? el.getBoundingClientRect().width), overlapPx())
     }
-    tabsEl.classList.remove("tight")
     for (const el of els) { el.style.flex = ""; el.style.width = "" }
     tabsEl.style.width = ""
     if (!els.length) return
@@ -836,18 +827,11 @@ export function shellPage({ repoRoot, version = null }) {
     const cs = getComputedStyle(els[0])
     const gap = px(cs.columnGap, 6), sides = px(cs.paddingLeft, 17) + px(cs.paddingRight, 14), least = px(cs.minWidth, 72)
     const overlap = overlapPx()
-    const wants = els.map((el, i) => {
-      // The glyph, the name (a pixel spare, so rounding never cuts it), and the close button.
-      const bare = sides + 16 + gap + Math.ceil(names[i]) + 1 + (el.querySelector(".close") ? gap + 16 : 0)
-      const num = el.querySelector(".num")
-      return { bare, full: bare + (num ? gap + Math.ceil(textWidth(num.textContent, "measure-num")) : 0) }
-    })
+    // The glyph, the name (a pixel spare, so rounding never cuts it), and the close button.
+    const wants = els.map((el, i) => sides + 16 + gap + Math.ceil(names[i]) + 1 + (el.querySelector(".close") ? gap + 16 : 0))
     const room = roomForTabs()
-    let widths = wants.map((w) => Math.max(least, w.full))
-    if (widths.reduce((t, w) => t + w, 0) - overlap * (widths.length - 1) > room) {
-      tabsEl.classList.add("tight")
-      widths = fitWidths(wants.map((w) => w.bare), room, least, overlap)
-    }
+    let widths = wants.map((w) => Math.max(least, w))
+    if (widths.reduce((t, w) => t + w, 0) - overlap * (widths.length - 1) > room) widths = fitWidths(wants, room, least, overlap)
     setWidths(els, widths, overlap)
   }
   addEventListener("resize", () => { if (!closing && !press && !drag) render() })
@@ -875,7 +859,7 @@ export function shellPage({ repoRoot, version = null }) {
         const share = (width - overlapPx()) / (tabs.length - 1)
         for (const [key, w] of widths) widths.set(key, w + share)
       }
-      closing = { widths, count: tabs.length - 1, tight: closing ? closing.tight : tabsEl.classList.contains("tight") }
+      closing = { widths, count: tabs.length - 1 }
     }
     close(id)
   }

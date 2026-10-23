@@ -525,6 +525,19 @@ await check("a press outside closes the menu; one inside does not", () => {
   assert.equal(menu().style.display, "none")
 })
 
+// The menu is in the overlay layer, which does not hide with the editor, and
+// ⌘. is not a key it closes on: it stayed open over the page. See DESIGN.md,
+// "Hidden editor".
+await check("hiding the editor closes the menu", () => {
+  reset()
+  rightClick($("buyA"))
+  assert.equal(menu().style.display, "block")
+  setState({ chromeHidden: true })
+  const shown = menu().style.display
+  setState({ chromeHidden: false })
+  assert.equal(shown, "none", "the menu stayed open over the page after the editor was hidden")
+})
+
 await check("the menu flips to stay inside the viewport", () => {
   reset()
   rightClick($("buyA"), { clientX: window.innerWidth - 20, clientY: window.innerHeight - 20 })

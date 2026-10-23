@@ -64,6 +64,21 @@ export interface Writer {
   applyClasses(selection: Selection, write: ClassWrite, summary: string): void
   /** Replaces the element's text content. */
   applyText(selection: Selection, text: string): void
+  /**
+   * Journals a text edit the page already shows: the engine's double-click
+   * editor typed it, so this only makes it a note and an undo step.
+   */
+  recordText(
+    selection: Selection,
+    before: { text: string; html: string },
+    after: { text: string; html: string }
+  ): void
+  /**
+   * Notes a move among the element's siblings. Nothing moves on the page: the
+   * agent reorders the source. `move` is `front`, `forward`, `backward`,
+   * `back`, or `before:<sibling name>`.
+   */
+  noteReorder(selection: Selection, move: string): void
   /** Redraws a selected `<svg>` as another variant from the host's icon set. */
   applyIcon(selection: Selection, variant: IconVariant): void
   /**
@@ -349,34 +364,6 @@ function journalStep(step: HistoryStep, edits: JournalEdit[]): void {
   })
 }
 
-/**
- * Hands the server the commit an Apply would send now, once the edits settle.
- *
- * `runtime/apply-ahead.mjs` rehearses it — the vendor's own batch transform,
- * with its writes captured — so that when Apply is clicked the parse and the
- * reprint are already done and the click only waits for a file write. It is a
- * hint and nothing more: the server uses the rehearsal only for a commit with
- * exactly these operations on exactly the file text it rehearsed against, so a
- * hint that goes stale (an undo, a file edited underneath) costs a wasted
- * rehearsal and never a wrong write. A vendor that does not know the message
- * ignores it. Module-wide, because every surface that edits builds its own
- * writer and the queue they feed is one.
- */
-const AHEAD_MS = 150
-let aheadTimer = 0
-
-function rehearseSoon(bridge: RewriteBridge): void {
-  window.clearTimeout(aheadTimer)
-  aheadTimer = window.setTimeout(() => {
-    try {
-      const operations = bridge.store.buildBatchOperations()
-      if (operations.length) bridge.send({ type: "designlayer:applyAhead", operations })
-    } catch {
-      // A store that cannot build has nothing an Apply could send either.
-    }
-  }, AHEAD_MS)
-}
-
 export function createWriter(bridge: RewriteBridge): Writer {
 
   /**
@@ -448,7 +435,6 @@ export function createWriter(bridge: RewriteBridge): Writer {
     if (!operation) return false
     try {
       bridge.store.addPendingPropertyOperation(selection.key, operation, keys)
-      rehearseSoon(bridge)
       return true
     } catch {
       // The engine rejects operations it cannot locate in source.
@@ -760,35 +746,9 @@ export function createWriter(bridge: RewriteBridge): Writer {
       }
       return
     }
-    // The identity the AST matcher needs is read here, before the await: by the
-    // time source resolves, a re-render may have replaced the classes we would
-    // otherwise send, and the matcher scores JSX against them.
-    const className = element.getAttribute("class") || undefined
-    const parentClassName = element.parentElement?.getAttribute("class") || undefined
-    const post = (source: SourceRef) => {
-      bridge.send({
-        type: "updateText",
-        filePath: source.filePath,
-        lineNumber: source.lineNumber,
-        columnNumber: source.columnNumber ?? 0,
-        componentName: source.componentName,
-        tagName: element.tagName.toLowerCase(),
-        className,
-        parentTagName: element.parentElement?.tagName.toLowerCase(),
-        parentClassName,
-        nthOfType: nthOfType(element),
-        originalText,
-        newText: text,
-      })
-    }
-    // Same split as `queue`: immediate when the file is known, and only then.
-    if (selection.source?.filePath) {
-      post(selection.source)
-      return
-    }
-    void ensureSource(selection).then((source) => {
-      if (source) post(source)
-    })
+    // React: the preview is the whole write. The engine's `updateText` wrote
+    // the file on the spot; the text is a note for the agent now, journaled by
+    // the caller like every other edit.
   }
 
   /**
@@ -1031,6 +991,32 @@ export function createWriter(bridge: RewriteBridge): Writer {
           redo: () => writeText(selection, text),
         },
         [{ property: "text", from: before, to: text, element: selection.element, written: true }]
+      )
+    },
+
+    noteReorder(selection, move) {
+      journalStep(
+        { label: "Reorder", undo: () => {}, redo: () => {} },
+        [{ property: "reorder", from: "", to: move, element: selection.element, written: false }]
+      )
+    },
+
+    recordText(selection, before, after) {
+      if (before.text === after.text) return
+      const element = selection.element
+      // Already on the page: the engine's own text editor typed it. Undo puts
+      // the markup back rather than the text, so inline children survive.
+      journalStep(
+        {
+          label: "Edit text",
+          undo: () => {
+            element.innerHTML = before.html
+          },
+          redo: () => {
+            element.innerHTML = after.html
+          },
+        },
+        [{ property: "text", from: before.text, to: after.text, element, written: false }]
       )
     },
 

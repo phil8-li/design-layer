@@ -117,3 +117,41 @@ export function round(value: number, places = 2): number {
   const factor = 10 ** places
   return Math.round(value * factor) / factor
 }
+
+/**
+ * Inline declarations as they stand, and the function that puts them back
+ * exactly: an absent declaration and an empty one are different states, and
+ * the first leaves the stylesheet in charge.
+ */
+export function saveInline(element: HTMLElement | SVGElement, properties: readonly string[]): () => void {
+  const style = element.style
+  const saved = properties.map((property) => ({
+    property,
+    value: style.getPropertyValue(property),
+    priority: style.getPropertyPriority(property),
+  }))
+  return () => {
+    for (const entry of saved) {
+      if (entry.value) style.setProperty(entry.property, entry.value, entry.priority)
+      else style.removeProperty(entry.property)
+    }
+  }
+}
+
+/**
+ * Turns the element's transitions off, and returns the function that turns
+ * them back on once the browser has computed whatever changed in between.
+ *
+ * A transition starts whenever a style recalc finds a value different from the
+ * last one, so restoring `transition` in the same breath as the change it hid
+ * animates the change after all. The flush is what makes the change the last
+ * value the browser saw.
+ */
+export function holdTransitions(element: HTMLElement | SVGElement): () => void {
+  const restore = saveInline(element, ["transition"])
+  element.style.setProperty("transition", "none")
+  return () => {
+    void element.getBoundingClientRect()
+    restore()
+  }
+}

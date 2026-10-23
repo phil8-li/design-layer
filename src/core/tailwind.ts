@@ -74,6 +74,12 @@ const KEYWORDS: Record<string, Record<string, string>> = {
     "0 1 auto": "flex-initial",
     none: "flex-none",
   },
+  // A fixed length on a full flex line, which would otherwise squeeze it back
+  // (`core/sizing.ts`).
+  "flex-shrink": {
+    "0": "shrink-0",
+    "1": "shrink",
+  },
   "border-style": {
     solid: "border-solid",
     dashed: "border-dashed",
@@ -201,6 +207,8 @@ const KEYWORDS: Record<string, Record<string, string>> = {
 /** Classes that set a keyword property without being one of its written values. */
 const KEYWORD_ALIASES: Record<string, string[]> = {
   "transition-property": ["transition-all"],
+  // Tailwind 2's spelling, still compiled by v3: replaced rather than doubled.
+  "flex-shrink": ["flex-shrink-0", "flex-shrink"],
 }
 
 /**
@@ -430,7 +438,9 @@ export function toClassUpdate(property: string, rawValue: string): ClassUpdate |
   const scalar = SCALARS[property]
   if (!scalar) return null
 
-  const token = property === "transition-duration" ? durationToken(value) : spacingToken(scalar.prefix, value)
+  // `w-auto` rather than `w-[auto]`: Fill on a flex line lets a fixed length go.
+  const auto = value === "auto" && (property === "width" || property === "height") ? "auto" : null
+  const token = auto ?? (property === "transition-duration" ? durationToken(value) : spacingToken(scalar.prefix, value))
   const typedValue = property === "font-size" && /^var\(--[\w-]+\)$/.test(value)
     ? `length:${toArbitrary(value)}`
     : toArbitrary(value)

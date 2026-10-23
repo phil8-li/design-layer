@@ -114,7 +114,7 @@ function revertPreview(element: LayerElement, property: string, from: string): b
   // change. Reverting those would mean re-running the writer backwards, which
   // is undo's job and not this one — the row leaves, the pixels stay, and the
   // toast says so.
-  if (property === "class" || property === "icon" || property === "text") return false
+  if (property === "class" || property === "icon" || property === "text" || property === "reorder") return false
 
   const style = element.style
   if (from) style.setProperty(property, from)

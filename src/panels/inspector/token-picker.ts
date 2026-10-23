@@ -15,6 +15,7 @@
 import { clamp, clear, el } from "../../core/dom"
 import { playExit, smoothScroll } from "../../core/motion"
 import { focusControl } from "../../core/focus"
+import { subscribe } from "../../core/store"
 import { icon } from "../../core/icons"
 import { tokens } from "../../core/tokens"
 
@@ -305,10 +306,12 @@ function openPicker(field: HTMLElement, options: TokenListOptions, anchor: HTMLE
     rows[active].scrollIntoView?.({ block: "nearest", behavior: smoothScroll() })
   }
 
+  let stopWatchingChrome = (): void => {}
   const close = (restoreFocus: boolean) => {
     if (dismiss !== close) return
     dismiss = null
     openFor = null
+    stopWatchingChrome()
     window.removeEventListener("pointerdown", onPointerDown, true)
     window.removeEventListener("keydown", onKeyDown, true)
     window.removeEventListener("scroll", onScroll, true)
@@ -476,6 +479,12 @@ function openPicker(field: HTMLElement, options: TokenListOptions, anchor: HTMLE
   window.addEventListener("pointerdown", onPointerDown, true)
   window.addEventListener("keydown", onKeyDown, true)
   window.addEventListener("scroll", onScroll, true)
+  // Closed when the editor is hidden. The popover hangs off `document.body`,
+  // not off the inspector, and ⌘. is not one of the keys it listens for, so it
+  // stayed open over the page with its rows still writing tokens.
+  stopWatchingChrome = subscribe((state, previous) => {
+    if (state.chromeHidden && !previous.chromeHidden) close(false)
+  })
   search.focus()
 }
 

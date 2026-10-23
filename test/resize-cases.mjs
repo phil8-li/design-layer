@@ -502,6 +502,46 @@ await check("hiding the chrome still zeroes the inset and holds the toolbar's ow
   assert.equal(inset("--de-left"), "320px")
 })
 
+/*
+ * A seam is its panel's sibling, not its child, so the panels' own hidden-state
+ * rules never reached it. A hidden editor left both seams over the app at the
+ * panels' old edges: they lit the accent on hover, a drag resized a panel
+ * nobody could see, and Tab still stopped on them.
+ */
+await check("hiding the chrome takes the seams away with the panels", async () => {
+  mount()
+  const visibility = (side) => window.getComputedStyle(seam(side)).visibility
+  // The editor arrives by playing its exit backwards (see shell.ts), so the
+  // seams sit that out too.
+  assert.equal(shell.root.classList.contains("de-root--arriving"), true)
+  assert.equal(visibility("left"), "hidden", "an arriving editor's seams are live before its panels land")
+  for (let frames = 0; shell.root.classList.contains("de-root--arriving") && frames < 30; frames++) {
+    await frame()
+  }
+  assert.equal(visibility("left"), "visible")
+  assert.equal(visibility("right"), "visible")
+
+  editor.setState({ chromeHidden: true })
+  for (const side of ["left", "right"]) {
+    assert.equal(visibility(side), "hidden", `the ${side} seam is still live over the app while the editor is hidden`)
+  }
+  editor.setState({ chromeHidden: false })
+  assert.equal(visibility("left"), "visible")
+
+  // jsdom runs no transitions, so the timing is asserted on the rules: out at
+  // once, back only when the panel it resizes has landed.
+  assert.match(
+    editor.shellCss,
+    /html\.designlayer-chrome-hidden \.de-separator \{\s*visibility: hidden;\s*transition: none;\s*\}/,
+    "a seam must leave at once, not after the panel's slide"
+  )
+  assert.match(
+    editor.shellCss,
+    new RegExp(`\\.de-separator \\{ transition: visibility 0s linear ${tokens.duration.resize}; \\}`),
+    "a seam comes back before the panel it resizes has landed"
+  )
+})
+
 await check("destroying the shell takes the rail and its listeners with it", () => {
   mount()
   const grip = seam("left")

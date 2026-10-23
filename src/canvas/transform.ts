@@ -9,12 +9,25 @@
  * `onDragUpdate`.
  */
 
-import { isChrome, round } from "../core/dom"
+import { holdTransitions, isChrome, round, saveInline } from "../core/dom"
+import {
+  clampInto,
+  lengthCompanions,
+  lengthLimits,
+  lengthWrites,
+  mergeWrites,
+  ownLength,
+  shrinkable,
+  type Axis,
+} from "../core/sizing"
 import { selectionOwnsInput } from "../core/store"
 import type { EditorContext } from "../core/context"
 import type { LayerElement, Selection } from "../core/types"
 import type { StyleWrite, Writer } from "../core/writer"
 import type { HandleId } from "./selection"
+
+/** Every inline declaration a gesture's preview can write, `transition` aside. */
+const PREVIEWED = ["transform", "width", "height", "flex", "flex-shrink", "display"]
 
 interface DragTarget {
   /** The writer takes a Selection, not an element: it needs the source ref too. */
@@ -25,11 +38,18 @@ interface DragTarget {
   /** The rotate, scale and skew the element had at pointerdown; see `linearOf`. */
   linear: Linear
   /**
-   * The inline declarations as the gesture found them, so the release can put
-   * them back exactly. An empty string and `0px` are different states — one
-   * leaves the stylesheet in charge — and a normalised reading loses that.
+   * Puts the inline declarations back as the gesture found them. An empty
+   * string and `0px` are different states — one leaves the stylesheet in
+   * charge — and a normalised reading loses that.
    */
-  inline: { transform: string; width: string; height: string }
+  restore: () => void
+  /**
+   * Gives the element its own transitions back. A gesture turns them off once
+   * it starts moving: a card with `transition-all` or a panel with a width
+   * tween trailed the pointer by the length of the tween, and a resize released
+   * mid-tween measured the first frame of it. A no-op until then.
+   */
+  releaseTransitions: () => void
 }
 
 interface Gesture {
@@ -47,7 +67,19 @@ interface Gesture {
    * first 1px move grow it by the padding and border as well.
    */
   startSize: { width: number; height: number }
+  /** The `min-*`/`max-*` a resized axis is held inside, read when the drag starts. */
+  limits: Partial<Record<Axis, { min: number; max: number }>>
+  /** The lengths the last frame drew, which are what the release writes. */
+  lengths: Partial<Record<Axis, number>>
   moved: boolean
+}
+
+/** The axes a handle drags: a side handle one, a corner both. */
+function axesOf(handle: HandleId): Axis[] {
+  const axes: Axis[] = []
+  if (/[ew]/.test(handle)) axes.push("width")
+  if (/[ns]/.test(handle)) axes.push("height")
+  return axes
 }
 
 export interface DragGeometry {
@@ -194,16 +226,6 @@ function settledTransform(x: number, y: number, linear: Linear): string {
 
 const DRAG_THRESHOLD = 3
 
-/**
- * Restores one inline declaration, where "no declaration" is a value too.
- * Blanking a property the element never set inline is not the same as removing
- * it: the blank keeps the declaration and shuts the stylesheet out.
- */
-function setInline(element: LayerElement, property: string, value: string): void {
-  if (value) element.style.setProperty(property, value)
-  else element.style.removeProperty(property)
-}
-
 export function installTransform(context: EditorContext, writer: Writer): void {
   let gesture: Gesture | null = null
   let capture: Element | null = null
@@ -219,13 +241,31 @@ export function installTransform(context: EditorContext, writer: Writer): void {
         offsetX: matrix.m41,
         offsetY: matrix.m42,
         linear: linearOf(matrix),
-        inline: {
-          transform: element.style.transform,
-          width: element.style.width,
-          height: element.style.height,
-        },
+        restore: saveInline(element, PREVIEWED),
+        releaseTransitions: () => {},
       }
     })
+
+  /**
+   * What a resize previews beside the length, set once as the drag starts: the
+   * companions `core/sizing.ts` says the length needs (`flex: none` on a
+   * growing item, `inline-block` on an inline box), and `flex-shrink: 0` on an
+   * item a full line could squeeze, so the preview is never smaller than the
+   * pointer. Whether the release still needs that last one is measured then.
+   */
+  const startResize = (active: Gesture): void => {
+    const element = active.targets[0].element
+    const axes = axesOf(active.handle ?? "se")
+    const companions = mergeWrites(...axes.map((axis) => lengthCompanions(element, axis)))
+    const squeezable = axes.some((axis) => shrinkable(element, axis, companions))
+    for (const axis of axes) active.limits[axis] = lengthLimits(element, axis)
+    // Pinned at the size it already has first, so taking the item off its
+    // `flex-1` moves nothing before the pointer does — the start hooks measure
+    // the siblings next, and snapping would aim at a layout that never painted.
+    for (const axis of axes) element.style.setProperty(axis, `${Math.round(active.startSize[axis])}px`)
+    for (const write of companions) element.style.setProperty(write.property, write.value)
+    if (squeezable) element.style.setProperty("flex-shrink", "0")
+  }
 
   const onPointerDown = (event: PointerEvent) => {
     if (!selectionOwnsInput()) return
@@ -250,12 +290,8 @@ export function installTransform(context: EditorContext, writer: Writer): void {
     }
 
     if (handleId && primary) {
-      const startRect = primary.element.getBoundingClientRect()
-      const computed = getComputedStyle(primary.element)
-      const own = (value: string, fallback: number) => {
-        const parsed = Number.parseFloat(value)
-        return Number.isFinite(parsed) ? parsed : fallback
-      }
+      const element = primary.element
+      const startRect = element.getBoundingClientRect()
       gesture = {
         targets: targetsFor([primary]),
         mode: "resize",
@@ -263,7 +299,12 @@ export function installTransform(context: EditorContext, writer: Writer): void {
         startX: event.clientX,
         startY: event.clientY,
         startRect,
-        startSize: { width: own(computed.width, startRect.width), height: own(computed.height, startRect.height) },
+        startSize: {
+          width: ownLength(element, "width", startRect.width),
+          height: ownLength(element, "height", startRect.height),
+        },
+        limits: {},
+        lengths: {},
         moved: false,
       }
       capturePointer()
@@ -288,6 +329,8 @@ export function installTransform(context: EditorContext, writer: Writer): void {
       startY: event.clientY,
       startRect,
       startSize: { width: startRect.width, height: startRect.height },
+      limits: {},
+      lengths: {},
       moved: false,
     }
     capturePointer()
@@ -336,6 +379,8 @@ export function installTransform(context: EditorContext, writer: Writer): void {
        * threshold, which is a question about tremor tolerance rather than about
        * motion.
        */
+      for (const target of gesture.targets) target.releaseTransitions = holdTransitions(target.element)
+      if (gesture.mode === "resize") startResize(gesture)
       const info: DragInfo = {
         element: gesture.targets[0].element,
         mode: gesture.mode,
@@ -374,10 +419,9 @@ export function installTransform(context: EditorContext, writer: Writer): void {
       proposed = hook({ element: gesture.targets[0].element, rect: startRect, proposed })
     }
 
-    const shiftX = proposed.left - startRect.left
-    const shiftY = proposed.top - startRect.top
-
     if (gesture.mode === "move") {
+      const shiftX = proposed.left - startRect.left
+      const shiftY = proposed.top - startRect.top
       for (const target of gesture.targets) {
         target.element.style.transform = placed(target.linear, target.offsetX + shiftX, target.offsetY + shiftY)
       }
@@ -388,14 +432,24 @@ export function installTransform(context: EditorContext, writer: Writer): void {
     // other axis's content-driven size into source on release.
     const primary = gesture.targets[0]
     const handle = gesture.handle ?? "se"
-    const { startSize } = gesture
+    const { startSize, limits, lengths } = gesture
+    const fit = (axis: Axis, raw: number) =>
+      Math.max(1, Math.round(clampInto(limits[axis] ?? { min: 0, max: Number.POSITIVE_INFINITY }, raw)))
+    let shiftX = 0
+    let shiftY = 0
     if (/[ew]/.test(handle)) {
-      primary.element.style.width = `${Math.max(1, Math.round(startSize.width + proposed.width - startRect.width))}px`
+      lengths.width = fit("width", startSize.width + proposed.width - startRect.width)
+      primary.element.style.width = `${lengths.width}px`
+      // A west handle holds the east edge still, so the origin moves by what
+      // the width actually grew; at a `max-width` both stop together.
+      if (handle.includes("w")) shiftX = startSize.width - lengths.width
     }
     if (/[ns]/.test(handle)) {
-      primary.element.style.height = `${Math.max(1, Math.round(startSize.height + proposed.height - startRect.height))}px`
+      lengths.height = fit("height", startSize.height + proposed.height - startRect.height)
+      primary.element.style.height = `${lengths.height}px`
+      if (handle.includes("n")) shiftY = startSize.height - lengths.height
     }
-    if (shiftX !== 0 || shiftY !== 0) {
+    if (/[wn]/.test(handle)) {
       primary.element.style.transform = placed(primary.linear, primary.offsetX + shiftX, primary.offsetY + shiftY)
     }
   }
@@ -413,32 +467,31 @@ export function installTransform(context: EditorContext, writer: Writer): void {
    */
   const commit = (finished: Gesture) => {
     const summary = finished.mode === "resize" ? "Resize" : "Move"
-    const handle = finished.handle ?? "se"
     for (const target of finished.targets) {
-      const style = target.element.style
-      const writes: StyleWrite[] = []
-      if (finished.mode === "resize") {
-        if (/[ew]/.test(handle)) writes.push({ property: "width", value: style.width })
-        if (/[ns]/.test(handle)) writes.push({ property: "height", value: style.height })
-      }
+      const element = target.element
       // A resize only moves the origin when a west or north handle dragged it,
       // and a move that snapped back where it started moved nothing. The
       // element is the honest record of which of those happened, compared as
       // an offset so a transform spelled differently inline is not a change.
-      const { x, y } = readOffset(target.element)
-      if (round(x) !== round(target.offsetX) || round(y) !== round(target.offsetY)) {
-        writes.push({ property: "transform", value: settledTransform(x, y, target.linear) })
-      }
-      if (writes.length === 0) continue
+      const { x, y } = readOffset(element)
+      const shifted = round(x) !== round(target.offsetX) || round(y) !== round(target.offsetY)
+      target.restore()
 
-      setInline(target.element, "transform", target.inline.transform)
+      const writes: StyleWrite[] = []
       if (finished.mode === "resize") {
-        setInline(target.element, "width", target.inline.width)
-        setInline(target.element, "height", target.inline.height)
+        // Measured against the element as it was, so `lengthWrites` can tell
+        // whether the line would squeeze the new length without `shrink-0`.
+        // An axis dragged back to where it began wrote nothing.
+        const axes = (Object.keys(finished.lengths) as Axis[]).filter(
+          (axis) => finished.lengths[axis] !== Math.round(finished.startSize[axis])
+        )
+        writes.push(...mergeWrites(...axes.map((axis) => lengthWrites(element, axis, finished.lengths[axis] ?? 0))))
       }
+      if (shifted) writes.push({ property: "transform", value: settledTransform(x, y, target.linear) })
       // One call carrying every property the gesture settled, so a resize that
       // also shifted the origin is one step on the timeline rather than three.
-      writer.applyStyles(target.selection, writes, summary)
+      if (writes.length) writer.applyStyles(target.selection, writes, summary)
+      target.releaseTransitions()
     }
   }
 
@@ -466,9 +519,8 @@ export function installTransform(context: EditorContext, writer: Writer): void {
     gesture = null
     if (!cancelled.moved) return
     for (const target of cancelled.targets) {
-      setInline(target.element, "transform", target.inline.transform)
-      setInline(target.element, "width", target.inline.width)
-      setInline(target.element, "height", target.inline.height)
+      target.restore()
+      target.releaseTransitions()
     }
     for (const hook of endHooks) hook()
   }

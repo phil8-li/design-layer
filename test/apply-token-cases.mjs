@@ -244,6 +244,20 @@ await check("the button opens the list of radius tokens, aligned to the field", 
   assert.equal(popover(), null, "pressing the button again does not close the list")
 })
 
+// The list hangs off `document.body`, not off the inspector, so hiding the
+// editor (⌘.) left it over the page. See DESIGN.md, "Hidden editor".
+await check("hiding the editor closes the list", () => {
+  const view = scene(surface, [{ style: ROUNDED }]).mount(surface.appearanceSection)
+  const button = view.apply("corner-radius")
+  click(button)
+  assert.ok(popover(), "no picker opened")
+  surface.setState({ chromeHidden: true })
+  const left = popover()
+  surface.setState({ chromeHidden: false })
+  assert.equal(left, null, "the list stayed open over the page after the editor was hidden")
+  assert.equal(button.getAttribute("aria-expanded"), "false")
+})
+
 await check("a pick writes the same declarations the old token row wrote", () => {
   const view = scene(surface, [{ style: ROUNDED }]).mount(surface.appearanceSection)
   click(view.apply("corner-radius"))

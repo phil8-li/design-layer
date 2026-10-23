@@ -94,25 +94,47 @@ any agent or chat. Every send is also saved as a markdown file under
 
 ## The Changes tab
 The **Changes** tab holds everything a session produced — the notes you left and
-the edits you made — as one list in the order they happened. Notes and edits
-share one system:
+the edits you made — as one list in the order they happened. A direct edit in
+the Design panel (new text, a resize, a color, a moved or deleted element)
+becomes a note that the editor writes for you in plain words, such as "Change
+the width to 200px (was 120px)" or "Stack its items vertically". DesignLayer
+shows the edit on the page and writes nothing to your source files. Your agent
+makes every note in code.
 
 - **One numbering.** Item 4 is 4 on its row, on its pin on the canvas, and in
-  the brief. Edits get pins too, drawn as squares beside the notes' discs.
+  the brief. Edit notes get the same numbered pins as typed notes.
 - **One undo timeline.** Pinning, rewriting and deleting a note are Cmd+Z steps
   beside every style edit, so Undo always takes back the newest thing you did.
-- **One send button.** It writes everything the codemod can spell straight into
-  your files first, then hands whatever is left — notes, and edits no commit can
-  write — to a coding agent that is already running, with the written half in
-  the brief as context. A session that only moved some padding finishes at the
-  first stage; the button reads **Apply to code** then, and **Send to agent**
-  once something needs the agent.
+  Undo an edit and its note goes too. The cross on an edit note discards the
+  edit and puts the page back.
+- **One send button.** **Send to agent** hands every note, typed or written by
+  the editor, to a coding agent that is already running. It shows once an agent
+  has connected over MCP.
 - **One copy.** **Copy** in the tab and the copy shortcut write the same brief.
   It is not a fallback: the editor cannot see whether an agent is attached, so
   the paste path has to stay a peer.
 
-Which half a change lands in is never the designer's question to answer: every
-edit row says whether it is Ready, In your files, or Needs the agent.
+The copied or sent brief says more than the row. An edit note carries the
+row's sentence as `**Change:**` (in place of `**Feedback:**`), then an
+`**Instructions:**` list for the agent: the exact CSS declaration and its
+current value, the Tailwind class to write in place of the current one (on a
+Tailwind host), and which component's source to edit. A text edit says to
+change the copy where it is defined, a drag says to move the element through
+the layout instead of a transform, and a delete says to remove what the element
+leaves unused. One line under the header tells the agent that none of the edits
+is in the source yet.
+
+```md
+### 9. div #box
+**Location:** #root > .page > #box
+**React:** <App>
+**Change:** Change the corner radius to 20px (was 12px)
+**Instructions:**
+- Set `border-radius: 20px` on this element. It is `12px` now.
+- Tailwind: replace `rounded-xl` with `rounded-[20px]`.
+- If the theme has a token with this value, use the token in place of the arbitrary value.
+- Edit the JSX or template of <App> that renders this element.
+```
 
 ## How it works
 

@@ -2,7 +2,9 @@
 
 ## What it writes, and where
 
-- **Your component source**, only through an explicit edit, and only for files
+- **Your component source**, never for a Design panel edit: those become notes
+  that your coding agent makes in code. Only an explicit write such as a lint
+  fix or a saved control default reaches a file, and only for files
   that pass both the extension allowlist and a denylist you cannot widen
   (`.env*`, `*.config.*`, `node_modules`, `.git`). If `source.roots` is set,
   files outside those roots are refused as well.
@@ -123,6 +125,9 @@ server/mcp-control.mjs      where the editor's MCP endpoint runs: here, or relay
 src/core/angular.ts         the Angular resolver, edit queue and commit
 src/core/element-target.ts  how the browser describes an element to a source writer
 src/core/removal.ts         the delete queue, one for both hosts
+src/core/sizing.ts          a length the layout honors, for the canvas handles and the W/H fields alike
+src/annotations/edit-words.ts  what an edit note says: a plain sentence for the designer, instructions for the agent
+src/canvas/text-edit.ts     text retyped on the page (the engine's double-click editor) becomes an edit note
 src/shell/resize.ts         the panel rail: motion-panels' core wired to plain DOM
 src/                        the editor UI, bundled to an IIFE
 test/host.mjs               where this package is, and where a host app is

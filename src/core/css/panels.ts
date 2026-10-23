@@ -329,6 +329,29 @@ html.designlayer-chrome-hidden .de-panel {
 }
 html.designlayer-chrome-hidden .de-panel--left { transform: translateX(-100%); }
 html.designlayer-chrome-hidden .de-panel--right { transform: translateX(100%); }
+/*
+ * The seams stand down with their panels, and have to be told to.
+ *
+ * A seam is its panel's sibling in the rail, not its child, so neither the
+ * \`visibility\` nor the slide above reaches it. With the editor hidden, each
+ * seam stayed where its panel's inner edge had been: an invisible strip over
+ * the app that lit the accent hairline on hover, resized a panel nobody could
+ * see when dragged, and kept a Tab stop on chrome that was gone.
+ *
+ * Out at once rather than after the slide, because the panel's edge leaves on
+ * the first frame and a seam held back would light up over app the panel has
+ * already uncovered. Back only once the panel has landed — \`resize\` after the
+ * class comes off — for the same reason in reverse: a seam live at the
+ * destination would draw its line before the edge it belongs to had arrived.
+ * The delay sits on the bare selector because a transition is read from the
+ * style being entered. Reduced motion's blanket zeroes it, which is right:
+ * there the panel is in place from the first frame of its crossfade.
+ */
+.de-separator { transition: visibility 0s linear ${t.duration.resize}; }
+html.designlayer-chrome-hidden .de-separator {
+  visibility: hidden;
+  transition: none;
+}
 
 .de-panel-body { flex: 1; overflow-y: auto; overscroll-behavior: contain; }
 /*

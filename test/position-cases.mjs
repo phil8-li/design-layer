@@ -10,8 +10,9 @@
  *    a column, which is exactly the case nobody clicks;
  *  - a parent that is not a flex container offers the way in rather than six
  *    controls that would do nothing;
- *  - arrange speaks the layers panel's protocol — `getSiblings` then `reorder`
- *    — and refuses the moves that have nowhere to go;
+ *  - arrange asks the layers panel's `getSiblings`, refuses the moves that
+ *    have nowhere to go, and notes the rest for the agent rather than sending
+ *    the engine's `reorder`;
  *  - X and Y stay a readout. The moment X becomes an `<input>` it is
  *    promising a write there is no property to make;
  *  - rotation and flips write `rotate` and `scale` on the element, never
@@ -160,6 +161,7 @@ function scene({
   const sent = []
   const listeners = new Set()
   const writes = []
+  const moves = []
   let renders = 0
 
   const bridge = {
@@ -175,6 +177,7 @@ function scene({
     writer: {
       applyStyles: (selection, styles, summary) =>
         writes.push({ target: selection.element, styles, summary }),
+      noteReorder: (selection, move) => moves.push({ target: selection.element, move }),
     },
     selection: {
       element,
@@ -195,6 +198,7 @@ function scene({
     element,
     sent,
     writes,
+    moves,
     get renders() {
       return renders
     },
@@ -399,21 +403,17 @@ check("a middle child can go all four ways, and asks only once", () => {
   assert.equal(view.sent.filter((message) => message.type === "getSiblings").length, 1)
 })
 
-check("to front and forward reorder this node before an earlier sibling", () => {
-  const front = scene().reply([8, 10, 12, 14, 16]).render().press("Bring to front")
-  assert.deepEqual(lastSent(front), { type: "reorder", filePath: PAGE, fromLine: 12, toLine: 8 })
-  const forward = scene().reply([8, 10, 12, 14, 16]).render().press("Bring forward")
-  assert.deepEqual(lastSent(forward), { type: "reorder", filePath: PAGE, fromLine: 12, toLine: 10 })
-})
-
-check("one step back moves the sibling below us, because there is no insert-after", () => {
-  const view = scene().reply([8, 10, 12, 14, 16]).render().press("Send backward")
-  assert.deepEqual(lastSent(view), { type: "reorder", filePath: PAGE, fromLine: 14, toLine: 12 })
-})
-
-check("to back names our own line, the only way to say last", () => {
-  const view = scene().reply([8, 10, 12, 14, 16]).render().press("Send to back")
-  assert.deepEqual(lastSent(view), { type: "reorder", filePath: PAGE, fromLine: 12, toLine: 12 })
+check("each arrange button notes its move for the agent and sends no reorder", () => {
+  for (const [label, move] of [
+    ["Bring to front", "front"],
+    ["Bring forward", "forward"],
+    ["Send backward", "backward"],
+    ["Send to back", "back"],
+  ]) {
+    const view = scene().reply([8, 10, 12, 14, 16]).render().press(label)
+    assert.deepEqual(view.moves, [{ target: view.element, move }], `${label} noted the wrong move`)
+    assert.ok(!view.sent.some((message) => message.type === "reorder"), `${label} rewrote the source`)
+  }
 })
 
 check("the first child cannot go further forward", () => {

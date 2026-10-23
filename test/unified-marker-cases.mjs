@@ -234,7 +234,7 @@ function editOn(element, property, value) {
 
 console.log("\nOne pin per item, one number per item")
 
-await check("a note, an edit and a note are pins 1, 2, 3, and the edit is a square", async () => {
+await check("a note, an edit and a note are pins 1, 2, 3, all drawn as notes", async () => {
   reset()
   noteOn(button, "First")
   tick()
@@ -245,11 +245,13 @@ await check("a note, an edit and a note are pins 1, 2, 3, and the edit is a squa
 
   const painted = pins()
   assert.deepEqual(painted.map((pin) => pin.textContent), ["1", "2", "3"])
+  // An edit is a note the editor wrote, so its pin is the same disc.
   assert.deepEqual(
     painted.map((pin) => pin.classList.contains("de-ann-marker--edit")),
-    [false, true, false],
-    "only the edit's pin should carry the edit shape"
+    [false, false, false],
+    "an edit's pin still wears a shape of its own"
   )
+  assert.deepEqual(painted.map((pin) => pin.dataset.kind), ["note", "edit", "note"])
   // The pin's number IS the row's number: both come from `outboxNumbers`.
   const numbers = editor.outboxNumbers()
   for (const pin of painted) assert.equal(pin.textContent, String(numbers.get(pin.dataset.item)))
@@ -257,18 +259,16 @@ await check("a note, an edit and a note are pins 1, 2, 3, and the edit is a squa
   const [, edit] = painted
   assert.equal(edit.dataset.item, editor.edits()[0].id)
   assert.equal(edit.dataset.note, undefined, "an edit's pin claims to be a note")
-  assert.match(edit.getAttribute("aria-label"), /^Edit 2: opacity: .* → 0\.5$/)
-  assert.equal(edit.title, edit.getAttribute("aria-label"))
+  assert.match(edit.getAttribute("aria-label"), /^Note 2: (Change the opacity to 50% \(was .+\)|Set the opacity to 50%)$/)
+  assert.equal(`Note 2: ${edit.title}`, edit.getAttribute("aria-label"))
   assert.equal(painted[2].getAttribute("aria-label"), "Note 3: Third")
   // Anchored at the element's top-left, like a note.
   assert.equal(edit.style.left, "10px")
   assert.equal(edit.style.top, "100px")
 })
 
-await check("the edit shape is a shape, not a colour", async () => {
-  const rule = /\.de-ann-marker--edit \{([^}]*)\}/.exec(editor.annotationsCss)?.[1] ?? ""
-  assert.match(rule, /border-radius:\s*4px/, "the edit pin has no shape of its own")
-  assert.doesNotMatch(rule, /background/, "the edit pin left the one colour system")
+await check("no stylesheet rule gives an edit pin a shape of its own", async () => {
+  assert.doesNotMatch(editor.annotationsCss, /\.de-ann-marker--edit/)
 })
 
 await check("undoing the edit takes its pin away and renumbers the note after it", async () => {
@@ -334,7 +334,7 @@ await check("clicking an edit pin selects its element and opens no composer", as
   editOn(lede, "opacity", "0.5")
   await settle()
   const [pin] = pins()
-  assert.ok(pin?.classList.contains("de-ann-marker--edit"), "no edit pin was painted")
+  assert.equal(pin?.dataset.kind, "edit", "no edit pin was painted")
 
   let reached = false
   const hear = () => {

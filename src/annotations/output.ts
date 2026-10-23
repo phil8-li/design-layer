@@ -18,10 +18,10 @@
  * `**Feedback:**` fields at the same four detail levels. Agentation runs beside
  * this editor as a companion, and a designer using both should not hand an
  * agent two different documents for the same kind of note. The one thing this
- * says that Agentation never has to is WHICH KIND of edit each item is. A brief
- * that mixes "the designer already did this" with "the designer wants this" is
- * how an agent ends up reverting work that is already in the file it just
- * opened, so every edit carries a `**Status:**` of its own.
+ * says that Agentation never has to is what the designer CHANGED: a direct edit
+ * in the Design panel is a note too, written for them, with a `**Change:**`
+ * field in place of `**Feedback:**`. The editor writes none of them to source,
+ * so every one is a request for the agent.
  */
 
 import { owningComponentName } from "../core/angular"
@@ -44,7 +44,8 @@ import {
   nearbyElements,
   nearbyText,
 } from "./identify"
-import { edits, isEditQueued, owedEditCount } from "./journal"
+import { attributeName, editInstructions, editNoteText } from "./edit-words"
+import { editCount, edits } from "./journal"
 import { annotations, annotationSettings } from "./store"
 import type {
   AnnotationRecord,
@@ -557,24 +558,17 @@ export function outboxNumbers(items: OutboxItem[] = outboxItems()): Map<string, 
 }
 
 /**
- * How many rows still want something from the designer.
+ * How many rows are waiting for the agent: all of them.
  *
- * Every row the Changes tab does NOT badge "In your files": the notes, the
- * edits no commit can write, and — the one that is easy to miss — the edits
- * that are merely queued. It lives here, beside `outboxItems`, because two
- * surfaces ask the question and they must not answer it differently: the count
- * on the inspector's tab and the count on the toolbar's pending indicator are
- * the same promise about the same list, and a bar reading "3" over a list
- * showing four things is worse than a bar with no number at all.
- *
- * `written` cannot answer it alone. The writer sets that flag the moment it
- * knows it CAN spell a change, long before any commit runs, so counting
- * `!written` silently omits every Ready row. `queued` is the other half.
+ * It used to subtract the edits already in the file. The editor no longer
+ * writes edits to source — every edit is a note the agent makes in code — so
+ * nothing in the list is ever done before it is sent. It lives here, beside
+ * `outboxItems`, so the tab's count and anything else that shows one cannot
+ * disagree. No sort: only the number is wanted, and the tab badge asks on
+ * every journal announce.
  */
 export function owedCount(): number {
-  // Every note, plus the edits `owedEditCount` counts. No sort: only the
-  // number is wanted, and the tab badge asks on every journal announce.
-  return annotations().length + owedEditCount()
+  return annotations().length + editCount()
 }
 
 /* -------------------------------------------------------------------------
@@ -697,27 +691,23 @@ function environmentBlock(): string[] {
 }
 
 /**
- * The vocabulary is `change-prompt.ts`'s, deliberately.
+ * The exact change in code, for the compact brief's one line: the sentence
+ * says it to a person, this says it to the agent. Null where the sentence is
+ * already exact — a text, an icon, a delete or a move says everything.
  *
- * `class`, `icon`, `text` and `remove` are sentinels rather than CSS
- * properties, and an agent handed "set `remove` to ``" has no idea what was
- * wanted. Two spellings of "what changed" in one codebase is how the Prompts
- * tab and this brief come to describe the same edit differently.
+ * `class`, `icon`, `text`, `remove` and `reorder` are sentinels rather than CSS
+ * properties, the vocabulary `change-prompt.ts` uses too.
  */
-function editPhrase(edit: EditRecord): string {
-  if (edit.property === "remove") {
-    return "delete this element, and any import or handler left unused by its removal"
-  }
-  if (edit.property === "icon") {
-    return `swap the icon to \`${edit.to}\` (was \`${edit.from || "unknown"}\`)`
-  }
+function exactPhrase(edit: EditRecord): string | null {
+  if (["remove", "icon", "text", "reorder"].includes(edit.property)) return null
   if (edit.property === "class") {
-    return `the class attribute becomes \`${edit.to}\` (was \`${edit.from || "none"}\`)`
+    return `class attribute \`${edit.to}\` (was \`${edit.from || "none"}\`)`
   }
-  if (edit.property === "text") {
-    return `the text becomes “${truncate(edit.to)}” (was “${truncate(edit.from)}”)`
+  const attribute = attributeName(edit.property)
+  if (attribute) {
+    return `\`${attribute}\` prop \`${edit.to}\`${edit.from ? ` (was \`${edit.from}\`)` : ""}`
   }
-  return `set \`${edit.property}\` to \`${edit.to}\`${edit.from ? ` (was \`${edit.from}\`)` : ""}`
+  return `\`${edit.property}: ${edit.to}\`${edit.from ? ` (was \`${edit.from}\`)` : ""}`
 }
 
 /**
@@ -735,46 +725,27 @@ interface BriefItem {
   facts: AnnotationTarget | null
   rect: AnnotationRect | null
   selectedText: string
-  /** `Feedback` for a note, `Change` for an edit — the item's last line. */
+  /** `Feedback` for a note, `Change` for an edit. */
   field: "Feedback" | "Change"
+  /** What the designer wrote, or the sentence the editor wrote for an edit. */
   body: string
-  /** An edit's `EditStatus`; a note has none. */
-  status: EditStatus | null
+  /** An edit's exact change, for the compact line. */
+  phrase: string | null
+  /** An edit's `**Instructions:**` bullets; empty for a note. */
+  instructions: string[]
 }
 
-/**
- * Where an edit stands, as the agent must read it.
+/*
+ * THERE IS NO `**Status:**` LINE ANY MORE.
  *
- * Three states, because `written` alone is two of them: the writer sets it the
- * moment it can spell a change, so a queued edit is `written` and still in no
- * file. Calling that "already written" tells the agent to skip the one change
- * the editor has not made yet; calling it "needs writing" gets it written
- * twice, once by hand and once by the editor's own Apply.
+ * Each edit used to say whether it was already written, queued for the
+ * editor's own Apply, or still only in the browser, because the editor wrote
+ * part of a session to source itself and the agent had to skip that part. The
+ * editor writes nothing now. Every edit is still only in the browser, so one
+ * sentence under the header says it once for all of them.
  */
-interface EditStatus {
-  /** The `**Status:**` line. */
-  full: string
-  /** The tail of a compact line. */
-  short: string
-}
-
-const WRITTEN: EditStatus = {
-  full: "Already written to source — do not apply again",
-  short: "already written, do not apply again",
-}
-const QUEUED: EditStatus = {
-  full: "Queued in DesignLayer — it will write this itself; do not apply by hand",
-  short: "queued in DesignLayer, do not apply by hand",
-}
-const PREVIEW: EditStatus = {
-  full: "Showing in the browser only — still needs writing",
-  short: "browser only, still needs writing",
-}
-
-function editStatus(edit: EditRecord): EditStatus {
-  if (!edit.written) return PREVIEW
-  return isEditQueued(edit.id) ? QUEUED : WRITTEN
-}
+const EDITS_LEAD =
+  "Items with a **Change:** line are edits the designer made in the browser with DesignLayer. None of them is in the source yet. Make each one in code, as its **Instructions:** say."
 
 function noteItem(note: AnnotationRecord): BriefItem {
   const { target } = note
@@ -792,7 +763,8 @@ function noteItem(note: AnnotationRecord): BriefItem {
     selectedText: (note.selectedText ?? "").replace(/\s+/g, " ").trim().slice(0, 500),
     field: "Feedback",
     body: note.comment.trim() || "(no comment)",
-    status: null,
+    phrase: null,
+    instructions: [],
   }
 }
 
@@ -809,8 +781,9 @@ function editItem(edit: EditRecord): BriefItem {
     rect: null,
     selectedText: "",
     field: "Change",
-    body: editPhrase(edit),
-    status: editStatus(edit),
+    body: editNoteText(edit),
+    phrase: exactPhrase(edit),
+    instructions: editInstructions(edit),
   }
 }
 
@@ -839,8 +812,8 @@ function renderItem(index: number, item: BriefItem, detail: OutputDetail): strin
     const quote = selectedText
       ? ` (re: "${selectedText.slice(0, 30)}${selectedText.length > 30 ? "..." : ""}")`
       : ""
-    const status = item.status ? ` — ${item.status.short}` : ""
-    return [`${index}. **${item.name}**${source ? ` (${source})` : ""}: ${item.body}${quote}${status}`]
+    const exact = item.phrase ? ` — ${item.phrase}` : ""
+    return [`${index}. **${item.name}**${source ? ` (${source})` : ""}: ${item.body}${quote}${exact}`]
   }
 
   const lines = [`### ${index}. ${item.name}`]
@@ -888,8 +861,9 @@ function renderItem(index: number, item: BriefItem, detail: OutputDetail): strin
     if (detail === "detailed" && context) lines.push(`**Context:** ${context}`)
   }
 
-  if (item.status) lines.push(`**Status:** ${item.status.full}`)
-  lines.push(`**${item.field}:** ${item.body}`, "")
+  lines.push(`**${item.field}:** ${item.body}`)
+  if (item.instructions.length) lines.push("**Instructions:**", ...item.instructions.map((line) => `- ${line}`))
+  lines.push("")
   return lines
 }
 
@@ -901,11 +875,9 @@ function renderItem(index: number, item: BriefItem, detail: OutputDetail): strin
  * `outboxNumbers`'s and "fix 4" means the same thing in the brief as on the
  * row and the pin. A note prints exactly what Agentation would copy for it.
  *
- * Each edit states its status on its own line, just before its change. That
- * exists to prevent a specific failure — an agent that opens the file, sees
- * the padding change already applied, and applies it a second time because
- * nothing told it the designer had got there first. The same warning also
- * sits once under the header, where an agent that skims still reads it.
+ * An edit is a note the editor wrote: its last line is `**Change:**`, and one
+ * sentence under the header tells the agent that none of them is in the source
+ * yet, because the editor previews edits and leaves the code to the agent.
  */
 export function buildAnnotationBrief(items: OutboxItem[] = outboxItems()): string {
   const detail = annotationSettings().outputDetail
@@ -925,12 +897,7 @@ export function buildAnnotationBrief(items: OutboxItem[] = outboxItems()): strin
   if (detail === "forensic") lines.push(...environmentBlock())
   else if (detail !== "compact") lines.push(`**Viewport:** ${viewportLabel()}`)
   lines.push("")
-  if (briefItems.some((item) => item.status === WRITTEN)) {
-    lines.push(
-      "Items marked already written are in the source files. Do not apply them again — a second application is a conflict, not a fix.",
-      ""
-    )
-  }
+  if (briefItems.some((item) => item.field === "Change")) lines.push(EDITS_LEAD, "")
 
   briefItems.forEach((item, index) => lines.push(...renderItem(index + 1, item, detail)))
 

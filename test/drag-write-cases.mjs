@@ -460,6 +460,91 @@ check("DW-14 pointercancel reverts the preview instead of committing it", () => 
   assert.equal(history.canUndo(), false)
 })
 
+/*
+ * A length alone does not size a flex item: `flex-1` grows it past any width
+ * and a basis replaces the width outright, so a resize there moved nothing.
+ * The release writes `flex: none` beside the length, Figma's Fixed child.
+ */
+check("DW-15 a resize on a flex-1 column takes it off its grow", () => {
+  const row = mount('<div class="row" style="display: flex"><div class="col" style="flex: 1 1 0%">Column</div></div>')
+  const column = row.firstElementChild
+  reset(selectionFor(column))
+  handle.dataset.handle = "e"
+  try {
+    drag(handle, [
+      [0, 0],
+      [20, 0],
+    ])
+  } finally {
+    handle.dataset.handle = "se"
+  }
+  assert.equal(column.style.width, "120px")
+  assert.equal(column.style.flexGrow, "0", "the column still grows past the width it was given")
+  assert.deepEqual(queued[0].keys, ["width", "flex"])
+  assert.equal(history.undo(), "Resize")
+  assert.notEqual(column.style.width, "120px")
+  assert.equal(column.style.flexGrow, "1", "undo did not give the column its grow back")
+})
+
+check("DW-16 a resize stops at the element's max-width, and writes the cap", () => {
+  const element = mount('<div class="capped" style="width: 100px; max-width: 130px">Capped</div>')
+  reset(selectionFor(element))
+  handle.dataset.handle = "e"
+  try {
+    drag(handle, [
+      [0, 0],
+      [60, 0],
+    ])
+  } finally {
+    handle.dataset.handle = "se"
+  }
+  assert.equal(element.style.width, "130px", "the write went past a max-width the layout ignores it beyond")
+})
+
+check("DW-17 a west handle at a max-width moves the origin only as far as the width grew", () => {
+  const element = mount('<div class="capped" style="width: 100px; max-width: 130px">Capped</div>')
+  reset(selectionFor(element))
+  handle.dataset.handle = "w"
+  try {
+    drag(handle, [
+      [0, 0],
+      [-60, 0],
+    ])
+  } finally {
+    handle.dataset.handle = "se"
+  }
+  assert.equal(element.style.width, "130px")
+  // The east edge stays where it was: 30px of growth, 30px of travel.
+  assert.equal(element.style.transform, "translate(-30px, 0px)")
+})
+
+check("DW-18 the element's transitions sit the gesture out and come back after", () => {
+  const element = mount('<div class="card" style="width: 100px; transition: width 300ms">Card</div>')
+  reset(selectionFor(element))
+  fire(handle, "pointerdown", { clientX: 0, clientY: 0 })
+  fire(handle, "pointermove", { clientX: 30, clientY: 20 })
+  assert.equal(element.style.transition, "none", "the tween still runs under the handle")
+  fire(handle, "pointerup", {})
+  assert.equal(element.style.transition, "width 300ms", "the gesture kept the element's transition")
+  assert.equal(element.style.width, "130px")
+})
+
+check("DW-19 a resized inline box becomes inline-block, or the length means nothing", () => {
+  const span = mount('<p>Some <span class="tag">tag</span> text</p>').querySelector("span")
+  reset(selectionFor(span))
+  handle.dataset.handle = "e"
+  try {
+    drag(handle, [
+      [0, 0],
+      [20, 0],
+    ])
+  } finally {
+    handle.dataset.handle = "se"
+  }
+  assert.equal(span.style.display, "inline-block")
+  assert.equal(span.style.width, "120px")
+})
+
 // ── The order of the release ───────────────────────────────────────────────
 
 console.log("\nThe release")

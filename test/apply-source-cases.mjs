@@ -332,7 +332,7 @@ await check("AS-08 a class change queues and survives buildBatchOperations", asy
   assert.equal(selection.source.filePath, "src/Fixture.tsx")
 })
 
-await check("AS-09 a text edit waits for the path instead of dropping", async () => {
+await check("AS-09 a text edit previews and sends nothing, before or after the path resolves", async () => {
   resetSourceResolutionCache()
   const element = mount('<h2 class="title">Before</h2>')
   const bridge = makeBridge({
@@ -347,13 +347,10 @@ await check("AS-09 a text edit waits for the path instead of dropping", async ()
   })
   createWriter(bridge).applyText(selectionFor(element), "After")
   assert.equal(element.textContent, "After")
-  assert.equal(bridge.sent.length, 0, "sending before the path resolves would target nothing")
   await settle()
-  assert.equal(bridge.sent.length, 1)
-  assert.equal(bridge.sent[0].type, "updateText")
-  assert.equal(bridge.sent[0].filePath, "src/Fixture.tsx")
-  assert.equal(bridge.sent[0].originalText, "Before")
-  assert.equal(bridge.sent[0].newText, "After")
+  // A text edit is a note for the agent. The engine's `updateText`, which
+  // wrote the file on the spot, is never sent.
+  assert.deepEqual(bridge.sent, [])
 })
 
 // --- the file on disk ------------------------------------------------------
@@ -616,7 +613,7 @@ await check("AS-17 a source that lands after the click patches the record, not t
  * so the click only waits for a write. It can only rehearse what it is shown:
  * the queue's operations, once the edits settle — not one message per edit.
  */
-await check("AS-18 queued edits hand the server their commit to rehearse, once they settle", async () => {
+await check("AS-18 edits send the server nothing: no commit and no rehearsal of one", async () => {
   resetSourceResolutionCache()
   const parent = mount('<div class="p-2"><button class="rounded bg-blue-500 px-3">Go</button></div>')
   const bridge = makeBridge({
@@ -627,13 +624,10 @@ await check("AS-18 queued edits hand the server their commit to rehearse, once t
   writer.applyClasses(selection, { remove: ["bg-blue-500"], add: ["bg-red-500"] }, "Background")
   await settle()
   writer.applyClasses(selection, { remove: ["px-3"], add: ["px-4"] }, "Padding")
-  await settle()
-  assert.equal(bridge.sent.length, 0, "the hint went out before the edits settled")
   await new Promise((resolve) => setTimeout(resolve, 250))
-  const hints = bridge.sent.filter((message) => message.type === "designlayer:applyAhead")
-  assert.equal(hints.length, 1, "a hint went out per edit rather than once the edits settled")
-  assert.deepEqual(hints[0].operations, bridge.store.buildBatchOperations())
-  assert.equal(bridge.sent.length, 1, "the hint is not a commit")
+  // Edits are notes for the agent now, so the editor never writes them and
+  // has no commit to rehearse.
+  assert.deepEqual(bridge.sent, [])
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

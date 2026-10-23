@@ -966,30 +966,26 @@ function briefItem(brief, number) {
   return brief.slice(start, next === -1 ? undefined : next)
 }
 
-check("the brief states each change's status, unmissably", () => {
+check("every edit in the brief is a request: no status line, one lead under the header", () => {
   seedBrief()
   editor.updateSettings({ outputDetail: "standard" })
   const brief = editor.buildAnnotationBrief()
 
-  // Sections by kind are gone: one list, and the status rides on each item.
-  assert.ok(!brief.includes("## Already written to source"), "the edits still sit under their own headings")
-  assert.ok(!brief.includes("## Showing in the browser only"), "the edits still sit under their own headings")
-
-  const done = briefItem(brief, 2)
-  const todo = briefItem(brief, 3)
-  assert.match(done, /24px/)
-  assert.match(
-    done,
-    /\*\*Status:\*\* Already written to source — do not apply again\n\*\*Change:\*\*/,
-    "the applied change does not say it is done, right before what it changed"
-  )
-  assert.match(todo, /swap the icon to `Heart`/)
-  assert.match(todo, /\*\*Status:\*\* Showing in the browser only — still needs writing/)
-  assert.ok(!/Already written/.test(todo), "the preview-only change was filed as already in the file")
-  // Spelled out once at the top as well: this is the sentence that stops an
-  // agent applying the designer's padding change a second time.
+  const padding = briefItem(brief, 2)
+  const icon = briefItem(brief, 3)
+  // The note's plain sentence, then the exact instructions an agent needs.
+  assert.match(padding, /\*\*Change:\*\* Change the padding to 24px \(was 16px\)\n\*\*Instructions:\*\*\n/)
+  assert.match(padding, /^- Set `padding: 24px` on this element\. It is `16px` now\.$/m)
+  assert.match(padding, /^- Tailwind: add `p-6`\.$/m)
+  assert.match(padding, /^- Edit the JSX or template of <Lede> that renders this element\.$/m)
+  assert.match(icon, /\*\*Change:\*\* Swap the icon to Heart \(was Star\)/)
+  assert.match(icon, /^- Swap the icon `Star` for `Heart`, from the icon set the project already uses\.$/m)
+  // The editor writes nothing, so even an edit the old codemod "wrote" is
+  // still owed to the agent.
+  assert.ok(!/\*\*Status:\*\*/.test(brief), "an edit still carries a status line")
+  assert.ok(!/Already written|Queued in DesignLayer|do not apply/i.test(brief), "an edit told the agent to skip it")
   const header = brief.slice(0, brief.indexOf("### 1."))
-  assert.match(header, /Do not apply them again — a second application is a conflict, not a fix\./)
+  assert.match(header, /None of them is in the source yet\. Make each one in code, as its \*\*Instructions:\*\* say\./)
 })
 
 check("the brief numbers notes and edits as one list, in the order they happened", () => {
@@ -1003,32 +999,27 @@ check("the brief numbers notes and edits as one list, in the order they happened
   const brief = editor.buildAnnotationBrief()
 
   assert.match(briefItem(brief, 1), /\*\*Feedback:\*\* First thought/)
-  assert.match(briefItem(brief, 2), /\*\*Change:\*\* set `padding` to `24px`/)
+  assert.match(briefItem(brief, 2), /\*\*Change:\*\* Change the padding to 24px/)
   assert.match(briefItem(brief, 3), /\*\*Feedback:\*\* Second thought/)
   assert.equal(briefItem(brief, 4), "", "an item was numbered twice")
-  // Nothing is written, so there is nothing to warn about re-applying.
-  assert.ok(!brief.includes("Do not apply them again"), "a warning about written work with none written")
+  assert.ok(!brief.includes("Do not apply them again"), "a warning about re-applying work")
 })
 
-check("a queued edit is not described as already written", () => {
+check("an edit the writer could spell reads the same as one it could not", () => {
+  reset()
+  editor.updateSettings({ outputDetail: "compact" })
+  editor.recordEdit({ property: "padding", from: "16px", to: "24px", element: lede, written: true })
+  editor.markEditsWritten()
+  // Compact keeps one line: the sentence, then the exact declaration.
+  assert.match(editor.buildAnnotationBrief(), /^1\. .*: Change the padding to 24px \(was 16px\) — `padding: 24px` \(was `16px`\)$/m)
+  assert.ok(!/already written|queued/i.test(editor.buildAnnotationBrief()))
+})
+
+check("a brief with only typed notes has no edit lead", () => {
   reset()
   editor.updateSettings({ outputDetail: "standard" })
-  // `written` is set the moment the writer can spell it; until Apply runs the
-  // change is queued, and in no file.
-  editor.recordEdit({ property: "padding", from: "16px", to: "24px", element: lede, written: true })
-  const brief = editor.buildAnnotationBrief()
-
-  assert.ok(!/Already written/i.test(brief), "a queued change told the agent it is already in the file")
-  assert.match(
-    briefItem(brief, 1),
-    /\*\*Status:\*\* Queued in DesignLayer — it will write this itself; do not apply by hand/
-  )
-
-  editor.updateSettings({ outputDetail: "compact" })
-  assert.match(editor.buildAnnotationBrief(), /^1\. .*— queued in DesignLayer, do not apply by hand$/m)
-
-  editor.markEditsWritten()
-  assert.match(editor.buildAnnotationBrief(), /^1\. .*— already written, do not apply again$/m)
+  note(saveButton, "Too loud")
+  assert.ok(!editor.buildAnnotationBrief().includes("None of them is in the source yet"))
 })
 
 check("nothing to hand over says so, rather than printing empty headings", () => {
@@ -1253,15 +1244,15 @@ check("a dragged region is an Area selection at its page position", () => {
   )
 })
 
-check("edits read like notes, in the same numbered list, with a status line", () => {
+check("edits read like notes, in the same numbered list", () => {
   seedBrief()
   editor.updateSettings({ outputDetail: "standard" })
   const brief = editor.buildAnnotationBrief()
   assert.match(
     brief,
-    /^### 2\. paragraph: "Invoices and orders in one place\."\n\*\*Location:\*\* #app > \.panel > #lede\n\*\*React:\*\* <Lede>\n\*\*Status:\*\* Already written to source — do not apply again\n\*\*Change:\*\* set `padding` to `24px` \(was `16px`\)$/m
+    /^### 2\. paragraph: "Invoices and orders in one place\."\n\*\*Location:\*\* #app > \.panel > #lede\n\*\*React:\*\* <Lede>\n\*\*Change:\*\* Change the padding to 24px \(was 16px\)\n\*\*Instructions:\*\*\n- Set `padding: 24px` on this element\. It is `16px` now\.$/m
   )
-  assert.match(brief, /^### 3\. button "Save"\n[\s\S]*?\*\*Change:\*\* swap the icon to `Heart`/m)
+  assert.match(brief, /^### 3\. button "Save"\n[\s\S]*?\*\*Change:\*\* Swap the icon to Heart/m)
 })
 
 check("forensic opens with Agentation's environment block and rule", () => {
@@ -1270,7 +1261,7 @@ check("forensic opens with Agentation's environment block and rule", () => {
   const brief = editor.buildAnnotationBrief()
   assert.match(
     brief,
-    /^## Page Feedback: \/\n\*\*App:\*\* app on localhost\n\n\*\*Environment:\*\*\n- Viewport: \d+×\d+\n- URL: http:\/\/localhost\/\n- User Agent: .+\n- Timestamp: .+\n- Device Pixel Ratio: \d+(\.\d+)?\n\n---\n\nItems marked already written are in the source files\. [^\n]+\n\n### 1\. button "Save"\n\*\*Full DOM Path:\*\* body > main#app > section\.panel > div\.row > button\.btn\n/
+    /^## Page Feedback: \/\n\*\*App:\*\* app on localhost\n\n\*\*Environment:\*\*\n- Viewport: \d+×\d+\n- URL: http:\/\/localhost\/\n- User Agent: .+\n- Timestamp: .+\n- Device Pixel Ratio: \d+(\.\d+)?\n\n---\n\nItems with a \*\*Change:\*\* line are edits [^\n]+\n\n### 1\. button "Save"\n\*\*Full DOM Path:\*\* body > main#app > section\.panel > div\.row > button\.btn\n/
   )
   assert.ok(!brief.includes("**Viewport:**"), "forensic printed the viewport twice")
 })
@@ -2726,7 +2717,7 @@ check("edit asks the canvas to reopen the note, and only a note offers it", () =
   // queued write stayed, so pressing Apply afterwards wrote a change the
   // designer had explicitly discarded. The bin withdraws the work now, and the
   // label is the thing that has to say so.
-  assert.match(editActions[0].getAttribute("aria-label"), /^Discard change/)
+  assert.match(editActions[0].getAttribute("aria-label"), /^Discard edit/)
 })
 
 check("a pin hovered on the page lights its row, and no other", () => {

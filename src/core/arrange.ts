@@ -1,40 +1,28 @@
 /**
  * Arrange — moving the selection among its JSX siblings.
  *
- * "Front" and "back" here mean SOURCE ORDER, not z-index. That is not a
- * simplification, it is the only thing that survives the trip to source:
- * `core/tailwind.ts` has no entry for `z-index`, so a `z-*` write is dropped
- * silently at "Apply to code" and the user is left with a preview that no file
- * agrees with. Reordering the JSX children is the move the engine can actually
- * make, and in a document flow it is also the move that means something —
- * siblings in normal flow do not stack, they read in order. Front is the first
- * child, which is the top row of the Layers tree; back is the last.
+ * "Front" and "back" here mean SOURCE ORDER, not z-index. In a document flow
+ * that is the move that means something — siblings in normal flow do not
+ * stack, they read in order. Front is the first child, which is the top row of
+ * the Layers tree; back is the last.
  *
  * The reference we move is exactly the layers panel's `DragRef`, built the same
  * way from the same resolver memo. Two definitions of "which node is this, and
  * who are its siblings" would be two answers, and a drag and a button press on
  * the same layer would move different things.
  *
- * ── What `reorder` can and cannot say ──────────────────────────────────────
+ * ── A move is a note ───────────────────────────────────────────────────────
  *
- * The engine's `reorder` inserts `fromLine` *before* `toLine`, and that is its
- * whole vocabulary. Three of the four moves fall straight out of it. The two
- * that do not are worth naming, because they look like tricks and are not:
- *
- *   - one step LATER is the same edit as swapping with the next sibling, so it
- *     is sent as "move the next sibling before me" rather than as a move of the
- *     selection. There is no "insert after" to ask for.
- *   - the LAST slot cannot be named by an insert-before, because there is no
- *     sibling after it to insert before. Passing the element's own line as the
- *     target is how you say it: the vendor removes the node first, then fails
- *     to find its target, and splices at -1 — which lands the node before the
- *     parent's trailing whitespace, i.e. last. Verified against the pinned
- *     `react-rewrite-cli@0.1.1`. It relies on the parent's children ending in a
- *     JSXText, which is true of any JSX written one child per line — and the
- *     protocol is line-addressed, so anything else was already out of reach.
+ * Arranging used to send the engine's `reorder`, which rewrote the file on the
+ * spot. It writes a note now, like every other direct edit, and the agent
+ * moves the element in source. The sibling lines still come from the engine's
+ * `getSiblings`: they are how a move with nowhere to go is told apart from one
+ * that has somewhere.
  */
 
 import { getResolver, type LayerBridge } from "./resolve"
+import type { Selection } from "./types"
+import type { Writer } from "./writer"
 
 export interface ArrangeBridge extends LayerBridge {
   send(message: unknown): void
@@ -152,27 +140,22 @@ export function canArrange(
   return move === "front" || move === "forward" ? at > 0 : at < lines.length - 1
 }
 
-/** Sends the one `reorder` that performs `move`. A move that cannot go is a no-op. */
+/**
+ * Notes the move for the agent. A move that cannot go is a no-op.
+ *
+ * The memo is dropped all the same: the file has not changed, but a stale
+ * answer must never outlive a gesture that may come back as a source edit.
+ */
 export function arrange(
-  bridge: ArrangeBridge,
+  writer: Pick<Writer, "noteReorder">,
+  selection: Selection,
   ref: ArrangeRef,
   lines: number[] | null,
   move: ArrangeMove
 ): void {
-  if (!canArrange(lines, ref, move) || !lines) return
-  const at = arrangeIndex(lines, ref)
-
-  // "backward" moves the sibling below us instead of moving us: swapping two
-  // adjacent children is symmetric, and it is the only way to say "one later"
-  // in a vocabulary that has no insert-after.
-  const fromLine = move === "backward" ? lines[at + 1] : ref.fromLine
-  const toLine =
-    move === "front" ? lines[0]
-    : move === "forward" ? lines[at - 1]
-    : ref.fromLine
-
+  if (!canArrange(lines, ref, move)) return
   siblingsByParent.clear()
-  bridge.send({ type: "reorder", filePath: ref.filePath, fromLine, toLine })
+  writer.noteReorder(selection, move)
 }
 
 /** Drops the memo. Exported for tests, which move the same parent repeatedly. */

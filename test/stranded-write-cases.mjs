@@ -520,23 +520,14 @@ await check("SW-08 a write the translator cannot spell is a row that says so, un
     "the empty state outlived the change it was denying"
   )
   const row = rows()[0]
-  assert.equal(said(row), "transform: none → translate(4px, 0px)")
-  /*
-   * One chip, not two. The "Edit" chip was removed: the row sits in a list
-   * whose other kind is a typed sentence, and its own body reads
-   * `transform: none → translate(4px, 0px)` in mono — it had no work left to
-   * do in a 260px column. What must survive is the STATE, which is the one fact
-   * here an agent acts on differently and which nothing else on the row says.
-   */
-  // "Needs the agent", not the old "Preview only". Both are true of this row,
-  // but only one of them tells the designer what happens next: a `transform`
-  // has no Tailwind spelling, so no amount of pressing Apply will ever write
-  // it, and the row that says so is the only warning they get.
-  assert.deepEqual(badges(row), ["Needs the agent"])
+  // A note the editor wrote, in words, with no state badge: every edit goes
+  // to the agent, so there is no state left to report.
+  assert.equal(said(row), "Move it 4px right")
+  assert.deepEqual(badges(row), [])
   assert.equal(previewOnlyChanges().length, 1, "the ledger is the other half of the same fact")
 })
 
-await check("SW-09 a row says which of THREE things is true of it, not two", async () => {
+await check("SW-09 a writable edit and an unwritable one read the same: both are notes", async () => {
   reset()
   const element = mount('<button class="rounded px-3">Go</button>')
   const writer = createWriter(makeBridge({ asyncInfo: RESOLVED }))
@@ -545,39 +536,18 @@ await check("SW-09 a row says which of THREE things is true of it, not two", asy
   await settle()
 
   /*
-   * The two-state badge told a lie here for a version, and this case is what
-   * catches it coming back.
-   *
-   * `opacity` becomes a utility class, so the writer marks it written THE
-   * MOMENT THE EDIT IS MADE — before anything has been applied. Read straight
-   * off `written`, the row announced "In source" for a change that was in no
-   * file at all, and a designer who believed it had no reason to press Apply.
-   * So the queued half is asked first: writable-and-still-owed is Ready, and
-   * only a commit turns it into In your files.
-   *
-   * `filter` has no entry in `core/tailwind.ts`, so no commit will ever write
-   * it. "Not yet" and "not ever" are different answers to the same question,
-   * and collapsing them into one word is what the third state exists to stop.
+   * `opacity` has a utility class and `filter` has none. That split used to
+   * decide whether the row read Ready or Needs the agent. The editor writes
+   * neither now, so both rows are the same kind of note.
    */
-  assert.equal(badges(rowSaying("opacity")).at(-1), "Ready")
-  assert.equal(badges(rowSaying("filter")).at(-1), "Needs the agent")
-
-  // The commit landing is what moves the first one — and it must leave the
-  // second alone. A row promoted here is a change the agent is then told to
-  // skip, which is the one way this feature can lose work outright.
-  markEditsWritten()
-  await settle()
-  assert.equal(badges(rowSaying("opacity")).at(-1), "In your files")
-  assert.equal(
-    badges(rowSaying("filter")).at(-1),
-    "Needs the agent",
-    "Apply promoted a change it never wrote"
-  )
-
-  // Said twice on purpose — in words and in a class the stylesheet tints —
-  // because a tint alone is a fact nobody can read out loud.
-  assert.ok(rowSaying("opacity").classList.contains("de-ann-item--written"))
-  assert.ok(!rowSaying("filter").classList.contains("de-ann-item--written"))
+  for (const prefix of ["Change the opacity", "Add a layer blur"]) {
+    const row = rowSaying(prefix)
+    assert.ok(row, `no row for ${prefix}`)
+    assert.deepEqual(badges(row), [])
+    assert.ok(!row.classList.contains("de-ann-item--written"))
+  }
+  assert.ok(!tab.node.textContent.includes("Ready"), "a row still claims the editor will write it")
+  assert.ok(!tab.node.textContent.includes("In your files"))
 })
 
 await check("SW-10 a sentinel reads as what it is, not as a CSS declaration", () => {
@@ -590,13 +560,11 @@ await check("SW-10 a sentinel reads as what it is, not as a CSS declaration", ()
   journal("text", "Save", "Save changes")
   journal("remove", "<div>", "")
 
-  assert.equal(said(rowSaying("swap icon")), "swap icon: Star → Heart")
-  assert.equal(rowSaying("icon:"), null, "the glyph swap is still labelled as a property")
-  assert.ok(rowSaying("class attribute"), "the class write is still labelled as a property")
-  assert.ok(rowSaying("text content"), "the text write is still labelled as a property")
-  // The empty side is spelled rather than dropped: a row with a gap where a
-  // value goes reads as a rendering bug, and "unset" is the actual claim.
-  assert.equal(said(rowSaying("delete element")), "delete element: <div> → unset")
+  assert.equal(said(rowSaying("Swap the icon")), "Swap the icon to Heart (was Star)")
+  assert.equal(rowSaying("icon"), null, "the glyph swap is still labelled as a property")
+  assert.equal(said(rowSaying("Replace the class")), "Replace the class btn--outlined with btn--filled")
+  assert.equal(said(rowSaying("Change the text")), "Change the text to “Save changes” (was “Save”)")
+  assert.equal(said(rowSaying("Delete")), "Delete this element")
 })
 
 await check("SW-11 a row's remove drops that row and leaves the rest standing", () => {
@@ -605,16 +573,15 @@ await check("SW-11 a row's remove drops that row and leaves the rest standing", 
   journal("opacity", "1", "0.5")
   assert.equal(rows().length, 2)
 
-  // The X on one row. Dropping an edit from the outbox does not undo it, which
-  // is why the button says so at length rather than saying "Remove".
-  click(rowSaying("swap icon").querySelector(".de-mini--danger"))
+  // The X on one row discards that edit and nothing else.
+  click(rowSaying("Swap the icon").querySelector(".de-mini--danger"))
 
   // Again no `update()`: the row's own handler mutates the journal and leaves
   // the repaint to it, so a broken subscription shows up here as a row the
   // user deleted and is still looking at.
   assert.equal(rows().length, 1)
-  assert.equal(rowSaying("swap icon"), null)
-  assert.ok(rowSaying("opacity"), "removing one row took the other with it")
+  assert.equal(rowSaying("Swap the icon"), null)
+  assert.ok(rowSaying("Change the opacity"), "removing one row took the other with it")
 })
 
 await check("SW-12 emptying the outbox lands on the empty state, not on nothing", () => {
@@ -725,7 +692,7 @@ await check("SW-14 Copy writes the brief for the rows on screen, and writes it s
   // makes reading either of them worthless.
   assert.equal(copied, buildAnnotationBrief())
   assert.match(copied, /transform/, "the row is on screen and the brief does not mention it")
-  assert.match(copied, /still needs writing/, "a preview-only change is the work, and must read as it")
+  assert.match(copied, /None of them is in the source yet/, "an edit is the work, and must read as it")
 })
 
 // --- the ledger across a reload, and across an app switch ------------------

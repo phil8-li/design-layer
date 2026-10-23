@@ -82,6 +82,12 @@ export function installShortcuts(context: EditorContext): void {
   const resolver = getResolver(context.bridge)
   const writer = createWriter(context.bridge)
   const panel = shortcutsPanel()
+  // Closed when the editor is hidden. The sheet is a modal on `document.body`,
+  // which nothing that hides carries away, and it lists keys a hidden editor
+  // no longer takes. Same call as the library sign-in.
+  context.subscribe((state, previous) => {
+    if (state.chromeHidden && !previous.chromeHidden && panel.isOpen()) panel.close()
+  })
 
   /* ── Tools ──────────────────────────────────────────────────────────────── */
 
@@ -237,9 +243,9 @@ export function installShortcuts(context: EditorContext): void {
     const ref = arrangeRef(context.bridge, primary.element)
     if (!ref) return
     const lines = siblingLines(context.bridge, ref, () => {
-      arrange(context.bridge, ref, siblingLines(context.bridge, ref, () => {}), direction)
+      arrange(writer, primary, ref, siblingLines(context.bridge, ref, () => {}), direction)
     })
-    if (lines) arrange(context.bridge, ref, lines, direction)
+    if (lines) arrange(writer, primary, ref, lines, direction)
   }
   registerCommand("arrange.front", move("front"))
   registerCommand("arrange.forward", move("forward"))

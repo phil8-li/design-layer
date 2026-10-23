@@ -22,6 +22,7 @@ import { installSnapping } from "./snapping"
 import { installSpacingHandles } from "./spacing-handles"
 import { installMarquee } from "./marquee"
 import { installLayerMenu } from "./layer-menu"
+import { installTextEditNotes } from "./text-edit"
 
 export function installCanvas(context: EditorContext): void {
   const writer = createWriter(context.bridge)
@@ -32,6 +33,7 @@ export function installCanvas(context: EditorContext): void {
   installSnapping(context)
   installSpacingHandles(context, writer)
   installLayerMenu(context)
+  installTextEditNotes(context, writer)
 
   // `select()` early-returns when the element is already the whole selection,
   // so a re-click can never refresh a source ref that a code edit has moved.

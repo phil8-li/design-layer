@@ -1814,7 +1814,8 @@ await check("closing tabs with the mouse puts each next close button under the p
 
 /*
  * Phil: show the whole name when there is room. A tab is as wide as its name
- * needs; short of room the shortcuts go, then the widest names are cut first.
+ * needs; short of room the widest names are cut first. The tabs carry no ⌘
+ * number: Phil wanted the strip clean.
  */
 await check("a tab is as wide as its whole name while there is room, and the widest give way first", async () => {
   const LONG = { ...SHOP, name: "gemini-app-builder-cujs-integrations" }
@@ -1823,20 +1824,20 @@ await check("a tab is as wide as its whole name while there is room, and the wid
     const a = await app.open({ tabs: { tabs: [tabOn("a", LONG), { id: "h1", kind: "home" }], active: "a" } })
     const tabsEl = a.doc.getElementById("tabs")
     const widths = () => [...a.doc.querySelectorAll(".tab[data-id]")].map((el) => parseFloat(el.style.width))
-    // 7px a letter here. Both tabs have a glyph, a shortcut and a close
-    // button, so they differ by their names alone.
+    // 7px a letter here. Both tabs have a glyph and a close button, so they
+    // differ by their names alone.
     const [long, home] = widths()
     assert.equal(long - home, (LONG.name.length - "Home".length) * 7, "a tab is not as wide as its name")
     assert.ok(home > 72)
-    assert.equal(tabsEl.classList.contains("tight"), false)
-    // Eight more Home tabs: no room for the shortcuts, then the long name is cut first.
-    for (let i = 0; i < 8; i++) a.doc.getElementById("newTab").click()
+    assert.equal(a.doc.querySelector(".tab .num"), null, "a tab still shows its ⌘ number")
+    assert.doesNotMatch(tabsEl.textContent, /⌘/, "a tab still shows its ⌘ number")
+    // Twelve more Home tabs: the long name is cut first.
+    for (let i = 0; i < 12; i++) a.doc.getElementById("newTab").click()
     const crowded = widths()
-    assert.equal(tabsEl.classList.contains("tight"), true, "the shortcuts kept their room")
     assert.ok(crowded[0] < long, "the long name was not cut")
     assert.ok(crowded.slice(1).every((w) => w === crowded[1]), "the Home tabs differ")
     assert.ok(crowded.reduce((t, w) => t + w, 0) - 10 * (crowded.length - 1) <= 1024, "the row overflows the strip")
-    assert.ok(crowded[1] >= home - 6 - 2 * 7 - 1, "a short name was cut while a long one could give way")
+    assert.ok(crowded[1] >= home - 1, "a short name was cut while a long one could give way")
   } finally {
     app.closeAll()
   }

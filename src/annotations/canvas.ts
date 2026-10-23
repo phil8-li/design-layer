@@ -33,6 +33,7 @@ import {
 } from "./store"
 import { pinNote, rewriteNote } from "./actions"
 import { editElement, onEditsChange } from "./journal"
+import { editNoteText } from "./edit-words"
 import { describeElement, outboxItems, outboxNumbers } from "./output"
 import type { AnnotationKind, AnnotationRect, AnnotationRecord, EditRecord, OutboxItem } from "./types"
 
@@ -798,9 +799,9 @@ export function installAnnotations(context: EditorContext): void {
         const words = item.note.comment
         pins.push({ id, kind: "note", label, name: `Note ${label}: ${words}`, title: words, left, top: anchor.top })
       } else {
-        const { property, from, to } = item.edit
-        const name = `Edit ${label}: ${property}: ${from} → ${to}`
-        pins.push({ id, kind: "edit", label, name, title: name, left, top: anchor.top })
+        // The same sentence as the edit's row, so the pin reads as its note.
+        const words = editNoteText(item.edit)
+        pins.push({ id, kind: "edit", label, name: `Note ${label}: ${words}`, title: words, left, top: anchor.top })
       }
     }
     return pins
@@ -891,10 +892,6 @@ export function installAnnotations(context: EditorContext): void {
       // words, so a name written only when the words change would go on
       // announcing the old number.
       if (marker.getAttribute("aria-label") !== pin.name) marker.setAttribute("aria-label", pin.name)
-      // Re-stated rather than added once, because the nodes are pooled: a pin
-      // that last drew an edit would keep the edit's square under whichever
-      // note reuses it next.
-      marker.classList.toggle("de-ann-marker--edit", pin.kind === "edit")
       // Same reason, and the reason the panel names an item rather than a pin:
       // re-derived from the id every frame, so the emphasis follows the item
       // through a repool instead of staying on the button it first landed on.

@@ -888,6 +888,14 @@ html.designlayer-inspecting svg {
   outline: 2px solid ${t.color.accent};
   outline-offset: 2px;
 }
+/*
+ * HIDDEN WITH THE EDITOR, which is the one time leaving the Tab order is right.
+ * The stop exists to hide the editor; left in place it was a stop in front of
+ * the page offering to do what had already happened. The launcher is the way
+ * back, and becomes the first stop instead. \`test/hidden-chrome-cases.mjs\`
+ * holds every part of the chrome to the same rule.
+ */
+html.designlayer-chrome-hidden .de-escape { visibility: hidden; }
 
 /*
  * Inside .de-root's stacking context, canvas chrome sits below the panels.
@@ -919,9 +927,15 @@ html.designlayer-inspecting svg {
  * The launcher is excluded. It is the thing you press to bring the editor BACK,
  * so it belongs to the hidden state and has no business appearing during an
  * arrival that ends with it hidden.
+ *
+ * The seams are included, for the reason \`css/panels.ts\` gives for the hidden
+ * state: they are not inside the panels, so they would otherwise be live at
+ * the panels' final edges while the panels are still sliding in. Their return
+ * delay lives there too.
  */
 .de-root--arriving .de-panel--left { transform: translateX(-100%); }
 .de-root--arriving .de-panel--right { transform: translateX(100%); }
+.de-root--arriving .de-separator { visibility: hidden; }
 .de-root--arriving .de-toolbar { opacity: 0; }
 
 .de-overlay-layer { z-index: 1; }

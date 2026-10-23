@@ -79,6 +79,7 @@ import { typographySection } from "./section-typography"
 import { classesSection } from "./section-classes"
 import { formatCount } from "../../core/format"
 import { fanOutWriter } from "./multi"
+import { followSelection } from "./follow"
 
 export interface SectionContext {
   editor: EditorContext
@@ -275,18 +276,9 @@ export function installInspector(editor: EditorContext): void {
   /**
    * A count on the tab, because the tab is the only place unfinished work shows.
    *
-   * It counts what is still OWED, which is every row the Changes tab does not
-   * badge "In your files": the notes, the edits no commit can write, and — the
-   * one that is easy to get wrong — the edits that are merely QUEUED. A badge
-   * is read as "this many things want you", so a session that has applied
-   * everything must stop wearing a number, and a session that has applied
-   * nothing must not read as zero.
-   *
-   * `written` alone cannot answer this. The writer sets it at the moment of the
-   * edit for anything it can spell, so counting `!written` silently omitted
-   * every Ready row — the tab said 3 with four things waiting. `isEditQueued`
-   * is the other half, exactly as it is for the badge, and the two must agree:
-   * the number on the tab is a promise about what the list below it shows.
+   * It counts every note and every edit. The editor writes nothing to source,
+   * so each one is still owed to the agent until it is sent, and the number
+   * on the tab is a promise about what the list below it shows.
    *
    * It is an ATTRIBUTE the stylesheet draws, not a child element, and that is
    * the whole of why. A tab's text content is its name: every reader of this
@@ -508,6 +500,14 @@ export function installInspector(editor: EditorContext): void {
   const invalidate = (): void => schedule(true)
   const invalidateSource = (): void => schedule(false)
 
+  /*
+   * The selection's boxes move without telling the store: a resize handle on
+   * an element with a width transition, the app resizing its own panel in
+   * interactive mode, a window resize. `follow.ts` watches them and asks for
+   * the same repaint a commit does, only when a number on the tab would change.
+   */
+  const follow = followSelection({ host, showing: () => activeId === "design", repaint: invalidate })
+
   /**
    * Which element the panel currently shows, so a repaint can tell a tweak from
    * a new subject.
@@ -569,6 +569,7 @@ export function installInspector(editor: EditorContext): void {
      * reader concludes there are two places.
      */
     if (!selection) {
+      follow.track([])
       host.append(
         el("div", { class: "de-empty" }, [
           el("div", {}, ["Select an element or layer to edit it."]),
@@ -627,6 +628,9 @@ export function installInspector(editor: EditorContext): void {
         renderedNodes.set(section, node)
       }
     }
+    // Before the append, while the layout the sections measured is still clean:
+    // what `follow` records as shown is what they read, at no extra layout.
+    follow.track(selections.map((entry) => entry.element))
     host.append(...built)
     renderedContext = context
 

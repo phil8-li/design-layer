@@ -44,7 +44,7 @@ const { window } = dom
 for (const key of [
   "window", "document", "navigator", "Node", "Element", "HTMLElement", "HTMLInputElement",
   "HTMLSelectElement", "SVGElement", "SVGSVGElement", "Event", "CustomEvent", "KeyboardEvent",
-  "MouseEvent", "PointerEvent", "requestAnimationFrame", "cancelAnimationFrame",
+  "MouseEvent", "PointerEvent", "MutationObserver", "requestAnimationFrame", "cancelAnimationFrame",
 ]) {
   Object.defineProperty(globalThis, key, { value: window[key], configurable: true, writable: true })
 }
@@ -403,6 +403,82 @@ await check("typing a width while the axis hugs writes a fixed length", () => {
   assert.deepEqual(flat(writes), { width: "150px" })
 })
 
+/*
+ * On a flex line's main axis the item's flex outranks its width. A typed W on
+ * a `flex-1` column used to write a width the column grew straight past, and
+ * Fill wrote `100%`, the whole line rather than what the siblings leave.
+ */
+await check("a flex-1 column reads Fill, and a typed width takes it off its grow", () => {
+  const { context, writes } = scene({
+    children: 0,
+    parent: FLEX_ROW,
+    style: { flexGrow: "1", flexShrink: "1", flexBasis: "0%" },
+  })
+  const row = layout.sizeControls(context)
+  assert.ok(byLabel(row, "Horizontal resizing: Fill container"), "a growing column does not read Fill")
+  commit(field(row, "size.width"), 150)
+  assert.deepEqual(flat(writes), { width: "150px", flex: "none" })
+})
+
+await check("a basis length reads Fixed", () => {
+  const { context } = scene({ children: 0, parent: FLEX_ROW, style: { flexGrow: "0", flexBasis: "200px" } })
+  assert.ok(byLabel(layout.sizeControls(context), "Horizontal resizing: Fixed width"))
+})
+
+await check("Fill on a flex line's main axis is flex-1, and lets a fixed width go", () => {
+  const { context, element, writes } = scene({ children: 0, parent: FLEX_ROW, style: { flexGrow: "0", flexBasis: "auto" } })
+  element.style.width = "300px"
+  pick(byLabel(layout.sizeControls(context), "Horizontal resizing: Fixed width"), "fill")
+  assert.deepEqual(flat(writes), { flex: "1 1 0%", width: "auto" })
+})
+
+await check("Fill across a flex line is still 100%", () => {
+  const { context, element, writes } = scene({ children: 0, parent: { display: "flex", flexDirection: "column", alignItems: "flex-start" } })
+  element.style.width = "300px"
+  pick(byLabel(layout.sizeControls(context), "Horizontal resizing: Fixed width"), "fill")
+  assert.deepEqual(flat(writes), { width: "100%" })
+})
+
+await check("Hug takes a growing item off its grow", () => {
+  const { context, writes } = scene({ children: 0, parent: FLEX_ROW, style: { flexGrow: "1", flexBasis: "0%" } })
+  pick(byLabel(layout.sizeControls(context), "Horizontal resizing: Fill container"), "hug")
+  assert.deepEqual(flat(writes), { width: "fit-content", flex: "none" })
+})
+
+await check("a typed width is the border box, written as a content-box element's own width", () => {
+  // The field shows the border box, as the canvas does: typing 200 into a
+  // card with 8px padding each side wrote 200 and drew 216.
+  const { context, writes } = scene({
+    children: 0,
+    style: { boxSizing: "content-box", paddingLeft: "8px", paddingRight: "8px" },
+  })
+  commit(field(layout.sizeControls(context), "size.width"), 200)
+  assert.deepEqual(flat(writes), { width: "184px" })
+})
+
+await check("a typed width stops at the element's max-width", () => {
+  const { context, writes } = scene({ children: 0, style: { maxWidth: "180px" } })
+  commit(field(layout.sizeControls(context), "size.width"), 300)
+  assert.deepEqual(flat(writes), { width: "180px" })
+})
+
+await check("a full flex line gets shrink-0 so a typed width sticks, and only then", () => {
+  const style = { flexGrow: "0", flexShrink: "1", flexBasis: "auto" }
+  const squeezed = scene({ children: 0, parent: FLEX_ROW, style })
+  // The line has 120px to give, whatever width the item asks for.
+  Object.defineProperty(squeezed.element, "offsetWidth", { configurable: true, get: () => 120 })
+  commit(field(layout.sizeControls(squeezed.context), "size.width"), 200)
+  assert.deepEqual(flat(squeezed.writes), { width: "200px", "flex-shrink": "0" })
+
+  const roomy = scene({ children: 0, parent: FLEX_ROW, style })
+  Object.defineProperty(roomy.element, "offsetWidth", {
+    configurable: true,
+    get: () => Number.parseFloat(roomy.element.style.width) || 0,
+  })
+  commit(field(layout.sizeControls(roomy.context), "size.width"), 200)
+  assert.deepEqual(flat(roomy.writes), { width: "200px" }, "shrink-0 was written where the line had room")
+})
+
 await check("Lock aspect ratio scales the other axis on commit", () => {
   layout.setExpanded("layout.aspect-lock", false)
   const first = scene({ children: 0 })
@@ -445,6 +521,67 @@ await check("a number field commits on blur only when its text changed and it is
   window.document.body.append(field)
   input.dispatchEvent(new window.Event("blur"))
   assert.deepEqual(commits, [12])
+})
+
+/*
+ * A scrub previews straight onto the element, and the writer reads the element
+ * to learn what an edit changed FROM. A scrub that ended on its last preview
+ * committed a change from that value to itself: no undo step, no Changes row.
+ */
+await check("a scrub's commit reads the value from before the scrub, and leaves no preview behind", async () => {
+  for (const name of ["setPointerCapture", "releasePointerCapture"]) window.Element.prototype[name] ??= () => {}
+  window.Element.prototype.hasPointerCapture ??= () => false
+  const settle = () => new Promise((resolve) => window.requestAnimationFrame(() => setTimeout(resolve, 0)))
+  const scrub = async (field, dx) => {
+    const label = field.querySelector(".de-field-label")
+    const at = (type, clientX) => label.dispatchEvent(new window.PointerEvent(type, { bubbles: true, clientX, pointerId: 1 }))
+    at("pointerdown", 0)
+    at("pointermove", dx)
+    await settle()
+    at("pointerup", dx)
+  }
+
+  window.document.body.replaceChildren()
+  const target = window.document.createElement("div")
+  target.style.width = "100px"
+  window.document.body.append(target)
+  const seen = []
+  const make = () =>
+    layout.numberField({
+      title: "Width",
+      label: "W",
+      value: 100,
+      onPreview: (value) => {
+        target.style.width = `${value}px`
+        target.style.flexShrink = "0"
+      },
+      onCommit: (value) => {
+        seen.push({ value, from: target.style.width, shrink: target.style.flexShrink })
+        target.style.width = `${value}px`
+      },
+    })
+  const field = make()
+  window.document.body.append(field)
+  await scrub(field, 30)
+  assert.deepEqual(seen, [{ value: 130, from: "100px", shrink: "" }], "the commit read the preview as its starting point")
+  assert.equal(target.style.width, "130px")
+  assert.equal(target.style.flexShrink, "", "a preview-only declaration stayed on the element")
+
+  // Out and back to where it began: nothing to commit, and nothing left over.
+  seen.length = 0
+  target.style.width = "100px"
+  const again = make()
+  field.replaceWith(again)
+  const label = again.querySelector(".de-field-label")
+  const at = (type, clientX) => label.dispatchEvent(new window.PointerEvent(type, { bubbles: true, clientX, pointerId: 1 }))
+  at("pointerdown", 0)
+  at("pointermove", 25)
+  await settle()
+  at("pointermove", 0)
+  at("pointerup", 0)
+  assert.deepEqual(seen, [])
+  assert.equal(target.style.width, "100px")
+  assert.equal(target.style.flexShrink, "")
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

@@ -333,13 +333,13 @@ Every edit is undoable with the platform's own pair — `⌘Z` and `⇧⌘Z` on 
 `Ctrl+Z` and `Shift+Ctrl+Z` elsewhere — and with the two toolbar buttons, which
 run the same call. The timeline lives on the writer rather than on the panels,
 so a section added later is undoable without being wired up for it, and it
-covers the preview and the queued source operation together: undoing a change
-also takes back what "Apply to code" would have written.
+covers the preview and its note together: undoing a change also takes its
+note out of the Changes tab.
 
 Dragging and resizing on the canvas go through that same writer, so a gesture is
-one undo step, one row in the Changes tab, and — for the width and height a
-resize settles on — a queued operation "Apply to code" can write. A gesture that
-moved and resized at once is a single step, not three.
+one undo step and one note in the Changes tab, such as "Change the width to
+200px (was 120px)". A gesture that moved and resized at once is a single step,
+not three.
 
 ## As a Dock app on a Mac
 
@@ -389,49 +389,28 @@ one of its own children deletes the parent once rather than cutting two
 overlapping holes in one file.
 
 **Cmd+Z puts it back**, between the same two siblings it came from, and takes
-the pending source write back with it. A delete that is undone and never redone
-leaves nothing for "Apply to code" to write.
+its "Delete this element" note out of the Changes tab.
 
 Locked layers are not deleted. The tree can still select one — that is the only
 way back out of the lock — so the refusal lives with the delete itself rather
 than with the canvas.
 
-The source write is the one edit this package performs itself on both hosts. On
-Angular it splices the element out of its template; on React it splices the JSX
-element out of the file, as bytes rather than as a reprint, so nothing else in
-the file is reformatted. Both take the element's whole line when it had that
-line to itself, and both refuse rather than guess:
-
-| Refused | Because |
-| --- | --- |
-| An element matching two places in the file equally well | The wrong one would disappear, and nothing would say so |
-| A component's root element in JSX | `return ;` does not parse — delete the component instead |
-| An element inside `{open && …}` or a `.map()` callback | The branch would be left empty; delete the branch |
-
-A refusal is reported by name in the Apply toast, and the change stays on screen
-with a line in the Changes tab an agent can act on.
-
 ## Where a change ends up
 
-Two surfaces catch an edit, and between them nothing is dropped.
+Every direct edit becomes a note in the Changes tab, written by the editor in
+plain words: "Change the text to “Save changes” (was “Save”)", "Change the width
+to 200px (was 120px)", "Bring it to the front of its siblings", "Delete this
+element". That covers text you retype on the page by double-clicking it, and
+layer order changed from the Layers panel or the Arrange buttons. DesignLayer
+previews the edit on the page and writes nothing to your source files.
 
-- **"Apply to code"** writes the changes the codemod can spell, into the
-  component source it resolved them to.
-- **The Changes tab** catches the rest, as a written instruction you hand to an
-  agent. A change can land here because the property is one the writer cannot
-  express — but also because the *file* could not be found: under React 19 the
-  fibre walk can answer with no path at all, and the async resolver can come
-  back with a bundler chunk rather than your component.
+**Copy** and **Send to agent** hand the notes over as a brief with detailed
+instructions for each edit: the exact CSS, the Tailwind class to write, and
+where to make the change. Your coding agent makes each change in code, the way
+it would for a note you typed. See
+[Handing changes to your coding agent](agent-handoff.md#the-changes-tab).
 
-That second case used to be a hole. The edit was on screen, and no surface in
-the editor admitted it existed: it was dropped on its way to the queue, "Apply
-to code" stayed disabled, and the Changes tab said there was nothing to hand
-over. Now a write that cannot reach source falls back to the tab, carrying the
-value it read *before* the element changed, so the instruction says what to
-change it from. A change reaching the queue stays out of the tab, so an agent is
-never asked to redo what the codemod is about to write.
-
-The tab repaints as the ledger moves, so an edit made while it is open appears
-in it. Only while it is the tab being looked at — a hidden pane is read when you
+The tab repaints as edits land, so an edit made while it is open appears in it.
+Only while it is the tab being looked at — a hidden pane is read when you
 switch to it, which is what keeps both it and the Code view off the hot path of
 a drag.

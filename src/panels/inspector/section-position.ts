@@ -411,7 +411,7 @@ function rotationRow(context: SectionContext, picked: Selection[]): HTMLElement 
  * to go is disabled rather than absent.
  */
 function arrangeRow(context: SectionContext): HTMLElement {
-  const { editor, selection, invalidate } = context
+  const { editor, writer, selection, invalidate } = context
   const ref: ArrangeRef | null = arrangeRef(editor.bridge, selection.element)
   // Asking costs a round trip, so only once there is something to move; the
   // answer arrives by re-render.
@@ -424,7 +424,7 @@ function arrangeRow(context: SectionContext): HTMLElement {
       glyph: mark(glyph),
       disabled: !canArrange(lines, ref, move),
       onClick: () => {
-        if (ref) arrange(editor.bridge, ref, lines, move)
+        if (ref) arrange(writer, selection, ref, lines, move)
       },
     })),
   })

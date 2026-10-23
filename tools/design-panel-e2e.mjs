@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
  * Real-browser end-to-end check of the Design tab's flows: each one changes a
- * property through the panel the way a Figma user would, presses Apply to
- * code, and reads the host's source file for the class that edit must write.
+ * property through the panel the way a Figma user would, then reads the
+ * Changes tab for the note the edit must become, and the host's source file to
+ * prove the editor wrote nothing. The agent makes the change in code.
  *
  *   DESIGNLAYER_E2E_DEPS=/path/to/node_modules node tools/design-panel-e2e.mjs
  *   ... --only radius     # one flow
@@ -13,7 +14,7 @@
  * os.tmpdir() (node_modules borrowed by symlink from DESIGNLAYER_E2E_DEPS),
  * Vite and `cli.mjs` on fresh free ports, so no running editor is touched. The
  * host ships a few hand-written utility rules so its starting classes lay out
- * the way Tailwind would; the edits are asserted in the source, not on screen.
+ * the way Tailwind would.
  *
  * Not part of `npm test`: it needs a React + Vite toolchain, a Chromium from
  * the global Playwright, and free local ports.
@@ -148,6 +149,7 @@ export default {
 `)
   write("designlayer.config.mjs", `export default {
   ports: { proxy: ${ports.proxy}, ws: ${ports.ws}, mcp: ${ports.mcp} },
+  host: { tailwind: true },
 }
 `)
   write("index.html", `<!doctype html>
@@ -253,29 +255,44 @@ async function choose(page, name, value) {
   await sleep(150)
 }
 
-async function applyToCode(page) {
+/** The Changes tab's edit notes, as their one line of text each. */
+async function editNotes(page) {
   await page.click("#de-tab-annotations")
-  const apply = await page.waitForSelector("button:has-text('Apply to code')", { timeout: WAIT })
-    .catch(() => { throw new Fail("no Apply to code button in the Changes tab") })
-  await apply.click()
-  await sleep(300)
+  await sleep(200)
+  const lines = await page.$$eval(".de-ann-item--edit .de-ann-item-line", (nodes) => nodes.map((node) => node.textContent.trim()))
   await page.click("#de-tab-design")
   await sleep(150)
+  return lines
 }
 
-/** A needle is a substring, or a RegExp when it must sit on one particular element. */
+/** A needle is a substring, or a RegExp. */
 const found = (text, needle) => (needle instanceof RegExp ? needle.test(text) : text.includes(needle))
 
-async function sourceHas(file, expected, timeout = 10000) {
-  const start = Date.now()
-  let text = ""
-  while (Date.now() - start < timeout) {
-    text = fs.readFileSync(file, "utf8")
-    if (expected.every((needle) => found(text, needle))) return text
-    await sleep(200)
-  }
-  const missing = expected.filter((needle) => !found(text, needle))
-  throw new Fail(`source never gained ${missing.map((m) => `"${m}"`).join(", ")}`)
+async function notesHave(page, before, expected) {
+  const lines = await editNotes(page)
+  const added = lines.filter((line) => !before.includes(line))
+  check(lines.length > before.length || added.length > 0, "the edit left no note in the Changes tab")
+  const missing = expected.filter((needle) => !lines.some((line) => found(line, needle)))
+  check(!missing.length, `no note says ${missing.map(String).join(", ")}; notes: ${lines.join(" | ")}`)
+  return lines
+}
+
+/** Double-clicks #id's text, types `text` in place of it, and leaves the field. */
+async function retype(page, id, text) {
+  const box = await page.evaluate((target) => {
+    const r = document.getElementById(target)?.getBoundingClientRect()
+    return r ? { x: r.left + Math.min(20, r.width / 2), y: r.top + r.height / 2 } : null
+  }, id)
+  check(box, `#${id} is not on the page`)
+  await page.mouse.dblclick(box.x, box.y)
+  await sleep(200)
+  const editing = await page.evaluate((target) => document.getElementById(target)?.isContentEditable === true, id)
+  check(editing, `double-clicking #${id} did not start editing its text`)
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A")
+  await page.keyboard.type(text)
+  await page.keyboard.press("Escape")
+  await page.mouse.click(5, 5)
+  await sleep(300)
 }
 
 /** Types a hex into the Selection colors row showing `from`, by its field id. */
@@ -295,42 +312,33 @@ async function recolor(page, from, to) {
 /* ---------- the flows ---------- */
 
 /*
- * Each flow names the element, the gesture, and the classes the source must
- * gain. Control names are the panel's accessible names, which are also its
+ * Each flow names the element, the gesture, and what its note must say. Most
+ * only need the note to exist; the ones that name a value check the wording.
+ * Control names are the panel's accessible names, which are also its
  * tooltips, so a renamed control fails here by name.
  */
 const FLOWS = [
   // Layout / Auto layout
-  { name: "add-auto-layout", select: "stack", act: (p) => press(p, "Add auto layout"), expect: ["flex"] },
-  { name: "gap", select: "card", act: (p) => type(p, /gap between objects$/, 24), expect: ["gap-6"] },
-  { name: "gap-auto", select: "card", act: (p) => choose(p, "Gap options", "auto"), expect: ["justify-between"] },
-  { name: "flow-vertical", select: "card", act: (p) => press(p, "Vertical"), expect: ["flex-col"] },
-  { name: "wrap", select: "stack", act: async (p) => { await press(p, "Horizontal"); await press(p, "Wrap") }, expect: ["flex-wrap"] },
-  { name: "padding-horizontal", select: "card", act: (p) => type(p, "Horizontal padding", 32), expect: ["pl-8", "pr-8"] },
-  { name: "padding-individual", select: "card", act: async (p) => { await press(p, "Individual padding"); await type(p, "Padding top", 12) }, expect: ["pt-3"] },
-  { name: "clip-content", select: "card", act: (p) => press(p, "Clip content"), expect: ["overflow-hidden"] },
+  { name: "add-auto-layout", select: "stack", act: (p) => press(p, "Add auto layout"), expect: [] },
+  { name: "gap", select: "card", act: (p) => type(p, /gap between objects$/, 24), expect: ["Change the gap to 24px (was 16px)"] },
+  { name: "gap-auto", select: "card", act: (p) => choose(p, "Gap options", "auto"), expect: [] },
+  { name: "flow-vertical", select: "card", act: (p) => press(p, "Vertical"), expect: [] },
+  { name: "padding-horizontal", select: "card", act: (p) => type(p, "Horizontal padding", 32), expect: ["Change the left padding to 32px (was 24px)", "Change the right padding to 32px (was 24px)"] },
+  { name: "clip-content", select: "card", act: (p) => press(p, "Clip content"), expect: ["Clip its content"] },
+  // Size
+  { name: "width", select: "box", act: (p) => type(p, "Horizontal resizing", 200), expect: ["Change the width to 200px (was 120px)"] },
   // Appearance
-  { name: "radius", select: "box", act: (p) => type(p, "Corner radius", 20), expect: ["rounded-[20px]"] },
-  { name: "corners", select: "box", act: async (p) => { await press(p, "Individual corners"); await type(p, "Top left radius", 4) }, expect: ["rounded-tl-[4px]"] },
-  // Two layers, radius 12 and 0: the field reads Mixed, and one commit writes both.
-  {
-    name: "multi-radius",
-    select: "box",
-    act: async (p) => { await selectAlso(p, "copy", 2); await type(p, "Corner radius", 6) },
-    expect: [/id="box" className="[^"]*rounded-\[6px\]/, /id="copy" className="[^"]*rounded-\[6px\]/],
-  },
-  { name: "opacity", select: "box", act: (p) => type(p, "Opacity", 50), expect: ["opacity-"] },
+  { name: "radius", select: "box", act: (p) => type(p, "Corner radius", 20), expect: ["Change the corner radius to 20px (was 12px)"] },
+  { name: "opacity", select: "box", act: (p) => type(p, "Opacity", 50), expect: ["Change the opacity to 50% (was 100%)"] },
   // Position
-  { name: "rotation", select: "box", act: (p) => type(p, "Rotation", 45), expect: ["rotate-[45deg]"] },
-  { name: "flip", select: "box", act: (p) => press(p, "Flip horizontal"), expect: ["[scale:-1_1]"] },
-  // Typography and the text's fill
-  { name: "text-weight", select: "copy", act: (p) => choose(p, "Font weight", "700"), expect: ["font-bold"] },
-  { name: "text-align", select: "copy", act: (p) => press(p, /^Align text center$/), expect: ["text-center"] },
-  { name: "text-case", select: "copy", act: async (p) => { await press(p, "Type settings"); await press(p, "Uppercase") }, expect: ["uppercase"] },
+  { name: "rotation", select: "box", act: (p) => type(p, "Rotation", 45), expect: [] },
+  // Typography
+  { name: "text-weight", select: "copy", act: (p) => choose(p, "Font weight", "700"), expect: ["Change the font weight to Bold (was Regular)"] },
+  { name: "text-align", select: "copy", act: (p) => press(p, /^Align text center$/), expect: ["Center the text"] },
+  // Copy, edited in place on the page.
+  { name: "text-copy", select: "title", act: (p) => retype(p, "title", "Team plan"), expect: ["Change the text to “Team plan” (was “Pro plan”)"] },
   // Last, because it leaves the box invisible for anything after it.
-  { name: "hide", select: "box", act: (p) => press(p, "Hide"), expect: ["invisible"] },
-  // Selection colors: the card's white is its background and the button's label.
-  { name: "selection-color", select: "card", act: (p) => recolor(p, "FFFFFF", "ff0066"), expect: ["bg-[#ff0066]", "text-[#ff0066]"] },
+  { name: "hide", select: "box", act: (p) => press(p, "Hide"), expect: [] },
 ]
 
 async function main() {
@@ -340,6 +348,7 @@ async function main() {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "designlayer-panel-e2e-"))
   writeHost(tmpDir, ports)
   const appFile = path.join(tmpDir, "src", "App.jsx")
+  const original = fs.readFileSync(appFile, "utf8")
 
   const vite = run(process.execPath,
     ["node_modules/vite/bin/vite.js", "--port", String(ports.app), "--strictPort", "--configLoader", "native"],
@@ -367,17 +376,52 @@ async function main() {
   const results = []
   for (const flow of FLOWS.filter((f) => !only || f.name === only)) {
     try {
+      const before = await editNotes(page)
       await selectApp(page, flow.select)
       await flow.act(page)
-      await applyToCode(page)
-      await sourceHas(appFile, flow.expect)
-      console.log(`ok ${flow.name} — source has ${flow.expect.join(" ")}`)
+      const lines = await notesHave(page, before, flow.expect)
+      // The send button would only post to the agent; the source must not move.
+      await sleep(300)
+      check(fs.readFileSync(appFile, "utf8") === original, "the editor wrote the edit to source")
+      console.log(`ok ${flow.name} — note: ${lines.filter((line) => !before.includes(line)).join(" | ") || lines.at(-1)}`)
       results.push(true)
     } catch (error) {
       console.log(`FAIL ${flow.name} — ${error instanceof Fail ? error.message : error.stack}`)
       await page.screenshot({ path: path.join(SHOTS, `fail-${flow.name}.png`) }).catch(() => {})
       results.push(false)
     }
+  }
+  // The copied brief: each note's sentence, then instructions for the agent.
+  // It names the radius and text flows, so it runs only with every flow.
+  if (!only) try {
+    await page.evaluate(() => {
+      window.__copied = null
+      navigator.clipboard.writeText = (text) => {
+        window.__copied = text
+        return Promise.resolve()
+      }
+    })
+    await page.click("#de-tab-annotations")
+    await sleep(300)
+    await page.screenshot({ path: path.join(SHOTS, "changes-tab.png") })
+    await page.click(".de-ann-ctas button:has-text('Copy')")
+    await sleep(300)
+    const brief = await page.evaluate(() => window.__copied)
+    check(typeof brief === "string", "Copy put nothing on the clipboard")
+    fs.writeFileSync(path.join(SHOTS, "brief.md"), brief)
+    for (const needle of [
+      "**Change:** Change the corner radius to 20px (was 12px)",
+      "- Set `border-radius: 20px` on this element. It is `12px` now.",
+      "- Tailwind: replace `rounded-xl` with `rounded-[20px]`.",
+      "**Change:** Change the text to “Team plan” (was “Pro plan”)",
+      "- Replace the text “Pro plan” with “Team plan”.",
+    ]) check(brief.includes(needle), `the copied brief lacks: ${needle}`)
+    console.log(`ok copied-brief — sentence and instructions for every edit (${path.relative(ROOT, SHOTS)}/brief.md)`)
+    results.push(true)
+  } catch (error) {
+    console.log(`FAIL copied-brief — ${error instanceof Fail ? error.message : error.stack}`)
+    await page.screenshot({ path: path.join(SHOTS, "fail-copied-brief.png") }).catch(() => {})
+    results.push(false)
   }
   const errors = logs.filter((l) => l.startsWith("error") || l.startsWith("pageerror"))
   if (errors.length) console.log(`console errors (${errors.length}):\n  ${errors.slice(0, 5).join("\n  ")}`)

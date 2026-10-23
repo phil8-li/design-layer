@@ -9,16 +9,14 @@
  * it. Every surface now calls these two functions, so a copy from the chord and
  * a copy from the panel are the same act with the same words.
  *
- * `handOver` is the send flow, and it is ONE flow in two stages, not two
- * buttons: everything the writer can spell is written first, and only what is
- * left — notes, and edits no commit can write — goes to the agent, with the
- * written half in the brief as context. A session that only moved some padding
- * finishes at the first stage and never waits on an agent round trip, which
- * was the one good reason the two buttons were ever split.
+ * `handOver` is the send flow, and it writes nothing. It used to write every
+ * edit the codemod could spell first and send only the rest, which left the
+ * designer's change split between two writers that disagreed about class
+ * order, tokens and component boundaries. Now every edit is a note like any
+ * other: the editor previews it, and the agent makes it in code.
  */
 
 import { isProjectSourcePath } from "../core/bridge"
-import type { Committer } from "../core/apply"
 import { COPY_REFUSED, copyText } from "../core/clipboard"
 import type { ToastMessage } from "../core/toast"
 import { requestAgent } from "../ai/transport"
@@ -109,70 +107,34 @@ export function copyHandover(toast: Toast, onRefused?: () => void): boolean {
   return true
 }
 
-/** Does anything in the outbox still need a person or an agent after a write? */
+/** Is there anything to send? Every note and every edit goes to the agent. */
 export function needsAgent(items: OutboxItem[] = outboxItems()): boolean {
-  return items.some((item) => item.type === "note" || !item.edit.written)
+  return items.length > 0
 }
 
 export interface HandoverResult {
-  /** The writer ran and wrote something. */
-  wrote: boolean
   /** The brief went to the agent route. */
   sent: boolean
   ok: boolean
 }
 
-/**
- * Finish the session: write what can be written, then send what is left.
- *
- * The write goes FIRST so the brief that follows describes a source tree that
- * already contains the writable half — an agent handed "set padding to 24px"
- * for an edit that landed a moment ago re-applies it. `applyAll` awaits, so by
- * the time the brief is built those rows read as written and the brief marks
- * them "do not apply again".
- */
-export async function handOver(options: {
-  apiBase: string
-  committer: Committer
-  toast: Toast
-  /**
-   * False when no agent has connected over MCP: the write still runs, and the
-   * rest stays in the outbox for Copy rather than going to a queue nobody reads.
-   */
-  sendToAgent?: boolean
-}): Promise<HandoverResult> {
-  const { apiBase, committer, toast, sendToAgent = true } = options
+/** Send the whole session to the agent, and put the same prompt on the clipboard. */
+export async function handOver(options: { apiBase: string; toast: Toast }): Promise<HandoverResult> {
+  const { apiBase, toast } = options
+  const items = outboxItems()
+  if (!needsAgent(items)) {
+    toast("Nothing to send")
+    return { sent: false, ok: true }
+  }
+  const brief = buildAnnotationBrief(items)
 
   /*
    * A send also puts the session prompt on the clipboard, so the designer can
    * paste it into a new chat in any agent when the queue has nobody reading it.
    * The copy runs HERE, before the first await, because both clipboard routes
-   * need the click's transient activation, and the write below can outlast it.
+   * need the click's transient activation.
    */
-  const before = outboxItems()
-  let copy: Promise<boolean> | null =
-    sendToAgent && needsAgent(before) ? copyText(sessionPrompt(buildAnnotationBrief(before))) : null
-
-  let wrote = false
-  if (committer.hasPendingChanges()) {
-    await committer.applyAll()
-    wrote = true
-  }
-
-  const items = outboxItems()
-  const brief = buildAnnotationBrief(items)
-  // The write changed what the brief says ("already written, do not apply
-  // again"), so copy again to keep the clipboard byte-for-byte what was sent.
-  // Best effort: the activation may be spent, and then the first copy stands.
-  if (wrote && copy) copy = copy.then((first) => copyText(sessionPrompt(brief)).then((again) => again || first))
-
-  if (!sendToAgent) return { wrote, sent: false, ok: true }
-  if (!needsAgent(items)) {
-    // Everything was the writer's. There is nothing for an agent to do, and
-    // sending it the written rows would only ask it to confirm a diff.
-    if (!wrote) toast("Nothing to send")
-    return { wrote, sent: false, ok: true }
-  }
+  const copy = copyText(sessionPrompt(brief))
 
   const response = await requestAgent(apiBase, {
     // The outbox IS the request; this line is the subject, not the ask.
@@ -185,7 +147,7 @@ export async function handOver(options: {
     ancestry: [],
     url: window.location.href,
   })
-  const copied = copy ? await copy : false
+  const copied = await copy
   // The server's own words, whatever they are. A manufactured "Sent!" over a
   // route that answered with a refusal is the one thing this must never do.
   // The clipboard line is ours, and is only said when the copy landed.
@@ -194,5 +156,5 @@ export async function handOver(options: {
     response.ok ? "info" : "error"
   )
   if (response.ok) clearIfAsked()
-  return { wrote, sent: true, ok: response.ok }
+  return { sent: true, ok: response.ok }
 }

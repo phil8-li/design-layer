@@ -9,11 +9,10 @@
  * agent one without the other is what makes it redo work that is done, or
  * guess at reasons it was never given.
  *
- * So this is one list in the order things happened, and every row says which
- * of the two it is. An edit says one thing more — whether it reached the file
- * — because an agent reads those cases completely differently: a written
- * change is already in the source it is about to open, and applying it again
- * is a conflict rather than a fix.
+ * So this is one list in the order things happened. A direct edit in the
+ * Design panel becomes a note here, written by the editor rather than typed:
+ * the editor previews the change on the page and writes nothing to source, and
+ * the agent makes every note, typed or written, in code.
  *
  * The settings live here rather than behind a preferences screen for the same
  * reason the queue lives in the panel rather than the toolbar: they are
@@ -30,8 +29,6 @@
  */
 
 import { isProjectSourcePath } from "../../core/bridge"
-import { createApply } from "../../core/apply"
-import { previewOnlyChanges, type PreviewOnlyChange } from "../../core/change-prompt"
 import { clear, el } from "../../core/dom"
 import { holdScroll } from "../../core/scroll"
 import { leaveRow } from "../../core/leave"
@@ -45,12 +42,13 @@ import {
   onSettingsChange,
   updateSettings,
 } from "../../annotations/store"
-import { isEditQueued, onEditsChange } from "../../annotations/journal"
+import { onEditsChange } from "../../annotations/journal"
 import { clearNotesStep, deleteNote, undoNoteStep } from "../../annotations/actions"
 import { copyHandover, handOver, needsAgent } from "../../annotations/handover"
 import { COPY_REFUSED, copyText } from "../../core/clipboard"
 import { onComponentUsageChange, sharedComponentWarning } from "../../core/component-usage"
 import { withdrawEdit } from "../../core/withdraw"
+import { editNoteText } from "../../annotations/edit-words"
 import { outboxItems, outboxNumbers } from "../../annotations/output"
 import {
   OUTPUT_DETAILS,
@@ -60,7 +58,6 @@ import {
   type OutputDetail,
 } from "../../annotations/types"
 import type { EditorContext } from "../../core/context"
-import type { ToastMessage } from "../../core/toast"
 import { section, selectField } from "./field"
 import type { InspectorTab } from "./tab-code"
 import { tokens } from "../../core/tokens"
@@ -95,11 +92,11 @@ import { plural } from "../../core/format"
  */
 
 /**
- * What the bin on an edit row does: a real withdrawal (`core/withdraw.ts`). The
- * queued operation is taken back, the preview reverts, and the ledger entry
- * goes with it — so the label says that, rather than "Remove".
+ * What the cross on an edit row does: a real withdrawal (`core/withdraw.ts`).
+ * The preview reverts and the note goes with it — so the label says that,
+ * rather than "Remove".
  */
-const DROP_EDIT = "Discard change. Nothing is written."
+const DROP_EDIT = "Discard edit (reverts the page)"
 
 /**
  * The consequence, said on the button. A delete is a step on the editor's one
@@ -172,34 +169,6 @@ const CLEAR = {
   // question and answering it.
   prompt: (count: number) => `Click again to delete all ${noteWord(count)}`,
 } as const
-
-/**
- * What the row calls an edit.
- *
- * `property` is a CSS property for all but these four, which are
- * `change-prompt.ts`'s own sentinels that `EditRecord` deliberately reuses.
- * Printing `icon` or `remove` as though it were a declaration would send the
- * reader to the stylesheet looking for a property nobody ever wrote there.
- */
-const EDIT_LABELS: Record<string, string> = {
-  class: "class attribute",
-  icon: "swap icon",
-  text: "text content",
-  remove: "delete element",
-}
-
-/**
- * The fifth sentinel, and the one that could not be a row in that table: a
- * component prop previewed as a DOM attribute is spelled `attribute:<name>` in
- * the ledger, so the NAME is part of the key rather than one of four known
- * words. Printed raw it reads as a namespace the designer never typed.
- */
-function editLabel(property: string): string {
-  const known = EDIT_LABELS[property]
-  if (known) return known
-  const attribute = /^attribute:(.+)$/.exec(property)
-  return attribute ? `${attribute[1]} attribute` : property
-}
 
 /**
  * ONE LINE, and it is the route in rather than the fact of the emptiness.
@@ -298,14 +267,12 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
   )
 
   /**
-   * ONE BUTTON THAT FINISHES THE SESSION.
+   * ONE BUTTON THAT FINISHES THE SESSION: Send to agent.
    *
-   * It runs `handOver`: everything the writer can spell is written first, and
-   * whatever is left — notes, and edits no commit can write — goes to the agent
-   * with the written half in the brief as context. Its label says which of the
-   * two will happen: "Send to agent" when anything needs the agent, "Apply to
-   * code" when the session is only writable edits. The designer never routes a
-   * change themselves.
+   * It runs `handOver`, which sends every note and every edit to the agent and
+   * writes nothing to source. There was an "Apply to code" mode here that let
+   * the editor's codemod write the edits it could spell; it is gone, because
+   * the agent writes code that fits the project and the codemod did not.
    */
   let sending = false
 
@@ -323,17 +290,6 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
   }
 
   /**
-   * The committer, built here because the queues are module state and there is
-   * nothing per-render to close over. `onChange` repaints this tab: "the write
-   * finished" is when the rows' badges change, and only the caller knows it.
-   */
-  const committer = createApply({
-    bridge: editor.bridge,
-    toast: (message: ToastMessage, kind?: "info" | "error") => editor.toast(message, kind),
-    onChange: () => render(),
-  })
-
-  /**
    * Has an agent completed an MCP handshake during this page load?
    *
    * Latched rather than live: an agent that drops off mid-session is still
@@ -342,27 +298,18 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
    */
   let agentReady = false
 
-  /** What the primary button would do right now, or null when nothing. */
-  function primaryMode(): "send" | "apply" | null {
-    if (agentReady && needsAgent()) return "send"
-    if (committer.hasPendingChanges()) return "apply"
-    return null
+  /** Can the button send right now? */
+  function canSend(): boolean {
+    return agentReady && needsAgent()
   }
 
   function paintPrimary(): void {
-    const mode = primaryMode()
-    const send = sending ? primaryButton.dataset.mode === "send" : mode === "send"
-    if (!sending) primaryButton.dataset.mode = mode ?? ""
-    // With no agent and nothing writable the button has nothing it could ever
-    // do, so it leaves rather than sitting disabled beside Copy.
-    primaryButton.hidden = !sending && mode === null && !agentReady
-    primaryButton.disabled = sending || mode === null
-    primaryButton.title = send
-      ? "Write what it can to your files, send the rest to your agent"
-      : "Write these changes to your files"
-    setPrimaryLabel(
-      sending ? (send ? "Sending…" : "Applying…") : send ? "Send to agent" : "Apply to code"
-    )
+    // With no agent connected there is nobody to send to, so the button leaves
+    // rather than sitting disabled beside Copy, which still works.
+    primaryButton.hidden = !sending && !agentReady
+    primaryButton.disabled = sending || !canSend()
+    primaryButton.title = "Send every note and edit to your agent"
+    setPrimaryLabel(sending ? "Sending…" : "Send to agent")
   }
 
   /**
@@ -370,15 +317,13 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
    * work twice while the first round trip is outstanding.
    */
   async function finish(): Promise<void> {
-    if (sending || primaryMode() === null) return
+    if (sending || !canSend()) return
     sending = true
     paintPrimary()
     try {
       await handOver({
         apiBase: editor.apiBase,
-        committer,
         toast: (message, kind) => editor.toast(message, kind),
-        sendToAgent: agentReady,
       })
     } finally {
       sending = false
@@ -1164,8 +1109,7 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
      * A bin rather than a cross, which the edit row keeps.
      *
      * The two rows do different things under the same-shaped button: dropping
-     * an edit retracts it from the handover and leaves the change standing,
-     * deleting a note destroys the note. Giving the destructive one a different
+     * an edit reverts the page, deleting a note destroys only the note. Giving the destructive one a different
      * drawing is the cheapest way to say that before the label is read — the
      * same bin the layers tree deletes with.
      *
@@ -1248,9 +1192,8 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
       el("div", { class: "de-ann-item de-ann-item--note" }, [
         /*
          * No "Note" chip: the row carries a numbered disc matching its pin, and
-         * its line is a sentence somebody typed. An edit row still badges,
-         * because which of three things is true of an edit is the fact its row
-         * exists to tell.
+         * its line is a sentence somebody typed. An edit row has the same disc
+         * and a sentence the editor wrote.
          */
         el("div", { class: "de-ann-item-head" }, [
           el("span", { class: "de-ann-index" }, [String(index)]),
@@ -1282,81 +1225,16 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
   }
 
   /**
-   * THREE STATES, WHERE THERE USED TO BE TWO.
+   * One edit the designer made, as a note the editor wrote for them.
    *
-   * "Preview only" covered two completely different situations and a designer
-   * had no way to tell them apart: a change that WILL be written the moment
-   * they press the button, and a change that never can be because the writer
-   * has no way to spell it. Both said "live in this page only", both looked
-   * like the same problem, and only one of them was one.
-   *
-   * The split is the ledger. `change-prompt.ts` holds exactly the changes Apply
-   * cannot write — an icon swap, a drag's `transform`, a class list whose file
-   * never resolved — so an unwritten edit that appears there needs a person or
-   * an agent, and an unwritten edit that does not is simply queued.
-   *
-   * Matched on the same `(tagName, className, property)` triple that
-   * `markEditRefused` uses to demote a row when the server refuses a write. One
-   * identity for "these two records are about the same edit", used in both
-   * directions, is what keeps the badge and the refusal path from disagreeing.
-   */
-  function stateOf(edit: EditRecord): { label: string; title: string; kind: string } {
-    // Asked FIRST, because a queued edit is also a written one: the writer sets
-    // `written` the moment it knows it can spell the change, and only the
-    // commit clears `queued`. Reading them the other way round is what had
-    // every fresh padding tweak claiming to be in a file already.
-    if (isEditQueued(edit.id)) {
-      return {
-        label: "Ready",
-        title: "Apply to code will write this.",
-        kind: "ready",
-      }
-    }
-    if (edit.written) {
-      return {
-        label: "In your files",
-        title: "Already in your files. Do not apply again.",
-        kind: "written",
-      }
-    }
-    const unwritable = previewOnlyChanges().some(
-      (change: PreviewOnlyChange) =>
-        change.property === edit.property &&
-        change.tagName === (edit.target?.tagName ?? "") &&
-        change.className === (edit.target?.className ?? "")
-    )
-    // Not queued and not written. Either the ledger already knows why (an icon
-    // swap, a `transform`, a file that never resolved), or a commit refused it
-    // and `markEditRefused` took the claim back. Both are the agent’s.
-    return unwritable
-      ? {
-          label: "Needs the agent",
-          title:
-            "Apply to code cannot write this. It goes to your agent.",
-          kind: "agent",
-        }
-      : {
-          label: "Needs the agent",
-          title: "Apply to code failed on this. It goes to your agent.",
-          kind: "agent",
-        }
-  }
-
-  /**
-   * One edit the designer made, and what still has to happen to it.
-   *
-   * State is stated three ways on purpose — a class the stylesheet can tint, a
-   * badge with words in it, and the sentence behind that badge — because it is
-   * the fact that decides what happens to the row next, and a tint alone is a
-   * fact nobody can read out loud.
+   * It reads like a typed note — a numbered disc and one sentence — because it
+   * is one now: the editor writes nothing to source, so an edit is a request
+   * for the agent exactly as a typed note is. The Ready, In your files and
+   * Needs the agent badges went with the codemod they reported on.
    */
   function editRow(edit: EditRecord, index: number): HTMLElement {
-    const label = editLabel(edit.property)
-    // The empty side is spelled rather than dropped: a blank where a value goes
-    // reads as a rendering bug, and "unset" is the actual claim.
-    const change = `${label}: ${edit.from || "unset"} → ${edit.to || "unset"}`
+    const change = editNoteText(edit)
     const where = whereOf(edit.target)
-    const state = stateOf(edit)
     // Asked for every edit row; answered for the few whose component the server
     // finds in more than one place. The first call per component starts a
     // lookup and returns nothing, and the subscription below repaints when it
@@ -1384,68 +1262,42 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
          * "from" would be reckless if a later row could have written the same
          * property afterwards, and collapse guarantees none did.
          */
+        // The row disappears and the pixels go back, which says it all. A
+        // queue the withdrawal could not clear no longer matters: nothing
+        // commits it.
         onclick: () => {
-          const result = withdrawEdit(editor.bridge, edit.id)
-          /*
-           * Only spoken about when it FAILED, which is the one case the list
-           * cannot show on its own.
-           *
-           * A successful withdrawal explains itself: the row disappears and the
-           * pixels go back. A withdrawal that could not reach the queue leaves
-           * a page that reverted and a file that will still be written, and
-           * nothing on screen says so — that is worth a sentence, and it is the
-           * honest one rather than a generic failure.
-           */
-          if (!result.queueCleared && isEditQueued(edit.id)) {
-            editor.toast(
-              { title: "Still queued", description: "Removed from the list, but Apply to code will still write it." },
-              "error"
-            )
-          }
+          withdrawEdit(editor.bridge, edit.id)
         },
       },
       [icon("X", tokens.icon.marker)]
     )
 
     /*
-     * Delete alone, and the missing edit button is not an oversight.
+     * Discard alone, and the missing edit button is not an oversight.
      *
      * A note row's edit reopens the composer the note was written in. An edit
-     * row has no composer — it is a record of something the inspector already
-     * did to the page, and the way to change it is to change the element again,
-     * which writes a new row. A button that opened nothing would be the panel
-     * offering a door into a room that was never built.
+     * row's sentence is the editor's record of what the Design panel did, and
+     * the way to change it is to change the element again, which updates this
+     * row.
      */
     return trackHover(
       el(
         "div",
-        { class: `de-ann-item de-ann-item--edit${edit.written ? " de-ann-item--written" : ""}` },
+        { class: "de-ann-item de-ann-item--edit" },
         [
-          /*
-           * Same cut as the note row above: the "Edit" chip said what the mono
-           * `opacity: 1 → 0.55` beneath it already said. The state chip stays,
-           * because whether a change reached the file is the one fact on this
-           * row an agent acts on differently and nothing else here reports it.
-           */
           el("div", { class: "de-ann-item-head" }, [
             el("span", { class: "de-ann-index" }, [String(index)]),
-            el("span", { class: "de-ann-badge", "data-de-state": state.kind, title: state.title }, [
-              state.label,
-            ]),
           ]),
           el("div", { class: "de-ann-item-body" }, [
             /*
              * The element this changed rides in the TOOLTIP, for the reason the
-             * note row's second line went: one row, one line. The difference
-             * here is that an edit's line is a property and two values, which
-             * does not name the thing it happened to — so the tooltip is doing
-             * real work rather than storing a duplicate, and the badge below
-             * stays because it reports the one fact that decides what happens
-             * to this row next.
+             * note row's second line went: one row, one line. An edit's
+             * sentence does not name the thing it happened to, so the tooltip
+             * does real work here.
              */
             el("div", { class: "de-ann-item-line", title: `${change}\n${where}` }, [change]),
             /*
-             * THE BLAST RADIUS, said before the write rather than discovered
+             * THE BLAST RADIUS, said before the send rather than discovered
              * after it.
              *
              * Only for a component the server found in more than one place, so
@@ -1455,10 +1307,9 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
              * the designer looks identical whether this button is used once or
              * forty times.
              *
-             * It is a line in the row and not a dialog. The write has not
-             * happened yet — the button that performs it is under the list —
-             * so there is nothing to interrupt, only something to know before
-             * pressing it.
+             * It is a line in the row and not a dialog. Nothing has been sent
+             * yet — the button that sends it is under the list — so there is
+             * nothing to interrupt, only something to know before pressing it.
              */
             shared ? el("div", { class: "de-ann-item-shared" }, [shared]) : null,
           ]),
@@ -1521,17 +1372,14 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
 
     /*
      * WHAT IS ON SCREEN. The section and the buttons appear when the outbox
-     * holds anything OR a write is still owed: a deletion queues a source
-     * operation without leaving a row, and a designer who deleted a card and
-     * saw no section and no button would think the delete had not registered.
-     * Otherwise the tab's own empty state takes the column.
+     * holds anything; otherwise the tab's own empty state takes the column.
      *
      * A block with nothing to say LEAVES THE DOCUMENT rather than hiding, and
      * is detached rather than rebuilt, so the detail menu and the buttons keep
      * their listeners and whoever's focus was on them. Placed bottom-up,
      * because each block goes in before a sibling already in the column.
      */
-    const shown = filled || committer.hasPendingChanges()
+    const shown = filled
     place(ctas, shown, mcpSection)
     place(outboxSection, shown, inColumn(ctas) ? ctas : mcpSection)
     place(empty, !shown, node.firstChild)
@@ -1617,18 +1465,6 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
     void refreshMcp()
   }
   refreshMcpSoon()
-  /*
-   * The ledger is NOT subscribed to here, and the badge still tracks it.
-   *
-   * A stranded write moves a row from "Ready" to "Needs the agent" without the
-   * journal changing at all, so this list does have to be rebuilt when the
-   * ledger moves — but the tab host already does it, gated on this being the
-   * visible tab (`onPreviewOnlyChange` in `./index.ts`). Subscribing again here
-   * would repaint a pane nobody is looking at on every stranded write, which is
-   * the hot-path cost the tab host exists to avoid, and `inspector-tabs-cases`
-   * fails on exactly that.
-   */
-
   /*
    * The other direction: the pointer is on a PIN, so light its row.
    *

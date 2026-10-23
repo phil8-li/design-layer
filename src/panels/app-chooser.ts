@@ -1798,6 +1798,12 @@ export function installAppChooser(context: EditorContext): {
   window.addEventListener("pagehide", onPageHide)
   window.addEventListener("hashchange", onRouteChange)
   window.addEventListener("popstate", onRouteChange)
+  // Closed when the editor is hidden. The menu hangs off `document.body`, not
+  // off the panel, so nothing that hides carries it away: ⌘. left it open over
+  // the page, its rows still switching apps. Same call as the library sign-in.
+  const stopWatchingChrome = context.subscribe((state, previous) => {
+    if (state.chromeHidden && !previous.chromeHidden) close()
+  })
 
   return {
     node: trigger,
@@ -1832,6 +1838,7 @@ export function installAppChooser(context: EditorContext): {
       window.removeEventListener("hashchange", onRouteChange)
       window.removeEventListener("popstate", onRouteChange)
       window.clearInterval(pageTimer)
+      stopWatchingChrome()
       menu.remove()
     },
   }

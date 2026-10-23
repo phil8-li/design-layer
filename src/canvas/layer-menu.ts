@@ -469,4 +469,10 @@ export function installLayerMenu(context: EditorContext): void {
   )
   window.addEventListener("scroll", () => close(), true)
   window.addEventListener("blur", () => close())
+  // Closed when the editor is hidden. The card is in the overlay layer, which
+  // does not stand down, so ⌘. left it open over the page, its rows still
+  // acting on the app the editor had just handed back.
+  context.subscribe((state, previous) => {
+    if (state.chromeHidden && !previous.chromeHidden) close()
+  })
 }

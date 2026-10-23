@@ -481,7 +481,8 @@ await check("a pinned note and a recorded edit are one list, and arm the button"
     ["Notes and edits", "MCP", "Settings"]
   )
   assert.match(notesPane().textContent, /This gap is too tight/)
-  assert.match(notesPane().textContent, /box-shadow/)
+  // The edit's note, in words: the row says what happened, not the property.
+  assert.match(notesPane().textContent, /Add a shadow: 0 2px 8px/)
   /*
    * In the order they happened, with one run of numbers — the same numbers the
    * pins on the canvas and the brief use.
@@ -571,7 +572,7 @@ await check("dropping the last row empties the list and takes the buttons with i
   click(tabNamed("Changes"))
   assert.equal(copyButton().disabled, false)
 
-  const drop = notesPane().querySelector('[aria-label^="Discard change"]')
+  const drop = notesPane().querySelector('[aria-label^="Discard edit"]')
   assert.ok(drop, "an edit cannot be retracted from the handover")
   click(drop)
   assert.deepEqual(rowKinds(), [])

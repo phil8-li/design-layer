@@ -205,15 +205,15 @@ check("a class write undoes by swapping its two lists", () => {
   assert.equal(target.className, "rounded-full")
 })
 
-check("a text edit undoes to the original string, and tells source both times", () => {
+check("a text edit undoes to the original string, and never tells source", () => {
   reset()
   writer.applyText(selection, "Continue")
   assert.equal(target.textContent, "Continue")
   history.undo()
   assert.equal(target.textContent, "Go")
-  assert.equal(sent.length, 2, "the revert never reached the source writer")
-  assert.equal(sent[1].newText, "Go")
-  assert.equal(sent[1].originalText, "Continue")
+  // The text is a note for the agent: the engine's `updateText`, which wrote
+  // the file on the spot, is never sent, for the edit or for its undo.
+  assert.deepEqual(sent, [])
 })
 
 check("one edit is one step, however many times the field commits it", () => {

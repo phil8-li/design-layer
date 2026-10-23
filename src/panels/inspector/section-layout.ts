@@ -15,13 +15,22 @@
 
 import { el } from "../../core/dom"
 import { icon } from "../../core/icons"
+import {
+  flexOwnsLength,
+  lengthWrites,
+  mergeWrites,
+  onFlexMainAxis,
+  previewLengthWrites,
+  toOwnLength,
+  type Axis,
+} from "../../core/sizing"
 import { tokens } from "../../core/tokens"
 import { isExpanded, numberField, propRow, setExpanded, trailingToggle } from "./field"
 import { mixedNumber, sharedValue } from "./multi"
 import type { SectionContext } from "./index"
 import type { LayerElement } from "../../core/types"
+import type { StyleWrite } from "../../core/writer"
 
-type Axis = "width" | "height"
 type Mode = "fixed" | "hug" | "fill"
 
 const HUG = "fit-content"
@@ -44,8 +53,16 @@ const MODE_ITEM: Record<Axis, Record<Mode, string>> = {
  * The mode is a property of the *authored* value, and computed style resolves
  * every one of them to used pixels. So this reads what we wrote inline first,
  * then the Tailwind classes that are the actual source of truth.
+ *
+ * Except on a flex line's main axis, where the item's flex outranks both: a
+ * growing item fills its line whatever width it also carries, and a basis
+ * length is the item's length there.
  */
 function modeOf(element: LayerElement, axis: Axis): Mode {
+  const main = onFlexMainAxis(element, axis)
+  const own = main ? getComputedStyle(element) : null
+  if (own && Number.parseFloat(own.flexGrow) > 0) return "fill"
+
   const inline = element.style.getPropertyValue(axis).trim()
   if (inline === HUG || inline === "max-content" || inline === "auto") return "hug"
   if (inline === FILL) return "fill"
@@ -57,7 +74,34 @@ function modeOf(element: LayerElement, axis: Axis): Mode {
     if (name === `${stem}-fit` || name === `${stem}-auto` || name === `${stem}-[${HUG}]`) return "hug"
     if (name.startsWith(`${stem}-`)) return "fixed"
   }
+  if (own && /px$/.test((own.flexBasis ?? "").trim())) return "fixed"
   return stretchesIn(element, axis) ? "fill" : "hug"
+}
+
+/** Whether the axis carries a length of its own, inline or as a `w-*`/`h-*` class. */
+function hasLength(element: LayerElement, axis: Axis): boolean {
+  if (element.style.getPropertyValue(axis).trim()) return true
+  const stem = STEM[axis]
+  return Array.from(element.classList).some((name) => name.startsWith(`${stem}-`) && name !== `${stem}-auto`)
+}
+
+/**
+ * Hug and Fill as writes. Off a flex line's main axis they are the lengths
+ * `fit-content` and `100%`. On it, `100%` is the whole line rather than what
+ * the siblings leave, so Fill is `flex-1` and lets any fixed length go; and Hug
+ * also takes the item off a grow or a basis that would keep it from hugging.
+ */
+function modeWrites(element: LayerElement, axis: Axis, mode: "hug" | "fill"): StyleWrite[] {
+  const main = onFlexMainAxis(element, axis)
+  if (mode === "fill") {
+    if (!main) return [{ property: axis, value: FILL }]
+    const writes: StyleWrite[] = [{ property: "flex", value: "1 1 0%" }]
+    if (hasLength(element, axis)) writes.push({ property: axis, value: "auto" })
+    return writes
+  }
+  const writes: StyleWrite[] = [{ property: axis, value: HUG }]
+  if (flexOwnsLength(element, axis)) writes.push({ property: "flex", value: "none" })
+  return writes
 }
 
 /**
@@ -139,20 +183,29 @@ export function sizeControls(context: SectionContext): HTMLElement {
   // drawn rather than by a ratio a previous locked edit already rounded.
   const ratio = rect.width > 0 && rect.height > 0 ? rect.height / rect.width : null
 
-  const write = (axis: Axis, value: string, summary: string) => {
-    writer.applyStyles(selection, [{ property: axis, value }], summary)
+  const write = (writes: StyleWrite[], summary: string) => {
+    writer.applyStyles(selection, writes, summary)
     invalidate()
   }
 
-  /** The length writes for one axis, plus the other axis while the lock is on. */
-  const lengths = (axis: Axis, value: number) => {
-    const writes = [{ property: axis, value: `${Math.round(value)}px` }]
+  /**
+   * The writes for a size typed or scrubbed into one axis, plus the other axis
+   * while the lock is on. The field shows the border box, as the canvas does,
+   * so the number is converted to the element's own box-sizing first; and it
+   * goes through `core/sizing.ts`, so a flex item really takes it. A preview
+   * skips the measuring that decides `shrink-0`, which the commit does once.
+   */
+  const lengths = (axis: Axis, value: number, preview = false) => {
+    const one = (on: Axis, border: number) => {
+      const own = toOwnLength(element, on, border)
+      return preview ? previewLengthWrites(element, on, own) : lengthWrites(element, on, own)
+    }
+    const writes = [one(axis, value)]
     if (locked && ratio) {
       const other: Axis = axis === "width" ? "height" : "width"
-      const scaled = axis === "width" ? value * ratio : value / ratio
-      writes.push({ property: other, value: `${Math.round(scaled)}px` })
+      writes.push(one(other, axis === "width" ? value * ratio : value / ratio))
     }
-    return writes
+    return mergeWrites(...writes)
   }
 
   const axisField = (axis: Axis, label: string, measured: number) => {
@@ -171,9 +224,9 @@ export function sizeControls(context: SectionContext): HTMLElement {
       value: mode,
       items: (["fixed", "hug", "fill"] as Mode[]).map((value) => ({ value, label: MODE_ITEM[axis][value] })),
       onPick: (next) => {
-        if (next === "hug") write(axis, HUG, `Hug ${axis}`)
-        else if (next === "fill") write(axis, FILL, `Fill ${axis}`)
-        else write(axis, `${Math.round(measured)}px`, `Fixed ${axis}`)
+        if (next === "hug") write(modeWrites(element, axis, "hug"), `Hug ${axis}`)
+        else if (next === "fill") write(modeWrites(element, axis, "fill"), `Fill ${axis}`)
+        else write(lengthWrites(element, axis, toOwnLength(element, axis, measured)), `Fixed ${axis}`)
       },
     })
 
@@ -184,12 +237,9 @@ export function sizeControls(context: SectionContext): HTMLElement {
       ...mixedNumber(size),
       min: 0,
       onPreview: (value) => {
-        for (const entry of lengths(axis, value)) element.style.setProperty(entry.property, entry.value)
+        for (const entry of lengths(axis, value, true)) element.style.setProperty(entry.property, entry.value)
       },
-      onCommit: (value) => {
-        writer.applyStyles(selection, lengths(axis, value), `Set ${axis}`)
-        invalidate()
-      },
+      onCommit: (value) => write(lengths(axis, value), `Set ${axis}`),
       trailing,
     })
   }
