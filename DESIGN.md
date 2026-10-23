@@ -275,8 +275,9 @@ components:
 # Design Layer editor
 
 Rules for the editor chrome (`src/`), its keyboard behavior and its icons. The
-landing page has its own file, `landing/DESIGN.md`; it reuses this file's indigo
-(`primary`, `primary-fill`, `primary-text`) and nothing else.
+landing page has its own `DESIGN.md` in phil8-li/design-layer-landing-page; it
+reuses this file's indigo (`primary`, `primary-fill`, `primary-text`) and
+nothing else.
 
 `src/core/tokens.ts` is the source of truth. The frontmatter copies it; if the
 two disagree, the code wins and this file is stale. A newer rule replaces the

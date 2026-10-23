@@ -148,7 +148,7 @@ ships with it: Motion and motion-panels are compiled into
 stylesheet and Phosphor's icon paths are copied
 into `src/`, and the edit engine is
 [React Rewrite](https://github.com/donghaxkim/react-rewrite). All of them are
-MIT or ISC licensed. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists
+MIT or ISC licensed. [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) lists
 every dependency with its version, license and role, and reproduces the full
 license text of each project whose code is included.
 

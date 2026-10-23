@@ -40,23 +40,15 @@ and sends its class name to the loopback server, which maps it through the
 `@Component` decorator to a `templateUrl` (or an inline `template`). An element
 is then located inside that template by tag, static classes, parent and sibling
 index. A descriptor that fits two template nodes equally well resolves to
-NOTHING: the inspector still names the component's file, "Apply to code" leaves
-that element alone, and the change goes to the Changes tab. Guessing between two
-candidates would restyle an element the user was not looking at, and the only
-clue would be the wrong thing moving.
+NOTHING: the inspector names the component's file and no element in it, rather
+than guess between two candidates and send the agent to an element the user was
+not looking at.
 
-**What gets written.** Angular templates have no utility classes, so there is no
-Tailwind translation step and no property the translator cannot spell. A style
-edit is written as a declaration in the element's own `style` attribute, in its
-template, and merges with whatever is already there; `transform`, which a drag
-produces and which is preview-only on the React lane, is writable here. Class
-edits rewrite the static `class` attribute. Text edits replace static text and
-are refused — not overwritten — where the content holds an interpolation, a
-control-flow block, or child elements.
-
-Only static markup is touched. A `[style.x]`, `[class.x]` or `[ngClass]`
-binding is read as part of the live element's identity and never rewritten, and
-the block syntax around an element (`@if`, `@for`) is left exactly as it stands.
+**Where an edit goes.** On Angular, as on React, a direct edit becomes a note in
+the Changes tab and DesignLayer writes nothing to the template. The brief tells
+the agent which component to edit and gives the exact CSS; on a project without
+Tailwind it says to write the change the way the project already styles the
+element, not as an inline style.
 
 `source.extensions` gains `.html`, `.css` and `.scss` on an Angular host unless
 the host sets that list itself, in which case it gets exactly what it asked for.

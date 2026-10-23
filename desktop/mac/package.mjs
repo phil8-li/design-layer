@@ -5,7 +5,7 @@
  *
  *   node desktop/mac/package.mjs [--out <dir>] [--fresh-deps] [--node-zip]
  *
- *   --out <dir>    where the zip goes (default: landing/downloads/)
+ *   --out <dir>    where the zip goes (default: dist/)
  *   --fresh-deps   build dist/ against a clean `npm ci` instead of this
  *                  checkout's node_modules (used automatically when it has none)
  *   --node-zip     write the zip with the built-in writer even if `zip` exists
@@ -54,7 +54,7 @@ const argv = process.argv.slice(2)
 const flag = (name) => argv.includes(name)
 const outIndex = argv.indexOf("--out")
 if (outIndex !== -1 && !argv[outIndex + 1]) fail("--out needs a directory")
-const OUT_DIR = outIndex === -1 ? path.join(REPO_ROOT, "landing", "downloads") : path.resolve(argv[outIndex + 1])
+const OUT_DIR = outIndex === -1 ? path.join(REPO_ROOT, "dist") : path.resolve(argv[outIndex + 1])
 
 const TEMP = path.join(os.tmpdir(), "designlayer-mac-package")
 const STAGE = path.join(TEMP, "stage")

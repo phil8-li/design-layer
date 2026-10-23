@@ -2520,24 +2520,13 @@ await check("--verify-window recognizes the desk window on Home and on an editor
 })
 
 // macOS 15+ refuses a quarantined, unsigned .command until the user clicks Open
-// Anyway in Privacy & Security, and managed Macs warn on `curl | bash`. The page
-// installs from a git clone, which has neither problem, and its steps must work:
-// the clone's own `npm install` comes first, because npm installs no
-// dependencies for a folder dependency and the prepare script needs esbuild.
-await check("the get-started section installs from a clone, with no security prompt", () => {
+// Anyway in Privacy & Security, and managed Macs warn on `curl | bash`. The
+// landing page installs from a git clone, which has neither problem; its
+// commands are held by test/get-started-cases.mjs in
+// phil8-li/design-layer-landing-page. The zip is for people without git.
+await check("the Mac zip names Open Anyway, and sends no one to right-click or curl", () => {
   const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
   const pkg = fs.readFileSync(path.join(repo, "desktop", "mac", "package.mjs"), "utf8")
-  const page = fs.readFileSync(path.join(repo, "landing", "index.html"), "utf8")
-  const start = page.slice(page.indexOf('id="start"'), page.indexOf("</section>\n    </section>", page.indexOf('id="start"')))
-  assert.doesNotMatch(page, /\|\s*(ba)?sh\b/, "the page pipes nothing into a shell")
-  assert.doesNotMatch(page, /right-click/i, "the page must not send users to right-click > Open")
-  assert.doesNotMatch(start, /\.zip|\.command/, "the section offers no quarantined download")
-  // One line per command; the copy button joins these lines (landing/main.js setupCopy).
-  const shown = [...start.matchAll(/<code>([\s\S]*?)<\/code>/g)].map(([, code]) => [...code.matchAll(/<span class="t-cmd">(.*?)<\/span>/g)].map(([, line]) => line))
-  const setup = ["git clone https://github.com/phil8-li/design-layer", "cd design-layer &amp;&amp; npm install"]
-  const expected = [[...setup, "npx designlayer"], [...setup, "node desktop/mac/install.mjs"]]
-  assert.deepEqual(shown, expected, "the browser card starts the editor; the Mac card installs the app")
-  assert.match(start, /Use it in your browser on top of your app\./)
   const readme = pkg.slice(pkg.indexOf("const README = `"), pkg.indexOf("`", pkg.indexOf("const README = `") + 16))
   assert.doesNotMatch(readme, /right-click|curl/i, "README.txt sends no one to right-click > Open or curl")
   assert.match(readme, /Open Anyway/, "README.txt names the Privacy & Security step for the zip")

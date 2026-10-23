@@ -4,7 +4,7 @@ Optional. With no config file the tool runs against generic defaults for a
 stock Next.js + Tailwind + shadcn/ui app. It does not look for Leva,
 Agentation, or any host dev panel unless the host opts in.
 
-Copy `designlayer/designlayer.config.example.mjs` to
+Copy `designlayer.config.example.mjs` from this package to
 `designlayer.config.mjs` in your project root and delete everything you do
 not need. The file is discovered by walking up from the working directory, and
 all its paths resolve against the directory holding it.
