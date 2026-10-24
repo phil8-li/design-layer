@@ -24,6 +24,7 @@
 
 ## Install
 
+
 The package is not on npm. Install it from source as a development
 dependency; its prepare script builds the browser bundle on install.
 
@@ -72,6 +73,15 @@ dependency; its prepare script builds the browser bundle on install.
    ```
    .local/designlayer/
    ```
+
+   ## Known limitations
+
+- React appearance edits write Tailwind utilities; text edits do not need Tailwind. See [Requirements](#requirements).
+- Angular writes touch static template markup only. `[style.x]`, `[class.x]`, `[ngClass]`, interpolations, and `@if` / `@for` are left as they are. See [Angular hosts](angular.md).
+- A Vite app is classified as React, including one that is Vue, Svelte, or something else. See `DEV_SERVERS.vite` in [`config.mjs`](../config.mjs).
+- Two agents calling `wait_for_change` both receive the same change. There is no claim. See [Agent handoff](agent-handoff.md).
+- The package is `"private": true` and is not on npm. Install is from a clone. See [Install](#install).
+- `token-cases`, `responsive-cases`, `picker-cases`, and `icon-set-cases` skip unless a host app is on disk, and CI does not provide one. See [Testing](testing.md).
 
 ## Updating
 
