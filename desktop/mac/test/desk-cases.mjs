@@ -182,6 +182,14 @@ await check("shell page is the DesignLayer window with a manifest link and WCO s
   assert.doesNotMatch(html, /id="status"/)
 })
 
+await check("a framed app gets the Mac's color scheme, not the shell's dark", async () => {
+  // A frame's prefers-color-scheme is its iframe element's color-scheme. Inheriting the shell's `dark` made every app
+  // here read "dark" on a light Mac, so an app that follows the system never went light.
+  const html = (await request(port)).body.toString("utf8")
+  assert.match(html, /:root \{[^}]*color-scheme: dark;/)
+  assert.match(html, /\.frames iframe \{[^}]*color-scheme: light dark;[^}]*\}/)
+})
+
 await check("every glyph in the strip comes from symbols/ at the 20px title-bar size", async () => {
   // Each is a file in symbols/, copied unchanged: one path, at the 20px optical size.
   const symbols = path.join(MAC, "symbols")

@@ -217,7 +217,11 @@ export function shellPage({ repoRoot, version = null }) {
   .update[hidden] { display: none; }
 
   .frames { position: fixed; left: 0; right: 0; bottom: 0; top: calc(var(--strip-h) + 1px); background: var(--ground); }
-  .frames iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--ground); }
+  /* A framed page's prefers-color-scheme is its iframe element's color-scheme, so the shell's dark reached every app
+     here as "dark" whatever the Mac was set to: an app that follows the system stayed dark on a light Mac. "light dark"
+     hands each frame the Mac's own setting, live. */
+  .frames iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--ground);
+    color-scheme: light dark; }
   .frames iframe[hidden] { display: block; visibility: hidden; pointer-events: none; }
 
   .sheet { position: absolute; inset: 0; display: grid; place-items: center; background: var(--ground); z-index: 2; }
