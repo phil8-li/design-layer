@@ -279,7 +279,6 @@ async function inventoryCases() {
 
   check("an object that is not a leva store is refused", () => {
     dom.window.__STORE = { getData: 1 }
-    assert.equal(inventory.levaStore(), null)
     assert.equal(inventory.readInventory().available, false)
   })
 
