@@ -39,7 +39,7 @@ export const GLYPHS = Object.fromEntries(
   ])
 )
 
-export function glyph(name, size) {
+function glyph(name, size) {
   return `<svg width="${size}" height="${size}" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="${GLYPHS[name]}"/></svg>`
 }
 
@@ -54,6 +54,13 @@ export function isDeskTitle(title) {
 
 /** Where the page saves its tabs in its own storage; install.mjs reads it too. */
 export const TABS_KEY = "designlayer.desk.tabs.v1"
+
+/**
+ * The fields a saved tab keeps: in the page's storage, in the desk's copy
+ * (desk-server.mjs keeps exactly these), and when a tab moves to another
+ * window. Everything else on a tab (`stale`) is this page's alone.
+ */
+export const TAB_FIELDS = ["id", "kind", "url", "src", "name", "key", "app"]
 
 export function shellPage({ repoRoot, version = null }) {
   const startCommand = `node ${repoRoot}/desktop/mac/install.mjs --start`
@@ -233,11 +240,6 @@ export function shellPage({ repoRoot, version = null }) {
   .card .cmd { display: block; text-align: left; background: var(--raised); border: 1px solid var(--hair);
     border-radius: 8px; padding: 10px 12px; color: var(--ink); user-select: all; margin-bottom: 14px; overflow-wrap: anywhere; }
   .card [hidden] { display: none; }
-  .card .row { display: flex; gap: 8px; justify-content: center; }
-  .btn { height: 28px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--hair-2); background: var(--raised); color: var(--ink); }
-  .btn:hover { border-color: rgba(255,255,255,.24); }
-  .btn.primary { background: var(--fill); border-color: var(--fill); }
-  .btn.primary:hover { background: #1a96ef; }
   .spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--hair-2);
     border-top-color: var(--accent); animation: spin .9s linear infinite; margin: 0 auto 14px; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -246,7 +248,6 @@ export function shellPage({ repoRoot, version = null }) {
     border: 1px solid var(--hair-2); border-radius: 8px; padding: 8px 12px; color: var(--ink); font-size: 12px;
     box-shadow: 0 8px 24px rgba(0,0,0,.4); z-index: 5; max-width: calc(100% - 32px); }
   .toast[hidden] { display: none; }
-  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 </style>
 </head>
 <body>
@@ -278,6 +279,7 @@ export function shellPage({ repoRoot, version = null }) {
 <script>
 (() => {
   const KEY = ${JSON.stringify(TABS_KEY)}
+  const TAB_FIELDS = ${JSON.stringify(TAB_FIELDS)}
   // The commit the desk ran when it served this page (runtime/updater.mjs).
   const VERSION = ${JSON.stringify(version)}
   const $ = (id) => document.getElementById(id)
@@ -286,6 +288,12 @@ export function shellPage({ repoRoot, version = null }) {
   let tabs, active
 
   function uid() { return Math.random().toString(36).slice(2, 9) }
+  const readLocal = (k) => { try { return JSON.parse(localStorage.getItem(k)) } catch { return null } }
+  const hasTabs = (s) => Array.isArray(s?.tabs) && s.tabs.length > 0
+  // The frame showing a tab, once it has one.
+  const frameOf = (id) => framesEl.querySelector('iframe[data-id="' + id + '"]')
+  // What of a tab is saved, and carried to another window (TAB_FIELDS).
+  const pick = (t) => Object.fromEntries(TAB_FIELDS.map((field) => [field, t[field]]))
 
   // Names a person gave apps' tabs, by app: its project folder and app port,
   // the pair that also keeps each app's editor ports (runtime/editor-ports.mjs).
@@ -294,8 +302,16 @@ export function shellPage({ repoRoot, version = null }) {
   // its editor's address. The desk keeps them
   // (GET/PUT /api/names); this origin's storage holds a copy for the first
   // paint, and the windows tell each other of a rename at once.
+  //
+  // "names" has one writer, takeNames. A rename the desk has not taken yet
+  // waits in "pendingNames" (kept in this origin's storage too, so a reload
+  // keeps it), lies over the desk's names whenever they arrive, and is sent
+  // again after each poll the desk answers. A rename made while the desk was
+  // down used to be replaced by the desk's older names on the next load.
   const NAMES_KEY = KEY + ".names"
-  let names = (() => { try { return JSON.parse(localStorage.getItem(NAMES_KEY)) || {} } catch { return {} } })()
+  const PENDING_NAMES_KEY = NAMES_KEY + ".pending"
+  let names = readLocal(NAMES_KEY) || {}
+  const pendingNames = new Map(Object.entries(readLocal(PENDING_NAMES_KEY) || {}))
   let namesLoaded = false
   const appOf = (e) => {
     if (!e || !e.projectRoot || !e.appUrl) return null
@@ -312,6 +328,33 @@ export function shellPage({ repoRoot, version = null }) {
     names = next
     try { localStorage.setItem(NAMES_KEY, JSON.stringify(names)) } catch {}
     return !same
+  }
+  // The desk's names, with the renames it has not taken yet laid over them.
+  function takeDeskNames(desk) {
+    if (!desk || typeof desk !== "object") return false
+    const next = { ...desk }
+    for (const [app, name] of pendingNames) { if (name) next[app] = name; else delete next[app] }
+    return takeNames(next)
+  }
+  function savePendingNames() {
+    try { localStorage.setItem(PENDING_NAMES_KEY, JSON.stringify(Object.fromEntries(pendingNames))) } catch {}
+  }
+  // Sends every rename the desk has not taken. One the desk refuses (a 4xx)
+  // will never be taken, and is dropped; one it did not hear is sent again.
+  let sendingNames = null
+  function sendNames() {
+    sendingNames ??= (async () => {
+      for (const [app, name] of [...pendingNames]) {
+        let r
+        try { r = await fetch("/api/names", { method: "PUT", body: JSON.stringify({ app, name }), keepalive: true }) } catch { return }
+        if (r && r.status >= 500) return
+        if (pendingNames.get(app) === name) pendingNames.delete(app)
+        savePendingNames()
+        const body = r && r.ok !== false ? await r.json().catch(() => null) : null
+        if (body && body.names && takeDeskNames(body.names)) render()
+      }
+    })().finally(() => { sendingNames = null })
+    return sendingNames
   }
   const editorKey = (e) => e.url + "#" + e.pid
   // An editor tab is addressed by its editor's origin (url); src is the page in
@@ -332,62 +375,108 @@ export function shellPage({ repoRoot, version = null }) {
     } catch { return u }
   }
 
-  // Windows. Each window of the app names itself in its address (?window=):
-  // "main" is the one the app opens with, and a tab pulled out of a window
-  // opens a window of its own. Each keeps its tabs under its own key. The
-  // windows tell each other what they show over a BroadcastChannel: which
-  // editors have a tab, where each window's tab strip is on screen (to drop a
-  // tab dragged from another window), and which window was used last.
+  // ---- Windows ----
+  //
+  // Each window of the app names itself in its address (?window=): "main" is
+  // the one the app opens with, and a tab pulled out of a window opens a
+  // window of its own. Each keeps its tabs under its own key. The windows tell
+  // each other what they show over a BroadcastChannel ("designlayer-desk"),
+  // every message carrying "from" (the sender's id) and, when meant for one
+  // window, "to":
+  //
+  //   hello    a window opening asks whether its id is taken ("want")
+  //   state    every second: its tabs, title, when it was focused, where its strip is on screen
+  //   bye      it is going: closed, reloading, or the app quitting
+  //   claimed  its frame took an editor's socket: other windows drop their tab on it
+  //   names    a rename, so every window shows it at once
+  //   reveal   show the tab on this editor ("url"), asked by a window that has none
+  //   hover    a tab dragged from it is over this strip ("x"), or left it (no "x")
+  //   adopt    take this tab ("tab"), dropped at "x"; answered by
+  //   adopted  the tab is in; the sender takes it out ("req")
+  //
+  // A window's id:   probing --150 ms, nobody has it--> its id
+  //                  probing --a peer has it, or the app opened with peers up, or it yielded--> a new w<id>
+  // A peer:          present (a state in the last 3.5 s) --3.5 s silent--> pruned
+  //                  present --bye--> gone; 2 s later, unless it said hello again
+  //                  or this window is going too, it is forgotten: closed on its
+  //                  own, it does not come back with the app.
+  // This window:     open --last tab given away--> closing --closed--> gone
+  //                  closing --close refused for 2 s--> open, with a Home tab
+  //                  open --pagehide--> its record says when it closed (closedAt)
+  //                  At launch: closed within 5 s of the last one --> reopened by the desk,
+  //                  earlier --> forgotten; one the desk cannot open gives its tabs to the first window.
   const params = new URLSearchParams(location.search)
   const launched = !params.get("window")
   let wid = params.get("window") || "main"
   const keyOf = (w) => (w === "main" ? KEY : KEY + ":" + w)
-  const readLocal = (k) => { try { return JSON.parse(localStorage.getItem(k)) } catch { return null } }
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("designlayer-desk") : null
   // Other windows, by id: { tabs, title, focusedAt, geo, seen }.
   const peers = new Map()
   // Until this window knows its id, it speaks under a name nobody else has.
   const probeId = "?" + Math.random().toString(36).slice(2, 9)
-  let identified = !channel
   // Two windows that open at once both ask before either answers. The one
   // with the higher probe name lets the other have the id they both want.
   let yielded = false
   let focusedAt = document.hasFocus() ? Date.now() : 0
-  // Set once this window gave its last tab away and is closing.
-  let gone = false
   // Whether this window opened on saved tabs, and when that record says it closed.
   let hadRecord = false, closedAt = 0
 
+  // ---- Saving this window's tabs ----
+  //
+  // Where this window's tabs may be written. The page's own storage can be
+  // older than the desk's copy (PUT /api/tabs), each stamped with when it was
+  // saved (savedAt): the window moved from 127.0.0.1 to localhost and opened
+  // with nothing, or Chrome quit before it wrote the page's last change
+  // (measured: tabs closed a moment before quitting came back). So a page
+  // takes the desk's copy when it is newer than its own, and writes nothing
+  // until the desk has answered: its stale or lone-Home tabs would replace
+  // the newer copy.
+  //
+  //   identifying --150 ms, the id is its own-->           restoring
+  //   identifying --another window has the id-->           mirroring  (a new id and a Home tab)
+  //   restoring   --the desk answers-->                    mirroring  (the newer copy wins; the app's
+  //                                                                    first window reopens the others)
+  //   restoring   --no desk, but a copy of its own-->      mirroring
+  //   restoring   --no desk, no copy-->                    restoring  (asks again on the next poll)
+  //   mirroring   --its last tab went to another window--> closing
+  //   closing     --window.close() refused for 2 s-->      mirroring  (a Home tab)
+  //
+  // Only "mirroring" writes: to this origin's storage and to the desk's copy.
+  let persistence = channel ? "identifying" : "restoring"
+  function setPersistence(next) { persistence = next }
+  const identified = () => persistence !== "identifying"
+  const isGone = () => persistence === "closing"
+
   function adopt(s) {
-    tabs = Array.isArray(s?.tabs) && s.tabs.length ? s.tabs : [{ id: uid(), kind: "home" }]
+    tabs = hasTabs(s) ? s.tabs : [{ id: uid(), kind: "home" }]
     active = tabs.some((t) => t.id === s?.active) ? s.active : tabs[0].id
-    hadRecord = Boolean(Array.isArray(s?.tabs) && s.tabs.length)
+    hadRecord = hasTabs(s)
     closedAt = hadRecord ? s.closedAt || 0 : 0
     for (const t of tabs) { t.url = onLocalhost(t.url); t.src = onLocalhost(t.src) }
   }
   let saved = readLocal(keyOf(wid))
   adopt(saved)
-  // The desk keeps a copy of the tabs (PUT /api/tabs, below), stamped with
-  // when it was saved. The page's own storage can be older than that copy: the
-  // window moved from 127.0.0.1 to localhost and opened with nothing, or
-  // Chrome quit before it wrote the page's last change (measured: tabs closed
-  // a moment before quitting came back). So a page takes the desk's copy when
-  // it is newer than its own, and writes nothing until the desk has answered:
-  // its stale or lone-Home tabs would replace the newer copy.
-  let restoring = true
-  async function restore() {
-    const ask = new AbortController(), timer = setTimeout(() => ask.abort(), 1500)
-    try {
-      const s = await fetch("/api/tabs?window=" + wid, { cache: "no-store", signal: ask.signal }).then((r) => r.json())
-      const mine = Array.isArray(saved?.tabs) && saved.tabs.length ? saved.savedAt || 0 : -1
-      if (Array.isArray(s?.tabs) && s.tabs.length && (s.savedAt || 0) > mine) adopt(s)
-      restoring = false
-    } catch {
-      // No desk to ask: the page's own copy is the best there is.
-      if (Array.isArray(saved?.tabs) && saved.tabs.length) restoring = false
-    }
-    clearTimeout(timer)
-    if (!restoring && launched && channel) await reopenWindows()
+  // Of two saved copies of one window, the one saved later; a copy with no tabs never wins.
+  const newer = (a, b) => (hasTabs(b) && (!hasTabs(a) || (b.savedAt || 0) > (a.savedAt || 0)) ? b : a)
+  // One restore at a time: a poll that comes while one is out waits for it.
+  let restoring = null
+  function restore() {
+    restoring ??= (async () => {
+      const ask = new AbortController(), timer = setTimeout(() => ask.abort(), 1500)
+      let desk
+      try {
+        desk = await fetch("/api/tabs?window=" + wid, { cache: "no-store", signal: ask.signal }).then((r) => r.json())
+      } catch {
+        // No desk to ask: the page's own copy is the best there is.
+      }
+      clearTimeout(timer)
+      if (persistence !== "restoring") return
+      if (desk === undefined && !hasTabs(saved)) return
+      if (desk !== undefined && newer(saved, desk) === desk) adopt(desk)
+      setPersistence("mirroring")
+      if (launched && channel) await reopenWindows()
+    })().finally(() => { restoring = null })
+    return restoring
   }
 
   // Which window this is. The app's first window opens on "/", and so does a
@@ -403,9 +492,10 @@ export function shellPage({ repoRoot, version = null }) {
       wid = "w" + uid()
       saved = null
       adopt(null)
-      restoring = false
+      setPersistence("mirroring")
+    } else {
+      setPersistence("restoring")
     }
-    identified = true
     try { history.replaceState(history.state, "", location.pathname + "?window=" + wid + location.hash) } catch {}
     announce()
   })()
@@ -427,12 +517,12 @@ export function shellPage({ repoRoot, version = null }) {
       // A copy of a window that closed after it was saved: Chrome dropped
       // that window's last write to this storage when the app quit.
       if (s && goneAt[w] >= (s.savedAt || 0)) { localStorage.removeItem(k); continue }
-      if (s && (!all[w] || (s.savedAt || 0) > (all[w].savedAt || 0))) all[w] = s
+      if (s && newer(all[w], s) === s) all[w] = s
     }
     delete all[wid]
     // A window that is up already is not opened again.
     for (const w of peers.keys()) delete all[w]
-    return Object.entries(all).filter(([, s]) => Array.isArray(s?.tabs) && s.tabs.length)
+    return Object.entries(all).filter(([, s]) => hasTabs(s))
   }
   function forget(w) {
     localStorage.removeItem(keyOf(w))
@@ -461,6 +551,7 @@ export function shellPage({ repoRoot, version = null }) {
       const ok = await fetch("/api/windows/open", { method: "POST", body: JSON.stringify({ window: w }) })
         .then((r) => r.json()).then((r) => r.ok === true).catch(() => false)
       if (ok) continue
+      // This window's own tab on an editor wins over the one joining it.
       for (const t of s.tabs) if (!(t.kind === "editor" && tabs.some((x) => x.kind === "editor" && x.url === onLocalhost(t.url)))) {
         tabs.push({ ...t, url: onLocalhost(t.url), src: onLocalhost(t.src) })
       }
@@ -469,13 +560,11 @@ export function shellPage({ repoRoot, version = null }) {
     render()
   }
 
-  const tabState = () => ({
-    tabs: tabs.map(({ id, kind, url, src, name, key, app }) => ({ id, kind, url, src, name, key, app })),
-    active,
-  })
+  const tabState = () => ({ tabs: tabs.map(pick), active })
+  // The body last sent to the desk, or null to send the next one whatever it is.
   let mirrored = null
   function persist() {
-    if (restoring || gone || !identified) return
+    if (persistence !== "mirroring") return
     const state = tabState()
     // Stamped only when something changed: render runs on every poll.
     const body = JSON.stringify(state)
@@ -483,7 +572,12 @@ export function shellPage({ repoRoot, version = null }) {
     mirrored = body
     const stamped = { ...state, savedAt: Date.now() }
     localStorage.setItem(keyOf(wid), JSON.stringify(stamped))
-    fetch("/api/tabs", { method: "PUT", body: JSON.stringify({ ...stamped, window: wid }), keepalive: true }).catch(() => { mirrored = null })
+    // A desk that did not hear it (no answer, or a 5xx) is sent it again on
+    // the next render. A 4xx refuses this body for good (more than 100 tabs,
+    // or over 64 KB): sending it again would be refused again.
+    const retry = () => { if (mirrored === body) mirrored = null }
+    fetch("/api/tabs", { method: "PUT", body: JSON.stringify({ ...stamped, window: wid }), keepalive: true })
+      .then((r) => { if (r && r.status >= 500) retry() }, retry)
   }
   // A window that closes says when, in this origin's storage, so the app
   // reopens it only with the windows that closed with it (reopenWindows). A
@@ -495,18 +589,18 @@ export function shellPage({ repoRoot, version = null }) {
   addEventListener("pagehide", () => {
     leaving = true
     post({ t: "bye" })
-    if (restoring || gone || !identified) return
+    if (persistence !== "mirroring") return
     const stamped = { ...tabState(), savedAt: Date.now(), closedAt: Date.now() }
     localStorage.setItem(keyOf(wid), JSON.stringify(stamped))
     fetch("/api/tabs", { method: "PUT", body: JSON.stringify({ ...stamped, window: wid }), keepalive: true }).catch(() => {})
   })
 
   function post(message) {
-    if (channel) try { channel.postMessage({ ...message, from: identified ? wid : probeId }) } catch {}
+    if (channel) try { channel.postMessage({ ...message, from: identified() ? wid : probeId }) } catch {}
   }
   // What the other windows need to know about this one.
   function announce() {
-    if (!identified || gone) return
+    if (!identified() || isGone()) return
     const cur = tabs.find((t) => t.id === active)
     const name = cur ? labelOf(cur) : "Home"
     post({ t: "state", tabs: tabs.map(({ id, kind, url }) => ({ id, kind, url })),
@@ -558,10 +652,7 @@ export function shellPage({ repoRoot, version = null }) {
       b.className = "tab"; b.setAttribute("role", "tab"); b.tabIndex = t.id === active ? 0 : -1
       b.dataset.id = t.id
       b.setAttribute("aria-selected", String(t.id === active))
-      // A tab with no key yet was just sent to an editor the next list will
-      // name; until then it is new, not stopped.
-      const dead = t.kind === "editor" && t.key !== null && !editors.some((e) => e.url === t.url)
-      if (dead && health) b.classList.add("dead")
+      if (tabStatus(t) === "stopped" && health) b.classList.add("dead")
       const name = labelOf(t)
       tipData(b, "tab:" + t.id, name, t.kind === "home" ? hostOf(homeUrl) : appAddress(editors.find((e) => e.url === t.url)))
       b.innerHTML = '<span class="glyph">' + (t.kind === "home" ? HOME_GLYPH : EDIT_GLYPH) + '</span><span class="label"></span>' +
@@ -670,9 +761,10 @@ export function shellPage({ repoRoot, version = null }) {
     else next[key] = name
     if (!takeNames(next)) return
     post({ t: "names", names })
-    const put = (app, name) => fetch("/api/names", { method: "PUT", body: JSON.stringify({ app, name }), keepalive: true }).then((r) => r.json())
-    if (stale) put(t.url, "").catch(() => {})
-    put(key, next[key] || "").then((r) => { if (r && r.names && takeNames(r.names)) render() }).catch(() => {})
+    if (stale) pendingNames.set(t.url, "")
+    pendingNames.set(key, next[key] || "")
+    savePendingNames()
+    sendNames()
   }
 
   const tipEl = $("tip")
@@ -734,16 +826,56 @@ export function shellPage({ repoRoot, version = null }) {
   // focus: that blurs this page too, and editors focus themselves as they load.
   addEventListener("blur", () => { if (document.activeElement?.tagName !== "IFRAME") hideTip() })
 
+  // ---- A tab and its frame ----
+  //
+  // What an editor tab is, read off its fields and the last editor list:
+  //
+  //   new      sent to an editor (key null) the next list will name
+  //   live     its editor (key, "url#pid") is in the list
+  //   stopped  its editor is not in the list: drawn struck through
+  //   stale    in the background when its editor restarted: its frame is
+  //            empty until it is selected, so it takes no socket unasked
+  //
+  //   new     --the list names its editor-->                   live
+  //   live    --its editor leaves the list-->                  stopped
+  //   stopped --its editor is back, tab in the background-->   stale
+  //   stopped --its editor is back, tab in front-->            live   (loads once)
+  //   stale   --selected-->                                    live   (loads)
+  //   any     --a page handed over, or a go, onto it-->        live or new (loads)
+  function tabStatus(t) {
+    if (t.kind === "home") return "home"
+    if (t.key === null || t.key === undefined) return "new"
+    if (!editors.some((e) => e.url === t.url)) return "stopped"
+    return t.stale ? "stale" : "live"
+  }
+  // The one way a tab's frame is pointed at a page. "url" becomes the tab's
+  // page (src); without it the frame loads the page the tab already has.
+  // "key", when given, is the editor the tab now follows.
+  function loadTab(t, url, opts) {
+    if (url !== undefined) t.src = url
+    if (t.kind === "editor") t.stale = false
+    if (opts && "key" in opts) t.key = opts.key
+    const f = frameOf(t.id)
+    if (f) f.src = tabUrl(t)
+  }
+  // Empties a background tab's frame; "src" is the page it loads once selected.
+  function emptyTab(t, src) {
+    t.src = src
+    t.stale = true
+    const f = frameOf(t.id)
+    if (f) f.src = "about:blank"
+  }
+
   function syncFrames() {
     const live = new Set(tabs.map((t) => t.id))
     for (const f of framesEl.querySelectorAll("iframe")) if (!live.has(f.dataset.id)) f.remove()
     for (const t of tabs) {
-      let f = framesEl.querySelector('iframe[data-id="' + t.id + '"]')
+      let f = frameOf(t.id)
       // A stale tab is made empty, for the same reason applyEditors empties one.
       // Nothing loads before the window knows which window it is: a second
       // window opening on "/" would otherwise load the main window's editors
       // and take their sockets.
-      const url = !identified || (t.kind === "editor" && !listed) ? null : t.stale ? "about:blank" : tabUrl(t)
+      const url = !identified() || (t.kind === "editor" && !listed) ? null : t.stale ? "about:blank" : tabUrl(t)
       if (!f && url) {
         f = document.createElement("iframe")
         f.dataset.id = t.id
@@ -758,22 +890,87 @@ export function shellPage({ repoRoot, version = null }) {
       if (f) f.hidden = t.id !== active
     }
     const cur = tabs.find((t) => t.id === active)
-    const waiting = !cur || !identified || (cur.kind === "home" && !homeUrl) || (cur.kind === "editor" && !listed) || deskDown
-    $("boot").hidden = !waiting
+    applyBoot(bootState(cur))
     document.title = cur && cur.kind === "editor" ? (labelOf(cur) || "Editor") + " — DesignLayer" : "DesignLayer"
+  }
+
+  // ---- The boot sheet ----
+  //
+  // What covers the tab in front, if anything:
+  //
+  //   identifying  the window does not know its id yet
+  //   deskDown     the last poll got no answer: "Can’t connect" and the command that starts the desk
+  //   listing      an editor tab waiting for the first editor list (1.5 s at most)
+  //   starting     a Home tab, and the start screen is not answering yet
+  //   restarting   a Home tab, and the start screen stopped and waits to be started again
+  //   ready        nothing covers the tab
+  //
+  // The restart reason and log path stay in the desk log (and --status); the
+  // window only says what is happening.
+  function bootState(cur) {
+    if (!cur || !identified()) return "identifying"
+    if (deskDown) return "deskDown"
+    if (cur.kind === "editor" && !listed) return "listing"
+    if (cur.kind === "home" && !homeUrl) return health?.startScreen?.state === "backoff" ? "restarting" : "starting"
+    return "ready"
+  }
+  function applyBoot(state) {
+    $("boot").hidden = state === "ready"
+    if (state === "ready") return
+    const down = state === "deskDown"
+    $("bootSpin").hidden = down
+    $("bootTitle").textContent = down ? "Can’t connect" : state === "restarting" ? "Restarting…" : "Starting…"
+    $("bootText").hidden = !down
+    $("bootCmd").hidden = !down
+  }
+
+  // ---- The tab list ----
+  //
+  // Every change to "tabs" keeps three rules: a window has a tab, "active" is
+  // one of its tabs, and an editor has one tab (its socket takes one client).
+  // Removing goes through removeTabs and adding through insertTab.
+
+  // Removes the tabs "pred" picks. An active tab that goes hands over to
+  // "successor" when given, else to the tab after it, else the one before. A
+  // window left with none gets a Home tab, or closes ("whenEmpty"); "none"
+  // is only for insertTab, which puts a tab in at once.
+  function removeTabs(pred, { whenEmpty = "home", successor } = {}) {
+    const doomed = tabs.filter(pred)
+    if (!doomed.length) return doomed
+    const was = tabs
+    const at = was.findIndex((x) => x.id === active)
+    tabs = was.filter((x) => !doomed.includes(x))
+    for (const x of doomed) frameOf(x.id)?.remove()
+    if (!tabs.length) {
+      if (whenEmpty === "closeWindow") { closeWindow(); return doomed }
+      if (whenEmpty === "none") return doomed
+      tabs.push({ id: uid(), kind: "home" })
+    }
+    if (!tabs.some((x) => x.id === active)) {
+      const left = (x) => tabs.includes(x)
+      const next = tabs.find((x) => x.id === successor) || was.slice(at + 1).find(left) || was.slice(0, Math.max(at, 0)).reverse().find(left) || tabs[0]
+      active = next.id
+    }
+    return doomed
+  }
+  // Puts a tab in at "index" (the end by default), and shows it unless
+  // "show" is false. An editor's other tabs in this window go: the tab coming
+  // in is the one that holds its socket now.
+  function insertTab(t, index = tabs.length, { show = true } = {}) {
+    if (t.kind === "editor") removeTabs((x) => x !== t && x.kind === "editor" && x.url === t.url, { whenEmpty: "none", successor: t.id })
+    if (tabs.some((x) => x !== t && x.id === t.id)) t.id = uid()
+    tabs.splice(Math.min(index, tabs.length), 0, t)
+    if (show) active = t.id
+    return t
   }
 
   function select(id) {
     active = id
     const t = tabs.find((x) => x.id === id)
-    if (t?.stale) {
-      t.stale = false
-      const f = framesEl.querySelector('iframe[data-id="' + t.id + '"]')
-      if (f) f.src = tabUrl(t)
-    }
+    if (t?.stale) loadTab(t)
     render()
   }
-  function newHome() { const t = { id: uid(), kind: "home" }; tabs.push(t); select(t.id) }
+  function newHome() { insertTab({ id: uid(), kind: "home" }); render() }
 
   // ---- Tab widths ----
   //
@@ -882,12 +1079,11 @@ export function shellPage({ repoRoot, version = null }) {
   }
   addEventListener("blur", () => endClosing())
   addEventListener("resize", () => endClosing())
+  // A window's only tab has no close button and its menu's Close tab is off;
+  // ⌘W on it does nothing either. It used to swap the tab for a fresh Home tab.
   function close(id) {
-    const i = tabs.findIndex((t) => t.id === id); if (i < 0) return
-    tabs.splice(i, 1)
-    if (!tabs.length) tabs.push({ id: uid(), kind: "home" })
-    if (active === id) active = (tabs[i] || tabs[i - 1] || tabs[0]).id
-    render()
+    if (tabs.length < 2) return
+    if (removeTabs((t) => t.id === id).length) render()
   }
 
   // "Open in Mac app", pressed in an editor in a browser tab. The desk forwards
@@ -899,19 +1095,13 @@ export function shellPage({ repoRoot, version = null }) {
     if (!origin) return
     const e = editors.find((x) => originOf(x.url) === origin)
     let t = tabs.find((x) => x.kind === "editor" && originOf(x.url) === origin)
-    const frame = t && framesEl.querySelector('iframe[data-id="' + t.id + '"]')
-    if (!t) {
-      t = { id: uid(), kind: "editor", url: e ? e.url : origin, name: e ? e.name : new URL(href).host,
-        key: e ? editorKey(e) : null, projectRoot: e ? e.projectRoot : null }
-      tabs.push(t)
-    }
-    // Loaded now, so not again when the tab is next selected.
-    t.src = href; t.stale = false
-    active = t.id
-    render()
+    if (t) active = t.id
+    else t = insertTab({ id: uid(), kind: "editor", url: e ? e.url : origin, name: e ? e.name : new URL(href).host, key: e ? editorKey(e) : null })
     // Loaded again even when this frame already shows the editor: the browser
-    // tab took the editor's one socket from it, and only a fresh load takes it back.
-    if (frame) frame.src = href
+    // tab took the editor's one socket from it, and only a fresh load takes it
+    // back. A new tab's frame is made by render, on this page.
+    loadTab(t, href)
+    render()
     toast("Opened " + labelOf(t) + " from the browser")
     window.focus()
   }
@@ -927,26 +1117,49 @@ export function shellPage({ repoRoot, version = null }) {
     return ![...peers].some(([id, p]) => p.focusedAt > focusedAt || (p.focusedAt === focusedAt && id < wid))
   }
 
-  async function poll() {
+  // One poll at a time. The 2 s timer skips a tick while a poll is out, so
+  // two polls never both restore the tabs and reopen the saved windows (each
+  // window would open twice), and an older poll's list never lands after a
+  // newer one's. A poll still out after POLL_DEADLINE (a desk that hangs) is
+  // given up: the next tick starts a new one, and the old one's answers,
+  // whenever they come, are dropped by its generation.
+  const POLL_DEADLINE = 8000
+  let pollGeneration = 0, polling = null
+  function poll() {
+    if (polling && Date.now() - polling.at < POLL_DEADLINE) return polling.done
+    const generation = ++pollGeneration
+    const run = { at: Date.now() }
+    run.done = pollOnce(generation).finally(() => { if (polling === run) polling = null })
+    polling = run
+    return run.done
+  }
+  async function pollOnce(generation) {
     await identifying
+    const current = () => generation === pollGeneration
     try {
       const [h, list] = await Promise.all([
         fetch("/api/health", { cache: "no-store" }).then((r) => r.json()),
         fetch("/api/editors", { cache: "no-store" }).then((r) => r.json()),
       ])
+      if (!current()) return
       // An update restarted the desk on new files: this page is the old one.
       if (VERSION && h.version && h.version !== VERSION) { location.reload(); return }
       deskDown = false; health = h; editors = (list.editors || []).map((e) => ({ ...e, url: onLocalhost(e.url) }))
-      // The desk's names win over this origin's copy; asked until it answers.
+      // The desk's names win over this origin's copy, under any rename it has
+      // not taken yet; asked until it answers.
       if (!namesLoaded) {
         const r = await fetch("/api/names", { cache: "no-store" }).then((x) => x.json()).catch(() => null)
-        if (r && r.names && typeof r.names === "object") { takeNames(r.names); namesLoaded = true }
+        if (!current()) return
+        if (r && r.names && typeof r.names === "object") { takeDeskNames(r.names); namesLoaded = true }
       }
-      if (restoring) await restore()
+      if (pendingNames.size) sendNames()
+      if (persistence === "restoring") await restore()
+      if (!current()) return
     } catch {
+      if (!current()) return
       deskDown = true
       // No desk to compare with: a page that has its own tabs keeps saving them.
-      if (restoring && Array.isArray(saved?.tabs) && saved.tabs.length) restoring = false
+      if (persistence === "restoring" && hasTabs(saved)) setPersistence("mirroring")
     }
     applyHealth()
     applyEditors()
@@ -968,31 +1181,26 @@ export function shellPage({ repoRoot, version = null }) {
     if (home) select(home.id); else newHome()
   }
 
+  // Whether the start screen answered at the last poll: null before the
+  // first. What the desk and the start screen are doing shows on the boot
+  // sheet (bootState), over the tab that waits for them; the title bar
+  // carries no status.
+  let screenUp = null
   function applyHealth() {
     applyUpdate()
-    // What the desk and the start screen are doing shows on the boot sheet,
-    // over the tab that waits for them; the title bar carries no status.
-    const ss = health?.startScreen
-    if (deskDown) {
-      $("bootSpin").hidden = true; $("bootTitle").textContent = "Can’t connect"
-      $("bootText").hidden = false; $("bootCmd").hidden = false
-      return
-    }
-    $("bootText").hidden = true; $("bootCmd").hidden = true; $("bootSpin").hidden = false
-    if (ss?.ready && ss.url) {
+    const ss = deskDown ? null : health?.startScreen
+    const up = Boolean(ss?.ready && ss.url)
+    if (up) {
       // On localhost like this page, whatever address the desk reaches it on.
       const url = onLocalhost(ss.url)
-      if (homeUrl !== url) {
-        // The start screen came up on a different port (or for the first time): repoint Home tabs.
-        const was = homeUrl; homeUrl = url
-        if (was) for (const f of framesEl.querySelectorAll("iframe")) {
-          const t = tabs.find((x) => x.id === f.dataset.id); if (t?.kind === "home") f.src = homeUrl
-        }
-      }
-    } else {
-      // The restart reason and log path stay in the desk log; the window only says what is happening.
-      $("bootTitle").textContent = ss?.state === "backoff" ? "Restarting…" : "Starting…"
+      // The start screen came up on a different port, or came back after it
+      // (or the desk) went away: Home tabs load it again. A Home frame kept
+      // the browser's error page from the outage until it was reloaded by hand.
+      const reload = homeUrl !== null && (homeUrl !== url || screenUp === false)
+      homeUrl = url
+      if (reload) for (const t of tabs) if (t.kind === "home") loadTab(t)
     }
+    screenUp = up
   }
 
   // The tab whose frame posted a message, or nothing for a message from any
@@ -1030,13 +1238,10 @@ export function shellPage({ repoRoot, version = null }) {
     // editor's key, the next list would take it for a restart and empty it.
     const same = t.kind === "editor" && t.url === origin
     Object.assign(t, { kind: "editor", url: origin, src: origin + page, name: name.slice(0, 80), stale: false,
-      key: e ? editorKey(e) : same ? t.key : null, projectRoot: e?.projectRoot ?? (same ? t.projectRoot : null) })
+      key: e ? editorKey(e) : same ? t.key : null })
     // One editor, one tab. Its socket takes one client, so a second tab on the
     // same editor could only ever show it disconnected.
-    for (const other of tabs.filter((x) => x !== t && x.kind === "editor" && x.url === origin)) {
-      tabs.splice(tabs.indexOf(other), 1)
-      if (active === other.id) active = t.id
-    }
+    removeTabs((x) => x !== t && x.kind === "editor" && x.url === origin, { successor: t.id })
     // Other windows drop their tab on it too.
     post({ t: "claimed", url: origin })
     render()
@@ -1074,34 +1279,26 @@ export function shellPage({ repoRoot, version = null }) {
     }
     if (shown) {
       // The Home tab did its job; a second one left behind is clutter.
-      if (fromHome) tabs.splice(tabs.indexOf(t), 1)
+      if (fromHome) removeTabs((x) => x === t, { successor: shown.id })
       // A tab whose editor stopped still shows the refused connection, and a go
       // can arrive before the next editor list says the port is back. A tab not
       // on the running editor's key loads the page it was sent, once, here.
       const live = e && shown.key === editorKey(e)
-      if (!live) {
-        Object.assign(shown, { src: url, stale: false, key: e ? editorKey(e) : null })
-        const f = framesEl.querySelector('iframe[data-id="' + shown.id + '"]')
-        if (f) f.src = url
-      }
+      if (!live) loadTab(shown, url, { key: e ? editorKey(e) : null })
       select(shown.id)
       return
     }
     // The key is the next list's to fill in: the list may still hold an editor
     // that was just replaced on this port.
-    const target = { kind: "editor", url: origin, src: url, stale: false, key: null,
-      name: e ? e.name : new URL(url).host, projectRoot: e ? e.projectRoot : null }
+    const target = { kind: "editor", url: origin, key: null, name: e ? e.name : new URL(url).host }
     if (fromHome) {
       Object.assign(t, target)
-      const f = framesEl.querySelector('iframe[data-id="' + t.id + '"]')
-      if (f) f.src = url
+      loadTab(t, url)
       active = t.id
     } else {
       // From an editor, never in its own tab: its unapplied edits would go, and
       // its editor would be left with no tab. A new tab beside it.
-      const n = { id: uid(), ...target }
-      tabs.splice(tabs.indexOf(t) + 1, 0, n)
-      active = n.id
+      insertTab({ id: uid(), ...target, src: url, stale: false }, tabs.indexOf(t) + 1)
     }
     render()
   })
@@ -1126,17 +1323,12 @@ export function shellPage({ repoRoot, version = null }) {
       // socket from whoever uses it now. The active tab is left for the person
       // in it to reload, for the same reason.
       if (t.key && t.key !== key && t.id !== active) {
-        t.src = e.page ? onLocalhost(originOf(e.url) + e.page) : undefined
-        t.stale = true
-        const f = framesEl.querySelector('iframe[data-id="' + t.id + '"]')
-        if (f) f.src = "about:blank"
+        emptyTab(t, e.page ? onLocalhost(originOf(e.url) + e.page) : undefined)
       } else if (t.key && t.key !== key && was && !was.has(t.url)) {
         // The active tab's editor had stopped, so the tab shows a refused
         // connection and nobody is using it there; its editor is back, so the
         // tab loads it now rather than waiting for a reload by hand.
-        if (e.page) t.src = onLocalhost(originOf(e.url) + e.page)
-        const f = framesEl.querySelector('iframe[data-id="' + t.id + '"]')
-        if (f) f.src = tabUrl(t)
+        loadTab(t, e.page ? onLocalhost(originOf(e.url) + e.page) : undefined)
       }
       // When the window opens, an editor tab goes to the page its app was last
       // used on, from the server, over the page saved with the tab. The saved
@@ -1144,12 +1336,8 @@ export function shellPage({ repoRoot, version = null }) {
       // template shares; or a page of the app the editor ran before, saved by
       // a window that quit before its storage was written.
       const wanted = e.page ? onLocalhost(originOf(t.url) + e.page) : null
-      if (firstList && wanted && wanted !== t.src && !t.stale) {
-        t.src = wanted
-        const f = framesEl.querySelector('iframe[data-id="' + t.id + '"]')
-        if (f) f.src = tabUrl(t)
-      }
-      t.name = e.name; t.projectRoot = e.projectRoot; t.key = key
+      if (firstList && wanted && wanted !== t.src && !t.stale) loadTab(t, wanted)
+      t.name = e.name; t.key = key
       // Kept with the tab, so a tab whose editor stopped keeps its name.
       t.app = appOf(e) ?? t.app
     }
@@ -1180,7 +1368,7 @@ export function shellPage({ repoRoot, version = null }) {
   // (src/shell/way-back.ts) and ignores the rest.
   function relayToEditor(ev) {
     const t = tabs.find((x) => x.id === active)
-    const f = t && t.kind === "editor" && framesEl.querySelector('iframe[data-id="' + t.id + '"]')
+    const f = t && t.kind === "editor" && frameOf(t.id)
     const origin = f && originOf(f.src)
     if (!origin) return
     f.contentWindow.postMessage({ type: "designlayer-desk:key", key: ev.key, code: ev.code,
@@ -1194,7 +1382,7 @@ export function shellPage({ repoRoot, version = null }) {
   // the editor last reported (DESK_SHOWING_MESSAGE), so the reload stays on it.
   $("reload").onclick = () => {
     const t = tabs.find((x) => x.id === active)
-    const f = framesEl.querySelector('iframe[data-id="' + active + '"]')
+    const f = frameOf(active)
     if (!t || !f) return
     t.stale = false
     f.remove()
@@ -1236,10 +1424,10 @@ export function shellPage({ repoRoot, version = null }) {
   if (channel) {
     channel.onmessage = (ev) => {
       const m = ev.data
-      if (!m || typeof m !== "object" || m.from === (identified ? wid : probeId)) return
+      if (!m || typeof m !== "object" || m.from === (identified() ? wid : probeId)) return
       if (m.to && m.to !== wid) return
       if (m.t === "hello") {
-        if (identified) announce()
+        if (identified()) announce()
         else if (m.want === wid && String(m.from) < probeId) yielded = true
         return
       }
@@ -1247,7 +1435,7 @@ export function shellPage({ repoRoot, version = null }) {
         peers.set(m.from, { tabs: Array.isArray(m.tabs) ? m.tabs : [], title: String(m.title || ""), focusedAt: m.focusedAt || 0, geo: m.geo, seen: Date.now() })
         return
       }
-      if (!identified || gone) return
+      if (!identified() || isGone()) return
       if (m.t === "bye") {
         // A window closed while this one stays up: closed on its own, so it
         // does not come back with the app. A reload says hello again within
@@ -1255,9 +1443,9 @@ export function shellPage({ repoRoot, version = null }) {
         // nobody is left to forget anybody.
         const w = m.from
         peers.delete(w)
-        setTimeout(() => { if (!gone && !leaving && !peers.has(w)) forget(w) }, 2000)
+        setTimeout(() => { if (!isGone() && !leaving && !peers.has(w)) forget(w) }, 2000)
       } else if (m.t === "claimed" && typeof m.url === "string") dropTabsOn(m.url)
-      else if (m.t === "names") { if (takeNames(m.names)) render() }
+      else if (m.t === "names") { if (takeDeskNames(m.names)) render() }
       else if (m.t === "reveal" && typeof m.url === "string") reveal(m.url)
       else if (m.t === "hover") hovered(m)
       else if (m.t === "adopt") adoptTab(m)
@@ -1269,12 +1457,7 @@ export function shellPage({ repoRoot, version = null }) {
   // Another window's frame took this editor's socket: the tab here would only
   // show it disconnected.
   function dropTabsOn(url) {
-    const doomed = tabs.filter((x) => x.kind === "editor" && x.url === url)
-    if (!doomed.length) return
-    for (const x of doomed) tabs.splice(tabs.indexOf(x), 1)
-    if (!tabs.length) tabs.push({ id: uid(), kind: "home" })
-    if (!tabs.some((x) => x.id === active)) active = tabs[0].id
-    render()
+    if (removeTabs((x) => x.kind === "editor" && x.url === url).length) render()
   }
 
   // Another window was asked for an editor this window shows.
@@ -1283,19 +1466,15 @@ export function shellPage({ repoRoot, version = null }) {
     const t = origin && tabs.find((x) => x.kind === "editor" && x.url === origin)
     if (!t) return
     const e = editors.find((x) => x.url === origin)
-    if (!(e && t.key === editorKey(e))) {
-      Object.assign(t, { src: onLocalhost(href), stale: false, key: e ? editorKey(e) : null })
-      const f = framesEl.querySelector('iframe[data-id="' + t.id + '"]')
-      if (f) f.src = t.src
-    }
+    if (!(e && t.key === editorKey(e))) loadTab(t, onLocalhost(href), { key: e ? editorKey(e) : null })
     select(t.id)
     window.focus()
   }
 
-  // The fields a tab carries to another window. Its frame cannot go with it:
-  // a frame moved to another document loads again, so the other window loads
-  // the page the editor last reported.
-  const carry = (t) => ({ id: t.id, kind: t.kind, url: t.url, src: t.src, name: t.name, key: t.key, projectRoot: t.projectRoot, app: t.app })
+  // A tab carries its saved fields (TAB_FIELDS) to another window. Its frame
+  // cannot go with it: a frame moved to another document loads again, so the
+  // other window loads the page the editor last reported. cleanTab checks
+  // each of those fields as it comes in.
   function cleanTab(x) {
     if (!x || typeof x !== "object" || typeof x.id !== "string" || (x.kind !== "home" && x.kind !== "editor")) return null
     const str = (v) => (typeof v === "string" ? v : undefined)
@@ -1304,7 +1483,7 @@ export function shellPage({ repoRoot, version = null }) {
       const origin = localOrigin(x.url)
       if (!origin) return null
       const src = str(x.src) && localOrigin(x.src) === origin ? onLocalhost(x.src) : undefined
-      Object.assign(t, { url: origin, src, name: str(x.name)?.slice(0, 80), key: str(x.key) ?? null, projectRoot: str(x.projectRoot) ?? null, app: str(x.app) ?? null })
+      Object.assign(t, { url: origin, src, name: str(x.name)?.slice(0, 80), key: str(x.key) ?? null, app: str(x.app) ?? null })
     }
     return t
   }
@@ -1352,11 +1531,8 @@ export function shellPage({ repoRoot, version = null }) {
     clearTimeout(hovered.t)
     const index = typeof m.x === "number" ? indexAt(m.x) : tabs.length
     incoming = null
-    // One editor, one tab.
-    if (t.kind === "editor") for (const x of tabs.filter((x) => x.kind === "editor" && x.url === t.url)) tabs.splice(tabs.indexOf(x), 1)
-    if (tabs.some((x) => x.id === t.id)) t.id = uid()
-    tabs.splice(Math.min(index, tabs.length), 0, t)
-    active = t.id
+    // One editor, one tab: insertTab drops this window's own tab on it.
+    insertTab(t, index)
     post({ t: "adopted", to: m.from, req: m.req })
     render()
     window.focus()
@@ -1374,22 +1550,17 @@ export function shellPage({ repoRoot, version = null }) {
       const req = uid()
       const timer = setTimeout(() => { movesWaiting.delete(req); toast("That window did not answer"); render(); resolve(false) }, 1500)
       movesWaiting.set(req, () => { clearTimeout(timer); movesWaiting.delete(req); takeOut(id); resolve(true) })
-      post({ t: "adopt", to, req, x, tab: carry(t) })
+      post({ t: "adopt", to, req, x, tab: pick(t) })
     })
   }
 
   // A tab that left for another window. A window left with no tabs closes.
   function takeOut(id) {
-    const i = tabs.findIndex((x) => x.id === id)
-    if (i < 0) return
-    tabs.splice(i, 1)
-    framesEl.querySelector('iframe[data-id="' + id + '"]')?.remove()
-    if (!tabs.length) return closeWindow()
-    if (active === id) active = (tabs[i] || tabs[i - 1]).id
-    render()
+    const out = removeTabs((x) => x.id === id, { whenEmpty: "closeWindow" })
+    if (out.length && tabs.length) render()
   }
   function closeWindow() {
-    gone = true
+    setPersistence("closing")
     post({ t: "bye" })
     for (const f of framesEl.querySelectorAll("iframe")) f.remove()
     // The desk hears first: a request sent as the window closes is dropped.
@@ -1402,7 +1573,7 @@ export function shellPage({ repoRoot, version = null }) {
       // waits, and never runs once the page is going away.
       setTimeout(() => {
         if (window.closed || leaving) return
-        gone = false; mirrored = null
+        setPersistence("mirroring"); mirrored = null
         tabs = [{ id: uid(), kind: "home" }]; active = tabs[0].id
         render()
       }, 2000)
@@ -1417,7 +1588,7 @@ export function shellPage({ repoRoot, version = null }) {
     const t = tabs.find((x) => x.id === id)
     if (!t || tabs.length < 2) return
     const w = "w" + uid()
-    const state = { tabs: [carry(t)], active: t.id, savedAt: Date.now() }
+    const state = { tabs: [pick(t)], active: t.id, savedAt: Date.now() }
     localStorage.setItem(keyOf(w), JSON.stringify(state))
     fetch("/api/tabs", { method: "PUT", body: JSON.stringify({ ...state, window: w }), keepalive: true }).catch(() => {})
     const left = Math.round(at ? at.left : screenX + 40), top = Math.round(at ? at.top : screenY + 40)
@@ -1719,7 +1890,7 @@ export function shellPage({ repoRoot, version = null }) {
   poll().then(() => {
     if (!("EventSource" in window)) return
     const kind = matchMedia("(display-mode: browser)").matches ? "tab" : "app"
-    new EventSource("/api/events?window=" + kind).addEventListener("open-url", (ev) => {
+    new EventSource("/api/events?client=" + kind).addEventListener("open-url", (ev) => {
       try { const url = JSON.parse(ev.data).url; if (opensHere(url)) openUrl(url) } catch {}
     })
   })

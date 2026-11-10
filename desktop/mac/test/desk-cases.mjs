@@ -44,7 +44,7 @@ const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "desk-cases-"))
 const realHome = os.homedir()
 process.env.HOME = tempHome
 
-const { createDeskServer, createHandoff, manifest } = await import("../desk-server.mjs")
+const { createDeskServer, createOpenQueue, manifest } = await import("../desk-server.mjs")
 const { GLYPHS, isDeskTitle } = await import("../shell-page.mjs")
 const { APP_FEATURES, findMacChrome, profileChromeCommand } = await import("../chrome-pipe.mjs")
 const { buildPlist, LABEL, plistPath } = await import("../launch-agent.mjs")
@@ -304,14 +304,16 @@ await check("editors: live entries are normalized, dead ones swept", async () =>
   const res = await request(port, { pathname: "/api/editors" })
   assert.equal(res.status, 200)
   assert.deepEqual(
-    res.json.editors.map(({ name, url, projectRoot, pid, alive }) => ({ name, url, projectRoot, pid, alive })),
+    res.json.editors.map(({ name, url, projectRoot, pid }) => ({ name, url, projectRoot, pid })),
     [
       // On localhost, the host name editors are opened on, whichever spelling
       // the registry entry used.
-      { name: "demo-app", url: "http://localhost:4100", projectRoot: "/tmp/demo-app", pid: process.pid, alive: true },
-      { name: "no-name", url: "http://localhost:4200", projectRoot: "/tmp/no-name", pid: process.pid, alive: true },
+      { name: "demo-app", url: "http://localhost:4100", projectRoot: "/tmp/demo-app", pid: process.pid },
+      { name: "no-name", url: "http://localhost:4200", projectRoot: "/tmp/no-name", pid: process.pid },
     ]
   )
+  // Nothing reads them: every entry the registry returns is alive.
+  assert.ok(res.json.editors.every((e) => !("alive" in e) && !("startedAt" in e)), "the list carries fields nobody reads")
   assert.equal(fs.existsSync(path.join(dir, "4300.json")), false, "dead entry should be swept")
 })
 
@@ -323,6 +325,13 @@ await check("pick-folder refuses GET without opening a dialog", async () => {
 
 await check("pick-folder POST from a foreign Origin is refused before the dialog", async () => {
   const res = await request(port, { method: "POST", pathname: "/api/pick-folder", headers: { origin: "https://evil.example" } })
+  assert.equal(res.status, 403)
+  assert.equal(pickerCalls, 0)
+})
+
+await check("pick-folder POST from an editor origin is refused before the dialog", async () => {
+  // Any loopback page could raise a native dialog with a preflight-free POST.
+  const res = await request(port, { method: "POST", pathname: "/api/pick-folder", headers: { origin: "http://localhost:3466" } })
   assert.equal(res.status, 403)
   assert.equal(pickerCalls, 0)
 })
@@ -494,11 +503,11 @@ await check("with no window up, the page is held, the app is raised, and the fir
   assert.equal(res.json.url, "http://localhost:3466/studio?tab=agents")
   // The window is on localhost, the site of the editors it frames.
   assert.deepEqual(activations, [{ deskUrl: `http://localhost:${port}`, listening: 0 }])
-  const first = await stream(port, "?window=app")
+  const first = await stream(port, "?client=app")
   await until(() => first.events.length === 1)
   assert.equal(first.events[0].event, "open-url")
   assert.equal(first.events[0].data.url, "http://localhost:3466/studio?tab=agents")
-  const second = await stream(port, "?window=app")
+  const second = await stream(port, "?client=app")
   await sleep(50)
   assert.equal(second.events.length, 0, "a held page was handed out twice")
   first.close()
@@ -507,7 +516,7 @@ await check("with no window up, the page is held, the app is raised, and the fir
 })
 
 await check("a window that is up gets the page at once, and activate:false raises nothing", async () => {
-  const window = await stream(port, "?window=app")
+  const window = await stream(port, "?client=app")
   const before = activations.length
   const quiet = await post({ url: `${EDITOR}/studio`, activate: false })
   assert.equal(quiet.json.delivered, 1)
@@ -523,8 +532,8 @@ await check("a window that is up gets the page at once, and activate:false raise
 })
 
 await check("the app's windows take a page ahead of a desk page open in a browser tab", async () => {
-  const tab = await stream(port, "?window=tab")
-  const app = await stream(port, "?window=app")
+  const tab = await stream(port, "?client=tab")
+  const app = await stream(port, "?client=app")
   assert.equal((await health()).app.windows, 2)
   const res = await post({ url: `${EDITOR}/`, activate: false })
   assert.equal(res.json.delivered, 1)
@@ -539,8 +548,23 @@ await check("the app's windows take a page ahead of a desk page open in a browse
   tab.close()
 })
 
+// The query key was `?window=`, which on every other route names a window id.
+// A page served before the rename still says it, until the version reload.
+await check("a window that still says ?window=app is taken for an app window", async () => {
+  const tab = await stream(port, "?client=tab")
+  const old = await stream(port, "?window=app")
+  const res = await post({ url: `${EDITOR}/`, activate: false })
+  assert.equal(res.json.delivered, 1)
+  await until(() => old.events.length === 1)
+  await sleep(50)
+  assert.equal(tab.events.length, 0, "the old app window was taken for a browser tab")
+  old.close()
+  tab.close()
+  await until(async () => (await health()).app.windows === 0)
+})
+
 await check("a held page expires instead of ambushing a later launch", async () => {
-  const handoff = createHandoff({ maxAgeMs: 30 })
+  const handoff = createOpenQueue({ maxAgeMs: 30 })
   handoff.request("http://127.0.0.1:3466/old")
   await sleep(60)
   handoff.request("http://127.0.0.1:3466/new")
@@ -552,8 +576,8 @@ await check("a held page expires instead of ambushing a later launch", async () 
   off()
 })
 
-// The start screen runs an editor per app; `editing` names only the latest.
-await check("health lists every editor the start screen runs, and keeps editing", async () => {
+// The start screen runs an editor per app; the installer saves them for resume.
+await check("health lists every editor the start screen runs", async () => {
   const running = [
     { id: "a", state: "ready", name: "shop", appUrl: "http://localhost:5173", appPort: 5173, projectRoot: "/p/shop", packageName: "web", url: "http://localhost:3456/cart" },
     { id: "b", state: "starting", name: "docs", appUrl: "http://localhost:5174", appPort: 5174, projectRoot: "/p/docs", packageName: "web", url: null },
@@ -574,7 +598,11 @@ await check("health lists every editor the start screen runs, and keeps editing"
     const res = await request(supervised.port, { pathname: "/api/health" })
     assert.equal(res.json.startScreen.ready, true)
     assert.deepEqual(res.json.startScreen.editors, running)
-    assert.equal(res.json.startScreen.editing, null, "the most recent choice is still starting")
+    // Someone else's start screen: answering, and not the desk's to restart.
+    assert.equal(res.json.startScreen.state, "external")
+    assert.equal(res.json.startScreen.owned, false)
+    assert.equal(res.json.startScreen.pid, null)
+    assert.equal("editing" in res.json.startScreen, false, "health still carries the one-editor field nobody reads")
   } finally {
     await supervised.close()
     await new Promise((resolve) => screen.close(resolve))
@@ -604,22 +632,175 @@ await check("health relays the start screen's update status, and the commit the 
   }
 })
 
+console.log("start screen supervisor")
+
+/** A port nothing listens on, for a start screen the desk will start. */
+async function freePort() {
+  const probe = http.createServer()
+  await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve))
+  const { port: free } = probe.address()
+  await new Promise((resolve) => probe.close(resolve))
+  return free
+}
+
+/**
+ * A checkout whose cli.mjs stands in for the start screen the desk starts: it
+ * binds the port it is given, says so on stdout as cli.mjs does, answers
+ * /api/status with `editors`, writes its pid to `started`, and exits after
+ * `life` ms.
+ */
+function fakeCheckout({ editors = [], life = 1e9 } = {}) {
+  const repo = fs.mkdtempSync(path.join(tempHome, "checkout-"))
+  const started = path.join(repo, "started")
+  fs.writeFileSync(
+    path.join(repo, "cli.mjs"),
+    `import http from "node:http"
+import fs from "node:fs"
+const port = Number(process.argv[process.argv.indexOf("--start-screen-port") + 1])
+fs.appendFileSync(${JSON.stringify(started)}, process.pid + "\\n")
+const server = http.createServer((req, res) => {
+  res.setHeader("content-type", "application/json")
+  if (req.url === "/api/update") return res.end(JSON.stringify({ state: "off" }))
+  res.end(JSON.stringify({ ready: false, url: null, editors: ${JSON.stringify(editors)} }))
+})
+server.listen(port, "127.0.0.1", () => console.log("[designlayer] open http://127.0.0.1:" + port + " to choose an app"))
+setTimeout(() => process.exit(3), ${life})
+`
+  )
+  const pids = () => (fs.existsSync(started) ? fs.readFileSync(started, "utf8").trim().split("\n").filter(Boolean).map(Number) : [])
+  return { repo, pids }
+}
+const isAlive = (pid) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+const screenOf = async (deskPort) => (await request(deskPort, { pathname: "/api/health" })).json.startScreen
+
+await check("the desk starts a start screen, calls it its own, and starts it again with a wait when it stops", async () => {
+  const checkout = fakeCheckout({ life: 700 })
+  const logDir = path.join(tempHome, "supervisor-logs")
+  const supervised = await createDeskServer({ port: 0, repoRoot: checkout.repo, startScreenPort: await freePort(), logDir, stateDir: path.join(tempHome, "sup-state"), log: () => {} })
+  try {
+    await until(async () => (await screenOf(supervised.port)).state === "running", 5000)
+    const running = await screenOf(supervised.port)
+    assert.equal(running.ready, true)
+    assert.equal(running.owned, true)
+    assert.equal(running.pid, checkout.pids()[0])
+    assert.match(running.url, /^http:\/\/127\.0\.0\.1:\d+$/)
+    // It exits after 700 ms: the desk waits a second before it starts another.
+    await until(async () => (await screenOf(supervised.port)).state === "backoff", 5000)
+    const waiting = await screenOf(supervised.port)
+    // Nothing answers and nothing is running: no field may say otherwise.
+    assert.deepEqual([waiting.ready, waiting.owned, waiting.pid, waiting.url, waiting.restarts], [false, false, null, null, 1])
+    assert.ok(waiting.detail.includes(path.join(logDir, "start-screen.log")), `the restart names another log: ${waiting.detail}`)
+    await until(async () => (await screenOf(supervised.port)).state === "running", 5000)
+    assert.equal(checkout.pids().length, 2)
+  } finally {
+    await supervised.close()
+  }
+  await until(() => checkout.pids().every((pid) => !isAlive(pid)), 3000)
+})
+
+// A desk stopped while its first probe was out spawned a start screen once
+// the probe came back, and nothing ever stopped that one.
+await check("a desk stopped while it asks for the start screen starts none", async () => {
+  const checkout = fakeCheckout()
+  const supervised = await createDeskServer({ port: 0, repoRoot: checkout.repo, startScreenPort: await freePort(), logDir: path.join(tempHome, "supervisor-logs"), stateDir: path.join(tempHome, "sup-state"), log: () => {} })
+  await supervised.close()
+  await sleep(500)
+  const leaked = checkout.pids()
+  for (const pid of leaked) if (isAlive(pid)) process.kill(pid, "SIGKILL")
+  assert.deepEqual(leaked, [], "a start screen was started after the desk stopped")
+})
+
+console.log("installer restarts")
+
+/*
+ * The start screen the desk started, and every editor it started, stop with
+ * the desk. Only an update saved them for the restart; re-running the
+ * installer, --start and --stop dropped every open editor.
+ */
+await check("the installer saves the open editors before it stops or restarts the desk, and only the desk's own", async () => {
+  const { deskAgent, resumableEditors } = await import("../agent.mjs")
+  const editors = [
+    { id: "a", state: "ready", name: "shop", appUrl: "http://localhost:5173", appPort: 5173, projectRoot: "/p/shop", packageName: "web", url: "http://localhost:3456/cart" },
+    { id: "b", state: "starting", name: "docs", appUrl: "http://localhost:5174", appPort: 5174, projectRoot: "/p/docs", packageName: "web", url: null },
+  ]
+  const checkout = fakeCheckout({ editors })
+  const supervised = await createDeskServer({ port: 0, repoRoot: checkout.repo, startScreenPort: await freePort(), logDir: path.join(tempHome, "supervisor-logs"), stateDir: path.join(tempHome, "sup-state"), log: () => {} })
+  try {
+    await until(async () => (await screenOf(supervised.port)).state === "running", 5000)
+    const resume = path.join(tempHome, "resume", "resume.json")
+    for (const action of ["stop", "restart", "reload"]) {
+      fs.rmSync(resume, { force: true })
+      const calls = []
+      // launchctl is never run: each call is recorded with whether the editors were saved by then.
+      const agent = deskAgent({
+        domain: "gui/0",
+        label: "dev.designlayer.desk-cases",
+        plistFile: path.join(tempHome, "no.plist"),
+        deskApi: `http://127.0.0.1:${supervised.port}/`,
+        resumeFile: resume,
+        run: (cmd, argv) => {
+          calls.push({ cmd, argv, saved: fs.existsSync(resume) })
+          return { ok: argv[0] !== "print", out: "" }
+        },
+        sleep: () => {},
+      })
+      await agent.restartAgent({ action, save: true })
+      const writes = calls.filter((c) => c.argv[0] !== "print")
+      assert.ok(writes.length > 0, `${action} ran no launchctl`)
+      assert.ok(writes.every((c) => c.cmd === "/bin/launchctl" && c.saved), `${action} stopped the desk before it saved the editors`)
+      const saved = JSON.parse(fs.readFileSync(resume, "utf8"))
+      assert.deepEqual(saved.editors, [
+        { url: "http://localhost:5173", projectRoot: "/p/shop", devScript: null },
+        { url: "http://localhost:5174", projectRoot: "/p/docs", devScript: null },
+      ])
+    }
+    fs.rmSync(resume, { force: true })
+    const quiet = deskAgent({ domain: "gui/0", label: "x", plistFile: "/x", deskApi: `http://127.0.0.1:${supervised.port}/`, resumeFile: resume, run: () => ({ ok: true, out: "" }) })
+    await quiet.restartAgent({ action: "stop", save: false })
+    assert.equal(fs.existsSync(resume), false, "an uninstall saved editors nothing will reopen")
+  } finally {
+    await supervised.close()
+  }
+  // A start screen the desk did not start keeps running, and so do its editors.
+  assert.deepEqual(resumableEditors({ startScreen: { owned: false, editors } }), [])
+  assert.deepEqual(resumableEditors(null), [])
+  // Every launchctl write in the installer goes through restartAgent.
+  const installer = fs.readFileSync(path.join(MAC, "install.mjs"), "utf8")
+  assert.doesNotMatch(installer, /"\/bin\/launchctl"/, "install.mjs runs launchctl itself")
+})
+
 await desk.close()
 
 console.log("title bar")
 
-/** A desk whose app's Chrome runs with `command`, counting the restarts it asks for. */
+/**
+ * A desk whose app's Chrome runs with `command` (change it with `setCommand`),
+ * counting the restarts it asks for. Each restart waits until the case calls
+ * `finish(ok)`, as quitting and reopening Chrome takes seconds.
+ */
 async function deskWithApp(command) {
   const lines = []
   const counts = { relaunches: 0 }
+  let current = command
+  let finish = null
   const server = await createDeskServer({
     port: 0,
     supervise: false,
     logDir: path.join(tempHome, "logs"),
     log: (line) => lines.push(line),
-    appChromeCommand: () => command,
+    appChromeCommand: () => current,
     relaunch: () => {
       counts.relaunches += 1
+      return new Promise((resolve) => {
+        finish = resolve
+      })
     },
   })
   const connect = async (query) => {
@@ -627,40 +808,91 @@ async function deskWithApp(command) {
     await sleep(30)
     s.close()
   }
-  return { server, lines, counts, connect }
+  return {
+    server,
+    lines,
+    counts,
+    connect,
+    setCommand: (next) => (current = next),
+    finish: async (ok) => {
+      finish(ok)
+      await sleep(10)
+    },
+  }
 }
 
-await check("an app opened from the Dock is restarted once with the title-bar features", async () => {
+/*
+ * Every window of one Dock launch connects within milliseconds: the main
+ * window reopens the others. The desk used to read the second of them as "the
+ * app came back without the features" and gave up for good, so a multi-window
+ * session opened from the Dock kept Chrome's toggle until the desk restarted.
+ * Only a window that connects after the restart is done can say that.
+ */
+await check("an app opened from the Dock is restarted once with the title-bar features, whatever its windows do meanwhile", async () => {
   // No toggle for the overlay, and Extensions folded into the ⋮ menu.
   assert.match(APP_FEATURES, /^--enable-features=\S*DesktopPWAsWindowControlsOverlayWithNoToggle/)
   assert.match(APP_FEATURES, /DesktopPWAsElidedExtensionsMenu/)
   const chrome = "/Applications/Chromium.app/Contents/MacOS/Chromium --user-data-dir=/p --no-startup-window"
   const dock = await deskWithApp(chrome)
   try {
-    await dock.connect("?window=tab")
+    await dock.connect("?client=tab")
     assert.equal(dock.counts.relaunches, 0, "a desk page in a browser tab restarted the app")
-    await dock.connect("?window=app")
+    await dock.connect("?client=app")
     assert.equal(dock.counts.relaunches, 1, "the app was not restarted")
-    // Back without them: Chrome stopped passing them on, and a second restart would only blink the window.
-    await dock.connect("?window=app")
-    assert.equal(dock.counts.relaunches, 1, "the app was restarted a second time")
+    // The other windows of the same launch, while the restart is under way.
+    await dock.connect("?client=app")
+    await dock.connect("?client=app")
+    assert.equal(dock.counts.relaunches, 1, "a window of the launch being restarted restarted it again")
+    assert.ok(!dock.lines.some((line) => line.includes("leaving it as it is")), "a second window of one launch read as a failed restart")
+    // The restart worked: the app is back with the features, and stays as it is.
+    await dock.finish(true)
+    dock.setCommand(`${chrome} ${APP_FEATURES}`)
+    await dock.connect("?client=app")
+    assert.equal(dock.counts.relaunches, 1)
+    // A later Dock launch is restarted again.
+    dock.setCommand(chrome)
+    await dock.connect("?client=app")
+    assert.equal(dock.counts.relaunches, 2, "a later Dock launch was not restarted")
+    // Back without them from that restart: Chrome stopped passing them on, and
+    // another restart would only blink the window.
+    await dock.finish(true)
+    await dock.connect("?client=app")
+    assert.equal(dock.counts.relaunches, 2, "the app was restarted a second time in a row")
     assert.ok(dock.lines.some((line) => line.includes("leaving it as it is")), dock.lines.join("\n"))
+    await dock.connect("?client=app")
+    assert.equal(dock.counts.relaunches, 2)
   } finally {
     await dock.server.close()
   }
   const flagged = await deskWithApp(`${chrome} ${APP_FEATURES}`)
   try {
-    await flagged.connect("?window=app")
+    await flagged.connect("?client=app")
     assert.equal(flagged.counts.relaunches, 0, "an app already running with the features was restarted")
   } finally {
     await flagged.server.close()
   }
   const closed = await deskWithApp(null)
   try {
-    await closed.connect("?window=app")
+    await closed.connect("?client=app")
     assert.equal(closed.counts.relaunches, 0, "the desk restarted an app that is not running")
   } finally {
     await closed.server.close()
+  }
+})
+
+// A restart whose Chrome would not quit restarted nothing, and the desk used
+// to count it as done: the next window gave up for good.
+await check("a restart that could not quit the app's Chrome is tried again by the next window", async () => {
+  const dock = await deskWithApp("/Applications/Chromium.app/Contents/MacOS/Chromium --user-data-dir=/p")
+  try {
+    await dock.connect("?client=app")
+    await dock.finish(false)
+    await dock.connect("?client=app")
+    assert.equal(dock.counts.relaunches, 2)
+    assert.ok(!dock.lines.some((line) => line.includes("leaving it as it is")), dock.lines.join("\n"))
+  } finally {
+    await dock.finish(true)
+    await dock.server.close()
   }
 })
 
@@ -705,7 +937,7 @@ await check("a handed-over page opens in a named frame, and the next one for tha
     const doc = dom.window.document
     await sleep(30)
     assert.equal(streams.length, 1)
-    assert.equal(streams[0].url, "/api/events?window=app")
+    assert.equal(streams[0].url, "/api/events?client=app")
     assert.equal(doc.querySelectorAll(".tab").length, 1, "the running editor had a tab before it was handed over")
     const hand = (url) => streams[0].listeners["open-url"]({ data: JSON.stringify({ id: 1, url }) })
 
@@ -922,9 +1154,13 @@ await check("a tab is named by the app its frame says it shows", async () => {
  * polls when a case calls poll(), not on its 2 s timer. `remote` is the copy
  * of the tabs the desk keeps (GET /api/tabs), and `puts` what the page saved
  * there. `url` is the desk page's own address: localhost since the window
- * moved there, 127.0.0.1 for a window installed before.
+ * moved there, 127.0.0.1 for a window installed before. `slow` delays every
+ * health, list and saved-tabs answer by that many ms; `putStatus` is the HTTP status the
+ * desk answers a PUT of the tabs with; `routes(url, init)` answers any other
+ * request first, when it returns something. `gets` counts the page's asks
+ * for its own window's tabs.
  */
-async function multiDesk({ tabs, active, lists, remote, url: pageUrl = "http://127.0.0.1:3454/", setup, version = null, health = () => ({}) }) {
+async function multiDesk({ tabs, active, lists, remote, url: pageUrl = "http://127.0.0.1:3454/", setup, version = null, health = () => ({}), slow = 0, putStatus = 200, routes }) {
   const { JSDOM, VirtualConsole } = await import("jsdom")
   const { shellPage } = await import("../shell-page.mjs")
   // jsdom cannot navigate, and says so: each reload the page asks for lands here.
@@ -938,6 +1174,7 @@ async function multiDesk({ tabs, active, lists, remote, url: pageUrl = "http://1
   let poller = null
   const streams = []
   const puts = []
+  const gets = { tabs: 0 }
   const dom = new JSDOM(shellPage({ repoRoot: "/r", version }), {
     url: pageUrl,
     runScripts: "dangerously",
@@ -946,19 +1183,24 @@ async function multiDesk({ tabs, active, lists, remote, url: pageUrl = "http://1
       if (tabs) window.localStorage.setItem("designlayer.desk.tabs.v1", JSON.stringify({ tabs, active }))
       setup?.(window)
       window.fetch = async (url, init) => {
+        const routed = routes?.(String(url), init)
+        if (routed !== undefined) return routed
         const list = lists[Math.min(polls, lists.length - 1)]
         if (String(url).includes("/api/tabs")) {
           if (init?.method === "PUT") {
             puts.push(JSON.parse(init.body))
-            return { json: async () => ({}) }
+            return { ok: putStatus < 400, status: putStatus, json: async () => ({}) }
           }
           if (list === null) throw new Error("connection refused")
+          if (String(url).includes("?window=")) gets.tabs += 1
+          if (slow) await new Promise((resolve) => setTimeout(resolve, slow))
           return { json: async () => remote ?? {} }
         }
         // The page asks for health and then the list in one turn: one poll.
         if (String(url).includes("/api/editors")) polls += 1
         if (list === null) throw new Error("connection refused")
         if (list === "hang") return new Promise(() => {})
+        if (slow) await new Promise((resolve) => setTimeout(resolve, slow))
         return {
           json: async () =>
             String(url).includes("/api/editors")
@@ -993,6 +1235,7 @@ async function multiDesk({ tabs, active, lists, remote, url: pageUrl = "http://1
     selected: () => doc.querySelector('.tab[aria-selected="true"] .label').textContent,
     saved: () => JSON.parse(win.localStorage.getItem("designlayer.desk.tabs.v1")),
     puts,
+    gets,
     booting: () => !doc.getElementById("boot").hidden,
     async poll() {
       poller()
@@ -1330,6 +1573,152 @@ await check("the tab in front loads its editor when that editor comes back, once
     assert.equal(d.frame("b").src.startsWith("http://localhost:4102"), true)
   } finally {
     d.close()
+  }
+})
+
+/*
+ * The poll had no guard: a tick that came while one poll still waited on the
+ * desk (health waits on the start screen, restore on the tabs) ran a second
+ * one beside it. Both restored, and in the app's first window both reopened
+ * every saved window, so each came back twice.
+ */
+await check("a poll that comes while one is out waits for it: the tabs are restored once", async () => {
+  const d = await multiDesk({
+    tabs: [tabOn("a", SHOP)],
+    active: "a",
+    lists: [[SHOP]],
+    remote: { tabs: [tabOn("a", SHOP), tabOn("b", DOCS)], active: "b", savedAt: Date.now() + 60_000 },
+    url: "http://localhost:3454/",
+    slow: 120,
+  })
+  try {
+    // The first poll is still waiting on the desk.
+    await d.poll()
+    await d.poll()
+    // Every poll out has answered before the window closes.
+    await until(() => d.labels().length === 2, 3000)
+    await sleep(400)
+    assert.equal(d.gets.tabs, 1, `the window asked for its saved tabs ${d.gets.tabs} times`)
+    assert.deepEqual(d.labels(), ["shop", "docs"])
+  } finally {
+    d.close()
+  }
+})
+
+// A desk that did not hear a save (a 5xx) is sent it again; one that refused
+// it for good (a 4xx: more than 100 tabs, or too large) is not asked again.
+await check("a save the desk did not take is sent again on the next poll, and one it refused is not", async () => {
+  for (const [status, again] of [[503, true], [400, false]]) {
+    const d = await multiDesk({ tabs: [tabOn("a", SHOP)], active: "a", lists: [[SHOP]], url: "http://localhost:3454/", putStatus: status })
+    try {
+      const before = d.puts.length
+      assert.ok(before >= 1, "the window saved nothing")
+      await d.poll()
+      await d.poll()
+      assert.equal(d.puts.length > before, again, `after a ${status} the save was ${again ? "not " : ""}sent again`)
+    } finally {
+      d.close()
+    }
+  }
+})
+
+// The close button and the menu's Close tab are not there for a window's only
+// tab; ⌘W used to close it anyway and put a fresh Home tab in its place.
+await check("⌘W on a window's only tab leaves it, as its missing close button does", async () => {
+  const d = await multiDesk({ tabs: [tabOn("a", SHOP, { src: "http://localhost:4101/cart" })], active: "a", lists: [[SHOP]], url: "http://localhost:3454/" })
+  try {
+    const frame = d.frame("a")
+    assert.equal(d.doc.querySelector(".tab .close"), null)
+    d.press({ key: "w" })
+    assert.deepEqual(d.labels(), ["shop"])
+    assert.equal(d.frame("a"), frame, "the editor's frame was dropped")
+  } finally {
+    d.close()
+  }
+})
+
+/*
+ * A start screen that stopped and came back on the same port left the Home
+ * tab on the browser's error page from the outage, until it was reloaded by
+ * hand. So did a desk that went away and came back.
+ */
+await check("a Home tab loads the start screen again once it is back", async () => {
+  let up = true
+  const d = await multiDesk({
+    tabs: [{ id: "h1", kind: "home" }],
+    active: "h1",
+    lists: [[]],
+    url: "http://localhost:3454/",
+    health: () => ({ startScreen: up ? {} : { ready: false, url: null, state: "backoff" } }),
+  })
+  try {
+    const loads = []
+    const proto = d.win.HTMLIFrameElement.prototype
+    const src = Object.getOwnPropertyDescriptor(proto, "src")
+    Object.defineProperty(d.frame("h1"), "src", { configurable: true, get: src.get, set(value) { loads.push(value); src.set.call(this, value) } })
+    await d.poll()
+    assert.deepEqual(loads, [], "Home loaded again with nothing changed")
+    up = false
+    await d.poll()
+    assert.deepEqual(loads, [], "Home loaded while the start screen was down")
+    assert.equal(d.booting(), false, "a Home tab that had loaded was covered")
+    up = true
+    await d.poll()
+    assert.deepEqual(loads, ["http://localhost:3455"])
+    await d.poll()
+    assert.equal(loads.length, 1, "Home loaded twice")
+  } finally {
+    d.close()
+  }
+})
+
+// A rename made while the desk was down was broadcast and kept in this
+// origin's storage, but the next load took the desk's older names over it.
+await check("a rename the desk did not hear survives a reload and reaches the desk once it answers", async () => {
+  const deskNames = {}
+  let deskUp = false
+  const routes = (url, init) => {
+    if (!url.includes("/api/names")) return undefined
+    if (!deskUp) return Promise.reject(new Error("connection refused"))
+    if (init?.method === "PUT") {
+      const body = JSON.parse(init.body)
+      if (body.name) deskNames[body.app] = body.name
+      else delete deskNames[body.app]
+    }
+    return { ok: true, status: 200, json: async () => ({ names: { ...deskNames } }) }
+  }
+  const first = await multiDesk({ tabs: [tabOn("a", SHOP)], active: "a", lists: [[SHOP]], url: "http://localhost:3454/", routes })
+  let storage
+  try {
+    first.doc.querySelector('.tab[data-id="a"]').dispatchEvent(new first.win.MouseEvent("dblclick", { bubbles: true }))
+    const input = first.doc.querySelector("input.rename")
+    assert.ok(input, "double-click opened no name field")
+    input.value = "Storefront"
+    input.dispatchEvent(new first.win.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }))
+    await sleep(20)
+    assert.deepEqual(first.labels(), ["Storefront"])
+    assert.deepEqual(deskNames, {}, "a desk that is down took the name")
+    const store = first.win.localStorage
+    storage = Object.fromEntries(Array.from({ length: store.length }, (_, i) => [store.key(i), store.getItem(store.key(i))]))
+  } finally {
+    first.close()
+  }
+  deskUp = true
+  const again = await multiDesk({
+    lists: [[SHOP]],
+    url: "http://localhost:3454/",
+    routes,
+    setup: (window) => {
+      for (const [k, v] of Object.entries(storage)) window.localStorage.setItem(k, v)
+    },
+  })
+  try {
+    await again.poll()
+    assert.deepEqual(again.labels(), ["Storefront"], "the desk's older names replaced the rename")
+    assert.deepEqual(deskNames, { [SHOP.url]: "Storefront" }, "the rename never reached the desk")
+    assert.equal(again.win.localStorage.getItem("designlayer.desk.tabs.v1.names.pending"), "{}", "the rename is still waiting after the desk took it")
+  } finally {
+    again.close()
   }
 })
 

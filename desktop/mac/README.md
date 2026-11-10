@@ -11,13 +11,13 @@ A Dock app for DesignLayer that installs on macOS without compiling or signing a
 node desktop/mac/install.mjs                   # install and open the app
 node desktop/mac/install.mjs --dry-run         # print the plan, change nothing
 node desktop/mac/install.mjs --status          # LaunchAgent, health, start screen, app
-node desktop/mac/install.mjs --start | --stop  # restart / stop the desk server
+node desktop/mac/install.mjs --start | --stop  # restart / stop the desk server, keeping its editors
 node desktop/mac/install.mjs --verify-window   # relaunch the app over CDP and check what it loads (an open window is reopened after)
 node desktop/mac/install.mjs --app-window      # fallback window, see below
 node desktop/mac/install.mjs --uninstall --yes # remove the LaunchAgent, the app and its Chrome profile
 ```
 
-Running the installer again is safe. It rewrites the plist, restarts the desk, and keeps the existing app registration. An app installed from `http://127.0.0.1:3454/` (before the window moved to localhost) is a different app to Chrome: the installer removes it and installs the one from `http://localhost:3454/`, and the window's tabs come back from the desk's copy. If the app is open, the installer and `--uninstall` quit it first: they stop only the Chrome instance whose command line names the app's own profile, never your browser.
+Running the installer again is safe. It rewrites the plist, restarts the desk, and keeps the existing app registration. The start screen the desk started, and every editor it started, stop with the desk, so before the installer restarts it, it saves those editors to `~/.local/state/designlayer/resume.json`, the file an update writes (see [Updates](#updates)): the new start screen reopens them on their ports. `--start` and `--stop` save them the same way; after `--stop` they come back if the desk starts again within five minutes. A start screen the desk did not start keeps running, and so do its editors. An app installed from `http://127.0.0.1:3454/` (before the window moved to localhost) is a different app to Chrome: the installer removes it and installs the one from `http://localhost:3454/`, and the window's tabs come back from the desk's copy. If the app is open, the installer and `--uninstall` quit it first: they stop only the Chrome instance whose command line names the app's own profile, never your browser.
 
 Tests: `node desktop/mac/test/desk-cases.mjs`. Icons: `icons/app-icon.svg` is the Dock icon and `runtime/favicon.svg` the tab icon. `node desktop/mac/make-icons.mjs` renders the first to the manifest's PNGs in a headless Playwright Chromium and copies the second to `icons/mark.svg`. An installed app keeps the icon it was installed with: delete `~/Applications/Chrome Apps.localized/DesignLayer.app` and run the installer again to reinstall it with the new one.
 
@@ -51,7 +51,7 @@ The PWA is installed over Chrome's DevTools pipe (`--remote-debugging-pipe --ena
 - Shortcuts: ⌘1–9 switch tabs, ⌘T opens a new Home tab, ⌘W closes a tab. They only work when focus is on the tab strip or the desk page, because a cross-origin frame keeps its own keystrokes. Chrome can also reserve ⌘T and ⌘W for itself.
 - Title bar: the tabs always sit in the title bar (Window Controls Overlay), with no Chrome toggle to move them out, and Extensions lives in the ⋮ menu instead of beside it. That takes the app's Chrome running with `--enable-features=DesktopPWAsWindowControlsOverlayWithNoToggle,DesktopPWAsElidedExtensionsMenu`, which Chrome reads only at launch. The installer and the desk pass it whenever they open the app (`open <shim> --args …`; the shim hands `--enable-features` on to the Chrome it starts). The Dock icon passes nothing, so when the app was opened from the Dock the desk restarts it once with the flag as its window connects: the window closes and reopens with its tabs. The ⋮ menu stays: Chrome draws it for every installed app on the Mac.
 - Title-bar glyphs in `symbols/` are drawn at 20px to match the ⋮ button Chrome draws beside them.
-- The folder button opens the macOS folder picker (`osascript choose folder`) and copies the path you choose to the clipboard, so you can paste it into the start screen.
+- The folder button opens the macOS folder picker (`osascript choose folder`) and copies the path you choose to the clipboard, so you can paste it into the start screen. Only the desk page can ask for the picker (`POST /api/pick-folder`); another page on localhost is refused.
 
 ## Windows and tabs
 
@@ -75,7 +75,7 @@ The PWA is installed over Chrome's DevTools pipe (`--remote-debugging-pipe --ena
 An editor in an ordinary browser tab shows an **Open in Mac app** banner at the bottom of its left panel. Clicking it moves that page into the app:
 
 1. The editor POSTs its URL to `http://localhost:3454/api/open`. The body is JSON sent as `text/plain`, so the cross-origin request needs no preflight. The desk echoes CORS only to loopback origins and refuses anything that is not an http page on this Mac.
-2. The desk passes the URL to the app window over `GET /api/events` (server-sent events). If the window is closed, the desk holds the URL for up to 60 seconds and gives it to the first window that connects. A desk page open in an ordinary browser tab only gets a URL when no app window is open.
+2. The desk passes the URL to the app window over `GET /api/events?client=app` (server-sent events; a desk page in a browser tab says `?client=tab`). If the window is closed, the desk holds the URL for up to 60 seconds and gives it to the first window that connects. A desk page open in an ordinary browser tab only gets a URL when no app window is open.
 3. The desk runs `open` on the app shim to bring the window forward, or to launch it. With the `--app-window` fallback there is no shim, so it starts that Chrome window only when none is open.
 4. The window opens the page in the tab that already shows that editor, or in a new tab. Taking the editor's socket disconnects the browser tab.
 
@@ -93,5 +93,5 @@ The banner appears only when both of these are true:
 ## Troubleshooting
 
 - Logs: `~/Library/Logs/DesignLayer/desk.log` (desk) and `start-screen.log` (start screen and the editors it starts).
-- `launchctl print gui/$(id -u)/dev.designlayer.desk` shows the agent's state and last exit code.
+- `launchctl print gui/$(id -u)/dev.designlayer.desk` shows the agent's state and last exit code. `install.mjs --status` also prints why the start screen is not answering, and the editors it runs.
 - "A Chrome instance is using …/DesignLayer/Chrome": the app's Chrome did not quit within 10 s. Quit the DesignLayer app (⌘Q) and run the command again.
