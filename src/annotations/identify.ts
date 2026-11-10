@@ -65,7 +65,7 @@ function classNames(element: Element): string[] {
  * The hash is only stripped when it looks like one — it has a digit or a capital
  * in it — so BEM's `card__title` keeps its element name.
  */
-export function withoutModuleHash(name: string): string {
+function withoutModuleHash(name: string): string {
   const match = /^(.+?)_+([A-Za-z0-9]{5,})$/.exec(name)
   return match && /[0-9A-Z]/.test(match[2]) ? match[1] : name
 }

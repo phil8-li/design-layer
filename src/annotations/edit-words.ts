@@ -326,8 +326,19 @@ export function utilityFor(property: string, value: string): string | null {
   }
   if (!update) return null
   if (update.standalone) return update.tailwindToken ?? update.tailwindPrefix
-  if (update.tailwindToken) return `${update.tailwindPrefix}-${update.tailwindToken}`
+  if (update.tailwindToken) return withToken(update.tailwindPrefix, update.tailwindToken)
   return `${update.tailwindPrefix}-[${update.value}]`
+}
+
+/**
+ * `mt` + `2` is `mt-2`; `mt` + `-2` is `-mt-2`, not `mt--2`. `tailwind.ts`
+ * hands back a negative spacing step as a signed token, and Tailwind writes the
+ * sign before the stem — after any variant, so `md:mt` + `-2` is `md:-mt-2`.
+ */
+function withToken(prefix: string, token: string): string {
+  if (!token.startsWith("-")) return `${prefix}-${token}`
+  const cut = prefix.lastIndexOf(":") + 1
+  return `${prefix.slice(0, cut)}-${prefix.slice(cut)}-${token.slice(1)}`
 }
 
 /** The classes on the element, as it was before the edit, that set this property. */

@@ -64,7 +64,7 @@ interface Mutation {
   /** Where the entry sat, so an undo restores the order things happened in. */
   index: number
   /** What the entry read before this call, or null when this call created it. */
-  previous: { to: string; written: boolean; queued: boolean } | null
+  previous: { to: string; written: boolean; queued: boolean; sentAt?: string; sentIn?: string | null } | null
   /** Whether this call took the entry out of the list — see `recordEdit`. */
   removed: boolean
 }
@@ -251,7 +251,12 @@ export function recordEdit(input: {
       to: existing.record.to,
       written: existing.record.written,
       queued: existing.queued,
+      sentAt: existing.record.sentAt,
+      sentIn: existing.record.sentIn,
     }
+    // A row that changed after a send is a new request, so it is not "sent".
+    delete existing.record.sentAt
+    delete existing.record.sentIn
     existing.record.to = input.to
     existing.record.written = input.written
     existing.queued = input.written
@@ -333,6 +338,22 @@ export function removeEdit(id: string): void {
   announce()
 }
 
+/**
+ * A send that reached the agent queue carried these edits: stamp them, so the
+ * next brief says so and the Send button knows nothing about them is new.
+ */
+export function markEditsSent(ids: Iterable<string>, at: string, changeId: string | null): void {
+  const wanted = new Set(ids)
+  let changed = false
+  for (const entry of entries) {
+    if (!wanted.has(entry.record.id)) continue
+    entry.record.sentAt = at
+    entry.record.sentIn = changeId
+    changed = true
+  }
+  if (changed) announce()
+}
+
 export function clearEdits(): void {
   if (!entries.length && !mutations.length) return
   entries.length = 0
@@ -365,6 +386,10 @@ export function dropLastEdit(): void {
     mutation.entry.record.to = mutation.previous.to
     mutation.entry.record.written = mutation.previous.written
     mutation.entry.queued = mutation.previous.queued
+    if (mutation.previous.sentAt) {
+      mutation.entry.record.sentAt = mutation.previous.sentAt
+      mutation.entry.record.sentIn = mutation.previous.sentIn
+    }
     // Back where it was, not on the end: the outbox reads in the order things
     // happened, and an undo does not make an old edit new.
     if (mutation.removed) {

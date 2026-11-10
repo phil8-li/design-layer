@@ -44,7 +44,7 @@ import {
 } from "../../annotations/store"
 import { onEditsChange } from "../../annotations/journal"
 import { clearNotesStep, deleteNote, undoNoteStep } from "../../annotations/actions"
-import { copyHandover, handOver, needsAgent } from "../../annotations/handover"
+import { copyHandover, handOver, hasUnsent, needsAgent, onSendChange, sendState } from "../../annotations/handover"
 import { COPY_REFUSED, copyText } from "../../core/clipboard"
 import { onComponentUsageChange, sharedComponentWarning } from "../../core/component-usage"
 import { withdrawEdit } from "../../core/withdraw"
@@ -273,9 +273,10 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
    * writes nothing to source. There was an "Apply to code" mode here that let
    * the editor's codemod write the edits it could spell; it is gone, because
    * the agent writes code that fits the project and the codemod did not.
+   *
+   * The button paints from `sendState()` (the machine is in `handover.ts`)
+   * and from whether anything on the list is new since the last send.
    */
-  let sending = false
-
   const primaryButton = el("button", {
     class: "de-button de-button--primary",
     type: "button",
@@ -298,38 +299,43 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
    */
   let agentReady = false
 
-  /** Can the button send right now? */
+  /** Can the button send right now? Only when something on the list is new. */
   function canSend(): boolean {
-    return agentReady && needsAgent()
+    return agentReady && sendState().kind !== "sending" && hasUnsent()
   }
 
   function paintPrimary(): void {
+    const sending = sendState().kind === "sending"
     // With no agent connected there is nobody to send to, so the button leaves
     // rather than sitting disabled beside Copy, which still works.
     primaryButton.hidden = !sending && !agentReady
-    primaryButton.disabled = sending || !canSend()
+    primaryButton.disabled = !canSend()
     primaryButton.title = "Send every note and edit to your agent"
-    setPrimaryLabel(sending ? "Sending…" : "Send to agent")
+    // Every item already went out: a second press would hand the agent the
+    // same work as if it were new. The disabled button says so; a new note or
+    // a changed row brings "Send to agent" back.
+    setPrimaryLabel(sending ? "Sending…" : needsAgent() && !hasUnsent() ? "Nothing new to send" : "Send to agent")
   }
 
   /**
-   * Disabled while in flight, so a second click cannot write or post the same
-   * work twice while the first round trip is outstanding.
+   * One press, one send: `handOver` refuses while a send is out, and the
+   * button is disabled for as long as the state says "sending".
    */
   async function finish(): Promise<void> {
-    if (sending || !canSend()) return
-    sending = true
-    paintPrimary()
-    try {
-      await handOver({
-        apiBase: editor.apiBase,
-        toast: (message, kind) => editor.toast(message, kind),
-      })
-    } finally {
-      sending = false
-      render()
+    if (!canSend()) return
+    const result = await handOver({
+      apiBase: editor.apiBase,
+      toast: (message, kind) => editor.toast(message, kind),
+    })
+    // A send that reached the route changes what the MCP section reports (a
+    // change waiting, an agent working on it), so it looks again now rather
+    // than on the next throttled render.
+    if (result.sent && !result.stale) {
+      mcpCheckedAt = 0
+      refreshMcpSoon()
     }
   }
+  onSendChange(() => paintPrimary())
 
   /* ---------- footer actions ---------- */
 
@@ -681,10 +687,38 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
     title: "Checking…",
   })
 
-  function setMcpState(state: "on" | "idle" | "off", sentence: string): void {
+  /**
+   * What the MCP section says, as one value; `paintMcp` is its one painter and
+   * `mcpViewOf` turns a `/mcp/status` answer into it.
+   *
+   *   checking --status: port down----------------> off{reason}
+   *   checking --status: up, no agent-------------> idle
+   *   checking --status: up, agent parked---------> on{working: false}
+   *   checking --status: up, agent mid-turn-------> on{working: true}
+   *   any      --route unreachable----------------> off{reason}
+   *   any      --a later answer for any of these--> the same table
+   *
+   * An answer for an older request is dropped (`mcpRequest`), so two refreshes
+   * that cross never paint the older status last.
+   */
+  type McpView =
+    | { kind: "checking" }
+    | { kind: "off"; reason: string }
+    | { kind: "idle" }
+    | { kind: "on"; working: boolean }
+
+  function paintMcp(view: McpView): void {
+    const [state, sentence] =
+      view.kind === "checking"
+        ? ["checking", "checking"]
+        : view.kind === "off"
+          ? ["off", view.reason]
+          : view.kind === "idle"
+            ? ["idle", "No agent connected. Paste this address into your agent."]
+            : ["on", view.working ? "Connected. Your agent is working." : "Connected. Waiting for changes."]
     mcpState.dataset.deState = state
     mcpState.setAttribute("aria-label", `MCP: ${sentence}`)
-    mcpState.title = sentence
+    mcpState.title = view.kind === "checking" ? "Checking…" : sentence
   }
 
   /*
@@ -818,12 +852,16 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
    * and the panel is usually not even on screen. A socket for this would be
    * more machinery than the question deserves.
    *
-   * Three states, and the middle one is why `connected` and `waiting` are both
-   * reported. An agent that is attached but busy is a WORKING setup; showing it
-   * as disconnected the moment it went off to do the work it was just handed is
-   * how a correct configuration comes to look broken.
+   * Three states, and the middle one is why `agents` (how many completed a
+   * handshake) and `waiting` (how many are parked in `wait_for_change`) are
+   * both reported. An agent that is attached but busy is a WORKING setup;
+   * showing it as disconnected the moment it went off to do the work it was
+   * just handed is how a correct configuration comes to look broken.
    */
+  let mcpRequest = 0
   async function refreshMcp(): Promise<void> {
+    mcpRequest += 1
+    const request = mcpRequest
     try {
       const response = await fetch(`${editor.apiBase}/mcp/status`)
       if (!response.ok) throw new Error("status")
@@ -838,6 +876,7 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
         /** Why the start screen could not host the shared address, when it could not. */
         reason?: string
       }
+      if (request !== mcpRequest) return
       mcpAddress.textContent = status.url ?? "not running"
       stay.row.hidden = status.canStay !== true
       if (!staySwitching) {
@@ -863,21 +902,21 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
       if (!status.url || !status.listening) {
         // The start screen's own reason when it holds the shared address and
         // could not bind it; the general sentence otherwise.
-        setMcpState(
-          "off",
-          typeof status.reason === "string" && status.reason.length > 0
-            ? `Not running. ${status.reason}`
-            : "Not running. Another editor may be using the port."
-        )
+        paintMcp({
+          kind: "off",
+          reason:
+            typeof status.reason === "string" && status.reason.length > 0
+              ? `Not running. ${status.reason}`
+              : "Not running. Another editor may be using the port.",
+        })
       } else if (status.agents < 1) {
-        setMcpState("idle", "No agent connected. Paste this address into your agent.")
-      } else if (status.waiting > 0) {
-        setMcpState("on", "Connected. Waiting for changes.")
+        paintMcp({ kind: "idle" })
       } else {
-        // Attached but not parked in `wait_for_change`. A working setup, mid-turn
-        // — and it must not read as a broken one, or a correct configuration
-        // looks like a failure every time the agent goes off to do its job.
-        setMcpState("on", "Connected. Your agent is working.")
+        // Attached but not parked in `wait_for_change` is a working setup,
+        // mid-turn — and it must not read as a broken one, or a correct
+        // configuration looks like a failure every time the agent goes off to
+        // do its job.
+        paintMcp({ kind: "on", working: !(status.waiting > 0) })
       }
       // The first handshake is what makes "Send to agent" worth offering.
       if (!agentReady && status.url && status.listening && status.agents > 0) {
@@ -885,9 +924,10 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
         paintPrimary()
       }
     } catch {
+      if (request !== mcpRequest) return
       // A dead route reads the same as a refusal, the bargain `ai/transport.ts`
       // makes too: say nothing confident rather than invent a state.
-      setMcpState("off", "Could not reach the DesignLayer server.")
+      paintMcp({ kind: "off", reason: "Could not reach the DesignLayer server." })
     }
   }
 

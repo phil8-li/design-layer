@@ -25,11 +25,13 @@ import { MARKER } from "../core/css/annotations"
 import {
   annotationSettings,
   annotations,
+  followPage,
   notePinsVisible,
   onAnnotationsChange,
   onMarkerLayerChange,
   onSettingsChange,
   setMarkerLayer,
+  updateSettings,
 } from "./store"
 import { pinNote, rewriteNote } from "./actions"
 import { editElement, onEditsChange } from "./journal"
@@ -1283,13 +1285,27 @@ export function installAnnotations(context: EditorContext): void {
   window.addEventListener("resize", wake)
   window.addEventListener("pointerdown", wake, { capture: true, passive: true })
   window.addEventListener("keydown", wake, { capture: true, passive: true })
-  // A route change can bring an unattached note's element back.
+  /*
+   * A route change can bring an unattached note's element back, and it moves
+   * the notes themselves: they are filed per page, so the store re-reads them
+   * for the new pathname (`followPage`) and the pins and the Changes tab follow.
+   * A router's `pushState` fires no event, so the pathname is also polled, at
+   * the quarter second `options/inventory.ts` follows the page at.
+   */
+  let pagePath = window.location.pathname
   const onRoute = (): void => {
+    pagePath = window.location.pathname
+    followPage()
     attempted.clear()
     wake()
   }
   window.addEventListener("popstate", onRoute)
   window.addEventListener("hashchange", onRoute)
+  const routeTimer = setInterval(() => {
+    if (window.location.pathname !== pagePath) onRoute()
+  }, 250)
+  // Under Node (the test runner) an interval keeps the process alive.
+  ;(routeTimer as unknown as { unref?: () => void }).unref?.()
 
   const onNotes = (): void => {
     outbox = null
@@ -1332,6 +1348,14 @@ export function installAnnotations(context: EditorContext): void {
        * claimed it in the meantime.
        */
       setMarkerLayer("notes")
+      /*
+       * And it lifts "Show pins: off", for the same promise. The layer claim
+       * alone left a person who had hidden the pins clicking, typing, saving,
+       * and seeing nothing — the note was on the right layer and the layer was
+       * hidden. Asking to annotate is asking to see what you annotate; hiding
+       * the pins again is one click on the same switch.
+       */
+      if (annotationSettings().hideUntilRestart) updateSettings({ hideUntilRestart: false })
     }
     syncSurfaces()
     // Painted in this task rather than the next frame, as `canvas/selection`
@@ -1355,6 +1379,7 @@ export function installAnnotations(context: EditorContext): void {
     document.removeEventListener("selectionchange", onSelectionChange)
     window.removeEventListener("popstate", onRoute)
     window.removeEventListener("hashchange", onRoute)
+    clearInterval(routeTimer)
     if (idleTimer) clearTimeout(idleTimer)
     // A layer torn down mid-hover would otherwise leave the panel lighting a
     // row whose pin no longer exists to un-light it.

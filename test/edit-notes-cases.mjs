@@ -166,6 +166,20 @@ await check("a value on the theme scale gets its named class and no token hint",
   assert.ok(!lines.some((line) => line.includes("token")), "a scale value was sent to look for a token")
 })
 
+/*
+ * `tailwind.ts` returns a negative spacing step as the signed token `-2`, and
+ * the class used to be built as prefix-token: `mt--2`, which Tailwind does not
+ * compile. The sign goes before the stem.
+ */
+await check("a negative margin names Tailwind's own negative class", () => {
+  assert.equal(ui.utilityFor("margin-top", "-8px"), "-mt-2")
+  assert.equal(ui.utilityFor("margin-left", "-16px"), "-ml-4")
+  assert.equal(ui.utilityFor("margin-top", "8px"), "mt-2")
+  const lines = ui.editInstructions(edit("margin-top", "0px", "-8px", { className: "box" }))
+  assert.ok(lines.includes("Tailwind: add `-mt-2`."), lines.join("\n"))
+  assert.ok(!lines.some((line) => line.includes("--")), "a class with a double dash reached the brief")
+})
+
 await check("a drag says to move it through the layout, not a transform", () => {
   const lines = ui.editInstructions(edit("transform", "none", "translate(24px, 0px)"))
   assert.match(lines[1], /^The designer dragged it 24px right\. Get it there through the layout/)
