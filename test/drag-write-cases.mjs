@@ -4,16 +4,14 @@
  * Direct manipulation used to end at the screen: `onPointerUp` fired the drag
  * hooks, refreshed the panels and stopped, so the one gesture a visual editor
  * exists for left no trace anywhere else. No history step, so Cmd+Z could not
- * take a move back. No ledger row, so the Prompts tab still said there was
- * nothing to hand over. No queued operation for a resize, even though `width`
- * and `height` are perfectly translatable and "Apply to code" could have
- * written them. The keyboard nudge — the same movement, one pixel at a time —
- * had all four, which is what made the gap a bug rather than a design.
+ * take a move back, and no note, so the Changes tab said there was nothing to
+ * hand over. The keyboard nudge — the same movement, one pixel at a time — had
+ * both, which is what made the gap a bug rather than a design.
  *
  * The subtle half is the rewind, and most of these cases are about it. The
  * writer reads the element to decide what the change was FROM; by pointerup the
  * element already holds the dragged value, so committing naively records a step
- * from a value to itself: green tests, a no-op undo, and a prompt that asks an
+ * from a value to itself: green tests, a no-op undo, and a note that asks an
  * agent to change `translate(50px, 20px)` into `translate(50px, 20px)`. Every
  * assertion on a "from" below is guarding that.
  *
@@ -91,7 +89,7 @@ for (const key of [
   Object.defineProperty(globalThis, key, { value: window[key], configurable: true, writable: true })
 }
 
-/** One bundle: the timeline and the ledger are module state to be shared. */
+/** One bundle: the timeline and the journal are module state to be shared. */
 const { build } = await import("esbuild")
 const bundled = await build({
   stdin: {
@@ -99,7 +97,7 @@ const bundled = await build({
       export { installTransform, translateBy } from "./src/canvas/transform"
       export { createWriter } from "./src/core/writer"
       export * as history from "./src/core/history"
-      export { previewOnlyChanges, clearPreviewOnly } from "./src/core/change-prompt"
+      export { edits, resetJournalForTest } from "./src/annotations/journal"
       export * as store from "./src/core/store"
     `,
     resolveDir: PACKAGE_DIR,
@@ -114,22 +112,12 @@ const bundled = await build({
 const editor = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString("base64")}`
 )
-const { history, previewOnlyChanges, clearPreviewOnly, store } = editor
+const { history, store } = editor
 
-const queued = []
-const toasts = []
-const bridge = {
-  elementInfo: () => null,
-  send() {},
-  toast: (message, kind) => toasts.push({ message, kind }),
-  subscribe: () => () => {},
-  store: {
-    hasChanges: () => queued.length > 0,
-    buildBatchOperations: () => queued.map((entry) => entry.operation),
-    addPendingPropertyOperation: (mergeKey, operation, keys) =>
-      queued.push({ mergeKey, operation, keys }),
-  },
-}
+/** The move notes the agent is told about, oldest first. */
+const moves = () => editor.edits().filter((edit) => edit.property === "transform")
+/** Every property a release left a note for, in the order it wrote them. */
+const noted = () => editor.edits().map((edit) => edit.property)
 
 // The state the gesture reads, and the count of repaints it asked for. The
 // canvas lane builds one writer and hands it to every gesture; this is that
@@ -140,10 +128,10 @@ const context = {
   getState: () => state,
   // Snapshotted rather than counted: the ordering assertion needs to know what
   // the timeline looked like at the moment the panels were told to repaint.
-  refresh: () => refreshes.push({ canUndo: history.canUndo(), ledger: previewOnlyChanges().length }),
+  refresh: () => refreshes.push({ canUndo: history.canUndo(), notes: editor.edits().length }),
 }
 
-editor.installTransform(context, editor.createWriter(bridge))
+editor.installTransform(context, editor.createWriter())
 
 const app = window.document.getElementById("app")
 // A handle lives in the editor's chrome, not in the app, and the gesture picks
@@ -165,8 +153,6 @@ function selectionFor(element) {
     element,
     tagName: element.tagName.toLowerCase(),
     componentName: "Fixture",
-    // Known up front, so the queue dispatches in the same task the gesture ends
-    // in and a case never has to await a resolution it is not testing.
     source: { filePath: "src/Fixture.tsx", lineNumber: 4, columnNumber: 2, componentName: "Fixture" },
     key: `fixture-${keys}`,
   }
@@ -174,9 +160,7 @@ function selectionFor(element) {
 
 const reset = (...selections) => {
   history.resetHistory()
-  clearPreviewOnly()
-  queued.length = 0
-  toasts.length = 0
+  editor.resetJournalForTest()
   refreshes.length = 0
   state.selection = selections
 }
@@ -219,8 +203,7 @@ check("DW-01 a drag past the threshold reaches the writer", () => {
   // same task, so the element never paints at its pre-gesture position.
   assert.equal(element.style.transform, "translate(70px, 20px)")
   assert.equal(history.canUndo(), true, "the drag left no history step")
-  assert.equal(previewOnlyChanges().length, 1, "the Prompts tab still has nothing to hand over")
-  assert.deepEqual(toasts, [{ message: "Move: preview only (transform)", kind: "error" }])
+  assert.equal(moves().length, 1, "the Changes tab still has nothing to hand over")
 })
 
 check("DW-02 one gesture is one step, however many frames it took", () => {
@@ -239,10 +222,11 @@ check("DW-02 one gesture is one step, however many frames it took", () => {
   // Five pointermoves recording five steps is the failure this guards: Cmd+Z
   // would walk the pointer back frame by frame instead of undoing the move.
   assert.equal(history.canUndo(), false, "the gesture recorded one step per frame")
-  assert.equal(previewOnlyChanges().length, 1)
+  // And the one step takes the one note with it.
+  assert.equal(moves().length, 0, "undo left the move in the notes")
 })
 
-check("DW-03 the ledger says where the drag started, not where it ended", () => {
+check("DW-03 the note says where the drag started, not where it ended", () => {
   const element = mount('<div class="card" style="transform: translate(10px, 20px)">Card</div>')
   reset(selectionFor(element))
   drag(element, [
@@ -250,14 +234,13 @@ check("DW-03 the ledger says where the drag started, not where it ended", () => 
     [40, 0],
   ])
 
-  const [change] = previewOnlyChanges()
+  const [change] = moves()
   assert.equal(change.property, "transform")
   // The whole trap in one line. Committing without rewinding first reads the
   // dragged value as the "before", and this reads `translate(50px, 20px)`.
   assert.equal(change.from, "translate(10px, 20px)")
   assert.equal(change.to, "translate(50px, 20px)")
-  assert.equal(change.to, element.style.transform, "the prompt and the screen disagree")
-  assert.equal(change.filePath, "src/Fixture.tsx")
+  assert.equal(change.to, element.style.transform, "the note and the screen disagree")
 })
 
 check("DW-3b the vendor's lift never reaches the committed value", () => {
@@ -273,7 +256,7 @@ check("DW-3b the vendor's lift never reaches the committed value", () => {
   element.style.transform = "translate(40px, 24px) scale(1.02) matrix(1, 0, 0, 1, 0, 0)"
   fire(element, "pointerup", {})
 
-  const [change] = previewOnlyChanges()
+  const [change] = moves()
   assert.equal(change.to, "translate(40px, 24px)", "a transient animation reached the write")
 })
 
@@ -287,7 +270,7 @@ check("DW-3c a gesture that ends where it started writes nothing", () => {
   element.style.transform = "matrix(1, 0, 0, 1, 0, 0)"
   fire(element, "pointerup", {})
 
-  assert.deepEqual(previewOnlyChanges(), [], "an identity transform read as a move")
+  assert.deepEqual(moves(), [], "an identity transform read as a move")
   assert.equal(history.canUndo(), false)
 })
 
@@ -301,8 +284,7 @@ check("DW-04 a press that never crosses the threshold writes nothing", () => {
 
   assert.equal(element.style.transform, "translate(10px, 20px)", "a click nudged the element")
   assert.equal(history.canUndo(), false)
-  assert.deepEqual(previewOnlyChanges(), [])
-  assert.deepEqual(toasts, [], "a click that moved nothing announced a move")
+  assert.deepEqual(moves(), [])
   assert.deepEqual(refreshes, [], "a click that moved nothing repainted the panels")
 })
 
@@ -334,10 +316,10 @@ check("DW-06 a multi-selection drag moves and records every member, as one step"
   assert.equal(first.style.transform, "translate(34px, 0px)")
   assert.equal(second.style.transform, "translate(30px, 0px)")
 
-  const ledger = previewOnlyChanges()
-  assert.equal(ledger.length, 2, "only part of the selection reached the writer")
+  const notes = moves()
+  assert.equal(notes.length, 2, "only part of the selection reached the writer")
   assert.deepEqual(
-    ledger.map((change) => change.className).sort(),
+    notes.map((change) => change.target.className).sort(),
     ["a", "b"]
   )
   // One step for the whole set, as a multi-delete is: one Cmd+Z takes the
@@ -346,8 +328,7 @@ check("DW-06 a multi-selection drag moves and records every member, as one step"
   assert.equal(history.canUndo(), false, "the drag took more than one step")
   assert.equal(first.style.transform, "translate(4px, 0px)")
   // `none` rather than an empty string: the member that had no inline transform
-  // is reverted to its computed one, which is what keeps the undone move out of
-  // the pending source operation. Visually identical, and expressible.
+  // is reverted to its computed one. Visually identical.
   assert.equal(second.style.transform, "none", "the second member never had its move recorded")
 })
 
@@ -362,7 +343,7 @@ check("DW-20 pressing any member of a multi-selection carries the whole set", ()
   ])
   assert.equal(first.style.transform, "translate(25px, 0px)", "the primary stayed behind")
   assert.equal(second.style.transform, "translate(25px, 0px)")
-  assert.equal(previewOnlyChanges().length, 2)
+  assert.equal(moves().length, 2)
 })
 
 // ── Every way a drag ends early writes nothing ─────────────────────────────
@@ -381,7 +362,7 @@ function untouched(element) {
   assert.equal(element.style.transform, "translate(10px, 20px)")
   assert.equal(element.style.transition, "")
   assert.equal(history.canUndo(), false, "a cancelled drag left an undo step")
-  assert.equal(previewOnlyChanges().length, 0, "a cancelled drag left a note")
+  assert.equal(moves().length, 0, "a cancelled drag left a note")
   assert.equal(refreshes.length, 0)
 }
 
@@ -446,7 +427,7 @@ check("DW-25 a target that leaves the page mid-drag is not committed", () => {
   fire(window.document.body, "pointermove", { clientX: 40, clientY: 0 })
   fire(window.document.body, "pointerup", {})
   assert.equal(history.canUndo(), false)
-  assert.equal(previewOnlyChanges().length, 0, "a ledger row was filed for an element that is gone")
+  assert.equal(moves().length, 0, "a note was filed for an element that is gone")
 })
 
 check("DW-26 a lost pointer capture and a lost window focus each cancel", () => {
@@ -468,7 +449,7 @@ check("DW-26 a lost pointer capture and a lost window focus each cancel", () => 
 
 console.log("\nA resize")
 
-check("DW-07 a resize queues width and height for source", () => {
+check("DW-07 a resize notes width and height for the agent", () => {
   const element = mount('<div class="panel" style="width: 100px; height: 50px">Panel</div>')
   reset(selectionFor(element))
   // The gesture grows the element's own width and height by the handle's
@@ -480,15 +461,9 @@ check("DW-07 a resize queues width and height for source", () => {
 
   assert.equal(element.style.width, "140px")
   assert.equal(element.style.height, "70px")
-  assert.equal(queued.length, 1, '"Apply to code" is still disabled on a change it can write')
-  assert.deepEqual(queued[0].keys, ["width", "height"])
-  const values = JSON.stringify(queued[0].operation.updates)
-  assert.ok(values.includes("140px"), values)
-  assert.ok(values.includes("70px"), values)
-  // Both properties translate, so nothing was lost and nothing is said: a
-  // successful direct edit does not raise a toast.
-  assert.deepEqual(previewOnlyChanges(), [])
-  assert.deepEqual(toasts, [])
+  assert.deepEqual(noted(), ["width", "height"])
+  assert.deepEqual(editor.edits().map((edit) => edit.to), ["140px", "70px"])
+  assert.deepEqual(moves(), [])
 })
 
 check("DW-08 a resize undoes to the inline strings it started from", () => {
@@ -525,7 +500,7 @@ check("DW-10 an east handle writes width and leaves height alone", () => {
   }
   assert.equal(element.style.width, "120px")
   assert.equal(element.style.height, "", "the height was pinned by a width-only drag")
-  assert.deepEqual(queued[0].keys, ["width"])
+  assert.deepEqual(noted(), ["width"])
 })
 
 /*
@@ -555,7 +530,7 @@ check("DW-12 a drag keeps the element's rotation", () => {
     [40, 0],
   ])
   assert.equal(element.style.transform, "matrix(0.98, 0.17, -0.17, 0.98, 50, 20)")
-  const [change] = previewOnlyChanges()
+  const [change] = moves()
   assert.equal(change.to, "matrix(0.98, 0.17, -0.17, 0.98, 50, 20)", "the rotation was dropped from the write")
 })
 
@@ -578,7 +553,7 @@ check("DW-14 pointercancel reverts the preview instead of committing it", () => 
   assert.equal(element.style.transform, "translate(50px, 20px)", "no preview to revert")
   fire(element, "pointercancel", {})
   assert.equal(element.style.transform, "translate(10px, 20px)")
-  assert.equal(queued.length, 0)
+  assert.deepEqual(noted(), [])
   assert.equal(history.canUndo(), false)
 })
 
@@ -602,7 +577,7 @@ check("DW-15 a resize on a flex-1 column takes it off its grow", () => {
   }
   assert.equal(column.style.width, "120px")
   assert.equal(column.style.flexGrow, "0", "the column still grows past the width it was given")
-  assert.deepEqual(queued[0].keys, ["width", "flex"])
+  assert.deepEqual(noted(), ["width", "flex"])
   assert.equal(history.undo(), "Resize")
   assert.notEqual(column.style.width, "120px")
   assert.equal(column.style.flexGrow, "1", "undo did not give the column its grow back")
@@ -680,10 +655,10 @@ check("DW-09 the panels repaint after the write, not before it", () => {
   ])
 
   assert.equal(refreshes.length, 1, "one gesture is one repaint")
-  // The Prompts tab and the Undo button are drawn from this refresh, so a
+  // The Changes tab and the Undo button are drawn from this refresh, so a
   // refresh that runs before the write draws the state the drag replaced.
   assert.equal(refreshes[0].canUndo, true)
-  assert.equal(refreshes[0].ledger, 1)
+  assert.equal(refreshes[0].notes, 1)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

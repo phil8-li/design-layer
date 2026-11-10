@@ -87,7 +87,6 @@ function edit(property, from, to, target = {}) {
     property,
     from,
     to,
-    written: false,
     target: {
       tagName: "div",
       componentName: "PlanCard",

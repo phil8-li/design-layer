@@ -1302,11 +1302,9 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
          * "from" would be reckless if a later row could have written the same
          * property afterwards, and collapse guarantees none did.
          */
-        // The row disappears and the pixels go back, which says it all. A
-        // queue the withdrawal could not clear no longer matters: nothing
-        // commits it.
+        // The row disappears and the pixels go back, which says it all.
         onclick: () => {
-          withdrawEdit(editor.bridge, edit.id)
+          withdrawEdit(edit.id)
         },
       },
       [icon("X", tokens.icon.marker)]

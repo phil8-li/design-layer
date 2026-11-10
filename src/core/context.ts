@@ -104,7 +104,6 @@ export function createContext(bridge: RewriteBridge, slots: EditorSlots): Editor
    * fresh array here made every click a double select: the layers tree
    * re-rendered and re-scrolled, the inspector rebuilt, the announcer said
    * "selected" twice and a Controls highlight raised in between was dropped.
-   * The writer already fills `source` in place the same way (`ensureSource`).
    *
    * Only the element the inspector is actually describing is primed. A marquee
    * over fifty nodes would otherwise pay fifty owner-stack walks to fill a

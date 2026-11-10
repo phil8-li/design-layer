@@ -74,6 +74,7 @@ const bundled = await build({
       export * from "./src/core/variants"
       export { instanceSection } from "./src/panels/inspector/section-instance"
       export { createWriter } from "./src/core/writer"
+      export { edits } from "./src/annotations/journal"
     `,
     resolveDir: PACKAGE_DIR,
     loader: "ts",
@@ -329,16 +330,7 @@ check("an unresolved option cannot be applied", () => {
 
 console.log("\nInstance section: the source-declared axes")
 
-const pending = []
-const bridge = {
-  toast() {},
-  store: {
-    addPendingPropertyOperation(key, operation, propertyKeys) {
-      pending.push({ key, operation, propertyKeys })
-    },
-  },
-}
-const writer = client.createWriter(bridge)
+const writer = client.createWriter()
 
 const API_BASE = "/__designlayer"
 const SOURCE = {
@@ -462,9 +454,9 @@ check("a mixed instance offers Mixed as the shown value", () => {
   assert.match(picker.textContent, /Mixed/)
 })
 
-check("choosing an option previews on the element and queues one source operation", () => {
+check("choosing an option previews on the element and leaves one note", () => {
   renderSection()
-  const before = pending.length
+  const before = client.edits().length
   const select = host.querySelector('[data-de-field="variants.size"]')
   select.value = "lg"
   select.dispatchEvent(new dom.window.Event("change"))
@@ -478,15 +470,12 @@ check("choosing an option previews on the element and queues one source operatio
   // Untouched: the swap owns one axis, not the element's whole class list.
   assert.equal(classes.includes("bg-primary"), true)
 
-  assert.equal(pending.length, before + 1)
-  const { operation } = pending[pending.length - 1]
-  assert.equal(operation.op, "updateClass")
-  assert.equal(operation.file, FIXTURE_RELATIVE)
-  assert.equal(operation.line, SOURCE.lineNumber)
-  const patterns = operation.updates.map((update) => update.classPattern)
-  assert.equal(patterns.includes("^h-9$"), true)
-  assert.equal(patterns.includes("^px-4$"), true)
-  assert.equal(operation.updates.some((update) => update.value === "h-10"), true)
+  assert.equal(client.edits().length, before + 1)
+  const edit = client.edits().at(-1)
+  assert.equal(edit.property, "class")
+  assert.equal(edit.from.split(/\s+/).includes("h-9"), true)
+  assert.equal(edit.to.split(/\s+/).includes("h-10"), true)
+  assert.equal(edit.to.split(/\s+/).includes("px-8"), true)
 })
 
 check("the new option is what the rebuilt panel reads back", () => {
@@ -538,9 +527,9 @@ check("an option the source builds at runtime is offered inert, and says why", (
   assert.equal(tone.getAttribute("aria-disabled"), "true")
   assert.match(tone.textContent, /built at runtime/)
 
-  const before = pending.length
+  const before = client.edits().length
   tone.click()
-  assert.equal(pending.length, before, "an unresolved option queued a source operation")
+  assert.equal(client.edits().length, before, "an unresolved option left a note")
   assert.equal(instance.getAttribute("class").includes("tone"), false)
   document.querySelector(".de-token-popover")?.remove()
 })

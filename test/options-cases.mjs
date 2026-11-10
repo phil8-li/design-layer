@@ -898,7 +898,24 @@ async function sourceDefaultCases() {
 
 async function writerCases() {
   console.log("\nClass snapshot writer")
-  const { createWriter } = await load("src/core/writer.ts")
+  const { build } = await import("esbuild")
+  const bundled = await build({
+    stdin: {
+      contents: `
+        export { createWriter } from "./src/core/writer"
+        export { edits } from "./src/annotations/journal"
+      `,
+      resolveDir: PACKAGE_DIR,
+      loader: "ts",
+    },
+    bundle: true,
+    format: "esm",
+    write: false,
+    logLevel: "silent",
+  })
+  const { createWriter, edits } = await import(
+    `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString("base64")}`
+  )
   const parent = document.createElement("div")
   parent.className = "parent-shell"
   const element = document.createElement("button")
@@ -906,15 +923,6 @@ async function writerCases() {
   parent.append(element)
   document.body.append(parent)
 
-  const pending = []
-  const bridge = {
-    toast() {},
-    store: {
-      addPendingPropertyOperation(key, operation, propertyKeys) {
-        pending.push({ key, operation, propertyKeys })
-      },
-    },
-  }
   const selection = {
     element,
     tagName: "button",
@@ -927,28 +935,23 @@ async function writerCases() {
       componentName: "Button",
     },
   }
-  const writer = createWriter(bridge)
+  const writer = createWriter()
 
-  check("class swaps queue the removal and preserve pre-mutation identity", () => {
+  check("a class swap previews, and its note keeps the class list it started from", () => {
     writer.applyClasses(selection, { remove: ["px-2"], add: ["px-4"] }, "Swap padding")
     assert.equal(element.className, "rounded text-sm px-4")
-    assert.equal(pending[0].operation.className, "rounded px-2 text-sm")
-    assert.equal(pending[0].operation.parentClassName, "parent-shell")
-    assert.deepEqual(pending[0].operation.updates[0], {
-      tailwindPrefix: "px-2",
-      tailwindToken: "px-4",
-      value: "px-4",
-      standalone: true,
-      classPattern: "^px-2$",
-    })
+    const [edit] = edits()
+    assert.equal(edit.property, "class")
+    assert.equal(edit.from, "rounded px-2 text-sm")
+    assert.equal(edit.to, "rounded text-sm px-4")
   })
 
-  check("a pure removal queues an empty exact replacement instead of preview-only", () => {
+  check("a pure removal previews and joins the same note", () => {
     writer.applyClasses(selection, { remove: ["text-sm"], add: [] }, "Remove text size")
     assert.equal(element.classList.contains("text-sm"), false)
-    assert.equal(pending[1].operation.className, "rounded text-sm px-4")
-    assert.equal(pending[1].operation.updates[0].tailwindToken, "")
-    assert.equal(pending[1].operation.updates[0].classPattern, "^text-sm$")
+    assert.equal(edits().length, 1, "one element's class list is one note")
+    assert.equal(edits()[0].from, "rounded px-2 text-sm")
+    assert.equal(edits()[0].to, "rounded px-4")
   })
 
   parent.remove()
@@ -1004,22 +1007,15 @@ async function baselineCases() {
     assert.equal(client.visibleOptions(null).length, 0)
   })
 
-  check("the baseline can never become the active option", () => {
-    const stored = normalizeOptionSet(
-      { ...set, activeOptionId: client.BASELINE_OPTION_ID },
-      KEY
-    )
-    // The server only keeps an active id that names a real option, and the
-    // client filters the baseline out of every list, so nothing can select it.
-    assert.equal(stored.activeOptionId, client.BASELINE_OPTION_ID)
-    assert.equal(
-      client.visibleOptions(stored).some((option) => option.id === stored.activeOptionId),
-      false
-    )
+  check("an active option a client sends is ignored, and stored as none", () => {
+    // Nothing reads an active option any more; the key stays, as null, for an
+    // older checkout reading the same file.
+    const stored = normalizeOptionSet({ ...set, activeOptionId: "abc" }, KEY)
+    assert.equal(stored.activeOptionId, null)
   })
 
   check("a set with only a baseline reads as having no options", () => {
-    const stored = normalizeOptionSet({ ...set, activeOptionId: null, options: [baseline] }, KEY)
+    const stored = normalizeOptionSet({ ...set, options: [baseline] }, KEY)
     assert.equal(client.visibleOptions(stored).length, 0)
     assert.notEqual(client.baselineOf(stored, KEY), null)
   })
@@ -1112,7 +1108,7 @@ function savedStylesCases(surface) {
     scope,
   })
   const withStyles = (...options) =>
-    surface.setState({ optionSets: options.length ? { [KEY]: { key: KEY, activeOptionId: null, options } } : {} })
+    surface.setState({ optionSets: options.length ? { [KEY]: { key: KEY, options } } : {} })
 
   check("the header toggle is named for its scope and starts shut on a fresh element", () => {
     withStyles()
@@ -1678,7 +1674,7 @@ async function storeLoadCases() {
   console.warn = () => {}
   const KEY = "load-cases:card"
   const kept = { id: "kept", name: "Text style 1", className: "text-lg", style: {}, createdAt: 1, scope: "typography" }
-  const persisted = () => ({ [KEY]: { key: KEY, label: "Card", activeOptionId: null, options: [clone(kept)] } })
+  const persisted = () => ({ [KEY]: { key: KEY, label: "Card", options: [clone(kept)] } })
   const clone = (value) => JSON.parse(JSON.stringify(value))
 
   /** A server whose GET answers what the case says, when the case says. */
@@ -1784,7 +1780,7 @@ async function storeLoadCases() {
     const options = [...m.STYLE_SCOPES, "sparkle"].map((scope, index) => ({
       id: `o${index}`, name: scope, className: "", style: {}, createdAt: index, scope,
     }))
-    const kept = normalizeOptionSet({ label: "Card", activeOptionId: null, options }, "k").options
+    const kept = normalizeOptionSet({ label: "Card", options }, "k").options
     assert.deepEqual(kept.filter((option) => "scope" in option).map((option) => option.scope), [...m.STYLE_SCOPES])
   })
 

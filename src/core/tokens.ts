@@ -16,7 +16,7 @@
  * ---------------------------------------------------------------------------
  * TWO THEMES, AND WHY THE COLOURS ARE THE ONLY THING THAT MOVES
  *
- * Everything in `color`, `code` and `shadow` below is a REFERENCE —
+ * Everything in `color` and `shadow` below is a REFERENCE —
  * `var(--de-color-bg)` rather than a literal. The values live in `PALETTE`, two
  * per role, and `css/base.ts` emits them as two blocks of custom properties
  * switched by `data-de-theme`. The css modules interpolate these tokens once,
@@ -301,18 +301,6 @@ const PALETTE = {
     measure: { dark: "#f14445", light: "#d73337" },
   },
   /**
-   * Syntax tints for the Code tab, and only there, tuned against `bgSunken`.
-   * Drawn from the kit's decorative hues so the code view belongs to the
-   * same family: blue, violet, green and coral.
-   */
-  code: {
-    tag: { dark: "#60c2ff", light: "#005aa8" },
-    attribute: { dark: "#c09aeb", light: "#6e4c96" },
-    string: { dark: "#72b875", light: "#0e6c34" },
-    number: { dark: "#f6835d", light: "#b74a00" },
-    punctuation: { dark: "rgba(255,255,255,0.58)", light: wash(66) },
-  },
-  /**
    * The TINT of the kit's elevation, and only the tint; geometry stays literal
    * in `shadow` below. Light reads elevation from a cast shadow and a 7% ink
    * hairline (`--hairline`); dark from a heavier pure-black ambient plus a top
@@ -417,7 +405,7 @@ export function themeDeclarations(theme: ThemeName, indent = "  "): string {
  * otherwise. Generated from the same `PALETTE` row rather than restated, so a
  * registration cannot drift from the declaration it types.
  *
- * Shadows and code tints are registered too — they are colours, they are in
+ * Shadows are registered too — they are colours, they are in
  * `PALETTE`, and a crossfade that took the surfaces but left the casts behind
  * would be a worse artefact than no crossfade at all.
  *
@@ -450,7 +438,6 @@ const { cast, castSoft, castTooltip, ring, rim } = references("shadow", PALETTE.
 
 export const tokens = {
   color: references("color", PALETTE.color),
-  code: references("code", PALETTE.code),
   /*
    * The kit's radius ladder (ADOPTION-GUIDE § 4), under the kit's own names.
    *

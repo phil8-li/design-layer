@@ -2430,7 +2430,7 @@ await check("an available update lists what changed and what the restart touches
       shown: true,
       title: "Update available",
       changes: ["Tokens show their source", "Layers scroll sideways", "Notes keep their order", "and 2 more changes"],
-      note: "Restarts DesignLayer and 2 open editors. Apply or send their changes first.",
+      note: "Restarts DesignLayer and 2 open editors. Send their changes first.",
       error: "",
       button: "Update and restart",
     })

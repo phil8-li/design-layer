@@ -98,7 +98,6 @@ export interface ElementOptionSet {
   /** Element key (see `Selection.key`). */
   key: string
   label: string
-  activeOptionId: string | null
   options: ElementOption[]
 }
 

@@ -182,7 +182,7 @@ function setAction(button: HTMLElement, on: boolean, mark: IconName, label: stri
 
 export function installLayersPanel(context: EditorContext): void {
   const resolver = getResolver(context.bridge)
-  const writer = createWriter(context.bridge)
+  const writer = createWriter()
   /*
    * Children asked for during one render are asked for once.
    *

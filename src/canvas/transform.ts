@@ -494,9 +494,9 @@ export function installTransform(context: EditorContext, writer: Writer): void {
    * The gesture's own preview, rewound and then replayed through the writer.
    *
    * The writer reads the "before" value off the element to decide whether
-   * anything changed and what the ledger's "from" should be, so with the
+   * anything changed and what the note's "from" should be, so with the
    * dragged value still sitting inline the write reads as a no-op: no history
-   * step, and a change prompt that reports `from` equal to `to`. Restoring
+   * step, and no note at all. Restoring
    * first is what makes a drag an edit like any other. Both halves run in the
    * same task, so nothing paints in between and the rewind is invisible.
    *

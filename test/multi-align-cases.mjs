@@ -180,7 +180,6 @@ function scene({ count = 3, parent: parentLayout = ROW, split = false, real = fa
 
   const sent = []
   const toasts = []
-  const queued = []
   const writes = []
   const batches = []
   let renders = 0
@@ -190,10 +189,7 @@ function scene({ count = 3, parent: parentLayout = ROW, split = false, real = fa
     send: (message) => sent.push(message),
     subscribe: () => () => {},
     toast: (message, kind) => toasts.push({ message, kind }),
-    store: {
-      addPendingPropertyOperation: (mergeKey, operation, keys) =>
-        queued.push({ mergeKey, operation, keys }),
-    },
+    store: {},
   }
 
   const stub = {

@@ -455,7 +455,6 @@ const LEAVES = {
    * stopped being needed at the moment the geometry stopped applying, and the
    * staleness case below is what said so.
    */
-  ".de-insert-ghost": "one child, `.de-insert-ghost-name`, which draws no corner.",
   ".de-lib-signin":
     "the kit's dialog: an 18px corner over its 24px modal inset. The inset erodes the corner " +
     "to nothing, so the 8px buttons in its foot share no centre with it.",

@@ -303,17 +303,6 @@ function applyTheme(theme: ThemeName): void {
   document.querySelector(".de-root")?.setAttribute("data-de-theme", theme)
 }
 
-/*
- * Re-exported, not redefined.
- *
- * The commit moved to `core/apply.ts` so the Changes tab could reach it, and
- * this went with it — it is a consequence of an Angular refusal, which only the
- * commit can observe. The name stays reachable here because it was part of this
- * module's surface before the move, and a re-export costs a line where chasing
- * the new path costs every caller a change.
- */
-export { recordRefusedWrite } from "../core/apply"
-
 export function installToolbar(context: EditorContext): void {
   const { slots, bridge } = context
 
@@ -387,7 +376,7 @@ export function installToolbar(context: EditorContext): void {
   }
 
   /*
-   * Nothing here reports the queue or the outbox, and that is deliberate. The
+   * Nothing here reports the outbox, and that is deliberate. The
    * count lives in one place, the Changes tab's badge; a square here carrying
    * it was a second reader that could disagree with the panel it pointed at,
    * and its only action, "open the panel", is what the inspector toggle does.

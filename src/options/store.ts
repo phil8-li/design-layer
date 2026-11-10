@@ -190,7 +190,7 @@ export function baselineOf(set: ElementOptionSet | null, key: string): OptionSna
 }
 
 function emptySet(selection: Selection): ElementOptionSet {
-  return { key: selection.key, label: selection.componentName, activeOptionId: null, options: [] }
+  return { key: selection.key, label: selection.componentName, options: [] }
 }
 
 /** `set` with `snapshot` recorded as its baseline, unless it already has one. */

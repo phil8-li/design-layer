@@ -46,7 +46,6 @@
  * is deliberately not drawn.
  */
 
-import { onPreviewOnlyChange } from "../../core/change-prompt"
 import { registerCommand } from "../../core/commands"
 import { onAnnotationsChange } from "../../annotations/store"
 import { onEditsChange } from "../../annotations/journal"
@@ -268,7 +267,7 @@ interface TabDefinition {
 }
 
 export function installInspector(editor: EditorContext): void {
-  const writer = createWriter(editor.bridge)
+  const writer = createWriter()
   const host = el("div")
 
   /*
@@ -329,7 +328,7 @@ export function installInspector(editor: EditorContext): void {
       /*
        * The badge changes this tab's width, and the pill may be standing under
        * it. The pill's resize observer would notice only after the next layout,
-       * so an Apply showed the old pill width for a frame and the panel's last
+       * so a new count showed the old pill width for a frame and the panel's last
        * write trailed everything else by that frame. Re-tracking here measures
        * in the same task; the observer then finds the box already published and
        * writes nothing.
@@ -483,7 +482,7 @@ export function installInspector(editor: EditorContext): void {
    * owed rather than paid while the panel is off screen.
    *
    * A microtask, not a frame. Every write of one task — a commit's four
-   * properties, a selection and the ledger entry it files — still lands in one
+   * properties, a selection and the journal entry it files — still lands in one
    * repaint, and the repaint is done before the task yields, so the panel
    * describes the new element in the same task as the keypress or click that
    * chose it. A `requestAnimationFrame` here waited for the next frame and ran
@@ -780,31 +779,6 @@ export function installInspector(editor: EditorContext): void {
   editor.onRefresh(() => {
     forgetNormalizedCssValues()
     invalidate()
-  })
-  /*
-   * The ledger keeps its own time, and it is nobody else's.
-   *
-   * A write that turns out to have no file to land in reaches the ledger from
-   * `ensureSource(...).then(...)` in the writer, long after the store settled
-   * and long after the edit that caused it. Neither the subscription above nor
-   * `onRefresh` fires for that, so the outbox could be sitting open, already
-   * rendered, insisting there was nothing to hand over while the change was on
-   * screen behind it.
-   *
-   * Only when the outbox is the tab being looked at. `invalidate()` repaints
-   * whichever tab is active, and a ledger write says nothing whatsoever about
-   * the Design tab — repainting it on a write it does not show is exactly the
-   * hot-path cost `show()` is written to avoid. A hidden pane needs nothing:
-   * switching to it updates it.
-   *
-   * Routed through `invalidate()` rather than rendering here so the repaint
-   * lands once the write is done. A commit carrying four properties records four
-   * times, and the recording happens mid-write — a synchronous render would
-   * rebuild the panel three times for nothing and do it inside the writer's own
-   * loop, with the element half-styled.
-   */
-  onPreviewOnlyChange(() => {
-    if (activeTab().id === "annotations") invalidate()
   })
   /*
    * Only the visible tab is built at boot. A hidden one is built by `show`

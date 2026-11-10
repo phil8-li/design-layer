@@ -108,7 +108,7 @@ await check("past the size bound the oldest entries are dropped first", () => {
   const big = "v".repeat(storage.MAX_VALUE_LENGTH - 1024)
   const count = Math.ceil(storage.MAX_TOTAL_BYTES / big.length) + 3
   for (let index = 0; index < count; index += 1) {
-    storage.mergeEntries([{ key: `designlayer.preview-only.app:/p${index}`, value: big, updatedAt: 100 + index }])
+    storage.mergeEntries([{ key: `designlayer.annotations.app:/p${index}`, value: big, updatedAt: 100 + index }])
   }
   const kept = storage.readEntries().map((entry) => entry.updatedAt).sort((a, b) => a - b)
   assert.ok(kept.length < count, "nothing was dropped")
@@ -128,7 +128,7 @@ await check("past the size bound the oldest entries are dropped first", () => {
 await check("a merge under the caps reads only the entry it replaces", () => {
   clearStore()
   for (let index = 0; index < 50; index += 1) {
-    storage.mergeEntries([{ key: `designlayer.preview-only.app:/q${index}`, value: "x", updatedAt: 100 + index }])
+    storage.mergeEntries([{ key: `designlayer.annotations.app:/q${index}`, value: "x", updatedAt: 100 + index }])
   }
   const read = []
   const realRead = fs.readFileSync
@@ -302,7 +302,7 @@ await check("another origin hydrates notes written elsewhere, and applies remova
 
 await check("a newer local copy goes up and a newer server copy comes down", async () => {
   clearStore()
-  const key = "designlayer.preview-only.app:/a"
+  const key = "designlayer.annotations.app:/a"
   use(newOrigin)
   newOrigin.localStorage.setItem(key, "local")
   newOrigin.localStorage.setItem("designlayer.storage-meta", JSON.stringify({ ...meta(newOrigin), [key]: 500 }))
@@ -353,14 +353,14 @@ await check("old-origin notes meeting newer notes for the same page keep both", 
 
 await check("a stalled server is given up on after the wait, leaving local storage as it was", async () => {
   use(newOrigin)
-  newOrigin.localStorage.setItem("designlayer.preview-only.app:/stall", "kept")
+  newOrigin.localStorage.setItem("designlayer.annotations.app:/stall", "kept")
   fetchMode = "stall"
   try {
     const started = Date.now()
     await scope.hydrateScoped(150)
     const took = Date.now() - started
     assert.ok(took >= 140 && took < 1000, `waited ${took} ms`)
-    assert.equal(newOrigin.localStorage.getItem("designlayer.preview-only.app:/stall"), "kept")
+    assert.equal(newOrigin.localStorage.getItem("designlayer.annotations.app:/stall"), "kept")
   } finally {
     fetchMode = "server"
   }
@@ -370,9 +370,9 @@ await check("a server that is down costs nothing but the copy", async () => {
   fetchMode = "down"
   try {
     await scope.hydrateScoped()
-    scope.writeScoped("designlayer.preview-only.app:/down", "local")
+    scope.writeScoped("designlayer.annotations.app:/down", "local")
     await scope.flushScoped()
-    assert.equal(newOrigin.localStorage.getItem("designlayer.preview-only.app:/down"), "local")
+    assert.equal(newOrigin.localStorage.getItem("designlayer.annotations.app:/down"), "local")
   } finally {
     fetchMode = "server"
   }

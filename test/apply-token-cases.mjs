@@ -151,7 +151,7 @@ function scene(lib, layers) {
     applyStylesBatch: (edits, summary) => calls.push({ kind: "batch", edits, summary }),
     applyClasses: (selection, write, summary) => calls.push({ kind: "classes", selection, write, summary }),
   }
-  const bridge = { elementInfo: () => null, send: () => {}, subscribe: () => () => {}, toast: () => {}, store: { addPendingPropertyOperation: () => {} } }
+  const bridge = { elementInfo: () => null, send: () => {}, subscribe: () => () => {}, toast: () => {}, store: {} }
   const host = window.document.createElement("div")
   window.document.body.append(host)
   const context = {

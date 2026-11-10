@@ -1,22 +1,18 @@
 /**
- * "Apply to code" from the element to the file on disk.
+ * Where an element is written: from the element to a file path.
  *
- * The button was disabled for every element on every page of this app and no
- * signal said why: React 19.2 removed `fiber._debugSource`, the vendor's
- * synchronous walk returned `filePath: ""` for everything, the writer dropped
- * the operation on that empty string, and `hasChanges()` therefore stayed
- * false. Each layer behaved correctly in isolation, which is why the failure
- * was silent — so this file asserts the seam between them rather than any one
- * of them, and finishes by rewriting a real file through the vendor's own
- * transformer. A queued operation that never becomes a diff is the same bug
- * wearing a green test.
+ * React 19.2 removed `fiber._debugSource`, so the vendor's synchronous walk
+ * returns `filePath: ""` for every element. The inspector header, the layers
+ * tree and the agent's brief all need a real path, so this file asserts the
+ * seam between the vendor patch, the path rules and the async resolver
+ * (`resolveElementSource`), and that a source landing late patches the
+ * selection in place. Edits themselves are notes: the last cases pin that the
+ * editor sends the vendor nothing while they happen.
  *
- * Usage: node designlayer/test/apply-source-cases.mjs
+ * Usage: node designlayer/test/source-resolution-cases.mjs
  */
-
 import assert from "node:assert/strict"
 import fs from "node:fs"
-import os from "node:os"
 import path from "node:path"
 import { JSDOM } from "jsdom"
 
@@ -70,15 +66,7 @@ const bundled = await build({
         resolveElementSource,
         resetSourceResolutionCache,
       } from "./src/core/bridge"
-      export { createWriter, untranslatedProperties } from "./src/core/writer"
-      export {
-        buildChangePrompt,
-        sanitizeChangePrompt,
-        copyChangePrompt,
-        recordPreviewOnly,
-        previewOnlyChanges,
-        clearPreviewOnly,
-      } from "./src/core/change-prompt"
+      export { createWriter } from "./src/core/writer"
       export { createContext } from "./src/core/context"
       export { getState, subscribe } from "./src/core/store"
     `,
@@ -99,13 +87,6 @@ const {
   resolveElementSource,
   resetSourceResolutionCache,
   createWriter,
-  untranslatedProperties,
-  buildChangePrompt,
-  sanitizeChangePrompt,
-  copyChangePrompt,
-  recordPreviewOnly,
-  previewOnlyChanges,
-  clearPreviewOnly,
   createContext,
   getState,
   subscribe,
@@ -119,25 +100,10 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 10))
  * React 19.2 leaves it, and the async twin is where anything true comes from.
  */
 function makeBridge({ asyncInfo = null, discovered = null, componentName = "Fixture" } = {}) {
-  const queued = []
   const sent = []
-  const store = {
-    addPendingPropertyOperation(mergeKey, operation, propertyKeys) {
-      queued.push({ mergeKey, operation, propertyKeys })
-    },
-    // The vendor copies its pending list verbatim, so a stub that filters or
-    // re-derives here would test something the product does not do.
-    buildBatchOperations() {
-      return queued.map((entry) => entry.operation)
-    },
-    hasChanges() {
-      return queued.length > 0
-    },
-  }
   return {
-    queued,
     sent,
-    store,
+    store: {},
     discoverCalls: [],
     elementInfo() {
       return {
@@ -295,42 +261,8 @@ await check("AS-07 an owner-stack frame is used when the element's own is a chun
   assert.deepEqual(bridge.discoverCalls, [])
 })
 
-// --- the queue -------------------------------------------------------------
 
-await check("AS-08 a class change queues and survives buildBatchOperations", async () => {
-  resetSourceResolutionCache()
-  const parent = mount('<div class="p-2 text-sm"><button class="rounded bg-blue-500 px-3">Go</button></div>')
-  const element = parent.firstElementChild
-  const bridge = makeBridge({
-    asyncInfo: {
-      tagName: "button",
-      componentName: "Fixture",
-      filePath: "src/Fixture.tsx",
-      lineNumber: 4,
-      columnNumber: 6,
-      stack: [],
-    },
-  })
-  const selection = selectionFor(element)
-  const writer = createWriter(bridge)
-
-  assert.equal(bridge.store.hasChanges(), false)
-  writer.applyClasses(selection, { remove: ["bg-blue-500"], add: ["bg-red-500"] }, "Background")
-  await settle()
-
-  assert.equal(bridge.store.hasChanges(), true, "the Apply button is still disabled")
-  const operations = bridge.store.buildBatchOperations()
-  assert.equal(operations.length, 1)
-  assert.equal(operations[0].file, "src/Fixture.tsx")
-  assert.equal(operations[0].tagName, "button")
-  // Captured before the preview mutated it, so the AST matcher scores against
-  // the class list that is actually written in the JSX.
-  assert.equal(operations[0].className, "rounded bg-blue-500 px-3")
-  assert.equal(operations[0].nthOfType, 0)
-  // And the selection now knows where it lives, so the inspector and the next
-  // edit read the same file this operation used.
-  assert.equal(selection.source.filePath, "src/Fixture.tsx")
-})
+// --- edits are notes ------------------------------------------------------
 
 await check("AS-09 a text edit previews and sends nothing, before or after the path resolves", async () => {
   resetSourceResolutionCache()
@@ -353,216 +285,6 @@ await check("AS-09 a text edit previews and sends nothing, before or after the p
   assert.deepEqual(bridge.sent, [])
 })
 
-// --- the file on disk ------------------------------------------------------
-
-await check("AS-10 the queued operation rewrites a real file", async () => {
-  resetSourceResolutionCache()
-  const { executeBatch } = await import("react-rewrite-cli/dist/batch-transform.js")
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "de-apply-"))
-  const file = path.join(root, "src", "Fixture.tsx")
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  const original = [
-    "export function Fixture() {",
-    "  return (",
-    '    <div className="p-2 text-sm">',
-    '      <button className="rounded bg-blue-500 px-3">Go</button>',
-    "    </div>",
-    "  )",
-    "}",
-    "",
-  ].join("\n")
-  fs.writeFileSync(file, original)
-
-  const parent = mount('<div class="p-2 text-sm"><button class="rounded bg-blue-500 px-3">Go</button></div>')
-  const bridge = makeBridge({
-    // No line and no column: the discoverFile fallback is the path that gives
-    // the transformer the least to go on, so it is the one worth proving.
-    asyncInfo: null,
-    discovered: "src/Fixture.tsx",
-  })
-  const writer = createWriter(bridge)
-  writer.applyClasses(
-    selectionFor(parent.firstElementChild),
-    { remove: ["bg-blue-500"], add: ["bg-red-500"] },
-    "Background"
-  )
-  await settle()
-
-  const operations = bridge.store.buildBatchOperations()
-  assert.equal(operations.length, 1)
-  assert.equal(operations[0].line, 0, "the fallback path carries no line")
-
-  const { results } = executeBatch(operations, root)
-  assert.equal(results[0].success, true, results[0].error ?? "no error reported")
-  const written = fs.readFileSync(file, "utf8")
-  assert.ok(written.includes("bg-red-500"), written)
-  assert.ok(!written.includes("bg-blue-500"), written)
-  // Nothing else moved.
-  assert.ok(written.includes('<div className="p-2 text-sm">'), written)
-  fs.rmSync(root, { recursive: true, force: true })
-})
-
-// --- what cannot be written ------------------------------------------------
-
-await check("AS-11 a preview-only change becomes an agent-ready prompt", async () => {
-  clearPreviewOnly()
-  resetSourceResolutionCache()
-  const element = mount('<div class="card">Card</div>')
-  const bridge = makeBridge({
-    asyncInfo: {
-      tagName: "div",
-      componentName: "Card",
-      filePath: "src/components/card.tsx",
-      lineNumber: 12,
-      columnNumber: 2,
-      stack: [],
-    },
-    componentName: "Card",
-  })
-  createWriter(bridge).applyStyles(
-    selectionFor(element, "Card"),
-    [{ property: "transform", value: "translate(12px, 0px)" }],
-    "Move"
-  )
-
-  // The toolbar reads this on the very next line, so it cannot wait for a path.
-  assert.deepEqual(untranslatedProperties(), ["transform"])
-  await settle()
-
-  const prompt = buildChangePrompt()
-  assert.ok(prompt.includes("## src/components/card.tsx"), prompt)
-  assert.ok(prompt.includes("`transform`"), prompt)
-  assert.ok(prompt.includes("translate(12px, 0px)"), prompt)
-  assert.ok(prompt.includes('<div class="card">'), prompt)
-  assert.equal(previewOnlyChanges().length, 1)
-})
-
-await check("AS-12 dragging records one change, not one per frame", () => {
-  clearPreviewOnly()
-  for (const x of [1, 2, 3, 40]) {
-    recordPreviewOnly({
-      filePath: "src/a.tsx",
-      componentName: "A",
-      tagName: "div",
-      className: "c",
-      property: "transform",
-      from: "none",
-      to: `translate(${x}px, 0px)`,
-    })
-  }
-  const changes = previewOnlyChanges()
-  assert.equal(changes.length, 1)
-  assert.equal(changes[0].from, "none")
-  assert.equal(changes[0].to, "translate(40px, 0px)")
-})
-
-await check("AS-13 an icon swap is in the prompt but not in the Apply toast", () => {
-  clearPreviewOnly()
-  recordPreviewOnly({
-    filePath: "src/components/chip.tsx",
-    componentName: "Chip",
-    tagName: "svg",
-    className: "size-4",
-    property: "icon",
-    from: "ChevronRight",
-    to: "ArrowUpRight",
-  })
-  const prompt = buildChangePrompt()
-  assert.ok(prompt.includes("swap the icon to `ArrowUpRight`"), prompt)
-  assert.ok(prompt.includes("ChevronRight"), prompt)
-  // It already said "preview only" when it happened; the Apply toast lists the
-  // CSS properties, and repeating the swap there reports one loss twice.
-  assert.deepEqual(untranslatedProperties(), [])
-})
-
-await check("AS-14 an unresolved file becomes a component to search for", () => {
-  clearPreviewOnly()
-  recordPreviewOnly({
-    filePath: null,
-    componentName: "MysteryPanel",
-    tagName: "section",
-    className: "panel",
-    property: "backdrop-filter",
-    from: "none",
-    to: "blur(8px)",
-  })
-  const prompt = buildChangePrompt()
-  assert.ok(prompt.includes("File not resolved"), prompt)
-  assert.ok(prompt.includes("Search for `MysteryPanel`"), prompt)
-})
-
-await check("AS-15 the clipboard text carries no home directory and no attribution", () => {
-  const sanitized = sanitizeChangePrompt(
-    [
-      "## /Users/someone/Documents/Websites/Client Projects Local/host-app/src/a.tsx",
-      "**Source:** src_components_ui_127363p._.js:2295",
-      "- `<div>` — set `gap` to `8px`",
-      "- see `packages/ui/src/b.tsx`",
-      "",
-    ].join("\n")
-  )
-  assert.ok(sanitized.includes("## src/a.tsx"), sanitized)
-  assert.ok(!sanitized.includes("someone"), sanitized)
-  assert.ok(!sanitized.includes("**Source:**"), sanitized)
-  // A relative path that merely contains `src/` is not an absolute one.
-  assert.ok(sanitized.includes("packages/ui/src/b.tsx"), sanitized)
-})
-
-await check("AS-16 copy is one sanitised clipboard write, and answers whether it landed", async () => {
-  clearPreviewOnly()
-  const writes = []
-  Object.defineProperty(window.navigator, "clipboard", {
-    value: {
-      writeText(text) {
-        writes.push(text)
-        return Promise.resolve()
-      },
-    },
-    configurable: true,
-  })
-  recordPreviewOnly({
-    filePath: "/Users/someone/host-app/src/a.tsx",
-    componentName: "A",
-    tagName: "div",
-    className: "c",
-    property: "mix-blend-mode",
-    from: "normal",
-    to: "multiply",
-  })
-  assert.equal(await copyChangePrompt(), true)
-  assert.equal(writes.length, 1)
-  assert.ok(writes[0].includes("## src/a.tsx"), writes[0])
-  assert.ok(writes[0].includes("mix-blend-mode"), writes[0])
-
-  // Refused by the Clipboard API (Chrome, in an unfocused frame), the same
-  // sanitised text still lands through the copy command.
-  Object.defineProperty(window.navigator, "clipboard", {
-    value: {
-      writeText() {
-        return Promise.reject(new Error("Document is not focused."))
-      },
-    },
-    configurable: true,
-  })
-  let carried = null
-  window.document.execCommand = (command) => {
-    if (command !== "copy") return false
-    const before = new window.Event("beforecopy", { bubbles: true, cancelable: true })
-    window.document.body.dispatchEvent(before)
-    if (!before.defaultPrevented) return false
-    const copy = new window.Event("copy", { bubbles: true, cancelable: true })
-    copy.clipboardData = { setData: (type, value) => type === "text/plain" && (carried = value) }
-    window.document.body.dispatchEvent(copy)
-    return true
-  }
-  assert.equal(await copyChangePrompt(), true)
-  assert.equal(carried, writes[0], "the command route carried different text")
-
-  // Refused on every route: answered, never thrown. Not an error the user has
-  // to dismiss; the surface that owns the button decides what to say.
-  delete window.document.execCommand
-  assert.equal(await copyChangePrompt(), false)
-})
 
 await check("AS-17 a source that lands after the click patches the record, not the selection", async () => {
   // The identity rule in core/store.ts: a new \`selection\` array tells every
@@ -608,10 +330,10 @@ await check("AS-17 a source that lands after the click patches the record, not t
   }
 })
 
+
 /*
- * The server rehearses an Apply before it is clicked (`runtime/apply-ahead.mjs`)
- * so the click only waits for a write. It can only rehearse what it is shown:
- * the queue's operations, once the edits settle — not one message per edit.
+ * Edits are notes for the agent: the editor sends the server nothing while
+ * they happen, so no commit and no rehearsal of one reaches the vendor.
  */
 await check("AS-18 edits send the server nothing: no commit and no rehearsal of one", async () => {
   resetSourceResolutionCache()

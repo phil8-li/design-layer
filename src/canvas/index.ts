@@ -79,7 +79,7 @@ const CANVAS_COMMANDS: Record<Exclude<CanvasAction, "nudge">, CommandId> = {
 }
 
 export function installCanvas(context: EditorContext): void {
-  const writer = createWriter(context.bridge)
+  const writer = createWriter()
   const resolver = getResolver(context.bridge)
   const scope = scopeAccess(context)
 

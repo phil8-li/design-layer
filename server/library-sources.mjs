@@ -114,8 +114,10 @@ export const LIBRARY_SOURCE_KINDS = Object.freeze([
  * 5: a walled guessed path no longer hides a public page's tokens; a keyword
  *    font weight is read on a custom-property text style; a token file stops
  *    at its leaf ceiling; overlong values and selectors are not read.
+ * 6: a component no longer carries `group` (a Storybook title's folders, a
+ *    docs page's parent segment), which only the retired insert read.
  */
-export const CATALOG_READER_VERSION = 5
+export const CATALOG_READER_VERSION = 6
 
 /**
  * The library's identity, derived from its path rather than stored.

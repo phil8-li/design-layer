@@ -207,11 +207,7 @@ function linesAt(source, offsets) {
  * Every name the file declares itself, imports aside.
  *
  * This is what makes `definedIn` discoverable rather than something the caller
- * has to already know, and it is the same question `declaresLocally` in
- * `server/react-source.mjs` asks for a different purpose — that one is guarding
- * an import it is about to write, this one is looking for the definition the
- * usages point at. Neither can be expressed in terms of the other, so the walk
- * is written twice rather than generalised into a shape that serves neither.
+ * has to already know: the definition the usages point at.
  *
  * Only top-level declarations count. A component declared inside a function is
  * not the project's `Button`, and an import is not a declaration at all — a
@@ -241,13 +237,11 @@ function declaredNames(ast) {
 /**
  * Babel from the host project when it has one, ours otherwise.
  *
- * The same two-step `server/variants.mjs` and `server/react-source.mjs` each
- * make, and it is duplicated here for the same reason they duplicate it from
- * each other: a project pinned to a newer parser can contain syntax ours cannot
+ * The same two-step `server/variants.mjs` makes, and it is duplicated here for
+ * the same reason: a project pinned to a newer parser can contain syntax ours cannot
  * read, and the host's own copy is by definition able to parse the host's own
- * files. Neither sibling exports its resolution, and reaching into one of them
- * for it would couple this module to a file it otherwise only borrows a scanner
- * from.
+ * files. The sibling does not export its resolution, and reaching into it would
+ * couple two modules that otherwise share nothing.
  */
 let ourParse = null
 function hostParser(projectRoot) {

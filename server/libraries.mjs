@@ -525,11 +525,10 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
 
     if (source.kind === "components") {
       // `projectRoot` is only nominally optional here. Each component reports
-      // the file that declares it, and that path is what the insertion writer
-      // turns into an `import` specifier — so measured against the scanned
-      // directory rather than the project, every import a placed component
-      // needs would name a file that does not exist. The scan's own fallback is
-      // for a caller with no project to measure against; this one has one.
+      // the file that declares it, and the inspector and the agent read that
+      // path against the project, not against the scanned directory. The
+      // scan's own fallback is for a caller with no project to measure
+      // against; this one has one.
       const scan = await scanComponentLibrary(absolute, { projectRoot })
       return { ...emptyCatalog(fallbackName), components: scan?.components ?? [] }
     }

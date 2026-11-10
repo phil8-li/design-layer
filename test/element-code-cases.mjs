@@ -1,28 +1,14 @@
 /**
- * The code view, the generator behind it, and the left strip it was removed from.
+ * The element-code generator, and the left strip the Code tab was removed from.
  *
- * The view is `panels/inspector/tab-code.ts` and hands back an `InspectorTab`.
- * Neither panel mounts it any more — the left strip's Code tab was removed — so
- * this suite mounts it directly to keep the module honest, and installs BOTH
- * panels to pin that neither strip carries a Code tab.
+ * `core/element-code.ts` turns the live element into JSX, HTML or a class list
+ * for the layer header's and the layer menu's "copy as code". No route hands
+ * back a source file, so everything is derived from the element, and every
+ * question about what the code should say is asked of `elementCode`, not of
+ * the DOM. The last section installs both panels to pin that neither strip
+ * carries a Code tab: the Code tab and its view were retired.
  *
- * This tab is the one view in the editor that is REBUILT rather than read: no
- * route hands back a source file, so the panel derives everything from the live
- * element. That makes two things worth pinning, and they pull in opposite
- * directions:
- *
- *  - the generator is pure and testable on its own, so every question about
- *    what the source should say is asked of `elementCode`, not of the DOM;
- *  - the panel is layout, so every question about it is asked of the rendered
- *    nodes — the three views, the five tints, the empty state, and the copy.
- *
- * The copy case is the one that cannot be moved into the generator: the point
- * of it is that `navigator.clipboard.writeText` is reached synchronously inside
- * the click task, while the transient user activation still holds. A test that
- * awaited before asserting would pass against an implementation the browser
- * refuses at runtime.
- *
- * Usage: node designlayer/test/code-tab-cases.mjs
+ * Usage: node designlayer/test/element-code-cases.mjs
  */
 
 import assert from "node:assert/strict"
@@ -123,7 +109,6 @@ const bundled = await build({
       export { createContext } from "./src/core/context"
       export { installLeftPanel } from "./src/panels/left"
       export { installInspector } from "./src/panels/inspector/index"
-      export { codeTab } from "./src/panels/inspector/tab-code"
       export { setState } from "./src/core/store"
       export { CODE_VIEWS, codeText, elementCode } from "./src/core/element-code"
       export { shellCss } from "./src/core/css"
@@ -266,29 +251,14 @@ const slot = () => {
   window.document.body.append(node)
   return node
 }
-/** Every toast the lane raised, in order: the Code tab's copy reports here. */
-const toasts = []
 const bridge = {
   elementInfo: () => null,
   send() {},
-  toast(message, kind) {
-    toasts.push({ message, kind })
-  },
+  toast() {},
   subscribe: () => () => {},
-  store: {
-    setActiveTool() {},
-    hasChanges: () => false,
-    buildBatchOperations: () => [],
-    onStateChange() {},
-    getCanvasTransform: () => ({ x: 0, y: 0, scale: 1 }),
-    viewportToPage: (x, y) => ({ x, y }),
-    pageToViewport: (x, y) => ({ x, y }),
-  },
+  store: { setActiveTool() {} },
 }
-/*
- * Both panels, so "no Code tab" is asked of real strips rather than empty divs,
- * and the code view on its own host, since no panel mounts it.
- */
+/* Both panels, so "no Code tab" is asked of real strips rather than empty divs. */
 const left = slot()
 const right = slot()
 const context = editor.createContext(bridge, {
@@ -299,40 +269,10 @@ const context = editor.createContext(bridge, {
 })
 editor.installLeftPanel(context)
 editor.installInspector(context)
-const codeHost = slot()
-const code = editor.codeTab(context)
-codeHost.append(code.node)
 
 const tabsIn = (panel) => Array.from(panel.querySelectorAll('[role="tab"]'))
-/** Re-read the world synchronously, the call a hosting strip would make. */
-const openCode = () => {
-  code.update()
-  return pane()
-}
-const pane = () => codeHost.querySelector(".de-code")
-const codeView = () => pane().querySelector(".de-code-view")
-/**
- * What the view says, read back as text.
- *
- * The newline is structural now — one row per line, so the gutter can number
- * them — so the rows are rejoined here. This still asserts the screen matches
- * the generator character for character; it just reads the rows instead of a
- * flat run.
- */
-const viewText = () =>
-  Array.from(codeView().querySelectorAll(".de-code-text"))
-    .map((line) => line.textContent)
-    .join("\n")
-const picker = () => pane().querySelector(".de-select")
-const copyButton = () => pane().querySelector(".de-code-actions button")
-const status = () => pane().querySelector(".de-code-status")
 
-const showView = (id) => {
-  picker().value = id
-  picker().dispatchEvent(new window.Event("change", { bubbles: true }))
-}
-
-console.log("\nCode tab")
+console.log("\nNo Code tab")
 
 check("neither the left rail nor the inspector carries a Code tab", () => {
   assert.ok(left.querySelector(".de-tabs"), "the left panel has no tab strip")
@@ -345,198 +285,6 @@ check("neither the left rail nor the inspector carries a Code tab", () => {
   }
   assert.equal(window.document.getElementById("de-left-tabpanel-code"), null)
   assert.equal(left.querySelector(".de-code"), null, "a code view is mounted in the left panel")
-})
-
-check("with nothing selected the pane offers the empty state, not a blank <pre>", () => {
-  editor.setState({ selection: [] })
-  openCode()
-  assert.equal(codeView().hidden, true)
-  const empty = pane().querySelector(".de-empty")
-  assert.equal(empty.hidden, false)
-  assert.match(empty.textContent, /Select an element/)
-  assert.equal(copyButton().disabled, true)
-})
-
-check("the header offers exactly the three views that are derivable here", () => {
-  assert.deepEqual(
-    Array.from(picker().options).map((option) => option.value),
-    editor.CODE_VIEWS.map((view) => view.id)
-  )
-  assert.deepEqual(
-    Array.from(picker().options).map((option) => option.textContent),
-    ["JSX", "HTML", "Tailwind classes"]
-  )
-})
-
-check("selecting an element draws it, and the pre matches the generator", () => {
-  editor.setState({ selection: [cardSelection] })
-  openCode()
-  assert.equal(codeView().hidden, false)
-  assert.equal(pane().querySelector(".de-empty").hidden, true)
-  assert.equal(viewText(), text("jsx"))
-  assert.equal(copyButton().disabled, false)
-})
-
-check("the tints reach the DOM as the five reserved classes", () => {
-  const classes = new Set(
-    Array.from(codeView().querySelectorAll("span")).map((span) => span.className)
-  )
-  for (const name of ["de-code-tag", "de-code-attribute", "de-code-string", "de-code-number", "de-code-punctuation"]) {
-    assert.ok(classes.has(name), `nothing was tinted ${name}`)
-  }
-})
-
-check("switching the picker switches the view without touching the selection", () => {
-  showView("html")
-  assert.equal(viewText(), text("html"))
-  showView("classes")
-  assert.equal(viewText(), text("classes"))
-  assert.match(viewText(), /^rounded-xl\n/)
-  showView("jsx")
-  assert.equal(viewText(), text("jsx"))
-})
-
-check("the resolved source shows as file:line, never as the user's home", () => {
-  const where = pane().querySelector(".de-code-source")
-  assert.equal(where.textContent, "digest-card.tsx:42")
-  assert.ok(!where.textContent.includes("/Users/someone"), "an absolute path reached the header")
-})
-
-check("an unresolved element leaves the reference blank rather than guessing", () => {
-  editor.setState({ selection: [selectionFor(card)] })
-  openCode()
-  assert.equal(pane().querySelector(".de-code-source").textContent, "")
-  editor.setState({ selection: [cardSelection] })
-  openCode()
-})
-
-console.log("\nCopy")
-
-check("the clipboard write happens in the click task, before any await", () => {
-  let written = null
-  Object.defineProperty(window.navigator, "clipboard", {
-    value: { writeText: (value) => ((written = value), Promise.resolve()) },
-    configurable: true,
-  })
-  copyButton().dispatchEvent(new window.MouseEvent("click", { bubbles: true }))
-  assert.ok(written, "nothing was written synchronously")
-  assert.equal(written, text("jsx"))
-})
-
-// The success toast waits for the clipboard write to resolve, a few microtasks
-// on. Microtasks only: a whole task would let the pane's next render reset the
-// tick this case is about to read.
-for (let turn = 0; turn < 5; turn += 1) await Promise.resolve()
-check("the button flips to a check, and a toast names what was copied", () => {
-  assert.match(copyButton().textContent, /Copied/)
-  assert.deepEqual(toasts.at(-1), { message: "Copied JSX", kind: "info" })
-  // The footer line keeps describing the view; it is not a feedback channel.
-  assert.doesNotMatch(status().className, /--success|--error/)
-})
-
-check("what is copied is the view you are looking at, not always the JSX", () => {
-  let written = null
-  Object.defineProperty(window.navigator, "clipboard", {
-    value: { writeText: (value) => ((written = value), Promise.resolve()) },
-    configurable: true,
-  })
-  showView("classes")
-  copyButton().dispatchEvent(new window.MouseEvent("click", { bubbles: true }))
-  assert.equal(written, text("classes"))
-  showView("jsx")
-})
-
-/*
- * The Mac app's case: Chrome refuses `writeText` in a frame that does not hold
- * focus, with no permission involved. The copy has to land anyway, through the
- * copy command, which is stubbed here the way Chrome runs it: `beforecopy` asks
- * whether the command is enabled, then `copy` carries a writable DataTransfer.
- */
-{
-  let carried = null
-  Object.defineProperty(window.navigator, "clipboard", {
-    value: { writeText: () => Promise.reject(new window.DOMException("Document is not focused.", "NotAllowedError")) },
-    configurable: true,
-  })
-  window.document.execCommand = (command) => {
-    if (command !== "copy") return false
-    const before = new window.Event("beforecopy", { bubbles: true, cancelable: true })
-    window.document.body.dispatchEvent(before)
-    if (!before.defaultPrevented) return false
-    const copy = new window.Event("copy", { bubbles: true, cancelable: true })
-    copy.clipboardData = { setData: (type, value) => type === "text/plain" && (carried = value) }
-    window.document.body.dispatchEvent(copy)
-    return true
-  }
-  copyButton().dispatchEvent(new window.MouseEvent("click", { bubbles: true }))
-  for (let turn = 0; turn < 5; turn += 1) await Promise.resolve()
-  check("a Clipboard API refused for focus still copies, through the copy command", () => {
-    assert.equal(carried, text("jsx"), "the command route carried different text, or none")
-    assert.deepEqual(toasts.at(-1), { message: "Copied JSX", kind: "info" })
-    assert.match(copyButton().textContent, /Copied/)
-  })
-  delete window.document.execCommand
-}
-
-// Refused on every route: `writeText` throws, and jsdom has no copy command.
-Object.defineProperty(window.navigator, "clipboard", {
-  value: {
-    writeText: () => {
-      throw new Error("denied")
-    },
-  },
-  configurable: true,
-})
-copyButton().dispatchEvent(new window.MouseEvent("click", { bubbles: true }))
-for (let turn = 0; turn < 5; turn += 1) await Promise.resolve()
-check("a clipboard refused on every route is reported, not swallowed", () => {
-  assert.equal(toasts.at(-1).kind, "error")
-  assert.equal(toasts.at(-1).message, "Could not copy to the clipboard. Try again")
-  assert.match(copyButton().textContent, /^Copy$/)
-})
-
-check("this view is read-only: no Reset, because nothing can be written back", () => {
-  const labels = Array.from(pane().querySelectorAll("button")).map((node) => node.textContent.trim())
-  assert.deepEqual(labels, ["Copy"])
-})
-
-console.log("\nLine gutter")
-
-check("every line is a numbered row, counting from one", () => {
-  editor.setState({ selection: [cardSelection] })
-  openCode()
-  showView("jsx")
-  const rows = Array.from(codeView().querySelectorAll(".de-code-line"))
-  assert.equal(rows.length, text("jsx").split("\n").length)
-  assert.deepEqual(
-    rows.map((row) => row.dataset.line),
-    rows.map((_, index) => String(index + 1))
-  )
-})
-
-check("the number is not part of the text, so a copy takes only the code", () => {
-  // Drawn by ::before from the attribute, so it is in no text node at all.
-  for (const row of codeView().querySelectorAll(".de-code-line")) {
-    assert.equal(row.textContent, row.querySelector(".de-code-text").textContent)
-  }
-  assert.equal(viewText(), text("jsx"))
-  assert.match(editor.shellCss, /\.de-code-line::before\s*\{[^}]*content:\s*attr\(data-line\)/)
-})
-
-check("a long line wraps rather than running off a 260px panel", () => {
-  assert.match(editor.shellCss, /\.de-code-text\s*\{[^}]*white-space:\s*pre-wrap/)
-})
-
-console.log("\nCode stylesheet")
-
-check("the five syntax tints are all declared", () => {
-  for (const name of ["tag", "attribute", "string", "number", "punctuation"]) {
-    assert.match(editor.shellCss, new RegExp(`\\.de-code-${name}\\s*\\{[^}]*color:`))
-  }
-})
-
-check("the empty state fills the slot the code view would have taken", () => {
-  assert.match(editor.shellCss, /\.de-code \.de-empty\s*\{[^}]*flex:\s*1/)
 })
 
 /*

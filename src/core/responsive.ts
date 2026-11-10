@@ -157,11 +157,3 @@ export function responsiveClassBindings(
       return a.px - b.px || a.sourceIndex - b.sourceIndex
     })
 }
-
-export function replaceResponsiveClass(
-  binding: ResponsiveClassBinding,
-  nextUtility: string
-): { remove: string[]; add: string[] } {
-  const utility = nextUtility.trim()
-  return { remove: [binding.original], add: utility ? [`${binding.prefix}${utility}`] : [] }
-}

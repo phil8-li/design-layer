@@ -2059,7 +2059,7 @@ console.log("\nA change to the reading rules bumps the reader version")
  * When this fails on purpose: bump the version, then set both fields to what
  * the failure message prints.
  */
-const READER_FINGERPRINT = { version: 5, hash: "bfe3c113c1d09318" }
+const READER_FINGERPRINT = { version: 6, hash: "80fb27ea1b88d0f8" }
 
 /** A site served from a map of URL to `[status, body, headers]`; 404 for anything else. */
 function site(routes) {

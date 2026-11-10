@@ -47,8 +47,8 @@
  *
  * A toast is for news the reader cannot see on the canvas. Raise one for:
  *
- *   - an error, or a change that did not fully land ("preview only");
- *   - a handoff: notes or change prompts copied, or sent to the agent;
+ *   - an error, or a change that did not fully land;
+ *   - a handoff: notes copied, or sent to the agent;
  *   - something copied to the clipboard, which has no visible trace;
  *   - a write to source or to disk (a lint fix, a saved default);
  *   - a destructive step that offers Undo (deleting notes);

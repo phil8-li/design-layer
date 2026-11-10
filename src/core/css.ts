@@ -12,14 +12,12 @@ import { inspectorCss } from "./css/inspector"
 import { leftTabsCss } from "./css/left-tabs"
 import { appChooserCss } from "./css/app-chooser"
 import { macAppCss } from "./css/mac-app"
-import { codeCss } from "./css/code"
 import { annotationsCss } from "./css/annotations"
 import { layersCss } from "./css/layers"
 import { optionsCss } from "./css/options"
 import { librariesCss } from "./css/libraries"
 import { lintCss } from "./css/lint"
 import { canvasCss } from "./css/canvas"
-import { insertCss } from "./css/insert"
 import { lintMarkersCss } from "./css/lint-markers"
 import { iconsCss } from "./css/icons"
 import { launcherCss } from "./css/launcher"
@@ -60,7 +58,6 @@ export const shellCss =
   // The foot of the same panel, drawn as the chooser's mirror, so the two read
   // side by side here the way they do on screen.
   macAppCss +
-  codeCss +
   annotationsCss +
   layersCss +
   optionsCss +
@@ -85,7 +82,6 @@ export const shellCss =
   // into the same overlay as the selection frame, and the one rule it cannot
   // afford to lose is `pointer-events: none`, which is only load-bearing while
   // it sits alongside the rest of the overlay's chrome.
-  insertCss +
   // Last of the overlay's three, and deliberately after `annotations`: the two
   // marker layers are mutually exclusive, so they never paint together, but
   // they do share the overlay's positioning vocabulary. Sitting later means an

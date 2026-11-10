@@ -169,36 +169,24 @@ export interface AnnotationRecord {
  * notes asks the agent to redo work that is done; sending only the edits omits
  * every reason. They belong in one outbox.
  *
- * This is NOT the change-prompt ledger. That ledger holds the subset of edits
- * the writer could not express in source, because its job is to be the second
- * half of "Apply to code". This holds every edit, written or not, because its
- * job is to be the record of what the designer did — and "I moved this and it
- * worked" is as much a thing to tell an agent as "I moved this and it did not".
+ * This holds every edit, because its job is to be the record of what the
+ * designer did on the page.
  */
 export interface EditRecord {
   id: string
   /** ISO 8601, so notes and edits can be read back in the order they happened. */
   createdAt: string
   /**
-   * The CSS property, or one of the ledger's own sentinels — `class`, `icon`,
-   * `text`, `remove`. Deliberately the same vocabulary `change-prompt.ts`
-   * already uses: two spellings of "what changed" in one codebase is how the
-   * panel and the brief come to disagree about the same edit.
+   * The CSS property, or one of the sentinels `class`, `icon`, `text`,
+   * `remove`, `reorder` and `attribute:<name>`. One vocabulary for the panel
+   * and the brief: two spellings of "what changed" is how they come to
+   * disagree about the same edit.
    */
   property: string
   from: string
   to: string
   /** Where it happened, captured at the time, same as an annotation's target. */
   target: AnnotationTarget | null
-  /**
-   * Whether it reached the source file.
-   *
-   * An agent reads these two cases completely differently: a written change is
-   * already in the file it is about to open, and re-applying it would be a
-   * conflict; an unwritten one is still only pixels and is the actual request.
-   * Reporting them alike is how an agent ends up undoing the designer's work.
-   */
-  written: boolean
   /** As on `AnnotationRecord`: set by a send that reached the queue, unset by a later change to the row. */
   sentAt?: string
   sentIn?: string | null

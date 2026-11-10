@@ -1,7 +1,7 @@
 /**
  * The editor's remembered state, kept for the whole machine.
  *
- * Notes and the preview-only ledger used to live only in the page's
+ * Notes and their settings used to live only in the page's
  * localStorage, and localStorage belongs to one origin. Each app's editor is
  * served from its own port now, the same editor can be reached as `localhost`
  * or `127.0.0.1`, and the Mac app is a browser profile of its own, so a note

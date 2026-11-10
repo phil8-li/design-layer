@@ -1,10 +1,10 @@
 /**
  * CSS declaration -> Tailwind class update.
  *
- * The React Rewrite engine only ever writes Tailwind utilities into JSX; it has
- * no verb for a raw inline style. So every inspector control that thinks in CSS
- * is translated here, once, on the way to the source writer. Inline styles still
- * drive the live preview — this is only what lands in the file.
+ * Every inspector control thinks in CSS, and inline styles drive the live
+ * preview. The agent's brief names the Tailwind class that compiles to the
+ * previewed value (`annotations/edit-words.ts`), and this is the one table that
+ * translates it, in both directions (`toClassUpdate`, `propertyForClass`).
  */
 
 import { config } from "./config"
@@ -220,8 +220,8 @@ const DURATION_STEPS = new Set([0, 75, 100, 150, 200, 300, 500, 700, 1000])
 /**
  * Properties Tailwind has no utility for, written as an arbitrary-property
  * class (`[font-variation-settings:'wdth'_92]`). A text style read from a
- * stylesheet carries its variable-font axes, and without this every pick of
- * one reported its axes as preview only.
+ * stylesheet carries its variable-font axes, and without this the brief could
+ * name no class for them.
  */
 const ARBITRARY_PROPERTIES = new Set([
   "font-variation-settings",
@@ -361,14 +361,6 @@ function durationToken(value: string): string | null {
   if (!match) return null
   const ms = Math.round(Number(match[1]) * (match[2] === "s" ? 1000 : 1))
   return DURATION_STEPS.has(ms) ? String(ms) : null
-}
-
-/**
- * Stable per-property key. The engine uses it to replace an earlier pending
- * edit to the same property instead of stacking a second class onto the node.
- */
-export function propertyKey(property: string): string {
-  return property
 }
 
 export function toClassUpdate(property: string, rawValue: string): ClassUpdate | null {

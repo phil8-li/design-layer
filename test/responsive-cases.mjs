@@ -75,6 +75,7 @@ async function loadEditorHelpers() {
         export { createContext } from "./src/core/context"
         export { installInspector } from "./src/panels/inspector"
         export { responsiveSection } from "./src/panels/inspector/section-responsive"
+        export { edits, resetJournalForTest } from "./src/annotations/journal"
       `,
       resolveDir: PACKAGE_DIR,
       loader: "ts",
@@ -282,23 +283,6 @@ check("responsive bindings are ordered by breakpoint without losing source order
   )
 })
 
-check("replacing one breakpoint preserves base, siblings, and nested variants", () => {
-  const classes = ["grid", "grid-cols-1", "md:grid-cols-2", "dark:md:hover:gap-6", "xl:grid-cols-4"]
-  const binding = helpers.parseResponsiveClassName(
-    "dark:md:hover:gap-6",
-    workspace.tailwind.breakpoints
-  )
-  const edit = helpers.replaceResponsiveClass(binding, "gap-8")
-  assert.deepEqual(edit, {
-    remove: ["dark:md:hover:gap-6"],
-    add: ["dark:md:hover:gap-8"],
-  })
-  const after = classes.filter((name) => !edit.remove.includes(name)).concat(edit.add)
-  assert.ok(after.includes("grid-cols-1"))
-  assert.ok(after.includes("md:grid-cols-2"))
-  assert.ok(after.includes("xl:grid-cols-4"))
-})
-
 console.log("\nResponsive controls")
 
 await checkAsync("breakpoint controls are named and keep the caret across their write", async () => {
@@ -319,7 +303,10 @@ await checkAsync("breakpoint controls are named and keep the caret across their 
     window.document.body.append(node)
     return node
   }
-  const pending = []
+  // Edits are notes: what a write left behind is read off the journal, which
+  // is module state shared by every harness in this file, so it starts empty.
+  helpers.resetJournalForTest()
+  const notes = () => helpers.edits()
   const bridge = {
     elementInfo: () => ({
       tagName: "div", componentName: "Fixture", filePath: "/tmp/fixture.tsx",
@@ -327,10 +314,10 @@ await checkAsync("breakpoint controls are named and keep the caret across their 
     }),
     send() {}, subscribe: () => () => {}, toast() {},
     store: {
-      addPendingPropertyOperation: (...args) => pending.push(args),
       getCanvasTransform: () => ({ x: 0, y: 0, scale: 1 }),
       setCanvasTransform() {}, onCanvasTransformChange: () => () => {},
-      onStateChange: () => () => {}, hasChanges: () => false,    },
+      onStateChange: () => () => {},
+    },
   }
   const editor = helpers.createContext(bridge, {
     overlay: slot(), toolbar: slot(), left: slot(), right,
@@ -369,7 +356,7 @@ await checkAsync("breakpoint controls are named and keep the caret across their 
     assert.ok(target.classList.contains("dark:md:hover:gap-6"), "nested variant was removed")
     assert.ok(target.classList.contains("md:grid-cols-3"))
     assert.ok(target.classList.contains("md:gap-6"))
-    assert.ok(pending.length > 0, "responsive edit did not queue a source operation")
+    assert.ok(notes().length > 0, "the responsive edit left no note")
   } finally {
     globalThis.fetch = originalFetch
     dom.window.close()

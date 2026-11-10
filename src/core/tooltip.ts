@@ -470,8 +470,8 @@ function borrowTitle(node: HTMLElement, value: string): void {
     watch = new MutationObserver(() => {
       const held = borrowed
       if (!held || held.node !== node) return
-      // The control went away under the pointer — Apply hiding itself once
-      // nothing is left to write. No pointer event says so until the pointer
+      // The control went away under the pointer — a button hiding itself once
+      // its work is done. No pointer event says so until the pointer
       // next moves, so the card stood over nothing until the grace timer ran
       // out. It closes now, and hands the title back in the same breath.
       if (node.hidden) {

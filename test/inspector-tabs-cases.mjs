@@ -144,7 +144,6 @@ const bundled = await build({
     contents: `
       export { createContext } from "./src/core/context"
       export { installInspector } from "./src/panels/inspector/index"
-      export { recordPreviewOnly, clearPreviewOnly } from "./src/core/change-prompt"
       export { addAnnotation, resetAnnotationsForTest } from "./src/annotations/store"
       export { recordEdit, resetJournalForTest } from "./src/annotations/journal"
       export { shellCss } from "./src/core/css"
@@ -174,8 +173,6 @@ const bridge = {
   subscribe: () => () => {},
   store: {
     setActiveTool() {},
-    hasChanges: () => false,
-    buildBatchOperations: () => [],
     onStateChange() {},
     getCanvasTransform: () => ({ x: 0, y: 0, scale: 1 }),
     viewportToPage: (x, y) => ({ x, y }),
@@ -217,10 +214,9 @@ await check("three tabs, named for the three things you can be looking at", () =
     tabs().map((node) => node.textContent.trim()),
     ["Design", "Changes", "Design system"]
   )
-  // The ids too, because they are not decoration: `onPreviewOnlyChange` only
-  // repaints while `annotations` is active, the toolbar's pending indicator
-  // writes that same string into the store, and the keyboard layer addresses
-  // tabs by slot into this array. A rename leaves all three compiling.
+  // The ids too, because they are not decoration: the toolbar's pending
+  // indicator writes that same string into the store, and the keyboard layer
+  // addresses tabs by slot into this array. A rename leaves both compiling.
   assert.deepEqual(
     tabs().map((node) => node.getAttribute("aria-controls")),
     ["de-tabpanel-design", "de-tabpanel-annotations", "de-tabpanel-system"]
@@ -412,16 +408,6 @@ const CARD = {
   components: ["Card"],
 }
 
-const STRANDED = {
-  filePath: null,
-  componentName: "Card",
-  tagName: "div",
-  className: "rounded-xl",
-  property: "box-shadow",
-  from: "none",
-  to: "0 2px 8px rgba(0,0,0,.3)",
-}
-
 /**
  * Both stores back to empty, and the page's storage with them.
  *
@@ -431,14 +417,12 @@ const STRANDED = {
  * without clearing the key the next read rehydrates the previous case's notes
  * and every count from here on is off by whatever ran before it.
  *
- * `clearPreviewOnly` announces, and the announcement schedules a repaint on the
- * next frame; that frame is drained here so a pending one cannot land in the
- * middle of a case and be mistaken for the repaint the case is watching for.
+ * A frame is drained here so a pending repaint cannot land in the middle of a
+ * case and be mistaken for the repaint the case is watching for.
  */
 async function reset() {
   editor.resetAnnotationsForTest()
   editor.resetJournalForTest()
-  editor.clearPreviewOnly()
   window.localStorage.clear()
   await frame()
 }
@@ -452,7 +436,6 @@ await check("the copy button lives in the panel, and the toolbar holds no copy a
     from: "none",
     to: "0 2px 8px rgba(0,0,0,.3)",
     element: CTA,
-    written: false,
   })
   click(tabNamed("Changes"))
   assert.ok(copyButton(), "the Notes tab has no copy button")
@@ -491,7 +474,6 @@ await check("a pinned note and a recorded edit are one list, and arm the button"
     from: "none",
     to: "0 2px 8px rgba(0,0,0,.3)",
     element: CTA,
-    written: false,
   })
   click(tabNamed("Changes"))
 
@@ -594,7 +576,6 @@ await check("dropping the last row empties the list and takes the buttons with i
     from: "none",
     to: "0 2px 8px rgba(0,0,0,.3)",
     element: CTA,
-    written: false,
   })
   click(tabNamed("Changes"))
   assert.equal(copyButton().disabled, false)
@@ -606,55 +587,6 @@ await check("dropping the last row empties the list and takes the buttons with i
   // The session is empty again, so the column goes back to what it looks like
   // before anything happens: the empty state and Settings, nothing to press.
   assert.equal(copyButton(), null, "the buttons outlived the last row")
-})
-
-await check("the ledger repaints the outbox, and only while the outbox is showing", async () => {
-  await reset()
-  /*
-   * One edit first, so there is a list to plant a sentinel in.
-   *
-   * Each half of the outbox is its own section now, and a section holding
-   * nothing is taken out of the document entirely — so a fresh session has no
-   * `.de-ann-list` anywhere. This is the seed, not the subject: what is under
-   * test is still whether a LEDGER write repaints a tab nothing else told to
-   * look again.
-   */
-  editor.recordEdit({
-    property: "box-shadow",
-    from: "none",
-    to: "0 2px 8px rgba(0,0,0,.3)",
-    element: CTA,
-    written: false,
-  })
-  click(tabNamed("Changes"))
-
-  /*
-   * A write with no file to land in reaches the ledger from a promise inside the
-   * writer, long after the store settled — no selection change and no refresh,
-   * so nothing else would ever tell the tab to look again. A sentinel planted in
-   * the list is how the repaint is seen: `render()` empties the list before it
-   * refills it, so a rebuild takes the sentinel with it.
-   */
-  const plant = () => {
-    const node = window.document.createElement("span")
-    node.setAttribute("data-sentinel", "")
-    notesPane().querySelector(".de-ann-list").append(node)
-  }
-  const sentinel = () => notesPane().querySelector("[data-sentinel]")
-
-  plant()
-  editor.recordPreviewOnly({ ...STRANDED })
-  await frame()
-  assert.equal(sentinel(), null, "an open outbox was left stale by a ledger write")
-
-  // The same write with Design in front must not touch it. Repainting a pane
-  // nobody is looking at is the hot-path cost the tab host exists to avoid, and
-  // the hidden pane is re-read the moment it is switched to anyway.
-  click(tabNamed("Design"))
-  plant()
-  editor.recordPreviewOnly({ ...STRANDED, to: "0 4px 16px rgba(0,0,0,.4)" })
-  await frame()
-  assert.ok(sentinel(), "a hidden pane was repainted on a ledger write")
 })
 
 await check("a closed inspector owes its repaint and pays it on reopening", async () => {

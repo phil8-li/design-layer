@@ -510,7 +510,6 @@ await check("a session with no start screen still offers the other editors", asy
     editors: () => [editorEntry(), OTHER],
   }).list()
 
-  assert.equal(answer.chooser, true, "the menu was told there is nothing to choose from")
   assert.equal(answer.apps.length, 2)
   assert.ok(
     answer.apps.every((row) => row.kind === "editor"),
@@ -568,13 +567,12 @@ await check("the only editor on the machine has nothing to switch to", async () 
    * This used to assert `chooser: false`, and the browser read that as "this
    * session has no app chooser" and said so — inside the app chooser, to
    * everybody running a single editor with no start screen, which is the common
-   * shape. The field never meant that. It answers whether a supervisor can
-   * START something; an empty list is a fact about the machine right now, not a
-   * missing feature. So the answer is `true` with no rows, and the sentence
-   * about what the reader can do next belongs in the menu, where
+   * shape. An empty list is a fact about the machine right now, not a missing
+   * feature, so the answer is no rows and no flag, and the sentence about what
+   * the reader can do next belongs in the menu, where
    * `test/app-chooser-cases.mjs` pins it.
    */
-  assert.deepEqual(answer, { chooser: true, apps: [] })
+  assert.deepEqual(answer, { apps: [] })
 })
 
 /*
@@ -651,7 +649,6 @@ await check("the start screen going down does not take the local editors with it
     editors: () => [OTHER],
   }).list()
 
-  assert.equal(answer.chooser, true)
   assert.deepEqual(
     answer.apps.map((row) => row.target),
     ["http://127.0.0.1:3460"]
@@ -687,7 +684,7 @@ await check("a registry that cannot be read costs rows, never the answer", async
   // `chooser: true` with no rows, for the reason given on the single-editor
   // case above: the field says a supervisor could start something, not that
   // the menu exists. A failed read costs rows and nothing else.
-  assert.deepEqual(answer, { chooser: true, apps: [] })
+  assert.deepEqual(answer, { apps: [] })
 
   // And with a screen behind the session it still gets asked, because the half
   // that failed is not the half that answers this.

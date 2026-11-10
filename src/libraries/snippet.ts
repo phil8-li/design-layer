@@ -27,8 +27,8 @@ import type { EditorContext } from "../core/context"
  * is issued SYNCHRONOUSLY, before anything awaits. Both of `copyText`'s routes
  * need the transient user activation the click carries — so a refactor that
  * puts an `await` in front of this passes every test that awaits before
- * asserting and fails on real clicks. Same shape and same reasoning as the
- * Code tab's copy and `copyChangePrompt` in `core/change-prompt.ts`.
+ * asserting and fails on real clicks. Same shape and same reasoning as
+ * `copyHandover` in `annotations/handover.ts`.
  */
 export function copyLibrarySnippet(editor: EditorContext, snippet: string, name: string): void {
   if (!snippet) return

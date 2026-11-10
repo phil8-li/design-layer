@@ -42,20 +42,9 @@
  * Design edit since the editor stopped writing to source. The note under the
  * rows says the change is to the classes, not to the prop.
  *
- * A LIBRARY-documented prop is the open question, and it was investigated on
- * both lanes rather than assumed:
- *
- *  - **React cannot.** The pinned rewrite engine (`react-rewrite-cli@0.1.1`)
- *    has four source operations — `updateClass`, `updateText`, `reorder`,
- *    `moveSpacing` — and not one of them edits a JSX attribute.
- *  - **Angular cannot either, today, and is one wire operation away.**
- *    `AngularOperation` in `core/angular.ts` is `setStyles | setClasses |
- *    setText`; `editsFor` in `server/angular-source.mjs` answers exactly those
- *    three plus `removeElement` and `insertElement`. That server already has a
- *    general `setAttribute` splicer sitting in it, unreachable, because no
- *    operation asks for it. So `variant="primary"` in an Angular template is
- *    genuinely writable in principle and is not writable now, and minting that
- *    operation is a server change this section has no standing to make.
+ * A LIBRARY-documented prop is the open question. Nothing here writes source,
+ * so the question is only what the page can PREVIEW, and a React prop leaves
+ * no attribute behind to set.
  *
  * What Angular DOES supply is the other half. A component's selector is the DOM
  * tag, and an input written statically in a template — `variant="primary"` —
@@ -63,23 +52,23 @@
  * this section uses. A documented prop that is PRESENT as an attribute on the
  * selected element gets a control: setting it sets the attribute, which is a
  * live preview any component styling itself off `[variant="primary"]` actually
- * repaints for, and the change is filed through `recordPreviewOnly` so the
- * Changes tab hands it to an agent. A documented prop that is NOT on the
+ * repaints for, and the change is journaled so the Changes tab hands it to an
+ * agent. A documented prop that is NOT on the
  * element gets no control, because there is nothing to set, and setting it
  * would be inventing markup no file has.
  *
  * That is option (b) wherever the element supplies the evidence and option (a)
  * everywhere else — which on a React host is everywhere, since a React prop
  * leaves no attribute behind. The rows say which they are: a previewed one
- * toasts "— preview only" on every write and appears in Changes, a stated one
- * is printed as text with no control on it at all.
+ * appears in Changes, a stated one is printed as text with no control on it at
+ * all.
  *
  * Two things this deliberately does not claim. Setting an attribute does not
  * run Angular's change detection, so a component that reads its input once at
  * construction will not repaint — the attribute moved and the render may not,
- * and "preview only" is the truthful word for both. And nothing reaches `class`
- * or `style` by this path: those have real write lanes, and routing round them
- * would strand an edit that could have reached the file.
+ * and "preview" is the truthful word for both. And nothing reaches `class` or
+ * `style` by this path: those have writes of their own (`Writer.applyAttribute`
+ * says why).
  */
 
 import {

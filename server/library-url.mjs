@@ -315,18 +315,16 @@ export function parseStorybookIndex(json) {
 
   const components = []
   for (const entry of byTitle.values()) {
-    // "Primitives/Forms/Avatar": everything before the last segment is where a
-    // designer would look for it, the last segment is what they would call it.
+    // "Primitives/Forms/Avatar": the last segment is what a designer would
+    // call it.
     const segments = entry.title
       .split("/")
       .map((segment) => segment.trim())
       .filter(Boolean)
     const name = segments.length ? segments[segments.length - 1] : entry.title
-    const group = segments.slice(0, -1).join("/")
     components.push({
       id: componentId(entry.title),
       name,
-      ...(group ? { group } : {}),
       ...(entry.file ? { file: entry.file } : {}),
       ...(entry.stories.length
         ? {
@@ -440,13 +438,11 @@ export function componentFromPage(url, html) {
   const last = segments[segments.length - 1].replace(PAGE_EXTENSION, "")
   const name = humanize(words(last))
   if (!name) return null
-  const group = humanize(words(segments[segments.length - 2] ?? ""))
   const description = metaDescription(text)
 
   return {
     id: componentId(last),
     name,
-    ...(group ? { group } : {}),
     ...(description ? { description } : {}),
     // The URL itself: there is no project file behind this component, and a
     // consumer that wants to go and look at it wants the page.

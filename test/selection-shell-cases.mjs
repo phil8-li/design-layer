@@ -127,7 +127,6 @@ const bridge = {
   // stub for it here would let one grow back unnoticed.
   store: {
     setActiveTool() {},
-    hasChanges: () => false,
     onStateChange() {},
   },
 }

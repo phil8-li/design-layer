@@ -123,8 +123,8 @@ function railPlace(value: string): string | null {
  * is none.
  *
  * Not `vertical-align`: it does nothing on a block container. Not
- * `align-content`: `core/tailwind.ts` has no entry for it, so the edit would be
- * preview-only and never reach source. `justify-content` on a flex column and
+ * `align-content`: `core/tailwind.ts` has no entry for it, so the agent's
+ * brief could name no class swap for it. `justify-content` on a flex column and
  * `align-items` on a flex row or grid are both in the table, with
  * `flex-start`/`center`/`flex-end` mapped to utilities. Block, inline and table
  * have no writable answer, and get the rail disabled.

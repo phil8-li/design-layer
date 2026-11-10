@@ -28,7 +28,6 @@ import {
   stripFrameBlockingResponseHeaders,
   rewriteOverlayInjection,
 } from "./board-frame.mjs"
-import { installApplyAhead } from "./apply-ahead.mjs"
 import { appName } from "./app-name.mjs"
 import { ensureCurrentChromeBundle } from "./bundle-stamp.mjs"
 import { chooserUrlFromEnv, isLoopbackOrigin } from "./chooser-url.mjs"
@@ -288,7 +287,7 @@ async function loadRoutes(config) {
  * Not mounted on the proxy, which binds `auto`: this URL is typed into an
  * agent's config file by hand and has to survive a restart. A busy port is a
  * warning and nothing more — the editor's whole job is unaffected, and the
- * clipboard path in the Prompts tab still works.
+ * Changes tab's Copy still works.
  *
  * When the start screen this editor came from already serves it ("Stay on
  * between apps"), nothing binds here; `server/mcp-control.mjs` relays instead.
@@ -619,11 +618,6 @@ export async function launch(config, { appPort, host, open, verbose = false, onR
   // vendor-lazy.mjs) — installed before anything imports the vendor's
   // transform, and removed once the vendor has loaded.
   const releaseTransformHook = deferVendorTransform(vendor.entry)
-
-  // An Apply is worked out while the edits settle, so the click only writes
-  // (see apply-ahead.mjs). Installed over the patch above, so the rehearsal
-  // sees the same decoded paths the vendor will.
-  await installApplyAhead({ WebSocket, vendorEntry: vendor.entry })
 
   // The published proxy buffers Next's streamed HTML, sets Content-Length, but
   // leaves Transfer-Encoding: chunked in place. Browsers reject that conflicting

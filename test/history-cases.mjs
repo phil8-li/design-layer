@@ -100,7 +100,6 @@ const editor = await import(
 )
 const { history } = editor
 
-const queued = []
 const sent = []
 const bridge = {
   elementInfo: () => null,
@@ -109,14 +108,6 @@ const bridge = {
   subscribe: () => () => {},
   store: {
     setActiveTool() {},
-    hasChanges: () => false,
-    buildBatchOperations: () => [],
-    onStateChange() {},
-    getCanvasTransform: () => ({ x: 0, y: 0, scale: 1 }),
-    viewportToPage: (x, y) => ({ x, y }),
-    pageToViewport: (x, y) => ({ x, y }),
-    addPendingPropertyOperation: (mergeKey, operation, keys) =>
-      queued.push({ mergeKey, operation, keys }),
   },
 }
 
@@ -132,7 +123,7 @@ const selection = {
 
 const reset = () => {
   history.resetHistory()
-  queued.length = 0
+  editor.resetJournalForTest()
   sent.length = 0
   target.setAttribute("style", "")
   target.setAttribute("class", "rounded")
@@ -178,21 +169,13 @@ check("a fresh edit after an undo drops the redo branch", () => {
   assert.equal(history.canRedo(), false, "the abandoned branch is still redoable")
 })
 
-check("undo restores a value the source writer can still express", () => {
+check("undo takes an edit back off the page and out of the notes", () => {
   reset()
-  // Nothing is set inline, so the honest "before" is the empty string — which
-  // reverts the preview and leaves the pending source operation holding the
-  // change the user just took back. The computed value avoids that split.
   writer.applyStyles(selection, [{ property: "opacity", value: "0.5" }], "Set opacity")
-  queued.length = 0
+  assert.equal(editor.journalEdits().length, 1)
   history.undo()
   assert.notEqual(target.style.getPropertyValue("opacity"), "0.5")
-  assert.equal(queued.length, 1, "the undo queued nothing for source")
-  assert.equal(queued[0].keys[0], "opacity")
-  assert.ok(
-    !/0\.5/.test(JSON.stringify(queued[0].operation)),
-    "source still holds the undone value"
-  )
+  assert.deepEqual(editor.journalEdits(), [], "an undone edit stayed in the notes for the agent")
 })
 
 check("a class write undoes by swapping its two lists", () => {

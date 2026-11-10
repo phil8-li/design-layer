@@ -314,7 +314,6 @@ check("a legacy unscoped option is offered in every scope it has a slice in", ()
       [selection.key]: {
         key: selection.key,
         label: "Card",
-        activeOptionId: null,
         options: [
           { id: m.BASELINE_OPTION_ID, name: "Before options", className: "text-sm p-2", style: {}, createdAt: 0 },
           { id: "legacy", name: "Option 1", className: "text-lg bg-red-500 p-6", style: {}, text: "Hi", createdAt: 1 },
@@ -384,7 +383,6 @@ check("a known scope survives the round-trip and an unknown one is dropped", () 
   const stored = normalizeOptionSet(
     {
       label: "Card",
-      activeOptionId: null,
       options: [
         { id: "a", name: "Text style 1", className: "text-lg", style: {}, createdAt: 1, scope: "typography" },
         { id: "b", name: "Odd", className: "", style: {}, createdAt: 2, scope: "sparkle" },

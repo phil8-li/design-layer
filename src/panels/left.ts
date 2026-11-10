@@ -9,9 +9,9 @@
  * ## Where Code went
  *
  * This strip carried a Code tab between the two — the selected element written
- * back out as JSX, HTML or Tailwind classes. It was removed, and nothing in
- * this panel mounts it; the ⌥ keys below are positional, so the two tabs left
- * kept their keys.
+ * back out as JSX, HTML or Tailwind classes. It was removed with its view; the
+ * layer header and the layer menu copy the same code. The ⌥ keys below are
+ * positional, so the two tabs left kept their keys.
  *
  * ## Which tab is showing
  *
@@ -62,7 +62,7 @@
  * `panels/inspector/index.ts` builds an identical tab host, and this one is not
  * shared with it. It could not be without a rewrite of that file: its strip is
  * fused into `installInspector` alongside the focus memory, the section loop and
- * the ledger's out-of-band repaint, all of which close over the same locals, so
+ * the coalesced repaint, all of which close over the same locals, so
  * lifting the eight lines of DOM out means editing a file three other surfaces
  * currently depend on for the sake of removing a duplicate that is smaller than
  * the diff. So the ARIA contract is restated here instead, and the two are kept

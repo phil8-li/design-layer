@@ -31,7 +31,6 @@ import {
   type RewriteElementInfo,
   type RewriteStack,
 } from "../core/bridge"
-import { shortenAbsolutePaths } from "../core/change-prompt"
 import { config } from "../core/config"
 import { nthOfType } from "../core/element-target"
 import { getState } from "../core/store"
@@ -605,6 +604,18 @@ function componentsLine(target: AnnotationTarget | null): string | null {
   return `**${componentsLabel()}:** ${[...names].reverse().map((name) => `<${name}>`).join(" ")}`
 }
 
+/*
+ * An absolute path carries the user's home directory and their name; the tail
+ * from `src/` is what an agent working in the repo can use. Anchored on the
+ * leading slash so it only ever shortens an ABSOLUTE path:
+ * `packages/ui/src/x.tsx` has an `src/` too, and must survive untouched.
+ */
+const ABSOLUTE_PREFIX = /(^|[\s`])\/(?:[^\n`]*\/)?(?=src\/)/gm
+
+function shortenAbsolutePaths(markdown: string): string {
+  return markdown.replace(ABSOLUTE_PREFIX, "$1")
+}
+
 /**
  * The path as it is safe to show, with the line and column.
  *
@@ -696,7 +707,7 @@ function environmentBlock(): string[] {
  * already exact — a text, an icon, a delete or a move says everything.
  *
  * `class`, `icon`, `text`, `remove` and `reorder` are sentinels rather than CSS
- * properties, the vocabulary `change-prompt.ts` uses too.
+ * properties, the vocabulary `EditRecord.property` documents.
  */
 function exactPhrase(edit: EditRecord): string | null {
   if (["remove", "icon", "text", "reorder"].includes(edit.property)) return null

@@ -1344,7 +1344,7 @@ function showUpdate(banner, status) {
     state === "blocked"
       ? status.reason
       : open
-        ? "Restarts DesignLayer and " + plural(open, "open editor", "open editors") + ". Apply or send their changes first."
+        ? "Restarts DesignLayer and " + plural(open, "open editor", "open editors") + ". Send their changes first."
         : "Restarts DesignLayer. It takes about a minute."
   )
 }

@@ -282,11 +282,9 @@ await check("the old sentence, and its advice to allow a setting, is gone", () =
 await check("every Copy surface goes through copyText", () => {
   const surfaces = [
     "src/annotations/handover.ts",
-    "src/core/change-prompt.ts",
     "src/libraries/snippet.ts",
     "src/panels/inspector/section-classes.ts",
     "src/panels/inspector/tab-annotations.ts",
-    "src/panels/inspector/tab-code.ts",
   ]
   const missing = surfaces.filter(
     (file) => !/\bcopyText\(/.test(fs.readFileSync(path.join(PACKAGE_DIR, file), "utf8"))

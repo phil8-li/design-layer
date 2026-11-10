@@ -33,7 +33,7 @@ let installed = false
 
 /**
  * Installs the load hook. Stays installed for the life of the process: the
- * Apply rehearsal (`apply-ahead.mjs`) can load the module after the launch.
+ * vendor loads the module lazily, on its first commit.
  * `module.registerHooks` is Node 22.15/23.5 and later; on an older Node the
  * vendor keeps its own grouping.
  */

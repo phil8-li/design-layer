@@ -55,16 +55,14 @@ export function normalizeOptionSet(value, key) {
   const options = Array.isArray(value.options)
     ? value.options.map(normalizeOption).filter(Boolean).slice(0, MAX_OPTIONS_PER_SET)
     : []
-  const active =
-    typeof value.activeOptionId === "string" &&
-    options.some((option) => option.id === value.activeOptionId)
-      ? value.activeOptionId
-      : null
-
   return {
     key,
     label: typeof value.label === "string" && value.label ? value.label.slice(0, MAX_NAME) : key,
-    activeOptionId: active,
+    // Nothing chooses an "active" option any more: the verbs that set it went
+    // with the move to scoped styles. Written as null, not dropped, because an
+    // older checkout on this machine reads the same file and expects the key;
+    // whatever a client sends for it is ignored.
+    activeOptionId: null,
     options,
   }
 }
