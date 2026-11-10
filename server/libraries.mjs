@@ -67,6 +67,7 @@ import {
   parseLibrary,
 } from "./library-sources.mjs"
 import { keepUnreadable } from "./library-auth.mjs"
+import { isPlainObject } from "./library-common.mjs"
 import { URL_SOURCE_KIND, isLibraryUrl, libraryNameFromUrl, parseUrlLibrary } from "./library-url.mjs"
 
 /** A ceiling on the panel rather than a product limit: twenty cards is already a scroll. */
@@ -219,10 +220,6 @@ const FRAMEWORK_LABELS = { react: "React", angular: "Angular" }
  */
 const MIN_SYSTEM_TOKENS = 8
 const MIN_SINGLE_AXIS_TOKENS = 24
-
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
-}
 
 /** A catalog with nothing in it: what a source that cannot be read contributes. */
 function emptyCatalog(name) {

@@ -35,14 +35,12 @@
 import fs from "node:fs"
 import path from "node:path"
 
+import { isPlainObject } from "./library-common.mjs"
+
 /** Env var naming machine-wide companion manifests, separated by `:` or `,`. */
 export const COMPANIONS_ENV = "DESIGNLAYER_COMPANIONS"
 
 const SCRIPT_EXTENSIONS = new Set([".js", ".mjs", ".cjs"])
-
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
-}
 
 function readManifest(manifestPath) {
   let source

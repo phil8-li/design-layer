@@ -18,8 +18,9 @@
 
 import { chooserUrlFromEnv } from "../runtime/chooser-url.mjs"
 import { listEditors } from "../runtime/editor-registry.mjs"
-import { lastPage, portOfUrl, rememberPage } from "../runtime/last-pages.mjs"
 import { httpError as refusal } from "../runtime/http-error.mjs"
+import { lastPage, portOfUrl, rememberPage } from "../runtime/last-pages.mjs"
+import { isPlainObject } from "./library-common.mjs"
 
 // The chooser's own scan is the floor: it probes every candidate port
 // concurrently with a 1.5s ceiling and then reads package.json off disk for the
@@ -27,10 +28,6 @@ import { httpError as refusal } from "../runtime/http-error.mjs"
 // and stops well short of the point where a menu waiting on it reads as hung.
 const CHOOSER_TIMEOUT_MS = 4000
 
-
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
-}
 
 /**
  * One row, cut down to the five keys the browser is promised.
