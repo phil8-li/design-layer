@@ -15,7 +15,7 @@ them, and your coding agent makes every change in code over MCP.
 
 ![DesignLayer editing a live Next.js page: layers on the left, the selected headline in the middle, the design inspector on the right](docs/images/hero.webp)
 
-- **Edit, and keep it.** Layout, spacing, typography, fill, effects, insert and delete — each edit becomes a note your agent writes into real source.
+- **Edit, and keep it.** Layout, spacing, typography, fill, effects and delete — each edit becomes a note your agent writes into real source.
 - **Your design system, not ours.** Token pickers, components, and icons come from whatever your app already loads.
 - **Comment instead of coding.** Pin notes on elements and send them with your edit notes, and the source they point at, to Claude Code, Cursor, VS Code, or any MCP client.
 - **Nothing to install in your app.** Your app never imports DesignLayer. Stop the proxy and it leaves no trace.
