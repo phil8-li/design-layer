@@ -39,12 +39,14 @@
  * ## Where the keys are answered
  *
  * `shell/shortcuts.ts` is the only module that listens, and it dispatches
- * through `core/commands.ts`. The canvas lane still answers the five navigation
- * keys itself, because those depend on the selection, the scope and the
- * resolver memo it already holds — so they carry `owner: "canvas"` here. They
- * are in the table anyway: this is the one place that answers "what does this
- * key do?", and a table that omitted Tab because another file handles it would
- * be a table you cannot trust.
+ * through `core/commands.ts`. The canvas lane still hears its own keys —
+ * Escape, Enter, Tab, Delete and the arrows carry `owner: "canvas"` — because
+ * Escape has to cancel a held drag before it deselects and Tab is claimed only
+ * while something is selected. Their commands are registered all the same, by
+ * `canvas/index.ts` under the handlers the keys run, so a menu item that calls
+ * `runCommand("select.parent")` does what Shift+Enter does. This is the one
+ * place that answers "what does this key do?", and a table that omitted Tab
+ * because another file hears it would be a table you cannot trust.
  *
  * ⌘. is the other exception. `shell/way-back.ts` answers it, because it has to
  * be heard in places `shell/shortcuts.ts` deliberately is not: inside a text
@@ -190,15 +192,13 @@ export interface Shortcut {
   figma: string
   group: ShortcutGroup
   /**
-   * Who answers the key.
+   * Who hears the key.
    *
-   * `"canvas"` rows are documentation: `canvas/index.ts` has answered Tab,
-   * Enter, Escape, the arrows and Delete since before this table existed, and
-   * it answers them against the selection, the scope and a resolver memo that
-   * only it holds. Moving them here would be a refactor of the selection lane
-   * dressed up as a keymap change. They are listed because this file is meant
-   * to be the complete answer to "what does this key do", and a table with
-   * holes in it is one nobody checks before binding something new.
+   * `"canvas"` routes the key press to `canvas/index.ts` instead of
+   * `shell/shortcuts.ts`, which skips these rows so a key never runs twice.
+   * It says nothing about the command: the canvas registers every one of them
+   * except `element.nudge` (a nudge needs the arrow's direction, which a
+   * nullary command cannot carry), so `runCommand` reaches them like any other.
    */
   owner?: "shortcuts" | "canvas"
   /**
@@ -648,6 +648,16 @@ export function chordLabel(chord: Chord, mac = isMac()): string {
   return parts.join("+")
 }
 
+/**
+ * The key printed beside a command, read off the one keymap, or "" for a
+ * command no row binds. Every menu that prints a shortcut reads it here, so a
+ * menu cannot advertise a key the keyboard does not have.
+ */
+export function shortcutText(command: CommandId): string {
+  const shortcut = SHORTCUTS.find((entry) => entry.command === command)
+  return shortcut ? chordLabel(shortcut.chord) : ""
+}
+
 /** Exact. A modifier not asked for is a modifier that must be up. */
 function chordMatches(event: KeyboardEvent, chord: Chord): boolean {
   if (chord.code) {
@@ -702,8 +712,8 @@ export function matchShortcut(event: KeyboardEvent): Shortcut | null {
  * the "shortcuts only work while the editor is shown" rule, in one place,
  * rather than a `chromeHidden` check copied into every handler.
  *
- * `canvas`-owned rows return null: they are documentation here, and the
- * selection lane answers them on its own terms. So does the `everywhere` row,
+ * `canvas`-owned rows return null: the canvas lane hears those keys itself
+ * (see `owner`). So does the `everywhere` row,
  * ⌘., which `shell/way-back.ts` answers through `everywhereShortcut`. Two
  * listeners answering one toggle would run it twice and leave the editor
  * exactly where it was.

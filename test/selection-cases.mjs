@@ -142,7 +142,7 @@ const VISUAL_MARKUP = `
 /**
  * One component boundary in the whole second fixture, on purpose: every other
  * stop in those cases has to be earned by geometry, not handed over by
- * `isLayerRoot`. Kept out of `SOURCE` so the reachability case, which walks
+ * `meta(el).isRoot`. Kept out of `SOURCE` so the reachability case, which walks
  * `Object.keys(SOURCE)`, still means "the shared fixture".
  */
 const VISUAL_SOURCE = {
@@ -268,6 +268,9 @@ function installDom() {
     "PointerEvent",
     "KeyboardEvent",
     "Event",
+    // The text-edit watcher observes the edited element; without this the
+    // interactive-mode case could pass only because the watcher threw.
+    "MutationObserver",
     "requestAnimationFrame",
     "cancelAnimationFrame",
     "getComputedStyle",
@@ -310,10 +313,10 @@ async function resolverCases(window) {
   const $ = (name) => id(window, name)
 
   check("a component instance root is a layer, a bare wrapper is not", () => {
-    assert.equal(resolver.isLayerRoot($("card")), true)
-    assert.equal(resolver.isLayerRoot($("more")), true)
-    assert.equal(resolver.isLayerRoot($("wrap")), false)
-    assert.equal(resolver.isLayerRoot($("head")), false)
+    assert.equal(resolver.meta($("card")).isRoot, true)
+    assert.equal(resolver.meta($("more")).isRoot, true)
+    assert.equal(resolver.meta($("wrap")).isRoot, false)
+    assert.equal(resolver.meta($("head")).isRoot, false)
   })
 
   check("a layer's name follows its live text, not the text it first had", () => {
@@ -327,7 +330,7 @@ async function resolverCases(window) {
   })
 
   check("two call sites of one component are two layers", () => {
-    assert.equal(resolver.isLayerRoot($("card2")), true)
+    assert.equal(resolver.meta($("card2")).isRoot, true)
     assert.notEqual($("card"), $("card2"))
   })
 
@@ -464,7 +467,7 @@ async function resolverCases(window) {
 
   check("a plain click inside a component instance selects the instance", () => {
     // `tagline`, `hero`, `view` and `app` all draw exactly the same pixels, so
-    // no measurement can separate them. `isLayerRoot` can: the component
+    // no measurement can separate them. `meta(el).isRoot` can: the component
     // boundary is the one edge on this walk that the person who wrote the page
     // declared, so it beats every box comparison and the climb stops there.
     assert.equal(nameOf(resolver.resolve($("tagline"), null)), "hero")
@@ -630,11 +633,13 @@ console.log("\nLevel 1 — keymap")
 
 async function canvasCases(window) {
   console.log("\nLevel 2 — canvas lane")
-  const { createContext, installCanvas, installLayersPanel, getState, setState } = await load(`
+  const { createContext, installCanvas, installLayersPanel, getState, setState, setMode, history, runCommand } = await load(`
     export { createContext } from "./src/core/context"
     export { installCanvas } from "./src/canvas/index"
     export { installLayersPanel } from "./src/panels/layers"
-    export { getState, setState } from "./src/core/store"
+    export { getState, setState, setMode } from "./src/core/store"
+    export { runCommand } from "./src/core/commands"
+    export * as history from "./src/core/history"
   `)
   const store = { getState, setState }
 
@@ -846,7 +851,7 @@ async function canvasCases(window) {
     )
     $("title").dispatchEvent(
       new window.PointerEvent("pointermove", {
-        bubbles: true, button: 0, clientX: 30, clientY: 30, shiftKey: true,
+        bubbles: true, button: 0, buttons: 1, clientX: 30, clientY: 30, shiftKey: true,
       })
     )
     $("title").dispatchEvent(
@@ -927,6 +932,133 @@ async function canvasCases(window) {
     )
     assert.deepEqual(selection(), [])
     assert.equal(scope(), "null")
+  })
+
+  /** A press, moves with the button down, and a release, on one element. */
+  const dragOn = (element, path, init = {}) => {
+    at(element)
+    const [first, ...rest] = path
+    const event = (type, [x, y], extra = {}) =>
+      element.dispatchEvent(
+        new window.PointerEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y, ...init, ...extra })
+      )
+    event("pointerdown", first)
+    for (const point of rest) event("pointermove", point, { buttons: 1 })
+    return () => event("pointerup", path.at(-1))
+  }
+
+  // The move gesture reads the element's offset off its matrix, so the stub
+  // above (always the origin) is widened to read a `translate(...)`.
+  globalThis.DOMMatrixReadOnly = class {
+    constructor(source = "") {
+      const found = /translate\(\s*(-?[\d.]+)px\s*,\s*(-?[\d.]+)px\s*\)/.exec(source)
+      this.m41 = found ? Number(found[1]) : 0
+      this.m42 = found ? Number(found[2]) : 0
+    }
+  }
+
+  check("a press on one member of a multi-selection keeps the set; the click selects that member", () => {
+    reset()
+    context.selectMany([$("card"), $("card2")])
+    const release = dragOn($("title"), [[10, 10]])
+    // Held: the set survives the press, so a drag from here would carry both.
+    assert.deepEqual(selection(), ["card", "card2"])
+    release()
+    assert.deepEqual(selection(), ["card"])
+  })
+
+  check("dragging one member of a multi-selection moves the set and keeps it selected", () => {
+    reset()
+    history.resetHistory()
+    context.selectMany([$("card"), $("card2")])
+    const release = dragOn($("title"), [[10, 10], [40, 10]])
+    release()
+    assert.deepEqual(selection(), ["card", "card2"])
+    assert.equal($("card").style.transform, "translate(30px, 0px)")
+    assert.equal($("card2").style.transform, "translate(30px, 0px)")
+    assert.equal(history.undo(), "Move")
+    assert.equal(history.canUndo(), false, "a multi-selection drag took more than one step")
+    // Undone to the computed value, as a single drag is (DW-06).
+    assert.equal($("card2").style.transform, "none")
+    $("card").style.transform = ""
+    $("card2").style.transform = ""
+  })
+
+  check("Escape during a drag puts it back and keeps the selection", () => {
+    reset()
+    history.resetHistory()
+    pointer($("title"))
+    assert.deepEqual(selection(), ["card"])
+    const release = dragOn($("title"), [[10, 10], [40, 10]])
+    assert.equal($("card").style.transform, "translate(30px, 0px)")
+    press({ key: "Escape", cancelable: true })
+    assert.equal($("card").style.transform, "")
+    assert.deepEqual(selection(), ["card"], "Escape mid-drag deselected instead of cancelling")
+    release()
+    assert.equal(history.canUndo(), false)
+  })
+
+  check("Escape during a marquee sweep abandons it", () => {
+    reset()
+    pointer($("title"))
+    press({ key: "Enter" })
+    assert.deepEqual(selection(), ["head"])
+    const release = dragOn($("title"), [[10, 10], [30, 30]], { shiftKey: true })
+    const box = context.slots.overlay.querySelector(".de-marquee")
+    assert.equal(box.style.display, "block")
+    press({ key: "Escape", cancelable: true })
+    assert.equal(box.style.display, "none")
+    release()
+    assert.deepEqual(selection(), ["head"], "the release still selected the swept layers")
+  })
+
+  check("nudging a multi-selection is one undo step", () => {
+    reset()
+    history.resetHistory()
+    context.selectMany([$("card"), $("card2")])
+    press({ key: "ArrowRight", cancelable: true })
+    assert.equal($("card").style.transform, "translate(1px, 0px)")
+    assert.equal($("card2").style.transform, "translate(1px, 0px)")
+    assert.equal(history.undo(), "Nudge 1px")
+    assert.equal(history.canUndo(), false, "the nudge took one step per element")
+    $("card").style.transform = ""
+    $("card2").style.transform = ""
+  })
+
+  check("the canvas keys are commands too: select.parent and select.child run without a key", () => {
+    reset()
+    pointer($("title"), { metaKey: true })
+    assert.deepEqual(selection(), ["title"])
+    assert.equal(runCommand("select.parent"), true, "select.parent is not registered")
+    assert.deepEqual(selection(), ["head"])
+    assert.equal(runCommand("select.child"), true)
+    assert.deepEqual(selection(), ["title"])
+    assert.equal(runCommand("select.none"), true)
+    assert.deepEqual(selection(), [])
+    assert.equal(scope(), "null")
+  })
+
+  check("in interactive mode an app's own double-click editor is the app's, not a note", () => {
+    reset()
+    history.resetHistory()
+    setMode("interactive")
+    try {
+      const title = $("title")
+      title.dispatchEvent(new window.MouseEvent("dblclick", { bubbles: true }))
+      // The app's rename-in-place: editable after the double-click, focused.
+      title.setAttribute("contenteditable", "true")
+      title.tabIndex = -1
+      title.focus()
+      title.textContent = "Renamed"
+      title.removeAttribute("contenteditable")
+      title.blur()
+      assert.equal(history.canUndo(), false, "typing in the app became an undo step")
+      assert.deepEqual(selection(), [], "typing in the app selected the field")
+      title.textContent = "Homecoming"
+      title.removeAttribute("tabindex")
+    } finally {
+      setMode("inspecting")
+    }
   })
 
   check("right-click is left to the layer-stack menu", () => {

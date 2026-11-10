@@ -11,9 +11,16 @@
  *
  * Watched rather than patched into the engine, because the engine is a pinned
  * minified bundle and the session is visible from the DOM alone.
+ *
+ * Only while the selection owns the pointer. In interactive mode the
+ * double-click is the app's: an app whose own double-click makes a field
+ * editable (rename in place) passed every other check here, and the
+ * designer's typing in the app became a note, an undo step and a selection
+ * while the editor claimed to be out of the way.
  */
 
 import { isChrome } from "../core/dom"
+import { selectionOwnsInput } from "../core/store"
 import type { EditorContext } from "../core/context"
 import type { LayerElement, Selection } from "../core/types"
 import type { Writer } from "../core/writer"
@@ -42,6 +49,7 @@ export function installTextEditNotes(context: EditorContext, writer: Writer): vo
   window.addEventListener(
     "dblclick",
     (event) => {
+      if (!selectionOwnsInput()) return
       doubleClickAt = performance.now()
       const target = event.target
       if (!(target instanceof Element)) return
@@ -81,7 +89,7 @@ export function installTextEditNotes(context: EditorContext, writer: Writer): vo
       if (!(element instanceof HTMLElement)) return
       if (element.getAttribute("contenteditable") !== "true" || editableBefore.has(element)) return
       if (isChrome(element) || session?.element === element) return
-      if (performance.now() - doubleClickAt > DOUBLE_CLICK_WINDOW_MS) return
+      if (!selectionOwnsInput() || performance.now() - doubleClickAt > DOUBLE_CLICK_WINDOW_MS) return
       finish()
       // Read on focus, before the first keystroke: the engine focuses the
       // element in the same task it makes it editable.

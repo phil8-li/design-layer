@@ -85,7 +85,7 @@ const bundled = await build({
   logLevel: "silent",
 })
 const lib = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString("base64")}`)
-const { spacingZones, zoneAt, dragValues, changedWrites, readSpacing, snap, history } = lib
+const { spacingZones, zoneAt, dragValues, changedWrites, readSpacing, wholePixels, history } = lib
 
 const sides = (top, right, bottom, left) => ({ top, right, bottom, left })
 const zero = sides(0, 0, 0, 0)
@@ -266,7 +266,7 @@ await check("SH-16 values snap to whole pixels and never go below 0", () => {
   assert.deepEqual(dragValues(leftZone, start, { dx: 3.6, dy: 0 }, none), { "padding-left": 24 })
   assert.deepEqual(dragValues(leftZone, { ...start, padding: sides(0, 0, 0, 7.5) }, { dx: 0.2, dy: 0 }, none), { "padding-left": 8 })
   assert.deepEqual(dragValues(leftZone, start, { dx: -50, dy: 0 }, none), { "padding-left": 0 })
-  assert.equal(snap(-3), 0)
+  assert.equal(wholePixels(-3), 0)
 })
 
 await check("SH-17 a gap grows along the main axis and clamps at 0", () => {
@@ -472,6 +472,53 @@ await check("SH-27 interactive mode hides the handles", async () => {
   await frame()
   assert.equal(handle().style.display, "none")
   lib.store.setState({ interactive: false })
+})
+
+/** Hovers the left padding, presses its handle and drags 20px, button held. */
+async function midSpacingDrag() {
+  const element = selectCard()
+  fire(app, "pointermove", { clientX: 8, clientY: 50, buttons: 0 })
+  await frame()
+  fire(handle(), "pointerdown", { clientX: 20, clientY: 50 })
+  fire(handle(), "pointermove", { clientX: 40, clientY: 50, buttons: 1 })
+  assert.equal(element.style.paddingLeft, "40px", "the drag never previewed")
+  return element
+}
+
+const ORIGINAL = "display:flex; gap:12px; padding:10px 20px"
+
+await check("SH-28 the editor standing down mid-drag cancels it, and the release writes nothing", async () => {
+  const element = await midSpacingDrag()
+  lib.store.setState({ interactive: true })
+  try {
+    assert.equal(element.getAttribute("style"), ORIGINAL, "the preview stayed after the editor stood down")
+    fire(handle(), "pointerup", { clientX: 40, clientY: 50 })
+    assert.equal(queued.length, 0)
+    assert.equal(history.canUndo(), false, "the release committed a drag the editor had stood down from")
+  } finally {
+    lib.store.setState({ interactive: false })
+  }
+})
+
+await check("SH-29 a container that leaves the page mid-drag is not written", async () => {
+  const element = await midSpacingDrag()
+  element.remove()
+  fire(window.document.body, "pointermove", { clientX: 50, clientY: 50, buttons: 1 })
+  fire(window.document.body, "pointerup", { clientX: 50, clientY: 50 })
+  assert.equal(history.canUndo(), false, "a note was filed for a container that is gone")
+})
+
+await check("SH-30 Escape and a lost window focus each cancel a spacing drag", async () => {
+  for (const end of [
+    () => window.document.body.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })),
+    () => window.dispatchEvent(new window.Event("blur")),
+  ]) {
+    const element = await midSpacingDrag()
+    end()
+    assert.equal(element.getAttribute("style"), ORIGINAL)
+    fire(handle(), "pointerup", { clientX: 40, clientY: 50 })
+    assert.equal(history.canUndo(), false)
+  }
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

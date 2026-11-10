@@ -4,9 +4,35 @@
  * Both write to inline styles first so the gesture stays at 60fps, then hand
  * the resulting values to the inspector's writer on release. The frames in
  * between are preview and nothing else: they are never recorded, so a drag is
- * one history step and one ledger row rather than one per pointermove.
- * Snapping and alignment guides live in `snapping.ts` and hook in through
- * `onDragUpdate`.
+ * one history step, however many elements it carried, and one ledger row per
+ * element rather than one per pointermove. Snapping and alignment guides live
+ * in `snapping.ts` and hook in through `onDragUpdate`.
+ *
+ * ## The machine
+ *
+ * `DragState` is the whole of it, moved only by `transition()`:
+ *
+ *   idle     --press on a resize handle------------------------> pressed(resize)
+ *   idle     --press inside any selected member, no Shift------> pressed(move)
+ *   pressed  --travel reaches DRAG_THRESHOLD--------------------> dragging   (transitions held, start hooks)
+ *   pressed  --release------------------------------------------> idle       (a click: nothing written)
+ *   dragging --move---------------------------------------------> dragging   (inline preview, update hooks)
+ *   dragging --release------------------------------------------> idle       (rewind, one batch write, end hooks, refresh)
+ *   pressed | dragging --cancel(reason)-------------------------> idle       (preview restored, end hooks)
+ *
+ * Every way a gesture ends early is one `cancel`, wired by `gesture.ts`:
+ * Escape, `pointercancel`, a lost pointer capture, a move with no button down
+ * (a release the window never heard), the window losing focus, the editor
+ * standing down, and the gesture going invalid — a target that left the page
+ * or stopped being selected. A cancelled gesture writes nothing: the agent
+ * never receives a note for a drag the designer abandoned, and the page never
+ * keeps a move the notes do not have.
+ *
+ * A move takes the selection as it stands when the drag starts, not when the
+ * button went down. The canvas resolves a press into a selection in the same
+ * pointerdown, after this lane has seen it (a Cmd press deep-selects a child, a
+ * plain press on a deep-selected leaf selects its layer), so what moves is what
+ * the outline shows.
  */
 
 import { holdTransitions, isChrome, round, saveInline } from "../core/dom"
@@ -23,7 +49,9 @@ import {
 import { selectionOwnsInput } from "../core/store"
 import type { EditorContext } from "../core/context"
 import type { LayerElement, Selection } from "../core/types"
-import type { StyleWrite, Writer } from "../core/writer"
+import type { StyleBatchEdit, StyleWrite, Writer } from "../core/writer"
+import { trackPointer, type PointerTrack } from "./gesture"
+import { installModifiers } from "./modifiers"
 import type { HandleId } from "./selection"
 
 /** Every inline declaration a gesture's preview can write, `transition` aside. */
@@ -47,18 +75,24 @@ interface DragTarget {
    * Gives the element its own transitions back. A gesture turns them off once
    * it starts moving: a card with `transition-all` or a panel with a width
    * tween trailed the pointer by the length of the tween, and a resize released
-   * mid-tween measured the first frame of it. A no-op until then.
+   * mid-tween measured the first frame of it.
    */
   releaseTransitions: () => void
 }
 
-interface Gesture {
+/** The two drags, each with only the data it carries once it has started. */
+interface MoveGesture {
+  mode: "move"
   /** `targets[0]` is the primary element the geometry is measured from. */
   targets: DragTarget[]
-  mode: "move" | "resize"
-  handle: HandleId | null
-  startX: number
-  startY: number
+  startRect: DOMRect
+}
+
+interface ResizeGesture {
+  mode: "resize"
+  handle: HandleId
+  /** A resize only ever sizes the primary. */
+  targets: [DragTarget]
   startRect: DOMRect
   /**
    * The primary's `width`/`height` as its own box-sizing counts them. A
@@ -71,8 +105,17 @@ interface Gesture {
   limits: Partial<Record<Axis, { min: number; max: number }>>
   /** The lengths the last frame drew, which are what the release writes. */
   lengths: Partial<Record<Axis, number>>
-  moved: boolean
 }
+
+/** A press under the threshold: what it will drag if it travels far enough. */
+type Press =
+  | { mode: "move"; at: Element }
+  | { mode: "resize"; handle: HandleId; element: LayerElement }
+
+type DragState =
+  | { kind: "idle" }
+  | { kind: "pressed"; press: Press; track: PointerTrack }
+  | { kind: "dragging"; gesture: MoveGesture | ResizeGesture; track: PointerTrack }
 
 /** The axes a handle drags: a side handle one, a corner both. */
 function axesOf(handle: HandleId): Axis[] {
@@ -82,14 +125,14 @@ function axesOf(handle: HandleId): Axis[] {
   return axes
 }
 
-export interface DragGeometry {
+interface DragGeometry {
   left: number
   top: number
   width: number
   height: number
 }
 
-export interface DragInfo {
+interface DragInfo {
   element: LayerElement
   mode: "move" | "resize"
   rect: DOMRect
@@ -125,17 +168,6 @@ export function onDragStart(hook: (info: DragInfo) => void): () => void {
 
 export function onDragEnd(hook: () => void): () => void {
   return register(endHooks, hook)
-}
-
-let altDown = false
-
-/**
- * Alt is the one gesture modifier the canvas shares: it suppresses snapping
- * while dragging and reveals measurements while hovering. Pointer events keep
- * it honest when the document never received the keydown.
- */
-export function isAltDown(): boolean {
-  return altDown
 }
 
 function readMatrix(element: LayerElement): DOMMatrixReadOnly {
@@ -224,14 +256,16 @@ function settledTransform(x: number, y: number, linear: Linear): string {
   return placed(linear, x, y)
 }
 
-const DRAG_THRESHOLD = 3
-
 export function installTransform(context: EditorContext, writer: Writer): void {
-  let gesture: Gesture | null = null
-  let capture: Element | null = null
-  let pointerId = -1
+  installModifiers()
+  let state: DragState = { kind: "idle" }
 
-  const targetsFor = (selections: Selection[]): DragTarget[] =>
+  /** The one place the machine moves; see the table in the header. */
+  const transition = (next: DragState) => {
+    state = next
+  }
+
+  const targetsFor = (selections: readonly Selection[]): DragTarget[] =>
     selections.map((selection) => {
       const element = selection.element
       const matrix = readMatrix(element)
@@ -242,9 +276,28 @@ export function installTransform(context: EditorContext, writer: Writer): void {
         offsetY: matrix.m42,
         linear: linearOf(matrix),
         restore: saveInline(element, PREVIEWED),
-        releaseTransitions: () => {},
+        releaseTransitions: holdTransitions(element),
       }
     })
+
+  const selected = (element: Element) => context.getState().selection.some((entry) => entry.element === element)
+
+  /**
+   * Whether the gesture can still go on. A press is good while it still lands
+   * in the selection; a drag while every element it carries is on the page and
+   * still selected. Asked by `gesture.ts` on every event and store change.
+   */
+  const valid = (): boolean => {
+    if (state.kind === "pressed") {
+      const { press } = state
+      if (press.mode === "resize") return press.element.isConnected && context.getState().selection[0]?.element === press.element
+      return press.at.isConnected && context.getState().selection.some((entry) => entry.element.contains(press.at))
+    }
+    if (state.kind === "dragging") {
+      return state.gesture.targets.every((target) => target.element.isConnected && selected(target.element))
+    }
+    return true
+  }
 
   /**
    * What a resize previews beside the length, set once as the drag starts: the
@@ -253,9 +306,9 @@ export function installTransform(context: EditorContext, writer: Writer): void {
    * item a full line could squeeze, so the preview is never smaller than the
    * pointer. Whether the release still needs that last one is measured then.
    */
-  const startResize = (active: Gesture): void => {
+  const startResize = (active: ResizeGesture): void => {
     const element = active.targets[0].element
-    const axes = axesOf(active.handle ?? "se")
+    const axes = axesOf(active.handle)
     const companions = mergeWrites(...axes.map((axis) => lengthCompanions(element, axis)))
     const squeezable = axes.some((axis) => shrinkable(element, axis, companions))
     for (const axis of axes) active.limits[axis] = lengthLimits(element, axis)
@@ -267,47 +320,49 @@ export function installTransform(context: EditorContext, writer: Writer): void {
     if (squeezable) element.style.setProperty("flex-shrink", "0")
   }
 
-  const onPointerDown = (event: PointerEvent) => {
-    if (!selectionOwnsInput()) return
-    const state = context.getState()
-    if (state.tool !== "move") return
-    if (event.button !== 0) return
-
-    const target = event.target as HTMLElement | null
-    const handleId = target?.dataset?.handle as HandleId | undefined
-    const primary = state.selection[0] ?? null
-    const selected = primary?.element ?? null
-
-    const capturePointer = () => {
-      capture = event.target instanceof Element ? event.target : null
-      pointerId = event.pointerId
-      if (!capture || !("setPointerCapture" in capture)) return
-      try {
-        ;(capture as Element & { setPointerCapture(id: number): void }).setPointerCapture(pointerId)
-      } catch {
-        capture = null
-      }
-    }
-
-    if (handleId && primary) {
-      const element = primary.element
-      const startRect = element.getBoundingClientRect()
-      gesture = {
-        targets: targetsFor([primary]),
+  /** `pressed --travel reaches DRAG_THRESHOLD--> dragging`, with what the drag carries. */
+  const begin = (press: Press): MoveGesture | ResizeGesture => {
+    const selection = context.getState().selection
+    if (press.mode === "resize") {
+      const primary = selection[0]
+      const startRect = primary.element.getBoundingClientRect()
+      const gesture: ResizeGesture = {
         mode: "resize",
-        handle: handleId,
-        startX: event.clientX,
-        startY: event.clientY,
+        handle: press.handle,
+        targets: [targetsFor([primary])[0]],
         startRect,
         startSize: {
-          width: ownLength(element, "width", startRect.width),
-          height: ownLength(element, "height", startRect.height),
+          width: ownLength(primary.element, "width", startRect.width),
+          height: ownLength(primary.element, "height", startRect.height),
         },
         limits: {},
         lengths: {},
-        moved: false,
       }
-      capturePointer()
+      startResize(gesture)
+      return gesture
+    }
+    // Dragging one member of a multi-selection carries the whole set, and the
+    // primary stays the element the geometry and the guides are measured from.
+    return { mode: "move", targets: targetsFor(selection), startRect: selection[0].element.getBoundingClientRect() }
+  }
+
+  const onPointerDown = (event: PointerEvent) => {
+    if (!selectionOwnsInput()) return
+    const current = context.getState()
+    if (current.tool !== "move") return
+    if (event.button !== 0) return
+    // A press while another is held (a second button, a lost release) is not
+    // a new gesture; the old one ends first, and writes nothing.
+    if (state.kind !== "idle") cancel()
+
+    const target = event.target as HTMLElement | null
+    const handleId = target?.dataset?.handle as HandleId | undefined
+    const primary = current.selection[0] ?? null
+    const capture = event.target instanceof Element ? event.target : null
+
+    if (handleId && primary) {
+      const press: Press = { mode: "resize", handle: handleId, element: primary.element }
+      transition({ kind: "pressed", press, track: trackPointer(event, capture, handlers) })
       event.preventDefault()
       event.stopPropagation()
       return
@@ -316,34 +371,16 @@ export function installTransform(context: EditorContext, writer: Writer): void {
     // Shift+drag is the full-bleed marquee escape hatch. Reserve it before a
     // selected descendant can turn the same press into a move gesture.
     if (event.shiftKey) return
-    if (isChrome(target) || !selected) return
-    if (!selected.contains(target)) return
-
-    // Dragging one member of a multi-selection carries the whole set.
-    const startRect = selected.getBoundingClientRect()
-    gesture = {
-      targets: targetsFor(state.selection),
-      mode: "move",
-      handle: null,
-      startX: event.clientX,
-      startY: event.clientY,
-      startRect,
-      startSize: { width: startRect.width, height: startRect.height },
-      limits: {},
-      lengths: {},
-      moved: false,
-    }
-    capturePointer()
+    if (!target || isChrome(target)) return
+    if (!current.selection.some((entry) => entry.element.contains(target))) return
+    transition({ kind: "pressed", press: { mode: "move", at: target }, track: trackPointer(event, capture, handlers) })
   }
 
-  const onPointerMove = (event: PointerEvent) => {
-    altDown = event.altKey
-    if (!gesture) return
-    const dx = event.clientX - gesture.startX
-    const dy = event.clientY - gesture.startY
-    if (!gesture.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return
-    if (!gesture.moved) {
-      gesture.moved = true
+  const onMove = (event: PointerEvent) => {
+    if (state.kind === "idle") return
+    const { track } = state
+    if (state.kind === "pressed") {
+      if (!track.crossed(event)) return
       /*
        * THE THRESHOLD'S OWN TRAVEL IS APPLIED, AND THAT IS THE RIGHT TRADE.
        *
@@ -379,17 +416,17 @@ export function installTransform(context: EditorContext, writer: Writer): void {
        * threshold, which is a question about tremor tolerance rather than about
        * motion.
        */
-      for (const target of gesture.targets) target.releaseTransitions = holdTransitions(target.element)
-      if (gesture.mode === "resize") startResize(gesture)
-      const info: DragInfo = {
-        element: gesture.targets[0].element,
-        mode: gesture.mode,
-        rect: gesture.startRect,
-      }
+      const gesture = begin(state.press)
+      transition({ kind: "dragging", gesture, track })
+      const info: DragInfo = { element: gesture.targets[0].element, mode: gesture.mode, rect: gesture.startRect }
       for (const hook of startHooks) hook(info)
     }
+    if (state.kind !== "dragging") return
     event.preventDefault()
+    preview(state.gesture, event.clientX - track.startX, event.clientY - track.startY)
+  }
 
+  const preview = (gesture: MoveGesture | ResizeGesture, dx: number, dy: number) => {
     const { startRect } = gesture
     let proposed: DragGeometry = {
       left: startRect.left,
@@ -402,7 +439,7 @@ export function installTransform(context: EditorContext, writer: Writer): void {
       proposed.left += dx
       proposed.top += dy
     } else {
-      const handle = gesture.handle ?? "se"
+      const { handle } = gesture
       if (handle.includes("e")) proposed.width = Math.max(1, startRect.width + dx)
       if (handle.includes("s")) proposed.height = Math.max(1, startRect.height + dy)
       if (handle.includes("w")) {
@@ -431,8 +468,7 @@ export function installTransform(context: EditorContext, writer: Writer): void {
     // Only the axes the handle drags. A side handle that wrote both pinned the
     // other axis's content-driven size into source on release.
     const primary = gesture.targets[0]
-    const handle = gesture.handle ?? "se"
-    const { startSize, limits, lengths } = gesture
+    const { handle, startSize, limits, lengths } = gesture
     const fit = (axis: Axis, raw: number) =>
       Math.max(1, Math.round(clampInto(limits[axis] ?? { min: 0, max: Number.POSITIVE_INFINITY }, raw)))
     let shiftX = 0
@@ -457,16 +493,20 @@ export function installTransform(context: EditorContext, writer: Writer): void {
   /**
    * The gesture's own preview, rewound and then replayed through the writer.
    *
-   * `writer.applyStyles` reads the "before" value off the element to decide
-   * whether anything changed and what the ledger's "from" should be, so with
-   * the dragged value still sitting inline the write reads as a no-op: no
-   * history step, and a change prompt that reports `from` equal to `to`.
-   * Restoring first is what makes a drag an edit like any other. Both halves
-   * run in the same task, so nothing paints in between and the rewind is
-   * invisible.
+   * The writer reads the "before" value off the element to decide whether
+   * anything changed and what the ledger's "from" should be, so with the
+   * dragged value still sitting inline the write reads as a no-op: no history
+   * step, and a change prompt that reports `from` equal to `to`. Restoring
+   * first is what makes a drag an edit like any other. Both halves run in the
+   * same task, so nothing paints in between and the rewind is invisible.
+   *
+   * Every element rewinds before any is written, and the whole set goes to
+   * `applyStylesBatch`: one drag of five cards is one undo step, as a
+   * multi-delete is, and still one ledger row per card for the agent.
    */
-  const commit = (finished: Gesture) => {
+  const commit = (finished: MoveGesture | ResizeGesture) => {
     const summary = finished.mode === "resize" ? "Resize" : "Move"
+    const edits: StyleBatchEdit[] = []
     for (const target of finished.targets) {
       const element = target.element
       // A resize only moves the origin when a west or north handle dragged it,
@@ -488,68 +528,42 @@ export function installTransform(context: EditorContext, writer: Writer): void {
         writes.push(...mergeWrites(...axes.map((axis) => lengthWrites(element, axis, finished.lengths[axis] ?? 0))))
       }
       if (shifted) writes.push({ property: "transform", value: settledTransform(x, y, target.linear) })
-      // One call carrying every property the gesture settled, so a resize that
-      // also shifted the origin is one step on the timeline rather than three.
-      if (writes.length) writer.applyStyles(target.selection, writes, summary)
-      target.releaseTransitions()
+      // Every property the gesture settled in one edit, so a resize that also
+      // shifted the origin is one step on the timeline rather than three.
+      if (writes.length) edits.push({ selection: target.selection, writes })
     }
+    writer.applyStylesBatch(edits, summary)
+    for (const target of finished.targets) target.releaseTransitions()
   }
 
-  const release = () => {
-    if (capture && pointerId >= 0 && "releasePointerCapture" in capture) {
-      try {
-        ;(capture as Element & { releasePointerCapture(id: number): void }).releasePointerCapture(pointerId)
-      } catch {
-        // A removed target has already released capture.
-      }
-    }
-    capture = null
-    pointerId = -1
-  }
-
-  /*
-   * The browser took the pointer back — a pen or touch drag turned into a
-   * scroll, an OS gesture, lost capture. Nobody released anything, so the half
-   * finished preview is put back rather than written to source.
-   */
-  const onPointerCancel = () => {
-    release()
-    if (!gesture) return
-    const cancelled = gesture
-    gesture = null
-    if (!cancelled.moved) return
-    for (const target of cancelled.targets) {
+  /** `* --cancel--> idle`: the one way a gesture ends without writing. */
+  const cancel = () => {
+    const ending = state
+    if (ending.kind === "idle") return
+    transition({ kind: "idle" })
+    ending.track.end()
+    if (ending.kind !== "dragging") return
+    for (const target of ending.gesture.targets) {
       target.restore()
       target.releaseTransitions()
     }
     for (const hook of endHooks) hook()
   }
 
-  const onPointerUp = () => {
-    release()
-    if (!gesture) return
-    const finished = gesture
-    gesture = null
-    if (!finished.moved) return
+  const release = () => {
+    const ending = state
+    if (ending.kind === "idle") return
+    transition({ kind: "idle" })
+    if (ending.kind !== "dragging") return
     // Before the hooks and the refresh: both read state the write produces —
     // the guides come down around a settled element, and the panels repaint
     // from the history and ledger entries this leaves behind.
-    commit(finished)
+    commit(ending.gesture)
     for (const hook of endHooks) hook()
     context.refresh()
   }
 
-  const onAltKey = (event: KeyboardEvent) => {
-    altDown = event.altKey
-  }
+  const handlers = { move: onMove, release, cancel, valid }
 
   window.addEventListener("pointerdown", onPointerDown, true)
-  window.addEventListener("pointermove", onPointerMove, true)
-  window.addEventListener("pointerup", onPointerUp, true)
-  window.addEventListener("pointercancel", onPointerCancel, true)
-  window.addEventListener("keydown", onAltKey, true)
-  window.addEventListener("keyup", onAltKey, true)
-  window.addEventListener("blur", () => {
-    altDown = false
-  })
 }

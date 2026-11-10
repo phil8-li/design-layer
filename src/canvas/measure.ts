@@ -10,11 +10,23 @@
  * direction.
  */
 
+/**
+ * The canvas's one box and one axis. The painter, the guides and the spacing
+ * handles all measure in these, so they are defined here once rather than in
+ * each of them.
+ */
 export interface Box { left: number; top: number; right: number; bottom: number }
+export type Axis = "x" | "y"
+
+/** A rect's four edges, dropping the size and origin a `Box` derives from them. */
+export function boxOf(rect: { left: number; top: number; right: number; bottom: number }): Box {
+  return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+}
+
 /** A solid measurement line. axis "x" = horizontal line from (x, y) to (x + length, y); axis "y" = vertical line from (x, y) to (x, y + length). `value` is the distance it reports, equal to length. */
-export interface MeasureLine { axis: "x" | "y"; x: number; y: number; length: number; value: number }
+interface MeasureLine { axis: "x" | "y"; x: number; y: number; length: number; value: number }
 /** A dashed extension guide, same geometry convention as MeasureLine, no value. */
-export interface ExtensionLine { axis: "x" | "y"; x: number; y: number; length: number }
+interface ExtensionLine { axis: "x" | "y"; x: number; y: number; length: number }
 export interface Measurement { lines: MeasureLine[]; extensions: ExtensionLine[] }
 
 /**
@@ -22,8 +34,6 @@ export interface Measurement { lines: MeasureLine[]; extensions: ExtensionLine[]
  * Figma shows nothing; touching edges read as "no gap", not "gap of 0".
  */
 const MIN_LENGTH = 0.5
-
-type Axis = "x" | "y"
 
 /** One axis of a box: its near and far edges along that axis. */
 interface Span { start: number; end: number }
