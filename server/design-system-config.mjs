@@ -12,8 +12,10 @@ import {
   normalizeDesignSystemBreakpoints,
   normalizeDesignSystemContainerBreakpoints,
   normalizeDesignSystemManifest,
+  normalizeResponsiveMeasures,
   normalizeTrackingUnit,
 } from "./design-system-manifest.mjs"
+import { isPlainObject } from "./library-common.mjs"
 import { parseLibrary } from "./library-sources.mjs"
 
 export const DEFAULT_TAILWIND_BREAKPOINTS = {
@@ -22,36 +24,6 @@ export const DEFAULT_TAILWIND_BREAKPOINTS = {
   lg: 1024,
   xl: 1280,
   "2xl": 1536,
-}
-
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
-}
-
-function requiredString(value, label) {
-  if (typeof value !== "string" || !value.trim()) {
-    throw new Error(`Invalid design-system manifest: ${label} must be a non-empty string`)
-  }
-  return value
-}
-
-export function normalizeResponsiveMeasures(value) {
-  if (value === undefined || value === null) return []
-  if (!isPlainObject(value)) {
-    throw new Error("Invalid design-system manifest: designSystem.responsiveMeasures must be an object")
-  }
-  return Object.entries(value).map(([name, raw]) => {
-    const label = `designSystem.responsiveMeasures.${name}`
-    if (!isPlainObject(raw)) throw new Error(`Invalid design-system manifest: ${label} must be an object`)
-    return {
-      id: `responsive-measure:${name.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase()}`,
-      name,
-      category: "responsive-measure",
-      formula: requiredString(raw.formula, `${label}.formula`),
-      usage: requiredString(raw.usage, `${label}.usage`),
-      owner: requiredString(raw.owner, `${label}.owner`),
-    }
-  })
 }
 
 /**
@@ -111,6 +83,15 @@ function themeEntriesFromScales(scales, label) {
  * down on a project that had merely been detected too eagerly. So a detected
  * config that will not load degrades to "no v3 theme", which is exactly the
  * state the project was in before detection existed.
+ *
+ * THE POLICY ON RUNNING PROJECT JAVASCRIPT, stated once for the server: this
+ * process executes a project file only when the project's own build already
+ * executes it and only once per start — a Tailwind config, here, at config
+ * time. The dev server DesignLayer proxies has run that file already, so
+ * loading it trusts nothing new. Anything that runs again and again (the
+ * checker probe in `design-lint.mjs`, which runs whenever a panel opens) reads
+ * configuration files as text and leaves loading them to the tool itself, in
+ * its own child process, once the person has asked it to run.
  */
 function resolveTailwindThemeEntries(value, projectRoot, detected = false) {
   if (value.tailwindTheme !== undefined && value.tailwindTheme !== null) {
@@ -351,14 +332,7 @@ export function resolveDesignSystemConfig(value, projectRoot, breakpoints, conta
     catalog = normalizeDesignSystemManifest(parsed, { trackingUnit: value.trackingUnit })
   } else {
     catalog = fillCatalogFromCss(
-      emptyDesignSystemCatalog(
-        breakpoints,
-        annotations,
-        containerBreakpoints,
-        containerAnnotations,
-        responsiveMeasures,
-        trackingUnit
-      ),
+      emptyDesignSystemCatalog(trackingUnit),
       css,
       themeEntries,
       value.trackingUnit === undefined || value.trackingUnit === null

@@ -49,6 +49,8 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 
+import { componentId, slug } from "./library-common.mjs"
+
 /**
  * Guards on a directory nobody vetted, not product limits. A user can point
  * this at their whole `src/`, so every loop that could run away has a ceiling.
@@ -62,6 +64,32 @@ const MAX_DESCRIPTION = 280
 const MAX_DEFAULT = 120
 const MAX_GROUP = 60
 
+/**
+ * How far past a landmark the scanner looks for the thing that should follow
+ * it: a body brace after a declaration's name, a parameter list after a
+ * function's, the `=` of an initializer, the end of a type alias.
+ *
+ * A textual scanner has no tree to tell it where a declaration ends, so each
+ * search is bounded instead. The bounds are generous for hand-written source
+ * — a declaration head longer than these is generated code, and a search
+ * that runs out simply finds nothing, which costs that one component its props
+ * rather than costing the scan its time.
+ */
+const BODY_BRACE_WINDOW = 600
+const STATEMENT_WINDOW = 2000
+const INITIALIZER_WINDOW = 400
+const INITIALIZER_PEEK = 160
+const PARAMETER_WINDOW = 300
+const FUNCTION_HEAD_WINDOW = 300
+const CONST_HEAD_WINDOW = 200
+const MEMBER_TYPE_WINDOW = 400
+const MEMBER_LOOKAHEAD = 200
+const SETTER_PAREN_WINDOW = 40
+const ANGLE_WINDOW = 400
+const CLASS_LOOKAHEAD = 600
+/** How far into the next line a `|` or `&` continuation is looked for. */
+const CONTINUATION_PEEK = 40
+
 /** Budget for the discovery probe, which runs per directory across a whole tree. */
 const PROBE_BYTES = 4096
 const PROBE_READS = 8
@@ -74,25 +102,21 @@ const SOURCE_EXTENSIONS = new Set([".tsx", ".jsx", ".ts", ".js"])
 /**
  * Files that are about components without declaring any.
  *
- * A barrel re-exports names that are already being read from the file that
- * declares them, so scanning one would list every component twice. A spec, a
- * test and a story all MENTION a component in exactly the shapes this module
- * looks for — `<Button variant="primary" />` in a story is the snippet, not the
- * declaration — and a `.d.ts` is a mirror of a source file that is usually
- * sitting right next to it.
+ * A spec, a test and a story all MENTION a component in exactly the shapes this
+ * module looks for — `<Button variant="primary" />` in a story is the snippet,
+ * not the declaration — and a `.d.ts` is a mirror of a source file that is
+ * usually sitting right next to it.
+ *
+ * An `index` file IS scanned. It used to be skipped as a barrel, which lost
+ * every component in the folder-per-component layout (`button/index.tsx`
+ * declaring `Button`). Skipping was never needed for barrels either: the
+ * extractors match declarations only — `export function`, `export const … =`,
+ * `@Component` — and a barrel's `export … from` lines match none of them.
  */
 function isScannableFile(name) {
   if (!SOURCE_EXTENSIONS.has(path.extname(name))) return false
-  if (name.startsWith("index.")) return false
   if (name.endsWith(".d.ts")) return false
   return !/\.(spec|test|stories)\./.test(name)
-}
-
-function slug(value) {
-  return String(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
 }
 
 function collapse(text) {
@@ -338,7 +362,7 @@ function matchBracket(scratch, open) {
  * not: the first `{` in it belongs to a type argument, and matching on it reads
  * the wrong members. Only a brace at angle and paren depth zero is the body.
  */
-function findBodyBrace(scratch, from, limit = from + 600) {
+function findBodyBrace(scratch, from, limit = from + BODY_BRACE_WINDOW) {
   let angle = 0
   let paren = 0
   let i = from
@@ -487,7 +511,7 @@ function applyDefaults(props, defaults) {
 function statementEnd(scratch, from) {
   let depth = 0
   let i = from
-  const limit = Math.min(scratch.length, from + 2000)
+  const limit = Math.min(scratch.length, from + STATEMENT_WINDOW)
   while (i < limit) {
     const ch = scratch[i]
     if (ch === "'" || ch === '"') {
@@ -497,7 +521,7 @@ function statementEnd(scratch, from) {
     if (ch === "(" || ch === "[" || ch === "{" || ch === "<") depth += 1
     else if (ch === ")" || ch === "]" || ch === "}" || ch === ">") depth = Math.max(0, depth - 1)
     else if (depth === 0 && ch === ";") return i
-    else if (depth === 0 && ch === "\n" && !/^\s*[|&]/.test(scratch.slice(i + 1, i + 40))) return i
+    else if (depth === 0 && ch === "\n" && !/^\s*[|&]/.test(scratch.slice(i + 1, i + CONTINUATION_PEEK))) return i
     i += 1
   }
   return limit
@@ -757,7 +781,7 @@ function defaultExportNames(code) {
 function initializerStart(scratch, from) {
   let depth = 0
   let i = from
-  const limit = Math.min(scratch.length, from + 400)
+  const limit = Math.min(scratch.length, from + INITIALIZER_WINDOW)
   while (i < limit) {
     const ch = scratch[i]
     if (ch === "'" || ch === '"') {
@@ -786,7 +810,7 @@ const COMPONENT_INITIALIZER =
   /^(?:\(|<|async\s|function\b|styled\b|(?:React\.)?(?:forwardRef|memo|lazy)\b)/
 
 function looksLikeComponentInitializer(scratch, at) {
-  return COMPONENT_INITIALIZER.test(scratch.slice(at, at + 160).trimStart())
+  return COMPONENT_INITIALIZER.test(scratch.slice(at, at + INITIALIZER_PEEK).trimStart())
 }
 
 /**
@@ -828,7 +852,7 @@ function parameterPattern(code, scratch, from, budget = 2) {
   if (from < 0) return ""
   let depth = 0
   let i = from
-  const stop = Math.min(scratch.length, from + 300)
+  const stop = Math.min(scratch.length, from + PARAMETER_WINDOW)
   while (i < stop) {
     const ch = scratch[i]
     if (ch === "'" || ch === '"') {
@@ -945,7 +969,7 @@ function extractReact(code, scratch, comments, types) {
     if (named.has(name)) continue
     named.add(name)
     const declStart = match.index + match[0].indexOf("export")
-    build(name, declStart, declStart + 300, match.index + match[0].length - 1, isDefaultExport(match[0]))
+    build(name, declStart, declStart + FUNCTION_HEAD_WINDOW, match.index + match[0].length - 1, isDefaultExport(match[0]))
   }
 
   const constants = /(?:^|[\n;}])[ \t]*export\s+(?:default\s+)?(?:const|let|var)\s+([A-Z][\w$]*)\b/g
@@ -956,7 +980,7 @@ function extractReact(code, scratch, comments, types) {
     if (initializer === -1 || !looksLikeComponentInitializer(scratch, initializer)) continue
     named.add(name)
     const declStart = match.index + match[0].indexOf("export")
-    build(name, declStart, initializer + 200, initializer, isDefaultExport(match[0]))
+    build(name, declStart, initializer + CONST_HEAD_WINDOW, initializer, isDefaultExport(match[0]))
   }
 
   // A file holding one component and one props type has said everything it
@@ -1023,7 +1047,7 @@ function initializerExpression(body, at) {
   let i = at
   while (i < body.length && /[ \t]/.test(body[i])) i += 1
   if (body[i] !== "=" || body[i + 1] === "=" || body[i + 1] === ">") return ""
-  const window = body.slice(i + 1, i + 1 + 400)
+  const window = body.slice(i + 1, i + 1 + INITIALIZER_WINDOW)
   const end = window.search(/[;\n]/)
   return (end === -1 ? window : window.slice(0, end)).trim()
 }
@@ -1045,7 +1069,7 @@ function memberTypeAndDefault(body, scratch, from) {
   if (body[i] === ":") {
     i += 1
     const start = i
-    const limit = Math.min(body.length, start + 400)
+    const limit = Math.min(body.length, start + MEMBER_TYPE_WINDOW)
     let depth = 0
     while (i < limit) {
       const ch = scratch[i]
@@ -1058,7 +1082,7 @@ function memberTypeAndDefault(body, scratch, from) {
         if (depth === 0) break
         depth -= 1
       } else if (depth === 0 && (ch === "=" || ch === ";")) break
-      else if (depth === 0 && ch === "\n" && !/^\s*\|/.test(scratch.slice(i + 1, i + 40))) break
+      else if (depth === 0 && ch === "\n" && !/^\s*\|/.test(scratch.slice(i + 1, i + CONTINUATION_PEEK))) break
       i += 1
     }
     type = body.slice(start, i)
@@ -1069,7 +1093,7 @@ function memberTypeAndDefault(body, scratch, from) {
 /** `@Input() set value(next: Tone)` declares its type on the parameter. */
 function setterParameterType(body, scratch, from) {
   const open = body.indexOf("(", from)
-  if (open === -1 || open > from + 40) return ""
+  if (open === -1 || open > from + SETTER_PAREN_WINDOW) return ""
   const close = matchBracket(scratch, open)
   if (close === -1) return ""
   const first = splitTopLevel(body.slice(open + 1, close), ",")[0] ?? ""
@@ -1081,7 +1105,7 @@ function setterParameterType(body, scratch, from) {
 function angleEnd(scratch, open) {
   let depth = 0
   let i = open
-  const limit = Math.min(scratch.length, open + 400)
+  const limit = Math.min(scratch.length, open + ANGLE_WINDOW)
   while (i < limit) {
     const ch = scratch[i]
     if (ch === "'" || ch === '"') {
@@ -1152,7 +1176,7 @@ function angularProps(classBody, types) {
     const alias = decoratorAlias(classBody.slice(open + 1, close))
     const member =
       /^\s*(?:(?:public|protected|private|readonly|override|declare|static|accessor)\s+)*(?:(set)\s+)?([A-Za-z_$][\w$]*)/.exec(
-        classBody.slice(close + 1, close + 200)
+        classBody.slice(close + 1, close + MEMBER_LOOKAHEAD)
       )
     if (!member) continue
     const memberEnd = close + 1 + member.index + member[0].length
@@ -1201,7 +1225,7 @@ function extractAngular(code, scratch, comments, types) {
     if (close === -1) continue
     const selector = angularSelector(code.slice(open + 1, close))
 
-    const classMatch = /\bclass\s+([A-Za-z_$][\w$]*)/.exec(code.slice(close, close + 600))
+    const classMatch = /\bclass\s+([A-Za-z_$][\w$]*)/.exec(code.slice(close, close + CLASS_LOOKAHEAD))
     if (!classMatch) continue
     const classNameEnd = close + classMatch.index + classMatch[0].length
     // Whatever stands between the decorator and the `class` keyword says how
@@ -1263,11 +1287,49 @@ function extractComponents(source) {
  * A directory library is re-scanned on every Libraries repaint, which is what
  * keeps a component added to it visible without a restart. The walk and a stat
  * per file still run every time, so additions, edits and deletions are all
- * seen; what an unchanged file stops costing is the read and the parse. Never
- * mutated after it is stored — the loop below copies each entry into its own
- * component record.
+ * seen; what an unchanged file stops costing is the read and the parse.
+ *
+ * Read and written only through `cachedExtraction`, and pruned only by
+ * `forgetUnseen`. Never handed out: the scan copies each entry, props and
+ * their value lists included, into the component record it returns, so a
+ * caller that edits a record cannot edit the next scan's answer. A file that
+ * leaves a scanned directory leaves the cache on that directory's next scan,
+ * where it used to stay for the life of the process.
+ *
+ * The stat key is `mtimeMs` and `size`: an edit that keeps the size within one
+ * timestamp tick is served stale until the next edit. Accepted — the read it
+ * saves runs on every repaint.
  */
 const extracted = new Map()
+
+/** What a file declares, from the cache while its stat holds, else read and stored. */
+async function cachedExtraction(file, info) {
+  const cached = extracted.get(file)
+  if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached.found
+  const source = await fs.readFile(file, "utf8")
+  let found
+  try {
+    found = extractComponents(source)
+  } catch {
+    found = []
+  }
+  extracted.set(file, { mtimeMs: info.mtimeMs, size: info.size, found })
+  return found
+}
+
+/** Drops cached files under `root` that its walk no longer returned. */
+function forgetUnseen(root, files) {
+  const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`
+  const seen = new Set(files)
+  for (const file of extracted.keys()) {
+    if (file.startsWith(prefix) && !seen.has(file)) extracted.delete(file)
+  }
+}
+
+/** A prop as the caller's own copy, so the cache stays as it was read. */
+function copiedProp(prop) {
+  return { ...prop, ...(Array.isArray(prop.values) ? { values: [...prop.values] } : {}) }
+}
 
 async function collectSourceFiles(root, maxFiles) {
   const files = []
@@ -1333,6 +1395,7 @@ export async function scanComponentLibrary(
     : SOURCE_EXTENSIONS.has(path.extname(absDir))
       ? [absDir]
       : []
+  if (stats.isDirectory()) forgetUnseen(absDir, files)
 
   // A single file is its own library of one, and it has no folder structure
   // above it to group by — so the root is the directory holding it, which puts
@@ -1351,18 +1414,7 @@ export async function scanComponentLibrary(
     try {
       const info = await fs.stat(file)
       if (info.size > maxBytes) continue
-      const cached = extracted.get(file)
-      if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) {
-        found = cached.found
-      } else {
-        const source = await fs.readFile(file, "utf8")
-        try {
-          found = extractComponents(source)
-        } catch {
-          found = []
-        }
-        extracted.set(file, { mtimeMs: info.mtimeMs, size: info.size, found })
-      }
+      found = await cachedExtraction(file, info)
     } catch {
       continue
     }
@@ -1378,8 +1430,8 @@ export async function scanComponentLibrary(
       // Two directories in one library may each declare a `Card`, and they are
       // two different components. The id disambiguates so neither is lost.
       const base = slug(entry.name) || "component"
-      let id = `component:${base}`
-      for (let n = 2; ids.has(id); n += 1) id = `component:${base}-${n}`
+      let id = componentId(base)
+      for (let n = 2; ids.has(id); n += 1) id = componentId(`${base}-${n}`)
       ids.add(id)
 
       components.push({
@@ -1388,7 +1440,7 @@ export async function scanComponentLibrary(
         ...(entry.selector ? { selector: entry.selector } : {}),
         ...(entry.description ? { description: entry.description } : {}),
         ...(entry.snippet ? { snippet: entry.snippet } : {}),
-        ...(entry.props?.length ? { props: entry.props } : {}),
+        ...(entry.props?.length ? { props: entry.props.map(copiedProp) } : {}),
         // These four are always present, empty string and `false` included. A
         // browser that groups by a field has to be able to ask every component
         // for it, and an absent key would make "this component is at the

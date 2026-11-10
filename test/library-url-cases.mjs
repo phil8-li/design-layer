@@ -640,6 +640,153 @@ await checkAsync("a cross-origin OAuth 302 is read, and its audience survives", 
   assert.doesNotMatch(refused.error, /redirected more times/)
 })
 
+/*
+ * Every ending of one fetch is named, so a caller (or an agent reading a
+ * result) does not have to decode a combination of `ok`, `sso`, `status` and
+ * `viaHelper`. Two of the endings used to be one: an unreadable `Location` was
+ * reported as a redirect loop.
+ */
+await checkAsync("each way a fetch ends is named, and a bad redirect is not called a loop", async () => {
+  const at = "https://a.example.com/x"
+  const bad = await fetchLibraryUrl(at, offline({ [at]: { status: 302, headers: { location: "http://[bad" } } }))
+  assert.equal(bad.outcome, "bad-redirect")
+  assert.equal(bad.ok, false)
+  assert.match(bad.error, /sent a redirect this editor cannot follow/)
+  assert.doesNotMatch(bad.error, /redirected more times/)
+
+  const elsewhere = await fetchLibraryUrl(at, offline({ [at]: { status: 302, headers: { location: "ftp://a.example.com/x" } } }))
+  assert.equal(elsewhere.outcome, "bad-redirect", "a redirect off http(s) is not followed")
+
+  const loop = await fetchLibraryUrl(at, offline({ [at]: { status: 302, headers: { location: at } } }))
+  assert.equal(loop.outcome, "redirect-limit")
+  assert.match(loop.error, /redirected more times than this editor will follow/)
+
+  assert.equal((await fetchLibraryUrl(at, offline({ [at]: json({}) }))).outcome, "answered")
+  assert.equal((await fetchLibraryUrl(at, offline({}))).outcome, "http-error")
+  const down = await fetchLibraryUrl(at, { fetchImpl: async () => { throw new Error("ECONNREFUSED") }, runHelper: noHelper })
+  assert.equal(down.outcome, "unreachable")
+  assert.equal((await fetchLibraryUrl(STORYBOOK_URL, offline({ [STORYBOOK_URL]: html(LOGIN_PAGE) }))).outcome, "walled")
+})
+
+await checkAsync("only http and https are ever fetched, whatever the caller passes", async () => {
+  let asked = 0
+  const result = await fetchLibraryUrl("data:text/html,<p>hi</p>", {
+    fetchImpl: async () => {
+      asked += 1
+      return { status: 200, headers: {}, text: async () => "hi" }
+    },
+    runHelper: noHelper,
+  })
+  assert.equal(asked, 0)
+  assert.equal(result.ok, false)
+  assert.equal(result.outcome, "unreachable")
+})
+
+/*
+ * A wall after a redirect to another host belongs to that host. It used to be
+ * classified against the pasted URL, so the origin the panel asked the
+ * designer to sign in to was one that had never refused anything — and a
+ * credential saved for it is never sent to the host that did.
+ */
+await checkAsync("a wall after a cross-host redirect names the host that refused", async () => {
+  const pasted = "https://docs.example.com/system"
+  const moved = "https://catalog.example.net/system"
+  const result = await fetchLibraryUrl(
+    pasted,
+    offline({
+      [pasted]: { status: 301, headers: { location: moved } },
+      [moved]: { status: 401, headers: { "www-authenticate": 'Bearer realm="catalog"' } },
+    })
+  )
+  assert.equal(result.outcome, "walled")
+  assert.equal(result.wall.origin, "https://catalog.example.net")
+  assert.equal(result.wall.realm, "catalog")
+})
+
+/*
+ * The cap is on what is read off the wire. The whole body used to be awaited
+ * and then sliced, so a server streaming a large body inside the timeout cost
+ * all of it, up to fifty times per paste.
+ */
+await checkAsync("a response body is read up to the byte cap and the rest is never pulled", async () => {
+  const MAX = 8 * 1024 * 1024
+  const chunk = new Uint8Array(1024 * 1024).fill(0x61)
+  let pulled = 0
+  let cancelled = false
+  const body = new ReadableStream({
+    pull(controller) {
+      pulled += chunk.byteLength
+      controller.enqueue(chunk)
+      if (pulled >= 64 * 1024 * 1024) controller.close()
+    },
+    cancel() {
+      cancelled = true
+    },
+  })
+  const result = await fetchLibraryUrl("https://a.example.com/big.css", {
+    fetchImpl: async () => ({ status: 200, headers: new Headers({ "content-type": "text/css" }), body }),
+    runHelper: noHelper,
+  })
+  assert.equal(result.ok, true)
+  assert.equal(Buffer.byteLength(result.text), MAX)
+  assert.ok(pulled <= MAX + 2 * chunk.byteLength, `pulled ${pulled} bytes for a ${MAX}-byte cap`)
+  assert.ok(cancelled, "the stream was left running after the cap")
+
+  // Bytes, not UTF-16 units: three-byte characters fill the cap at a third
+  // of the characters.
+  const wide = new TextEncoder().encode("€".repeat(4 * 1024 * 1024))
+  const capped = await fetchLibraryUrl("https://a.example.com/wide.css", {
+    fetchImpl: async () => ({ status: 200, headers: {}, body: new Blob([wide]).stream() }),
+    runHelper: noHelper,
+  })
+  assert.ok(Buffer.byteLength(capped.text) <= MAX)
+})
+
+/*
+ * A host that walls every path, with a helper configured, used to start the
+ * helper once per probe: sixteen child processes for one paste. The first
+ * walled fetch on an origin now asks, and the rest take its answer.
+ */
+await checkAsync("the helper command runs once for a host that refuses every path", async () => {
+  let runs = 0
+  const result = await parseUrlLibrary(DOCS_URL, {
+    fetchImpl: async () => ({ status: 401, headers: new Headers({ "www-authenticate": "Bearer" }), text: async () => "" }),
+    runHelper: async () => {
+      runs += 1
+      return null
+    },
+  })
+  assert.equal(runs, 1, `the helper ran ${runs} times`)
+  assert.equal(result.auth.kind, "bearer")
+})
+
+/*
+ * `curl -i -L` prints a header block per hop, and a proxy prints its own
+ * `200 Connection established` first. The last block is the response; reading
+ * the first served the next block's headers as the body.
+ */
+await checkAsync("a helper that prints several header blocks is read by its last one", async () => {
+  const dump = [
+    "HTTP/1.1 200 Connection established",
+    "",
+    "HTTP/1.1 302 Found",
+    "Location: /docs/",
+    "",
+    "HTTP/1.1 200 OK",
+    "Content-Type: application/json",
+    "",
+    JSON.stringify(INDEX_V4),
+  ].join("\r\n")
+  const result = await fetchLibraryUrl(DOCS_URL, {
+    fetchImpl: async () => ({ status: 401, headers: new Headers({ "www-authenticate": "Bearer" }), text: async () => "" }),
+    fetchCommand: [process.execPath, "-e", `process.stdout.write(${JSON.stringify(dump)})`, "{url}"],
+  })
+  assert.equal(result.outcome, "rescued")
+  assert.equal(result.status, 200)
+  assert.equal(result.contentType, "application/json")
+  assert.deepEqual(JSON.parse(result.text), INDEX_V4)
+})
+
 // ── The whole job ──────────────────────────────────────────────────────────
 
 console.log("\nEnd to end, offline")
@@ -1274,6 +1421,79 @@ await checkAsync("a walled URL parses to an empty catalog and a sentence, not a 
   assert.equal(walled.auth.origin, STORYBOOK_ORIGIN)
   assert.match(walled.error, /sign-in/i)
   assert.match(walled.error, /public URL/)
+})
+
+/*
+ * The census case. A docs host that guards its guessed JSON paths behind an
+ * OAuth redirect while serving the page and its stylesheet in public: one
+ * walled probe used to skip the page's stylesheets entirely and return its
+ * one component with no error and no way to sign in.
+ */
+await checkAsync("a walled guessed path does not hide a public page's tokens", async () => {
+  const page = "https://docs.example.com/components/button"
+  const sheet = ":root{--brand-color:#123456;--surface-color:#fff;--space-sm:4px;--space-md:8px;--radius-sm:2px}"
+  const markup = `<!doctype html><html><head><link rel="stylesheet" href="/tokens.css"></head><body>Button</body></html>`
+  const host = (withSheet) => async (url) => {
+    const { pathname } = new URL(url)
+    const answer = (status, body, headers = {}) => ({ status, headers: new Headers(headers), text: async () => body })
+    if (pathname.endsWith(".json")) return answer(302, "", { location: OAUTH_LOCATION })
+    if (pathname === "/tokens.css" && withSheet) return answer(200, sheet, { "content-type": "text/css" })
+    if (pathname === "/components/button") return answer(200, markup, { "content-type": "text/html" })
+    return answer(404, "")
+  }
+
+  const read = await parseUrlLibrary(page, { fetchImpl: host(true), runHelper: noHelper })
+  assert.equal(read.error, "")
+  assert.equal(read.auth ?? null, null, "a public page was refused")
+  assert.equal(read.catalog.colors.length, 2)
+  assert.equal(read.catalog.spacing.length, 2)
+  assert.deepEqual(read.catalog.components.map((entry) => entry.name), ["Button"])
+  assert.equal(read.via, "stylesheets")
+
+  // With no stylesheet the page's component is all there is, and the guessed
+  // paths' refusal travels beside it as an offer rather than a refusal.
+  const lone = await parseUrlLibrary(page, { fetchImpl: host(false), runHelper: noHelper })
+  assert.equal(lone.error, "")
+  assert.equal(lone.auth ?? null, null, "a lone component is still a library")
+  assert.equal(lone.via, "component")
+  assert.equal(lone.signIn?.kind, "oauth")
+  assert.equal(lone.signIn?.audience, "a1b2c3d4-5e6f-4071-8abc-9d0e1f2a3b4c")
+})
+
+await checkAsync("a walled page is refused even when its guessed paths answer nothing", async () => {
+  const result = await parseUrlLibrary(STORYBOOK_URL, offline({ [STORYBOOK_URL]: html(LOGIN_PAGE) }))
+  assert.equal(result.catalog.components.length, 0)
+  assert.equal(result.auth?.kind, "redirect")
+  assert.match(result.error, /sign-in/i)
+})
+
+await checkAsync("a composed Ladle is read through its refs, as a composed Storybook is", async () => {
+  const root = "https://ui.example.com/"
+  const manager = `<!doctype html><html><head><script>window['REFS'] = {"forms":{"title":"Forms","url":"https://ui.example.com/forms"}};</script></head></html>`
+  const ladle = { stories: { "button--primary": { levels: ["Forms", "Button"], name: "Primary" } } }
+  const result = await parseUrlLibrary(
+    root,
+    offline({ [root]: html(manager), "https://ui.example.com/forms/meta.json": json(ladle) })
+  )
+  assert.equal(result.via, "refs")
+  assert.deepEqual(result.catalog.components.map((entry) => entry.name), ["Button"])
+})
+
+await checkAsync("a hostile page is scraped in time proportional to its size", async () => {
+  const started = performance.now()
+  const pages = [
+    "<!doctype html>" + "window['REFS'] = {".repeat(20_000),
+    "<!doctype html>" + "<style>".repeat(50_000),
+    "<!doctype html>" + "<link ".repeat(50_000),
+    "<!doctype html>" + "<meta ".repeat(50_000),
+    "<!doctype html><style>" + "@import url(".repeat(50_000) + "</style>",
+  ]
+  for (const page of pages) {
+    const at = "https://hostile.example.com/x"
+    await parseUrlLibrary(at, offline({ [at]: html(page) }))
+  }
+  const took = performance.now() - started
+  assert.ok(took < 3000, `five hostile pages took ${Math.round(took)}ms`)
 })
 
 // ── The store ──────────────────────────────────────────────────────────────

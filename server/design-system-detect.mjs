@@ -34,8 +34,8 @@
  * never compiles cannot be nominated however token-shaped it looks.
  *
  * WHAT COUNTS AS A DESIGN SYSTEM IS NOT DECIDED HERE. A candidate is parsed with
- * the same `parseLibrary` discovery uses and judged by the same `worthAdopting`
- * bar, so a CSS reset, a component stylesheet or a file of three one-off values
+ * the same `parseLibrary` discovery uses and judged by `worthAdopting`, which
+ * sits beside discovery's own bar in `library-catalog.mjs`, so a CSS reset, a component stylesheet or a file of three one-off values
  * is rejected by the rule that already rejects it in the Add panel. A second
  * notion of "is this a design system" would drift from the first one within a
  * release, and then the panel and the startup path would disagree about the same
@@ -51,8 +51,8 @@
 import fs from "node:fs"
 import path from "node:path"
 
-import { libraryCounts, parseLibrary } from "./library-sources.mjs"
-import { worthAdopting } from "./libraries.mjs"
+import { isPlainObject } from "./library-common.mjs"
+import { libraryCounts, parseLibrary, worthAdopting } from "./library-sources.mjs"
 
 /** Past this a "stylesheet" is a build output, and reading it is a stall. */
 const MAX_STYLESHEET_BYTES = 2 * 1024 * 1024
@@ -108,6 +108,11 @@ const STYLE_DIRECTORIES = ["src/styles", "styles", "src/css", "app/styles"]
 /**
  * `.scss` is read for the same reason `.css` is, and reading it is honest.
  *
+ * Narrower than the lint probe's list on purpose. The linter parses `.sass`,
+ * `.less` and PostCSS sources because it checks how they are written; this
+ * reads custom properties out of them, and `.sass`' indented syntax and
+ * Less's own variables are not text `parseCssLibrary` reads.
+ *
  * The custom-property syntax is preprocessor-agnostic — `--brand: #f00` inside a
  * `.scss` file is a CSS custom property that Sass passes straight through — so
  * an Angular or Vue project whose tokens are in `src/styles.scss` is read
@@ -148,16 +153,22 @@ const COMPONENTS_JSON = "components.json"
  * Tailwind v3 keeps its scale in a JavaScript object rather than in a
  * stylesheet, so on a v3 project there is no custom property to find and the
  * convention list above can come back empty on a project that plainly has a
- * design system. `.ts` is listed even though `require` cannot evaluate it: the
- * caller degrades to "no v3 theme" rather than failing, and naming the file we
- * could not read is better than behaving as though a v3 project had no config.
+ * design system. The TypeScript spellings are listed even though `require`
+ * cannot evaluate them: the caller degrades to "no v3 theme" rather than
+ * failing, and naming the file we could not read is better than behaving as
+ * though a v3 project had no config.
+ *
+ * Exported as the one list of names Tailwind looks for, so the lint probe and
+ * this detector cannot disagree about whether a project has a config.
  */
-const TAILWIND_CONFIGS = [
+export const TAILWIND_CONFIG_FILES = Object.freeze([
   "tailwind.config.js",
   "tailwind.config.cjs",
   "tailwind.config.mjs",
   "tailwind.config.ts",
-]
+  "tailwind.config.cts",
+  "tailwind.config.mts",
+])
 
 /**
  * A dependency whose NAME claims to be a design system.
@@ -226,10 +237,6 @@ const IMPORT_RULE = /@import\s+(?:url\(\s*)?(?:"([^"]+)"|'([^']+)'|([^\s"';()]+)
 /** One entry's imports, capped so a generated index cannot become a read loop. */
 const MAX_IMPORTS = 12
 
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
-}
-
 /**
  * A file's text, or null for anything this process should not spend time on.
  *
@@ -274,7 +281,7 @@ function contains(boundary, target) {
  * (`@import "tailwindcss/preflight.css"`) resolves to a path that does not
  * exist beside the entry and falls out at the read.
  */
-export function importedStylesheets(entryAbsolute, text, boundary) {
+export function importedStylesheetFiles(entryAbsolute, text, boundary) {
   const directory = path.dirname(entryAbsolute)
   const imported = []
   const seen = new Set()
@@ -292,6 +299,13 @@ export function importedStylesheets(entryAbsolute, text, boundary) {
   }
   return imported
 }
+
+/**
+ * Transitional: the library store imports the old name, which collided with
+ * the URL reader's `@import` follower. It goes once the store imports
+ * `importedStylesheetFiles`.
+ */
+export { importedStylesheetFiles as importedStylesheets }
 
 /**
  * One entry stylesheet and its imports, as the single stylesheet the cascade
@@ -314,15 +328,15 @@ function stylesheetBundle(entryAbsolute, boundary, budget) {
   // conventional misses starve the folder sweep that comes after them.
   if (entryText === null) return null
   budget.parsed += 1
-  const imported = importedStylesheets(entryAbsolute, entryText, boundary)
+  const imported = importedStylesheetFiles(entryAbsolute, entryText, boundary)
   const parts = [...imported, { absolute: entryAbsolute, text: entryText }]
   const text = parts.map((part) => part.text).join("\n")
 
   /*
    * Judged on the DETECTION bar, which is not the Add panel's.
    *
-   * `worthAdopting` in `libraries.mjs` sits beside `worthOffering` and the two
-   * are documented against each other there. The short version: the Add panel
+   * `worthAdopting` in `library-catalog.mjs` sits beside `worthOffering` and
+   * the two are documented against each other there. The short version: the Add panel
    * chooses one file out of a whole project and has to be strict, while this
    * has already been pointed at the entry stylesheet the build itself uses, and
    * that path is stronger evidence than any token count. Applying the strict
@@ -521,7 +535,7 @@ export function detectHostDesignSystem(projectRoot) {
   const tailwindConfig =
     bundle && /(^|[^\w-])@theme\b/.test(bundle.text)
       ? null
-      : TAILWIND_CONFIGS.map((name) => path.join(root, name)).find((candidate) => {
+      : TAILWIND_CONFIG_FILES.map((name) => path.join(root, name)).find((candidate) => {
           try {
             return fs.statSync(candidate).isFile()
           } catch {

@@ -36,27 +36,48 @@
  * tested by a suite that was allowed to talk to the internet, which is a suite
  * that fails on a plane and passes when the site it points at changes.
  *
+ * THREE JOBS, in this order down the file:
+ *
+ *   1. Scraping: pure functions from a URL or a document to where a catalog
+ *      might be — the probes, the preview documents, the stylesheet links,
+ *      the inline styles, the imports, a composed Storybook's refs, and the
+ *      one component a documentation page names.
+ *   2. Fetching: one URL, its redirects and its sign-in wall. That lives in
+ *      `library-fetch.mjs`, which the sign-in routes use on their own.
+ *   3. Reading: `parseUrlLibrary`, which spends the fetches in order of
+ *      evidence and merges what comes back into one catalog.
+ *
+ * Jobs 1 and 3 decide what a cached URL catalog contains, so a change to
+ * either is a change to the reading rules: bump `CATALOG_READER_VERSION`
+ * (see `library-sources.mjs`), or every installed URL library keeps the old
+ * reading and nothing says so.
+ *
  * Nothing here touches the filesystem or the store. Reading a catalog out of
  * text is `library-sources.mjs`'s job and it is reused rather than
  * reimplemented — a second DTCG parser is how a token file served over HTTP
  * comes to be understood differently from the same file on disk.
  */
 
-import { execFile } from "node:child_process"
-
+import { originOf } from "./library-auth.mjs"
+import { componentId, isPlainObject } from "./library-common.mjs"
+import { DEFAULT_TIMEOUT_MS, SSO_SENTENCE, fetchLibraryUrl, isLibraryUrl } from "./library-fetch.mjs"
 import {
-  describeLibrary,
-  detectLibraryKind,
+  describeCatalog,
   emptyCatalog,
-  libraryCounts,
+  isEmptyCatalog,
   parseLibrary,
-  slug,
+  readLibraryText,
 } from "./library-sources.mjs"
+
+/*
+ * Re-exported so the store, the sign-in routes and the tests keep one import
+ * site for the URL lane. New code that only fetches imports
+ * `library-fetch.mjs` directly.
+ */
+export { fetchLibraryUrl, isLibraryUrl, looksLikeSsoWall } from "./library-fetch.mjs"
 
 export const URL_SOURCE_KIND = "url"
 
-/** Long enough for a cold serverless instance, short enough not to hang a panel. */
-const DEFAULT_TIMEOUT_MS = 15000
 /**
  * Probes get a tighter bound than the page does. There are up to a dozen of
  * them and most are expected to 404, so the full timeout applied to each would
@@ -76,24 +97,11 @@ const PROBE_TIMEOUT_MS = 5000
  * as "this URL has no design system".
  */
 const STYLESHEET_TIMEOUT_MS = 10000
-/**
- * A login page can run to a megabyte; a catalog worth reading is bigger than
- * this module used to allow.
- *
- * Four megabytes was sized against token FILES, and the largest thing read here
- * is not a token file — it is a compiled stylesheet. Tailwind's uncompiled
- * development build and a Figma Variables export for a large library both cross
- * four megabytes, and crossing it is silent: the body is sliced mid-token, JSON
- * stops parsing, CSS loses its tail, and the designer is told nothing was
- * found. Eight still bounds the memory one paste can cost.
- */
-const MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 /** How many path prefixes are probed before the bare origin. */
 const MAX_PROBE_DEPTH = 4
 const MAX_PROBES = 15
 /** Preview documents get their own budget: three filenames at every prefix. */
 const MAX_PREVIEWS = 15
-const MAX_REDIRECTS = 5
 /**
  * How many stylesheets are FETCHED, over all the documents that named one.
  *
@@ -134,14 +142,6 @@ const MAX_REFS = 4
 const MAX_COMPONENTS = 2000
 const MAX_VARIANTS = 200
 
-const ACCEPT = "application/json, text/html;q=0.9, */*;q=0.1"
-
-import { classifyWall, credentialHeaders, originOf } from "./library-auth.mjs"
-
-/** What the panel shows when the URL is real and the editor is not signed in. */
-const SSO_SENTENCE =
-  "Needs sign-in: this site refused the editor. " +
-  "Sign in to it below, or paste a public URL."
 /** What it shows when the URL answered and had no design system on it. */
 const NOTHING_SENTENCE =
   "Nothing at this URL read as a design system. " +
@@ -149,27 +149,9 @@ const NOTHING_SENTENCE =
 /** Appended to an HTTP failure, which states a fact and suggests nothing. */
 const CHECK_SENTENCE = "Check the address, or paste a page that documents a component."
 
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
-}
-
 /* ------------------------------------------------------------------------- */
 /* Naming                                                                     */
 /* ------------------------------------------------------------------------- */
-
-export function isLibraryUrl(value) {
-  if (typeof value !== "string" || value.trim().length === 0) return false
-  let parsed
-  try {
-    parsed = new URL(value.trim())
-  } catch {
-    return false
-  }
-  // Only the two schemes this module can actually fetch. `file:` would be a
-  // filesystem read wearing a URL, which is the one thing `resolveSource` in
-  // `libraries.mjs` exists to prevent.
-  return (parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.hostname.length > 0
-}
 
 function words(value) {
   return String(value)
@@ -266,36 +248,6 @@ export function libraryNameFromUrl(url) {
 }
 
 /* ------------------------------------------------------------------------- */
-/* Sign-in walls                                                              */
-/* ------------------------------------------------------------------------- */
-
-function headerReader(headers) {
-  if (headers && typeof headers.get === "function") return (name) => headers.get(name) ?? ""
-  const entries = isPlainObject(headers) ? Object.entries(headers) : []
-  const lower = new Map(entries.map(([key, value]) => [String(key).toLowerCase(), value]))
-  return (name) => lower.get(name.toLowerCase()) ?? ""
-}
-
-/**
- * Whether this response is a sign-in wall wearing the clothes of an answer.
- *
- * A thin reading of `classifyWall`, which owns every rule. Kept as its own name
- * because most callers only need the boolean, and because the question reads
- * better at a branch than `classifyWall(...) !== null` does.
- *
- * The case worth knowing about is the 200. `fetch` follows redirects by
- * default, so by the time a caller sees a response the 302 that explains it is
- * gone and all that is left is a successful-looking page of login HTML. Parsed
- * as a library, that page installs a design system made of somebody's sign-in
- * form — so the body evidence is not belt-and-braces, it is the check that
- * stops the failure this whole module was written around.
- */
-export function looksLikeSsoWall(response, url = "") {
-  if (!isPlainObject(response)) return false
-  return classifyWall(response, url) !== null
-}
-
-/* ------------------------------------------------------------------------- */
 /* Storybook                                                                  */
 /* ------------------------------------------------------------------------- */
 
@@ -372,7 +324,7 @@ export function parseStorybookIndex(json) {
     const name = segments.length ? segments[segments.length - 1] : entry.title
     const group = segments.slice(0, -1).join("/")
     components.push({
-      id: `component:${slug(entry.title)}`,
+      id: componentId(entry.title),
       name,
       ...(group ? { group } : {}),
       ...(entry.file ? { file: entry.file } : {}),
@@ -398,17 +350,50 @@ export function parseStorybookIndex(json) {
 /* ------------------------------------------------------------------------- */
 
 const HTML_HINT = /<!doctype\s+html|<html[\s>]|<head[\s>]|<body[\s>]/i
-const META_DESCRIPTION = /<meta\b[^>]*\bname\s*=\s*["']description["'][^>]*>/i
+const DESCRIPTION_NAME = /\bname\s*=\s*["']description["']/i
 const META_CONTENT = /\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)')/i
 /** A segment that names the page's plumbing rather than its subject. */
 const PAGE_NOISE = /^(index|default|home)(\.[a-z0-9]+)?$/i
 const PAGE_EXTENSION = /\.(html?|php|aspx?|jsp)$/i
 const MAX_DESCRIPTION = 400
 
+/** The longest tag this module reads. A real `<link>` or `<meta>` is a few hundred characters. */
+const MAX_TAG_LENGTH = 4096
+
+/**
+ * Every `<name …>` tag in a document, in order, up to its first `>`.
+ *
+ * A pattern like `<link\b[^>]*>` scanned to the end of the document for every
+ * opener with no `>` after it, so a page of a hundred thousand bare `<link`s
+ * was quadratic. Here the position of the next `>` is found once and reused
+ * for every opener before it, and a tag longer than `MAX_TAG_LENGTH` is
+ * skipped rather than read.
+ */
+function* tagsNamed(html, name) {
+  const text = String(html ?? "")
+  const opener = new RegExp(`<${name}\\b`, "gi")
+  let close = -1
+  for (const match of text.matchAll(opener)) {
+    // An opener inside the tag just read is part of that tag, as it was for
+    // the pattern this replaces.
+    if (match.index <= close) continue
+    close = text.indexOf(">", match.index)
+    if (close === -1) return
+    if (close - match.index > MAX_TAG_LENGTH) continue
+    yield text.slice(match.index, close + 1)
+  }
+}
+
 function metaDescription(html) {
-  const tag = META_DESCRIPTION.exec(html)
+  let tag = null
+  for (const candidate of tagsNamed(html, "meta")) {
+    if (DESCRIPTION_NAME.test(candidate)) {
+      tag = candidate
+      break
+    }
+  }
   if (!tag) return ""
-  const content = META_CONTENT.exec(tag[0])
+  const content = META_CONTENT.exec(tag)
   const value = (content?.[1] ?? content?.[2] ?? "").trim()
   return value.slice(0, MAX_DESCRIPTION)
 }
@@ -459,7 +444,7 @@ export function componentFromPage(url, html) {
   const description = metaDescription(text)
 
   return {
-    id: `component:${slug(last)}`,
+    id: componentId(last),
     name,
     ...(group ? { group } : {}),
     ...(description ? { description } : {}),
@@ -470,7 +455,7 @@ export function componentFromPage(url, html) {
 }
 
 /* ------------------------------------------------------------------------- */
-/* Fetching                                                                   */
+/* Where to look                                                              */
 /* ------------------------------------------------------------------------- */
 
 /**
@@ -505,6 +490,14 @@ function pathPrefixes(pathname) {
   kept.push("")
   return kept
 }
+
+/**
+ * The files a story index is published as, one per tool: Storybook v7+,
+ * Storybook v6, and Ladle. Shared by the probes and by the walk into a
+ * composed Storybook's refs, which asked for only the first two and so read a
+ * composed Ladle as nothing.
+ */
+const STORY_INDEX_FILES = ["index.json", "stories.json", "meta.json"]
 
 /**
  * Where a catalog might be, given a URL somebody pasted, best guess first.
@@ -545,9 +538,7 @@ export function catalogProbes(url) {
   if (/\.json$/i.test(parsed.pathname)) push(parsed.toString())
 
   for (const prefix of pathPrefixes(parsed.pathname)) {
-    push(new URL(`${prefix}/index.json`, parsed.origin).toString())
-    push(new URL(`${prefix}/stories.json`, parsed.origin).toString())
-    push(new URL(`${prefix}/meta.json`, parsed.origin).toString())
+    for (const file of STORY_INDEX_FILES) push(new URL(`${prefix}/${file}`, parsed.origin).toString())
   }
   return probes
 }
@@ -578,7 +569,7 @@ export function catalogProbes(url) {
  * the reason `catalogProbes` gives — an explorer mounted under a sub-path keeps
  * its preview under that sub-path.
  */
-export function previewEntries(url) {
+function previewEntries(url) {
   let parsed
   try {
     parsed = new URL(String(url).trim())
@@ -620,23 +611,14 @@ export function previewEntries(url) {
  * a third-party URL because a page told it to" is not a thing to be talked into
  * by a `<script>` tag.
  */
-export function storybookRefs(html, baseUrl) {
+function storybookRefs(html, baseUrl) {
   let base
   try {
     base = new URL(String(baseUrl))
   } catch {
     return []
   }
-  const found = /window\[\s*['"]REFS['"]\s*\]\s*=\s*(\{[\s\S]*?\})\s*;/.exec(String(html ?? ""))
-  if (!found) return []
-  let refs
-  try {
-    refs = JSON.parse(found[1])
-  } catch {
-    // The manager template writes this with `JSON.stringify`, so anything that
-    // does not parse is not the thing this is looking for.
-    return []
-  }
+  const refs = refsObject(String(html ?? ""))
   if (!isPlainObject(refs)) return []
 
   const urls = []
@@ -654,6 +636,54 @@ export function storybookRefs(html, baseUrl) {
     if (!urls.includes(href)) urls.push(href)
   }
   return urls
+}
+
+/** Where the assignment a composed Storybook's manager makes starts. */
+const REFS_ASSIGNMENT = /window\[\s*['"]REFS['"]\s*\]\s*=\s*\{/g
+/** The most of a document read as one refs object. A real one is a few kilobytes. */
+const MAX_REFS_TEXT = 256 * 1024
+const MAX_REFS_ATTEMPTS = 8
+
+/**
+ * The object `window['REFS'] = {…}` assigns, parsed, or null.
+ *
+ * Found by its opening brace and read to the brace that balances it, rather
+ * than by a lazy pattern for "everything up to `};`": that pattern rescanned
+ * the rest of the document from every assignment it could not finish, and
+ * twenty thousand of them in 360 KB cost two and a half seconds. The manager
+ * template writes the object with `JSON.stringify`, so anything that does not
+ * parse is not the thing this is looking for.
+ */
+function refsObject(html) {
+  let attempts = 0
+  for (const match of html.matchAll(REFS_ASSIGNMENT)) {
+    if ((attempts += 1) > MAX_REFS_ATTEMPTS) return null
+    const open = match.index + match[0].length - 1
+    const close = balancedBrace(html, open, Math.min(html.length, open + MAX_REFS_TEXT))
+    if (close === -1) continue
+    try {
+      return JSON.parse(html.slice(open, close + 1))
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
+/** The index of the `}` balancing the `{` at `open`, skipping JSON strings, or -1 before `limit`. */
+function balancedBrace(text, open, limit) {
+  let depth = 0
+  let quoted = false
+  for (let index = open; index < limit; index += 1) {
+    const char = text[index]
+    if (quoted) {
+      if (char === "\\") index += 1
+      else if (char === '"') quoted = false
+    } else if (char === '"') quoted = true
+    else if (char === "{") depth += 1
+    else if (char === "}" && --depth === 0) return index
+  }
+  return -1
 }
 
 /** One attribute off one tag, quoted either way or not at all. */
@@ -675,8 +705,6 @@ function attributeUrl(value, base) {
 /** A `media` that means "not on a screen", and one that means "only in dark". */
 const PRINT_MEDIA = /^\s*print\s*$/i
 const DARK_MEDIA = /prefers-color-scheme\s*:\s*dark/i
-const BASE_TAG = /<base\b[^>]*>/i
-const STYLE_BLOCK = /<style\b[^>]*>([\s\S]*?)<\/style>/gi
 
 /**
  * The stylesheets a document links, absolute, ranked, and SAME-ORIGIN ONLY.
@@ -705,7 +733,7 @@ const STYLE_BLOCK = /<style\b[^>]*>([\s\S]*?)<\/style>/gi
  * difference between `tokens.css` being the twelfth candidate and never fetched
  * and `tokens.css` being fetched: `print.css` used to outrank it.
  */
-export function stylesheetLinks(html, baseUrl) {
+function stylesheetLinks(html, baseUrl) {
   const source = String(html ?? "")
   let base
   try {
@@ -724,14 +752,13 @@ export function stylesheetLinks(html, baseUrl) {
    * document it exists to be careful of.
    */
   const origin = base.origin
-  const declared = BASE_TAG.exec(source)
-  if (declared) base = attributeUrl(attribute(declared[0], "href"), base) ?? base
+  const declared = tagsNamed(source, "base").next().value
+  if (declared) base = attributeUrl(attribute(declared, "href"), base) ?? base
 
   const found = []
   // `rel` and `href` in either order, quoted either way — this is reading real
   // build output rather than a format anybody agreed on.
-  const LINK = /<link\b[^>]*>/gi
-  for (const [tag] of source.matchAll(LINK)) {
+  for (const tag of tagsNamed(source, "link")) {
     const rel = attribute(tag, "rel").toLowerCase()
     const linked =
       /\bstylesheet\b/.test(rel) || (/\bpreload\b/.test(rel) && /^style$/i.test(attribute(tag, "as")))
@@ -765,15 +792,74 @@ export function stylesheetLinks(html, baseUrl) {
  * Free, too — the text is already in hand, so a `<style>` candidate costs no
  * request and does not touch the fetch budget the linked sheets compete for.
  */
-export function inlineStyles(html) {
+function inlineStyles(html) {
+  const source = String(html ?? "")
   const blocks = []
-  for (const [, body] of String(html ?? "").matchAll(STYLE_BLOCK)) {
-    const text = String(body ?? "").trim()
+  const opener = /<style\b/gi
+  const closer = /<\/style>/gi
+  // Walked by hand: a lazy `<style>…</style>` pattern rescanned the rest of
+  // the document from every `<style>` that never closed. The first one that
+  // does not close ends the walk, since nothing after it can be a block.
+  for (let match = opener.exec(source); match; match = opener.exec(source)) {
+    const tagEnd = source.indexOf(">", match.index)
+    if (tagEnd === -1) break
+    closer.lastIndex = tagEnd + 1
+    const close = closer.exec(source)
+    if (!close) break
+    const text = source.slice(tagEnd + 1, close.index).trim()
+    opener.lastIndex = close.index + close[0].length
     if (!text) continue
     if (blocks.length >= MAX_INLINE_STYLES) break
     blocks.push(text)
   }
   return blocks
+}
+
+/**
+ * The target of every `@import` in a stylesheet, as written: `@import url("x")`,
+ * `@import url(x)`, `@import "x"`, and the layer/supports/media variants, which
+ * all put the target in the same first position. A malformed one is skipped.
+ *
+ * Read by hand, with the next `)` and the next quote of each kind found once
+ * and reused until the walk passes them. The pattern this replaces scanned
+ * from every `@import url(` to the end of the sheet when nothing closed it.
+ */
+function importTargets(css) {
+  const targets = []
+  const next = new Map()
+  const following = (char, from) => {
+    const known = next.get(char)
+    if (known !== undefined && (known === -1 || known >= from)) return known
+    const found = css.indexOf(char, from)
+    next.set(char, found)
+    return found
+  }
+  for (const match of css.matchAll(/@import\s+/gi)) {
+    const at = match.index + match[0].length
+    let start = at
+    const wrapped = /^url\(/i.test(css.slice(at, at + 4))
+    if (wrapped) {
+      start = at + 4
+      while (/\s/.test(css[start] ?? "")) start += 1
+    }
+    const quote = css[start]
+    if (quote === '"' || quote === "'") {
+      const close = following(quote, start + 1)
+      if (close === -1) continue
+      let after = close + 1
+      if (wrapped) {
+        while (/\s/.test(css[after] ?? "")) after += 1
+        if (css[after] !== ")") continue
+      }
+      targets.push(css.slice(start + 1, close))
+    } else if (wrapped) {
+      const close = following(")", start)
+      if (close === -1) continue
+      const inner = css.slice(start, close)
+      if (!/["']/.test(inner)) targets.push(inner)
+    }
+  }
+  return targets
 }
 
 /**
@@ -791,7 +877,7 @@ export function inlineStyles(html) {
  * an `@import` is a URL inside a FILE, one level further from anything the
  * designer looked at, and a credential must not travel on the strength of it.
  */
-export function importedStylesheets(css, baseUrl) {
+function importedStylesheetUrls(css, baseUrl) {
   let base
   try {
     base = new URL(String(baseUrl))
@@ -799,11 +885,8 @@ export function importedStylesheets(css, baseUrl) {
     return []
   }
   const found = []
-  // `@import url("x")`, `@import "x"`, and the layer/supports/media variants,
-  // which all put the target in the same first position.
-  const IMPORT = /@import\s+(?:url\(\s*(?:"([^"]*)"|'([^']*)'|([^)"']*))\s*\)|"([^"]*)"|'([^']*)')/gi
-  for (const match of String(css ?? "").matchAll(IMPORT)) {
-    const value = (match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5] ?? "").trim()
+  for (const target of importTargets(String(css ?? ""))) {
+    const value = target.trim()
     if (!value) continue
     let resolved
     try {
@@ -864,282 +947,14 @@ const MIN_NAMESPACE_EVIDENCE = 8
 const FRAMEWORK_SHARE = 0.8
 
 function frameworkStylesheet(text) {
-  const names = new Set(String(text ?? "").match(/--[a-zA-Z0-9_-]+(?=\s*:)/g) ?? [])
+  // Only at the start of a name run, so a long run of hyphens is tried once.
+  const names = new Set(String(text ?? "").match(/(?<![a-zA-Z0-9_-])--[a-zA-Z0-9_-]+(?=\s*:)/g) ?? [])
   if (names.size < MIN_NAMESPACE_EVIDENCE) return false
   let framework = 0
   for (const name of names) {
     if (FRAMEWORK_NAMESPACES.some((prefix) => name.toLowerCase().startsWith(prefix))) framework += 1
   }
   return framework / names.size >= FRAMEWORK_SHARE
-}
-
-/**
- * A helper command the PROJECT configures, for a site this process cannot
- * authenticate to on its own.
- *
- * This is the generic replacement for what would otherwise be a hardcoded
- * vendor integration. Plenty of organisations front their internal docs with a
- * proxy that has a command-line client — a signed-request tool, a VPN-aware
- * curl wrapper, a credential helper — and the editor has no business knowing
- * which. So it knows none of them: the project names a command in its config,
- * the editor runs it when a fetch is refused, and the command's job is to print
- * an HTTP response.
- *
- *   libraries: { fetchCommand: ["my-auth-curl", "--dump-header", "-", "{url}"] }
- *
- * `{url}` is substituted per argument. The command must print a full HTTP
- * response — status line, headers, blank line, body — which is what
- * `curl -i` and most such tools already emit, and what `parseHttpResponse`
- * below reads back. A bare body would be indistinguishable from an error page,
- * which is the same "install the login screen as a library" failure the wall
- * detection exists to prevent.
- *
- * Unset by default, so out of the box the editor does no such thing. When it is
- * set, `execFile` with an argv array and never a shell: the URL is input that
- * arrived from a web page, and a shell here would make that a command
- * injection.
- */
-function runFetchCommand(url, { timeoutMs = DEFAULT_TIMEOUT_MS, fetchCommand = null } = {}) {
-  const argv = Array.isArray(fetchCommand) ? fetchCommand.filter((part) => typeof part === "string") : []
-  if (argv.length < 1) return Promise.resolve(null)
-
-  const [binary, ...rest] = argv.map((part) => part.split("{url}").join(url))
-  return new Promise((resolve) => {
-    execFile(
-      binary,
-      rest,
-      { timeout: timeoutMs, maxBuffer: MAX_RESPONSE_BYTES, encoding: "utf8" },
-      (error, stdout) => {
-        // A missing binary is the ordinary case for a config carried between
-        // machines: there is no helper here, so there is no second route, and
-        // the caller reports the wall.
-        if (error?.code === "ENOENT") {
-          resolve(null)
-          return
-        }
-        // A non-zero exit is NOT a reason to discard the output. These tools
-        // conventionally exit non-zero on any HTTP error while still printing
-        // the response, and a 401 is exactly what the caller needs to see.
-        resolve(parseHttpResponse(typeof stdout === "string" ? stdout : ""))
-      }
-    )
-  })
-}
-
-/** A printed HTTP response — status line, headers, body — as a record. */
-function parseHttpResponse(dump) {
-  const status = /^HTTP\/[\d.]+ (\d{3})/.exec(dump)
-  if (!status) return null
-
-  const crlf = dump.indexOf("\r\n\r\n")
-  const lf = dump.indexOf("\n\n")
-  const split =
-    crlf !== -1 && (lf === -1 || crlf < lf)
-      ? { at: crlf, width: 4 }
-      : lf !== -1
-        ? { at: lf, width: 2 }
-        : null
-  if (!split) return null
-
-  const headers = {}
-  for (const line of dump.slice(0, split.at).split(/\r?\n/).slice(1)) {
-    const colon = line.indexOf(":")
-    if (colon === -1) continue
-    headers[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim()
-  }
-  return {
-    status: Number(status[1]),
-    contentType: headers["content-type"] ?? "",
-    text: dump.slice(split.at + split.width, split.at + split.width + MAX_RESPONSE_BYTES),
-    location: headers.location ?? "",
-    headers,
-  }
-}
-
-function failed(error, url) {
-  const reason = error?.name === "TimeoutError" || error?.name === "AbortError"
-    ? "took too long to answer"
-    : `could not be reached (${error?.message ?? "network error"})`
-  return { ok: false, status: 0, contentType: "", text: "", viaHelper: false, sso: false, error: `${url} ${reason}` }
-}
-
-function normalizeHeaders(headers) {
-  if (!headers) return {}
-  const pairs =
-    typeof headers.entries === "function" ? [...headers.entries()] : Object.entries(headers)
-  return Object.fromEntries(pairs.map(([key, value]) => [String(key).toLowerCase(), value]))
-}
-
-async function readResponse(response) {
-  const header = headerReader(response?.headers)
-  let text = ""
-  try {
-    text = String(await response.text())
-  } catch {
-    // A body that cannot be read is a body with nothing in it for the parsers.
-  }
-  return {
-    status: Number(response?.status) || 0,
-    contentType: String(header("content-type") ?? ""),
-    text: text.length > MAX_RESPONSE_BYTES ? text.slice(0, MAX_RESPONSE_BYTES) : text,
-    location: String(header("location") ?? ""),
-    // The whole header set, because `classifyWall` reads `www-authenticate`
-    // and `location` and must not be limited to what this function anticipated.
-    /*
-     * The whole header set, lowercased, from either shape a response can carry
-     * them in. `classifyWall` reads `www-authenticate` and `location`, and a
-     * `fetchImpl` that hands back a plain object — every test fake, and some
-     * polyfills — would otherwise silently lose both.
-     */
-    headers: normalizeHeaders(response?.headers),
-  }
-}
-
-/**
- * One URL fetched, with sign-in walls detected and, where possible, walked
- * through.
- *
- * `redirect: "manual"` on purpose. The default would follow the 302 to the
- * login service and hand back a 200 with no trace of the hop, which is the
- * shape this module cannot afford to be handed. So redirects are followed here
- * instead — an http-to-https hop and a trailing-slash hop are ordinary and must
- * keep working — and the chain stops the moment a hop points at a login page.
- *
- * `sso` is what the probe chain reads: it separates "this host refused us" from
- * "there is nothing at that path", and only the first is worth abandoning the
- * whole chain over. `viaHelper` records that the answer came back through the
- * project's configured helper command rather than through `fetch`, which is a
- * fact worth having when a response looks different from a browser's.
- */
-export async function fetchLibraryUrl(url, options = {}) {
-  const {
-    fetchImpl = globalThis.fetch,
-    runHelper = runFetchCommand,
-    fetchCommand = null,
-    timeoutMs = DEFAULT_TIMEOUT_MS,
-    /*
-     * A credential for this URL's origin, when the designer has signed this
-     * editor in to it. Sent on the FIRST request rather than after a refusal:
-     * a wall costs a round trip to discover and the answer is already known
-     * here, so re-learning it per probe would multiply the slowest path in the
-     * module by the number of probes.
-     */
-    credential = null,
-  } = options
-  const authHeaders = credentialHeaders(credential)
-  // The origin the credential belongs to. Empty when there is none, which can
-  // never equal a real origin, so the guard below simply sends nothing.
-  const credentialOrigin = credential ? originOf(credential.origin ?? url) : ""
-
-  let target = String(url)
-  let record = null
-  for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-    let response
-    try {
-      response = await fetchImpl(target, {
-        redirect: "manual",
-        /*
-         * The credential goes ONLY to the origin it was stored for.
-         *
-         * A redirect can point anywhere, including at a host the designer has
-         * never heard of, and a bearer token forwarded across that hop is a
-         * token handed to a third party. Browsers strip `Authorization` on a
-         * cross-origin redirect for exactly this reason and `fetch` cannot do
-         * it for us here, because following redirects by hand is what the
-         * `manual` mode above exists for — so the check is ours to make.
-         *
-         * Recomputed per hop rather than once, since a chain can leave the
-         * origin and come back.
-         */
-        headers: { accept: ACCEPT, ...(originOf(target) === credentialOrigin ? authHeaders : {}) },
-        signal: AbortSignal.timeout(timeoutMs),
-      })
-    } catch (error) {
-      return failed(error, target)
-    }
-
-    record = await readResponse(response)
-    if (looksLikeSsoWall(record, target)) break
-    if (record.status >= 300 && record.status < 400 && record.location) {
-      try {
-        target = new URL(record.location, target).toString()
-      } catch {
-        break
-      }
-      continue
-    }
-
-    const ok = record.status >= 200 && record.status < 300
-    return {
-      ok,
-      status: record.status,
-      contentType: record.contentType,
-      text: record.text,
-      viaHelper: false,
-      sso: false,
-      error: ok ? "" : `${target} answered HTTP ${record.status}`,
-    }
-  }
-
-  /*
-   * `target`, not nothing — and the omission here was a real bug.
-   *
-   * Every cross-origin rule in `classifyWall` needs the request URL to compare
-   * the redirect against, so testing without it read every OAuth bounce and
-   * every sign-in handoff as "not a wall". The loop above breaks on a wall and
-   * this then denied there was one, so the caller got `sso: false` and the
-   * store installed the login page instead of refusing it.
-   */
-  if (!record || !looksLikeSsoWall(record, target)) {
-    return {
-      ok: false,
-      status: record?.status ?? 0,
-      contentType: record?.contentType ?? "",
-      text: record?.text ?? "",
-      viaHelper: false,
-      sso: false,
-      error: `${url} redirected more times than this editor will follow`,
-    }
-  }
-
-  const rescued = await runHelper(String(url), { timeoutMs, fetchCommand })
-  if (
-    isPlainObject(rescued) &&
-    Number(rescued.status) >= 200 &&
-    Number(rescued.status) < 300 &&
-    !looksLikeSsoWall(rescued, url)
-  ) {
-    return {
-      ok: true,
-      status: Number(rescued.status),
-      contentType: String(rescued.contentType ?? ""),
-      text: typeof rescued.text === "string" ? rescued.text : "",
-      viaHelper: true,
-      sso: false,
-      error: "",
-    }
-  }
-
-  /*
-   * The refusal, read rather than merely reported.
-   *
-   * `sso: true` is the flag the probe chain has always branched on. `wall` is
-   * the new half: which kind of sign-in this is, and — for OAuth — the
-   * client id pulled out of the redirect, which is the audience an identity
-   * token has to be minted for. Nothing else in the exchange names it, so a
-   * refusal that throws it away leaves the designer needing a string they have
-   * no way to look up.
-   */
-  return {
-    ok: false,
-    status: record.status,
-    contentType: record.contentType,
-    text: "",
-    viaHelper: false,
-    sso: true,
-    wall: classifyWall(record, url),
-    error: SSO_SENTENCE,
-  }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1175,19 +990,10 @@ function describeComponents(components) {
  * the extension on the URL decides nothing; a `.tokens`, a `.css` and a tokens
  * endpoint with no extension at all are read as what they contain.
  */
-function catalogFromTokenText(url, text, name) {
-  const kind = detectLibraryKind(url, text)
-  // `components` is a directory scan, which is not a thing a URL can name.
-  if (!kind || kind === "components") return null
-  let catalog
-  try {
-    catalog = parseLibrary(kind, text, { name })
-  } catch {
-    return null
-  }
-  const counts = libraryCounts(catalog)
-  if (Object.values(counts).every((value) => value === 0)) return null
-  return { catalog, detail: describeLibrary(kind, catalog) }
+function catalogFromTokenText(url, text, name, parsed) {
+  const read = readLibraryText(url, text, { name, parsed })
+  if (!read || isEmptyCatalog(read.catalog)) return null
+  return { catalog: read.catalog, detail: describeCatalog(read.catalog) }
 }
 
 /** The axes a stylesheet can contribute. `components` never comes from CSS. */
@@ -1345,7 +1151,7 @@ async function tokensFromDocuments(documents, name, options) {
   // file, and an inline `<style>` can import as readily as a file can.
   const imports = []
   for (const sheet of sheets) {
-    for (const href of importedStylesheets(sheet.text, sheet.from)) {
+    for (const href of importedStylesheetUrls(sheet.text, sheet.from)) {
       if (seen.has(href) || imports.length >= MAX_IMPORTS) continue
       seen.add(href)
       // Half a step behind whatever imported it: an `@import` precedes the
@@ -1404,12 +1210,12 @@ async function tokensFromDocuments(documents, name, options) {
         // A stylesheet with no custom properties in it. Most of them.
         continue
       }
-      if (Object.values(libraryCounts(catalog)).every((value) => value === 0)) continue
+      if (isEmptyCatalog(catalog)) continue
       catalogs.push(catalog)
     }
     if (catalogs.length === 0) continue
     const merged = mergeCatalogs(catalogs, name)
-    return { catalog: merged, detail: describeLibrary("css", merged) }
+    return { catalog: merged, detail: describeCatalog(merged) }
   }
   return null
 }
@@ -1434,6 +1240,14 @@ async function tokensFromDocuments(documents, name, options) {
  * gone missing, and for the same reason: the row carries the only control that
  * can remove the library, so refusing to create it leaves a designer with a
  * failure and nothing to click.
+ *
+ * The result is `{ name, catalog, detail, error }` plus, on success, `via` —
+ * which reading produced it: `index` (a story index at a probe), `probe` (a
+ * token file at a probe), `document` (the pasted URL's own body), `refs` (a
+ * composed Storybook), `stylesheets` (the page's CSS, with the page's component
+ * when it names one) or `component` (the page's component alone). A failure
+ * carries `auth` when the site refused the editor, and a lone component
+ * carries `signIn` when guessed paths on its host did.
  */
 export async function parseUrlLibrary(url, options = {}) {
   const name = libraryNameFromUrl(url)
@@ -1446,15 +1260,21 @@ export async function parseUrlLibrary(url, options = {}) {
     }
   }
 
+  /*
+   * One helper verdict per origin for the whole reading: see `helperGate` in
+   * `library-fetch.mjs`. Every probe below is the same host, and a host that
+   * walls one path walls them all.
+   */
+  const shared = { ...options, helperGate: options.helperGate ?? new Map() }
   const probeOptions = {
-    ...options,
+    ...shared,
     timeoutMs: Math.min(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, PROBE_TIMEOUT_MS),
   }
   // A stylesheet is a named file rather than a guess, and it is the big one.
   // See `STYLESHEET_TIMEOUT_MS`: sharing the probe bound made a cold CDN look
   // like a site with no design system on it.
   const styleOptions = {
-    ...options,
+    ...shared,
     timeoutMs: Math.min(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, STYLESHEET_TIMEOUT_MS),
   }
 
@@ -1476,53 +1296,38 @@ export async function parseUrlLibrary(url, options = {}) {
   const probes = catalogProbes(url)
   const [responses, page] = await Promise.all([
     Promise.all(probes.map((probe) => fetchLibraryUrl(probe, probeOptions))),
-    fetchLibraryUrl(url, options),
+    fetchLibraryUrl(url, shared),
   ])
 
-  let wall = false
-  // The first classified refusal wins. Every probe is the same host, so they
-  // all hit the same wall; keeping the first means the audience reported is the
-  // one belonging to the URL the designer actually pasted.
-  let challenge = null
+  /*
+   * A walled probe is REMEMBERED, not obeyed. The probes are paths this module
+   * guessed at, and a host that guards `/index.json` while serving its
+   * documentation in public is ordinary; letting one guessed path decide that
+   * the whole site was walled skipped the page, its stylesheets and its refs,
+   * and returned the page's one component with no error and no offer to sign
+   * in. So the wall is decided by the page itself, and the probes' refusal
+   * only counts when nothing else could be read — or beside a lone component,
+   * where signing in may well read the index the refusal was hiding.
+   *
+   * The first classified refusal wins. Every probe is the same host, so they
+   * all hit the same wall; keeping the first means the audience reported is
+   * the one belonging to the deepest guess.
+   */
+  let probeChallenge = null
+  let probesWalled = false
   for (let index = 0; index < probes.length; index += 1) {
     const response = responses[index]
     if (response.sso) {
-      wall = true
-      challenge ??= response.wall ?? null
+      probesWalled = true
+      probeChallenge ??= response.wall ?? null
       continue
     }
-    if (!response.ok || !response.text.trim()) continue
-
-    let json
-    try {
-      json = JSON.parse(response.text)
-    } catch {
-      // A probe that answered with HTML is a site serving its app shell for
-      // every path. It is not a catalog, and it is not an error either.
-      continue
-    }
-
-    const parsed = parseStorybookIndex(json)
-    if (parsed && parsed.components.length) {
-      return {
-        name,
-        catalog: { ...emptyCatalog(name), components: parsed.components },
-        detail: describeComponents(parsed.components),
-        error: "",
-      }
-    }
-
-    const tokens = catalogFromTokenText(probes[index], response.text, name)
-    if (tokens) return { name, catalog: tokens.catalog, detail: tokens.detail, error: "" }
+    const read = readProbe(probes[index], response, name)
+    if (read) return { name, ...read, error: "" }
   }
 
-  if (page.sso) {
-    wall = true
-    // The page's own reading is preferred over a probe's: the probes are paths
-    // this module guessed at, and a 404 behind the wall can classify
-    // differently from the document the designer named.
-    challenge = page.wall ?? challenge
-  }
+  const pageWalled = page.sso
+  const readable = !pageWalled && page.ok
 
   /*
    * THE PASTED DOCUMENT ITSELF, which was the one thing this module never read.
@@ -1545,9 +1350,9 @@ export async function parseUrlLibrary(url, options = {}) {
    * HTML page's inline CSS is picked up properly further down, by
    * `inlineStyles`, where it is extracted first and parsed as what it is.
    */
-  if (!wall && page.ok && page.text.trim() && !HTML_HINT.test(page.text)) {
+  if (readable && page.text.trim() && !HTML_HINT.test(page.text)) {
     const own = catalogFromTokenText(url, page.text, name)
-    if (own) return { name, catalog: own.catalog, detail: own.detail, error: "" }
+    if (own) return { name, catalog: own.catalog, detail: own.detail, via: "document", error: "" }
   }
 
   /*
@@ -1557,29 +1362,19 @@ export async function parseUrlLibrary(url, options = {}) {
    * exactly what a composition root looks like: its own `index.json` is empty
    * or absent because it has no local stories, and everything it shows the
    * designer belongs to the Storybooks it refers to. `storybookRefs` reads
-   * those out of the manager HTML; each is asked the same two questions the
-   * probes ask, and what comes back is one catalog.
+   * those out of the manager HTML; each is asked for the same index files the
+   * probes ask for, and what comes back is one catalog.
    */
-  if (!wall && page.ok && page.text) {
+  if (readable && page.text) {
     const refs = storybookRefs(page.text, url)
     if (refs.length) {
       const indexes = await Promise.all(
-        refs.flatMap((ref) => [
-          fetchLibraryUrl(`${ref}/index.json`, probeOptions),
-          fetchLibraryUrl(`${ref}/stories.json`, probeOptions),
-        ])
+        refs.flatMap((ref) => STORY_INDEX_FILES.map((file) => fetchLibraryUrl(`${ref}/${file}`, probeOptions)))
       )
       const composed = []
       const seen = new Set()
       for (const response of indexes) {
-        if (!response.ok || !response.text.trim()) continue
-        let parsed
-        try {
-          parsed = parseStorybookIndex(JSON.parse(response.text))
-        } catch {
-          continue
-        }
-        for (const entry of parsed?.components ?? []) {
+        for (const entry of storyIndexComponents(parsedJson(response)) ?? []) {
           if (seen.has(entry.id) || composed.length >= MAX_COMPONENTS) continue
           seen.add(entry.id)
           composed.push(entry)
@@ -1590,6 +1385,7 @@ export async function parseUrlLibrary(url, options = {}) {
           name,
           catalog: { ...emptyCatalog(name), components: composed },
           detail: describeComponents(composed),
+          via: "refs",
           error: "",
         }
       }
@@ -1624,7 +1420,7 @@ export async function parseUrlLibrary(url, options = {}) {
   let tokenCatalog = null
   let tokenDetail = ""
 
-  if (!wall) {
+  if (!pageWalled) {
     const entries = previewEntries(url)
     const previews = await Promise.all(entries.map((entry) => fetchLibraryUrl(entry, probeOptions)))
 
@@ -1659,17 +1455,28 @@ export async function parseUrlLibrary(url, options = {}) {
     const detail = component
       ? [tokenDetail, describeComponents([component])].filter(Boolean).join(" · ")
       : tokenDetail
-    return { name, catalog, detail, error: "" }
+    return { name, catalog, detail, via: "stylesheets", error: "" }
   }
+
+  /*
+   * A lone component beside walled probes carries the challenge as `signIn`:
+   * the row installs — the page was public and named a component — and the
+   * panel can still offer the sign-in that may read the whole index. It is
+   * NOT `auth`, which means "refused: not a library until somebody signs in",
+   * and which the store answers by declining to install the row at all.
+   */
   if (component) {
     return {
       name,
       catalog: { ...emptyCatalog(name), components: [component] },
       detail: describeComponents([component]),
+      via: "component",
+      ...(probesWalled ? { signIn: probeChallenge ?? weakestChallenge(url) } : {}),
       error: "",
     }
   }
 
+  const walled = pageWalled || probesWalled
   // Three different failures, and a designer can act on each of them only if
   // they are told apart: signed out, unreachable, or reachable and empty.
   /*
@@ -1681,34 +1488,71 @@ export async function parseUrlLibrary(url, options = {}) {
    * not a library at all until somebody signs in. `libraries.mjs` refuses to
    * install the second kind, and it can only do that if the distinction
    * survives the trip out of here as data rather than as a sentence.
+   *
+   * The page's own reading of the wall is preferred over a probe's: the
+   * probes are paths this module guessed at, and a 404 behind the wall can
+   * classify differently from the document the designer named.
    */
   return {
     name,
     catalog: emptyCatalog(name),
     detail: "",
-    /*
-     * A classified challenge, or the weakest honest one.
-     *
-     * The fallback is only reached when a probe reported a wall and the reading
-     * of it was lost — so it claims the least: a sign-in redirect, this origin,
-     * and nothing it cannot back up. It deliberately does NOT invent an
-     * audience or a realm, because the panel offers a copy button for each and
-     * a button that copies an empty string is worse than an absent row.
-     */
-    auth: wall
-      ? challenge ?? {
-          kind: "redirect",
-          origin: originOf(url),
-          audience: "",
-          realm: "",
-          location: "",
-          hint: "",
-        }
-      : null,
-    error: wall
+    auth: walled ? (pageWalled ? page.wall : null) ?? probeChallenge ?? weakestChallenge(url) : null,
+    error: walled
       ? SSO_SENTENCE
       : page.ok || !page.error
         ? NOTHING_SENTENCE
         : `${page.error}. ${CHECK_SENTENCE}`,
   }
+}
+
+/**
+ * A classified challenge's stand-in, when a wall was reported and the reading
+ * of it was lost: it claims the least — a sign-in redirect, this origin, and
+ * nothing it cannot back up. It deliberately does NOT invent an audience or a
+ * realm, because the panel offers a copy button for each and a button that
+ * copies an empty string is worse than an absent row.
+ */
+function weakestChallenge(url) {
+  return { kind: "redirect", origin: originOf(url), audience: "", realm: "", location: "", hint: "" }
+}
+
+/** A response's body as JSON, or undefined when it is not a readable answer. */
+function parsedJson(response) {
+  if (!response?.ok || !response.text.trim()) return undefined
+  try {
+    return JSON.parse(response.text)
+  } catch {
+    return undefined
+  }
+}
+
+/** A parsed story index's components, or null when it is not one or lists none. */
+function storyIndexComponents(json) {
+  const parsed = json === undefined ? null : parseStorybookIndex(json)
+  return parsed?.components.length ? parsed.components : null
+}
+
+/**
+ * One probe's answer as a reading: a story index, else a token file. Parsed
+ * once and handed to both questions.
+ *
+ * A probe that answered with HTML is a site serving its app shell for every
+ * path. It is not a catalog, and it is not an error either — and it is never
+ * handed to the stylesheet sniffer, which would read an inline theme block in
+ * the shell as the site's design system.
+ */
+function readProbe(probe, response, name) {
+  const json = parsedJson(response)
+  if (json === undefined) return null
+  const components = storyIndexComponents(json)
+  if (components) {
+    return {
+      catalog: { ...emptyCatalog(name), components },
+      detail: describeComponents(components),
+      via: "index",
+    }
+  }
+  const tokens = catalogFromTokenText(probe, response.text, name, json)
+  return tokens ? { catalog: tokens.catalog, detail: tokens.detail, via: "probe" } : null
 }
