@@ -77,8 +77,6 @@ const EVENTS = [
   {
     group: "A direct edit that did not fully land",
     items: [
-      { event: "Drag or nudge, nothing reaches source", message: "Move: preview only (transform)", kind: "error", source: "src/core/writer.ts", find: "preview only (${dropped.join" },
-      { event: "Style edit, part of it cannot reach source", message: "Set spacing: gap is preview only", kind: "error", source: "src/core/writer.ts", find: "${dropped.join(\", \")} is preview only`" },
       { event: "Opacity on a non-plain color", message: "Opacity needs a plain color. var(--brand) is kept as written.", kind: "error", source: "src/panels/inspector/color.ts", find: "Opacity needs a plain color." },
     ],
   },
@@ -324,7 +322,7 @@ const VARIANTS = {
   stack: () => {
     notify("Source path copied")
     notify("Copied the Button snippet")
-    notify("Set spacing: gap is preview only", "error")
+    notify("Opacity needs a plain color. var(--brand) is kept as written.", "error")
     notify("Deleted 3 notes", "info", undo("Undo"))
   },
   vendor: () => notify("Dev server disconnected", classifyVendorToast("Dev server disconnected")),
