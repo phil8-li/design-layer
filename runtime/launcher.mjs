@@ -429,6 +429,40 @@ function removeOwnEndpointFile(file) {
 }
 
 /**
+ * How a supervised editor leaves when its supervisor asks: the IPC message
+ * `{ type: "stop" }` (cli.mjs `runEditors`, `askToStop`).
+ *
+ *   listening --stop message-->  closing: MCP control closed, bounded by
+ *                                `shutdownMcpControl` (parked waits answered
+ *                                "endpoint_closing", connections closed)
+ *   closing   --stop message-->  closing (ignored)
+ *   closing   --closed or bound--> process.exit(0): the exit hooks withdraw
+ *                                the registry entry and the endpoint file
+ *
+ * A signal cannot carry this: the vendor's SIGTERM handler calls
+ * `process.exit` synchronously, so an async close started from a signal never
+ * finishes. An editor run by hand has no `process.send` and no supervisor, and
+ * keeps the signal path. The channel is unref'd so listening never keeps the
+ * process alive by itself.
+ */
+function listenForSupervisorStop() {
+  if (typeof process.send !== "function" || stopListening) return
+  stopListening = true
+  let closing = false
+  process.on("message", (message) => {
+    if (message?.type !== "stop" || closing) return
+    closing = true
+    import("../server/mcp-control.mjs")
+      .then(({ shutdownMcpControl }) => shutdownMcpControl())
+      .catch(() => {})
+      .finally(() => process.exit(0))
+  })
+  process.channel?.unref?.()
+}
+
+let stopListening = false
+
+/**
  * Installs every patch, then hands control to the vendor CLI.
  *
  * `argv` must already be in the vendor's own shape: commander parses
@@ -441,6 +475,9 @@ function removeOwnEndpointFile(file) {
  * always a folder this process is allowed to write to.
  */
 export async function launch(config, { appPort, host, open, verbose = false, onReady = () => {} }) {
+  // Before `onReady` can fire: the supervisor sends its stop message only to
+  // an editor that said it is ready.
+  listenForSupervisorStop()
   // Before anything binds a port: whatever is about to be concatenated onto the
   // overlay has to be this tree's source, not a bundle left over from before it.
   ensureCurrentChromeBundle()
