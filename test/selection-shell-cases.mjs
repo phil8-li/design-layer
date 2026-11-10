@@ -649,6 +649,43 @@ await check("a write from inside a listener is announced after the write that ca
 })
 
 /*
+ * The nested patch used to land at once. A later listener of the SAME round
+ * then read, through `getState()` or a reader built on it, a state its `next`
+ * did not show; and a listener that threw after the nested write left that
+ * write applied with nobody told.
+ */
+await check("in every round getState() is the round's next, and a throw leaves no unannounced write", () => {
+  editorModule.setState({ canvasView: true, interactive: false })
+  const seen = []
+  const closeBoard = editorModule.subscribe((next, previous) => {
+    if (next.interactive !== previous.interactive) editorModule.setState({ canvasView: false })
+  })
+  const reader = editorModule.subscribe((next) => {
+    seen.push([next.canvasView, editorModule.getState().canvasView])
+  })
+  try {
+    editorModule.setState({ interactive: true })
+    assert.deepEqual(seen, [[true, true], [false, false]], "a listener read a state its round had not announced")
+  } finally {
+    reader()
+  }
+  // Two writes: one would close the board on the way, through `closeBoard`.
+  editorModule.setState({ interactive: false })
+  editorModule.setState({ canvasView: true })
+  const thrower = editorModule.subscribe(() => {
+    throw new Error("listener failed")
+  })
+  try {
+    assert.throws(() => editorModule.setState({ interactive: true }), /listener failed/)
+    assert.equal(editorModule.getState().canvasView, true, "the nested write landed although no listener heard it")
+  } finally {
+    thrower()
+    closeBoard()
+    editorModule.setState({ canvasView: false, interactive: false })
+  }
+})
+
+/*
  * One writer for hiding (B-boot-state-9, B-SF-6): the escape stop went around
  * it and left `hovered` set, which keeps the canvas frame loop awake.
  */

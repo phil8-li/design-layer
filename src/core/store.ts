@@ -22,9 +22,13 @@
  * recomputes on `editorStandDownChanged`, never on one input it picked.
  *
  * Notification order: a listener that writes during a notification does not
- * interleave. Its patch is applied at once (so `getState()` reads it) but
- * announced after the current round, as a round of its own with its own
- * `previous`, so every listener sees every change once and in order.
+ * interleave. Its patch is queued and applied when the current round ends, as
+ * a round of its own with its own `previous`, so every listener sees every
+ * change once and in order, and `getState()` (and every reader built on it)
+ * agrees with the `next` the round's listeners were handed. A patch used to
+ * land at once: later listeners of the same round read state their `previous`
+ * did not account for, and a listener that threw left that patch applied and
+ * never announced. Now a throw drops the queued patches unapplied.
  */
 
 import type { ElementOptionSet, LayerElement, Selection, ToolId } from "./types"
@@ -228,13 +232,14 @@ export function subscribe(listener: Listener): () => void {
 }
 
 /*
- * Rounds waiting to be announced, oldest first. Each carries the snapshot taken
- * just before its patch landed, so its listeners diff exactly that patch.
+ * Patches written from inside a listener, oldest first, each applied when the
+ * round before it ends. See "Notification order" in the header.
  */
-const rounds: EditorState[] = []
+const pending: Array<Partial<EditorState>> = []
 let notifying = false
 
-export function setState(patch: Partial<EditorState>): void {
+/** Lands a patch; the state from just before it, or null when nothing changed. */
+function apply(patch: Partial<EditorState>): EditorState | null {
   const previous = { ...state }
   let changed = false
   for (const [key, value] of Object.entries(patch)) {
@@ -243,25 +248,30 @@ export function setState(patch: Partial<EditorState>): void {
     ;(state as any)[key] = value
     changed = true
   }
-  if (!changed) return
-  rounds.push(previous)
-  // A write from inside a listener queues behind the round that is running;
-  // see "Notification order" in the header.
-  if (notifying) return
+  return changed ? previous : null
+}
+
+export function setState(patch: Partial<EditorState>): void {
+  if (notifying) {
+    pending.push(patch)
+    return
+  }
+  let previous = apply(patch)
+  if (!previous) return
   notifying = true
   try {
-    for (let round = rounds.shift(); round; round = rounds.shift()) {
-      // The state as of THIS round's patch: the next waiting round's
-      // `previous` when one is queued, else a snapshot of now. A snapshot, so
-      // a listener that writes mid-round cannot show the later listeners of
-      // this round a change their `previous` does not account for; they hear
-      // it in its own round.
-      const next = rounds[0] ?? { ...state }
-      for (const listener of listeners) listener(next, round)
+    while (previous) {
+      // A snapshot, so a listener that keeps `next` holds this round's state.
+      const next = { ...state }
+      for (const listener of listeners) listener(next, previous)
+      // Compared when it lands, not when it was written: a later patch can
+      // undo an earlier one, and then it is a change again.
+      previous = null
+      while (!previous && pending.length) previous = apply(pending.shift() as Partial<EditorState>)
     }
   } finally {
     notifying = false
-    rounds.length = 0
+    pending.length = 0
   }
 }
 
