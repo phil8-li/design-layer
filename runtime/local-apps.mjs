@@ -20,6 +20,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { LOOPBACK_ADDRESSES, urlHost } from "./dev-server.mjs"
+import { DEV_SCRIPT_PREFERENCE, NEXT_CONFIG_FILES, VITE_CONFIG_FILES } from "./project-facts.mjs"
 
 /**
  * Where a local web app is actually likely to be, kept short so a full scan
@@ -66,7 +67,7 @@ const LSOF_TIMEOUT_MS = 1500
 // The `dev` and `start` families, best first. The exact names come first in
 // this order; anything else in the family (`dev:https`, `start-local`) keeps
 // its declaration order behind them.
-const PREFERRED_DEV_SCRIPTS = ["dev", "develop", "start", "serve"]
+const PREFERRED_DEV_SCRIPTS = DEV_SCRIPT_PREFERENCE
 const DEV_SCRIPT_FAMILY = /^(dev|develop|start|serve)([:_-]|$)/
 
 // The React families are transcribed from `react-rewrite-cli/dist/detect.js`,
@@ -74,8 +75,8 @@ const DEV_SCRIPT_FAMILY = /^(dev|develop|start|serve)([:_-]|$)/
 // by its dependency instead, the same way `resolveHostFramework` names it —
 // this screen must not report a project as unrecognised when the launcher is
 // about to accept it.
-const NEXT_CONFIGS = ["next.config.js", "next.config.ts", "next.config.mjs"]
-const VITE_CONFIGS = ["vite.config.js", "vite.config.ts"]
+const NEXT_CONFIGS = NEXT_CONFIG_FILES
+const VITE_CONFIGS = VITE_CONFIG_FILES
 
 function statOf(target) {
   try {

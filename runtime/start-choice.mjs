@@ -16,7 +16,13 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
+import { isLoopbackHost } from "./chooser-url.mjs"
+
 import { isDirectory } from "./local-apps.mjs"
+
+// The one loopback rule, re-exported for the start screen, which guarded its
+// routes with a private copy of it.
+export { isLoopbackHost }
 
 /** An error the server answers with `statusCode` and the message as the sentence. */
 export function badRequest(message, statusCode = 400) {
@@ -25,17 +31,6 @@ export function badRequest(message, statusCode = 400) {
   return error
 }
 
-/** Takes a bare `host` header as readily as a full origin. */
-export function isLoopbackHost(value) {
-  if (typeof value !== "string" || value.length === 0) return false
-  let host
-  try {
-    host = new URL(value.includes("://") ? value : `http://${value}`).hostname.replace(/^\[|\]$/g, "")
-  } catch {
-    return false
-  }
-  return host === "localhost" || host === "127.0.0.1" || host === "::1"
-}
 
 /**
  * The one thing a pasted path may be that `path.isAbsolute` refuses.

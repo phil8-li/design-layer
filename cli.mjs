@@ -561,14 +561,14 @@ export function runEditors(
     record.gone = exited.then((reason) => {
       const asked = record.state === "stopping"
       transition(record, "exited", { child: null })
-      // A child that dies on its own — a crash, a port clash, a project the
-      // vendor refuses — must not take the supervisor with it. The chooser is
-      // still up, so it is where the explanation goes and where the next
-      // attempt starts.
-      if (!asked) {
-        screen.reportStopped(reason, choice.id)
-        log(`[designlayer] ${reason}`)
-      }
+      // The screen hears every exit, so its own record moves from `stopping`
+      // to `gone` rather than ageing out; after a Stop it keeps the reason it
+      // was stopped with. A child that dies on its own — a crash, a port
+      // clash, a project the vendor refuses — must not take the supervisor
+      // with it. The chooser is still up, so it is where the explanation goes
+      // and where the next attempt starts.
+      screen.reportStopped(reason, choice.id)
+      if (!asked) log(`[designlayer] ${reason}`)
     })
   }
 
