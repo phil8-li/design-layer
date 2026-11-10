@@ -13,7 +13,7 @@
 import { el, round } from "../../core/dom"
 import { icon } from "../../core/icons"
 import { tokens } from "../../core/tokens"
-import { isExpanded, miniButton, numberField, propRow, setExpanded, trailingToggle } from "./field"
+import { disclosure, miniButton, numberField, propRow, trailingToggle } from "./field"
 import { styledSection } from "../../options/panel"
 import { fieldToken } from "./token-row"
 import { mixedNumber, sharedValue } from "./multi"
@@ -129,7 +129,8 @@ export const appearanceSection: InspectorSection = (context) => {
   const uniformRadius = shared === null || Number.isNaN(shared) ? null : shared
   const cornerValues = CORNERS.map((_, index) => sharedValue(context, (style) => round(radiiOf(style)[index])))
   const opacity = sharedValue(context, (style) => round((Number.parseFloat(style.opacity) || 0) * 100))
-  const perCorner = isExpanded(RADIUS_EXPANDER)
+  const corners = disclosure(RADIUS_EXPANDER)
+  const perCorner = corners.open
 
   const opacityField = numberField({
     id: "appearance.opacity",
@@ -160,7 +161,7 @@ export const appearanceSection: InspectorSection = (context) => {
     glyph: icon("IndividualCorners", tokens.icon.action),
     pressed: perCorner,
     onClick: () => {
-      setExpanded(RADIUS_EXPANDER, !perCorner)
+      corners.toggle()
       invalidate()
     },
   })

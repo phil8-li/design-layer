@@ -25,16 +25,7 @@ import { leaveRow, revealGroup } from "../../core/leave"
 import { icon } from "../../core/icons"
 import { tokens } from "../../core/tokens"
 import { alphaOf, emptyPaintSection, paintRow, toHex, withAlpha } from "./color"
-import {
-  isExpanded,
-  miniButton,
-  numberField,
-  propRow,
-  selectField,
-  setExpanded,
-  takeJustExpanded,
-  trailingToggle,
-} from "./field"
+import { disclosure, miniButton, numberField, propRow, selectField, trailingToggle } from "./field"
 import { styledSection } from "../../options/panel"
 import { hasBorder, hasOutline, hasRing, SIDES, svgTarget, tokenControl, tokenHints, tokenRow } from "./token-row"
 import { MIXED, isMulti, mixedNumber, mixedPaintSection, sharedValue } from "./multi"
@@ -167,7 +158,8 @@ export const strokeSection: InspectorSection = (context) => {
     },
   })
 
-  const perSide = isExpanded(SIDES_EXPANDER)
+  const sidesOpen = disclosure(SIDES_EXPANDER)
+  const perSide = sidesOpen.open
   const uniformOf = (values: number[]) => (values.every((value) => value === values[0]) ? round(values[0]) : NaN)
   const sharedWeight = isMulti(context) ? sharedValue(context, (entry) => uniformOf(widthsOf(entry))) : null
   const uniform = isMulti(context)
@@ -213,7 +205,7 @@ export const strokeSection: InspectorSection = (context) => {
       glyph: icon("IndividualSides", tokens.icon.action),
       pressed: perSide,
       onClick: () => {
-        setExpanded(SIDES_EXPANDER, !perSide)
+        sidesOpen.toggle()
         invalidate()
       },
     }),
@@ -240,7 +232,7 @@ export const strokeSection: InspectorSection = (context) => {
         propRow({ id: "stroke.sides.2", cells: [sideField(2), sideField(3)] }),
       ])
     : null
-  if (sides && takeJustExpanded(SIDES_EXPANDER)) revealGroup(sides)
+  if (sides && sidesOpen.justOpened()) revealGroup(sides)
 
   const body = el("div", { class: "de-stack" }, [
     paint,

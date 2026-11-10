@@ -18,13 +18,11 @@ import type { IconName } from "../../core/icons"
 import { tokens } from "../../core/tokens"
 import {
   alignPad,
+  disclosure,
   iconSegmented,
-  isExpanded,
   miniButton,
   numberField,
   propRow,
-  setExpanded,
-  takeJustExpanded,
   trailingToggle,
 } from "./field"
 import { fieldMenu } from "./section-layout"
@@ -440,13 +438,14 @@ function paddingRows(context: SectionContext): HTMLElement {
   const { apply, preview } = writers(context)
   const value = (style: CSSStyleDeclaration, side: Side) =>
     Number.parseFloat(style.getPropertyValue(`padding-${side}`)) || 0
-  const individual = isExpanded(PADDING_EXPANDER)
+  const perSide = disclosure(PADDING_EXPANDER)
+  const individual = perSide.open
   const toggle = trailingToggle({
     label: "Individual padding",
     glyph: icon("IndividualSides", tokens.icon.action),
     pressed: individual,
     onClick: () => {
-      setExpanded(PADDING_EXPANDER, !individual)
+      perSide.toggle()
       invalidate()
     },
   })
@@ -499,8 +498,8 @@ function paddingRows(context: SectionContext): HTMLElement {
         }),
       ]
   const block = el("div", { class: "de-stack de-lay-padding" }, rows)
-  // Opened only on the render that follows the press — see `takeJustExpanded`.
-  if (individual && takeJustExpanded(PADDING_EXPANDER)) revealGroup(rows[1])
+  // Opened only on the render that follows the press — see `disclosure`.
+  if (individual && perSide.justOpened()) revealGroup(rows[1])
   return block
 }
 

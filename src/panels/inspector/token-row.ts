@@ -415,7 +415,7 @@ function build(context: SectionContext, spec: RowSpec, hidePreview = false): Bui
   }
 }
 
-export interface TokenBindingOptions {
+interface TokenBindingOptions {
   /**
    * The element to write to, when it is not the selected one.
    *

@@ -25,7 +25,7 @@ import {
   type Axis,
 } from "../../core/sizing"
 import { tokens } from "../../core/tokens"
-import { isExpanded, numberField, propRow, setExpanded, trailingToggle } from "./field"
+import { numberField, panelFlag, propRow, trailingToggle } from "./field"
 import { mixedNumber, sharedValue } from "./multi"
 import type { SectionContext } from "./index"
 import type { LayerElement } from "../../core/types"
@@ -38,8 +38,8 @@ const FILL = "100%"
 
 const STEM: Record<Axis, string> = { width: "w", height: "h" }
 
-/** Panel-level, like the per-side toggles: the lock survives the rebuild each write causes. */
-const ASPECT_LOCK = "layout.aspect-lock"
+/** A panel flag, not a disclosure: the lock survives the rebuild each write causes and opens nothing. */
+export const ASPECT_LOCK = "layout.aspect-lock"
 
 const MODE_WORD: Record<Mode, string> = { fixed: "Fixed", hug: "Hug", fill: "Fill" }
 
@@ -178,7 +178,8 @@ export function sizeControls(context: SectionContext): HTMLElement {
   const { selection, computed, writer, invalidate } = context
   const element = selection.element
   const rect = element.getBoundingClientRect()
-  const locked = isExpanded(ASPECT_LOCK)
+  const lock = panelFlag(ASPECT_LOCK)
+  const locked = lock.on
   // Measured at render, so a commit scales the other axis by the box as it was
   // drawn rather than by a ratio a previous locked edit already rounded.
   const ratio = rect.width > 0 && rect.height > 0 ? rect.height / rect.width : null
@@ -253,7 +254,7 @@ export function sizeControls(context: SectionContext): HTMLElement {
       glyph: icon("Constrain", tokens.icon.action),
       pressed: locked,
       onClick: () => {
-        setExpanded(ASPECT_LOCK, !locked)
+        lock.toggle()
         invalidate()
       },
     }),

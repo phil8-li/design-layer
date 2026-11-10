@@ -14,11 +14,12 @@
  *
  * ## What came, what went, and why the panel is not "one selection" any more
  *
- * **Code** used to be the third tab and is now in the left rail beside Layers.
- * Both of those answer "what IS this" — one as a position in the page, one as
- * source — and neither is a control you change anything with, which is what
- * this panel is otherwise entirely made of. `panels/left.ts` carries the rest
- * of that argument.
+ * **Code** used to be the third tab, moved to the left rail beside Layers, and
+ * was then removed from there too: it answered "what IS this" as source, and
+ * was not a control you change anything with, which is what this panel is
+ * otherwise entirely made of. Copying the element as code is the layer
+ * header's job now (`section-layer-header.ts`); `panels/left.ts` keeps the
+ * history.
  *
  * **Library** sat second here for a release, left for the left rail, grew into
  * a catalogue of cards and previews there, and has now come back as half of
@@ -40,7 +41,7 @@
  *
  * `css/inspector.ts` keeps the strip a scroller, and it has to be: "Design
  * system" is a two-word label and the seam drags down to `inspectorMinWidth`,
- * which is 200px. `activate()` below carries the other half, scrolling the
+ * which is 200px. `show()` below carries the other half, scrolling the
  * chosen tab into view so the keyboard path never depends on a scrollbar that
  * is deliberately not drawn.
  */
@@ -61,7 +62,6 @@ import { forgetNormalizedCssValues } from "../../core/design-system"
 import type { EditorContext } from "../../core/context"
 import type { Selection } from "../../core/types"
 
-import type { InspectorTab } from "./tab-code"
 import { annotationsTab } from "./tab-annotations"
 import { designSystemTab } from "./tab-design-system"
 import { layerHeaderSection } from "./section-layer-header"
@@ -80,6 +80,31 @@ import { classesSection } from "./section-classes"
 import { formatCount } from "../../core/format"
 import { fanOutWriter } from "./multi"
 import { followSelection } from "./follow"
+import { finishScrubs } from "./field"
+import { closeTokenPicker } from "./token-picker"
+
+/** The contract every inspector tab keeps, Design included. */
+export interface InspectorTab {
+  node: HTMLElement
+  /**
+   * Re-read the world. Called on activation, and on every invalidation while
+   * the tab is the visible one — never for a hidden tab, which is first built
+   * when it is first shown.
+   */
+  update(): void
+  /**
+   * Work that must happen at load whether or not the tab is ever shown, for a
+   * tab whose data other surfaces read. Optional; most tabs have none.
+   */
+  boot?(): void
+}
+
+/**
+ * The tab ids, in strip order. `core/store.ts` types `inspectorTab` as a plain
+ * string, so this panel is where an id is checked: an id that names no tab
+ * reads as Design (`activeTab()`), never as a strip with every pane hidden.
+ */
+export type InspectorTabId = "design" | "annotations" | "system"
 
 export interface SectionContext {
   editor: EditorContext
@@ -237,7 +262,7 @@ function restoreFocus(host: HTMLElement, memory: FocusMemory | null): void {
 }
 
 interface TabDefinition {
-  id: string
+  id: InspectorTabId
   label: string
   tab: InspectorTab
 }
@@ -247,7 +272,7 @@ export function installInspector(editor: EditorContext): void {
   const host = el("div")
 
   /*
-   * Design is a tab like the other three, but its body is built by `render()`
+   * Design is a tab like the other two, but its body is built by `render()`
    * rather than by a controller — so it hands over the same `{node, update}`
    * shape and the strip below never has to know which is which.
    */
@@ -309,7 +334,7 @@ export function installInspector(editor: EditorContext): void {
        * in the same task; the observer then finds the box already published and
        * writes nothing.
        */
-      pill.track(buttons.get(activeId))
+      pill.track(buttons.get(activeTab().id))
     }
     paint()
     onAnnotationsChange(paint)
@@ -322,9 +347,25 @@ export function installInspector(editor: EditorContext): void {
     { id: "system", label: "Design system", tab: designSystemTab(editor) },
   ]
 
-  let activeId = tabs[0].id
+  /*
+   * Which tab shows is the store's `inspectorTab`, and only the store's: the
+   * strip, the ⌥8/⌥9/⌥0 commands, the bar's pending indicator and
+   * `context.setMode` all write it, and the subscription below is the one
+   * place that makes the panes follow it (`show`). There is no local copy to
+   * fall out of step with it.
+   *
+   *   any --strip click | command | setMode | bar--> setState(inspectorTab) --subscription--> show(tab)
+   *   tab --click on the showing tab--> show(tab) (a re-read, nothing to write)
+   */
+  const activeTab = (): TabDefinition =>
+    tabs.find((definition) => definition.id === editor.getState().inspectorTab) ?? tabs[0]
   const buttons = new Map<string, HTMLElement>()
   const panels = new Map<string, HTMLElement>()
+  /** Asks for a tab. The panes change when the store does, in `show`. */
+  const select = (id: InspectorTabId): void => {
+    if (activeTab().id === id) show(id)
+    else editor.setState({ inspectorTab: id })
+  }
 
   /*
    * ⌥8 / ⌥9 / ⌥0, registered BY SLOT rather than by name.
@@ -358,8 +399,8 @@ export function installInspector(editor: EditorContext): void {
         role: "tab",
         id: `de-tab-${definition.id}`,
         "aria-controls": `de-tabpanel-${definition.id}`,
-        "aria-selected": String(definition.id === activeId),
-        onclick: () => activate(definition.id),
+        "aria-selected": String(definition.id === activeTab().id),
+        onclick: () => select(definition.id),
       },
       [definition.label]
     )
@@ -377,7 +418,7 @@ export function installInspector(editor: EditorContext): void {
       },
       [definition.tab.node]
     )
-    panel.hidden = definition.id !== activeId
+    panel.hidden = definition.id !== activeTab().id
     panels.set(definition.id, panel)
   }
 
@@ -386,29 +427,19 @@ export function installInspector(editor: EditorContext): void {
   /* A frame late, for the reason `panels/left.ts` gives at the same call: the
      strip is in the document but not yet laid out, and `installTabPill` will
      not publish a measurement of zero. */
-  requestAnimationFrame(() => pill.track(buttons.get(activeId)))
+  requestAnimationFrame(() => pill.track(buttons.get(activeTab().id)))
 
   /**
-   * Switching tabs updates the tab you switch TO, and only that one.
+   * Makes the panes match the store's tab, and updates the tab shown, and only
+   * that one.
    *
-   * The hidden panes keep their DOM — losing the code view's scroll position
+   * The hidden panes keep their DOM — losing the outbox's scroll position
    * every time you glance at the design tab would make the pair unusable — but
    * a hidden pane is not re-read on every write either, which is what keeps the
-   * ledger and the code view off the hot path of a scrub.
+   * ledger off the hot path of a scrub.
    */
-  function activate(id: string): void {
-    activeId = id
-    /*
-     * Published, so the bar can ask for a tab without reaching into this
-     * closure.
-     *
-     * Written on every switch and not only on a user click, because the store
-     * is the record of WHICH TAB IS SHOWING — a switch this function made for
-     * some other reason is still a switch, and a record that skips those is one
-     * the toolbar would read as stale. Guarded on inequality so the write that
-     * comes back from the subscription below cannot loop.
-     */
-    if (editor.getState().inspectorTab !== id) editor.setState({ inspectorTab: id })
+  function show(requested: string): void {
+    const id = (tabs.find((definition) => definition.id === requested) ?? tabs[0]).id
     for (const definition of tabs) {
       const selected = definition.id === id
       buttons.get(definition.id)?.setAttribute("aria-selected", String(selected))
@@ -468,6 +499,22 @@ export function installInspector(editor: EditorContext): void {
    * active tab; `invalidateSource` re-runs only the sections that print a
    * source (see `SOURCE_SECTIONS`), for a Selection whose `source` landed
    * after the click. A full repaint already owed swallows the narrow one.
+   *
+   * The machine, stored as `scheduled` + `owedFull` + `stale`:
+   *
+   *   idle            --invalidate-->               pending(full)
+   *   idle            --invalidateSource-->         pending(source)
+   *   pending(source) --invalidate-->               pending(full)
+   *   pending(*)      --microtask, on screen-->     rendering --> idle
+   *   pending(*)      --microtask, off screen-->    owed
+   *   any             --write while off screen-->   owed
+   *   owed            --panel opens | chrome shows--> pending(full)
+   *   owed            --tab shown (`show`)-->       idle (the shown tab was just updated)
+   *
+   * A Design render ends whatever the person was doing on the nodes it is
+   * about to remove first: a label scrub commits (`finishScrubs`) and an open
+   * token list closes (`closeTokenPicker`), so no preview is left on the page
+   * without its note and no list writes through a field that is gone.
    */
   let scheduled = false
   let owedFull = false
@@ -493,8 +540,8 @@ export function installInspector(editor: EditorContext): void {
         stale = true
         return
       }
-      if (wasFull) tabs.find((definition) => definition.id === activeId)?.tab.update()
-      else if (activeId === "design") renderSourceSections()
+      if (wasFull) activeTab().tab.update()
+      else if (activeTab().id === "design") renderSourceSections()
     })
   }
   const invalidate = (): void => schedule(true)
@@ -505,8 +552,15 @@ export function installInspector(editor: EditorContext): void {
    * an element with a width transition, the app resizing its own panel in
    * interactive mode, a window resize. `follow.ts` watches them and asks for
    * the same repaint a commit does, only when a number on the tab would change.
+   * Only while that repaint would be seen: with the chrome hidden or the panel
+   * closed it reads no layout at all, which is what keeps the hidden editor
+   * inert on the app's main thread.
    */
-  const follow = followSelection({ host, showing: () => activeId === "design", repaint: invalidate })
+  const follow = followSelection({
+    host,
+    showing: () => activeTab().id === "design" && !offScreen(),
+    repaint: invalidate,
+  })
 
   /**
    * Which element the panel currently shows, so a repaint can tell a tweak from
@@ -520,6 +574,15 @@ export function installInspector(editor: EditorContext): void {
   /** The last full render's context and the node each section returned, for `renderSourceSections`. */
   let renderedContext: SectionContext | null = null
   const renderedNodes = new Map<InspectorSection, HTMLElement>()
+
+  /**
+   * Ends the person's gestures on nodes about to leave: a label scrub commits,
+   * and the token list closes if the field that opened it is among them.
+   */
+  function endGestures(leaving: HTMLElement): void {
+    finishScrubs(leaving)
+    closeTokenPicker(leaving)
+  }
 
   function render(): void {
     renderedContext = null
@@ -547,6 +610,7 @@ export function installInspector(editor: EditorContext): void {
     const key = selection?.key ?? null
     const hold = key !== null && key === renderedKey ? holdScroll(host) : null
     renderedKey = key
+    endGestures(host)
     clear(host)
 
     /*
@@ -656,13 +720,14 @@ export function installInspector(editor: EditorContext): void {
     const focus = captureFocus(host)
     const hold = holdScroll(host)
     for (const section of SOURCE_SECTIONS) {
+      const old = renderedNodes.get(section)
+      if (old) endGestures(old)
       let node: HTMLElement | null = null
       try {
         node = section(context)
       } catch (error) {
         console.warn("[designlayer] inspector section failed", error)
       }
-      const old = renderedNodes.get(section)
       if (old) {
         if (node) old.replaceWith(node)
         else old.remove()
@@ -687,18 +752,19 @@ export function installInspector(editor: EditorContext): void {
     // is the only way to reach the Changes tab from outside this panel. Handled
     // before the selection check below because a tab switch is not a selection
     // change and would otherwise be dropped by it.
-    if (next.inspectorTab !== previous.inspectorTab && next.inspectorTab !== activeId) {
-      activate(next.inspectorTab)
-    }
-    // Back on screen with a repaint owed from while it was away.
+    if (next.inspectorTab !== previous.inspectorTab) show(next.inspectorTab)
+    // Back on screen: pay a repaint owed from while it was away, or let
+    // `follow` look once at boxes that moved while it was not reading them.
     if (
-      stale &&
       (next.inspectorOpen !== previous.inspectorOpen || next.chromeHidden !== previous.chromeHidden) &&
       !offScreen()
     ) {
-      stale = false
-      invalidate()
-      return
+      if (stale) {
+        stale = false
+        invalidate()
+        return
+      }
+      follow.wake()
     }
     if (next.selection !== previous.selection || next.optionSets !== previous.optionSets) {
       invalidate()
@@ -724,9 +790,9 @@ export function installInspector(editor: EditorContext): void {
    *
    * Only when the outbox is the tab being looked at. `invalidate()` repaints
    * whichever tab is active, and a ledger write says nothing whatsoever about
-   * the Design or Code views — repainting either of them on a write they do not
-   * show is exactly the hot-path cost `activate()` is written to avoid. A
-   * hidden pane needs nothing: switching to it updates it.
+   * the Design tab — repainting it on a write it does not show is exactly the
+   * hot-path cost `show()` is written to avoid. A hidden pane needs nothing:
+   * switching to it updates it.
    *
    * Routed through `invalidate()` rather than rendering here so the repaint
    * lands once the write is done. A commit carrying four properties records four
@@ -735,10 +801,10 @@ export function installInspector(editor: EditorContext): void {
    * loop, with the element half-styled.
    */
   onPreviewOnlyChange(() => {
-    if (activeId === "annotations") invalidate()
+    if (activeTab().id === "annotations") invalidate()
   })
   /*
-   * Only the visible tab is built at boot. A hidden one is built by `activate`
+   * Only the visible tab is built at boot. A hidden one is built by `show`
    * the moment it is switched to — before that frame paints, so it is never
    * seen empty — and building it here too was a full list render plus the
    * requests behind it on every page load, for tabs most sessions never open.
@@ -746,7 +812,7 @@ export function installInspector(editor: EditorContext): void {
    * the Design tab's pickers draw on) says so through `boot`.
    */
   for (const definition of tabs) {
-    if (definition.id !== activeId) definition.tab.boot?.()
+    if (definition.id !== activeTab().id) definition.tab.boot?.()
     else if (offScreen()) stale = true
     else definition.tab.update()
   }

@@ -78,7 +78,7 @@ const bundled = await build({
       } from "./src/panels/inspector/section-autolayout"
       export { sizeControls } from "./src/panels/inspector/section-layout"
       export { unifiedLayoutSection } from "./src/panels/inspector/section-unified-layout"
-      export { isExpanded, numberField, setExpanded } from "./src/panels/inspector/field"
+      export { isExpanded, numberField, setExpanded, panelFlag, setPanelFlag } from "./src/panels/inspector/field"
       export { matchShortcut } from "./src/core/keymap"
       export { runCommand } from "./src/core/commands"
     `,
@@ -480,12 +480,12 @@ await check("a full flex line gets shrink-0 so a typed width sticks, and only th
 })
 
 await check("Lock aspect ratio scales the other axis on commit", () => {
-  layout.setExpanded("layout.aspect-lock", false)
+  layout.setPanelFlag("layout.aspect-lock", false)
   const first = scene({ children: 0 })
   const lock = byLabel(layout.sizeControls(first.context), "Lock aspect ratio")
   assert.equal(lock.getAttribute("aria-pressed"), "false")
   lock.click()
-  assert.equal(layout.isExpanded("layout.aspect-lock"), true)
+  assert.equal(layout.panelFlag("layout.aspect-lock").on, true)
 
   const { context, writes } = scene({ children: 0, rect: { width: 200, height: 100 } })
   const row = layout.sizeControls(context)
@@ -494,7 +494,7 @@ await check("Lock aspect ratio scales the other axis on commit", () => {
   writes.length = 0
   commit(field(row, "size.height"), 50)
   assert.deepEqual(flat(writes), { height: "50px", width: "100px" })
-  layout.setExpanded("layout.aspect-lock", false)
+  layout.setPanelFlag("layout.aspect-lock", false)
 })
 
 await check("the column-3 controls all land in the trailing column", () => {

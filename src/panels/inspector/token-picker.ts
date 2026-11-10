@@ -54,13 +54,13 @@ export interface TokenChoice {
  * around by a typed value. Those axes leave this out and the footer never
  * renders, rather than each of them remembering to suppress it.
  */
-export interface TokenCustomValue {
+interface TokenCustomValue {
   /** The shape the axis wants, shown in the empty field. Never read as prose. */
   placeholder: string
   onCommit(raw: string): void
 }
 
-export interface TokenFieldOptions {
+interface TokenFieldOptions {
   /** Stable identity so focus survives the panel rebuild a commit causes. */
   id: string
   title: string
@@ -107,12 +107,44 @@ const SWATCH = 16
  */
 const RADIUS_REFERENCE = 96
 
-/** One picker at a time: opening a second closes the first. */
-let dismiss: ((restoreFocus: boolean) => void) | null = null
-/** Which field that picker belongs to, so its own field can close it again. */
-let openFor: HTMLElement | null = null
-/** Row ids have to be unique in the host document for `aria-activedescendant`. */
-let pickerSeq = 0
+/*
+ * The picker's machine. One picker at a time, and it owns the field that
+ * opened it by generation: every open takes the next number, and a close or a
+ * commit from an older open is ignored.
+ *
+ *   closed --field click | Apply token click--> open(field, gen)
+ *   open   --same trigger click | Escape | close button--> closed (focus back)
+ *   open   --other trigger--> closed --> open(other, gen + 1)
+ *   open   --row click | Enter | custom Enter--> closed (focus back) --> onCommit
+ *   open   --outside press | outside scroll | window resize | chrome hidden--> closed
+ *   open   --its field leaves the document (a rebuild)--> closed, no commit
+ *   open   --input--> open (re-filter, re-place)
+ *
+ * A pick only ever reaches the field that is on screen: a field the panel has
+ * replaced closes the list (the MutationObserver while open, `closeTokenPicker`
+ * before a Design render, and a last check in `commit`), so no row writes
+ * through the closure of an element the person has left.
+ */
+interface OpenPicker {
+  generation: number
+  /** The trigger that opened it, so its own trigger can close it again. */
+  field: HTMLElement
+  close(restoreFocus: boolean): void
+}
+let open: OpenPicker | null = null
+/** Also unique row ids in the host document, for `aria-activedescendant`. */
+let generation = 0
+
+/**
+ * Closes the open list, without a commit. With `leaving`, only when the field
+ * that opened it is inside that node — the call a panel makes before it
+ * removes a subtree.
+ */
+export function closeTokenPicker(leaving?: Node): void {
+  if (!open) return
+  if (leaving && !leaving.contains(open.field)) return
+  open.close(false)
+}
 
 /**
  * The leading slot.
@@ -202,14 +234,14 @@ export function tokenField(options: TokenFieldOptions): HTMLElement {
   // control on the panel with no way to put away what it put on the screen:
   // the outside-pointerdown handler exempts its own field on purpose.
   field.addEventListener("click", () => {
-    if (openFor === field) dismiss?.(true)
+    if (open?.field === field) open.close(true)
     else openPicker(field, options)
   })
   return field
 }
 
 /** What the list itself needs; the closed field's own options stay with `tokenField`. */
-export type TokenListOptions = Pick<TokenFieldOptions, "title" | "choices" | "selectedId" | "onCommit" | "custom">
+type TokenListOptions = Pick<TokenFieldOptions, "title" | "choices" | "selectedId" | "onCommit" | "custom">
 
 /**
  * Opens the list from a control that is not a `tokenField`: the "Apply token"
@@ -219,14 +251,15 @@ export type TokenListOptions = Pick<TokenFieldOptions, "title" | "choices" | "se
  * Pressing the trigger again closes it.
  */
 export function toggleTokenList(trigger: HTMLElement, options: TokenListOptions, anchor: HTMLElement = trigger): void {
-  if (openFor === trigger) dismiss?.(true)
+  if (open?.field === trigger) open.close(true)
   else openPicker(trigger, options, anchor)
 }
 
 function openPicker(field: HTMLElement, options: TokenListOptions, anchor: HTMLElement = field): void {
-  dismiss?.(false)
+  open?.close(false)
 
-  const listId = `de-token-list-${(pickerSeq += 1)}`
+  const mine = (generation += 1)
+  const listId = `de-token-list-${mine}`
   const list = el("div", { class: "de-token-list", id: listId, role: "listbox", "aria-label": options.title })
   // A combobox rather than a bare input: focus stays here while the arrows walk
   // the list, so the active row has to be announced from here or a screen
@@ -307,14 +340,16 @@ function openPicker(field: HTMLElement, options: TokenListOptions, anchor: HTMLE
   }
 
   let stopWatchingChrome = (): void => {}
+  let orphanWatch: MutationObserver | null = null
   const close = (restoreFocus: boolean) => {
-    if (dismiss !== close) return
-    dismiss = null
-    openFor = null
+    if (open?.generation !== mine) return
+    open = null
     stopWatchingChrome()
+    orphanWatch?.disconnect()
     window.removeEventListener("pointerdown", onPointerDown, true)
     window.removeEventListener("keydown", onKeyDown, true)
     window.removeEventListener("scroll", onScroll, true)
+    window.removeEventListener("resize", onResize)
     // Closed now; the kit's 150ms dismissal plays on an inert copy.
     playExit(popover)
     popover.remove()
@@ -322,8 +357,16 @@ function openPicker(field: HTMLElement, options: TokenListOptions, anchor: HTMLE
     if (restoreFocus) focusControl(field)
   }
 
+  /** Whether a pick may still write: this open is current and its field is on screen. */
+  const current = (): boolean => {
+    if (open?.generation !== mine) return false
+    if (field.isConnected) return true
+    close(false)
+    return false
+  }
+
   const commit = (choice: TokenChoice) => {
-    if (choice.disabled) return
+    if (choice.disabled || !current()) return
     // Focus goes back to the field BEFORE the write, not after: a commit rebuilds
     // the whole inspector, and the panel restores focus by `data-de-field`. From
     // a row inside a popover it is about to remove, there is nothing to restore.
@@ -338,7 +381,7 @@ function openPicker(field: HTMLElement, options: TokenListOptions, anchor: HTMLE
    */
   const commitCustom = () => {
     const raw = customInput?.value.trim() ?? ""
-    if (!raw || !options.custom) return
+    if (!raw || !options.custom || !current()) return
     close(true)
     options.custom.onCommit(raw)
   }
@@ -443,6 +486,9 @@ function openPicker(field: HTMLElement, options: TokenListOptions, anchor: HTMLE
     if (event.target instanceof Node && popover.contains(event.target)) return
     close(false)
   }
+  // The card is placed in window coordinates, so a resize leaves it where the
+  // field used to be; closing is the same answer a scroll gets.
+  const onResize = () => close(false)
   // No Home/End: while the caret is in the search field those keys belong to
   // the text a designer is typing, and taking them costs more than the two rows
   // of travel they save in a list the arrows already walk.
@@ -474,11 +520,23 @@ function openPicker(field: HTMLElement, options: TokenListOptions, anchor: HTMLE
   field.setAttribute("aria-expanded", "true")
   render("")
   place(anchor, popover)
-  dismiss = close
-  openFor = field
+  open = { generation: mine, field, close }
   window.addEventListener("pointerdown", onPointerDown, true)
   window.addEventListener("keydown", onKeyDown, true)
   window.addEventListener("scroll", onScroll, true)
+  window.addEventListener("resize", onResize)
+  /*
+   * Closed when its field leaves the document: a panel rebuild (a refresh, an
+   * icon set or a variant declaration landing, a selection by keyboard) puts a
+   * new field in its place, and the list was built for the old one. Child
+   * lists only, so the app's own style and class churn costs nothing.
+   */
+  if (typeof MutationObserver === "function") {
+    orphanWatch = new MutationObserver(() => {
+      if (!field.isConnected) close(false)
+    })
+    orphanWatch.observe(document.documentElement, { childList: true, subtree: true })
+  }
   // Closed when the editor is hidden. The popover hangs off `document.body`,
   // not off the inspector, and ⌘. is not one of the keys it listens for, so it
   // stayed open over the page with its rows still writing tokens.

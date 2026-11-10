@@ -117,25 +117,19 @@ export function restated(color: string, alpha: number): string | null {
  * declaration was inline, a pseudo-class rule was not merely missing but
  * impossible to write. An inline style has nowhere to hang a `:hover`.
  *
- * The geometry stays here because `swatch()` is used standalone by three
- * sections that compose their own layout, and a size is the one thing those
- * call sites reason about. Everything that has a STATE moved to
+ * The geometry stays inline: the well sits inside the 24px paint well on the
+ * 16px icon rung, and a size is the one thing its caller reasons about.
+ * Everything that has a STATE moved to
  * `.de-color-well` in `css/panels.ts`, where the rest of the panel's controls
  * keep theirs.
  */
 const swatchStyle = (size: number) => [`width:${size}px`, `height:${size}px`, "flex:none", "padding:0"].join(";")
 
 /**
- * Standalone colour well, for a row that composes its own layout. `size` is
- * 20 standalone; a paint well passes the 16px icon rung so the swatch sits
- * inside the 24px well with 4px around it, as Figma's does.
+ * The paint row's colour well. `paintRow` passes the 16px icon rung, so the
+ * swatch sits inside the 24px well with 4px around it, as Figma's does.
  */
-export function swatch(
-  value: string,
-  label: string,
-  onCommit: (hex: string) => void,
-  size = 20
-): HTMLInputElement {
+function swatch(value: string, label: string, onCommit: (hex: string) => void, size: number): HTMLInputElement {
   const node = el("input", {
     type: "color",
     class: "de-color-well",
@@ -154,61 +148,6 @@ export function swatch(
   }) as HTMLInputElement
   node.addEventListener("input", () => onCommit(node.value))
   return node
-}
-
-export interface ColorFieldOptions {
-  id?: string
-  label: string
-  /** Computed colour string; anything unparseable still shows as raw text. */
-  value: string
-  onCommit(value: string): void
-}
-
-export function colorField(options: ColorFieldOptions): HTMLElement {
-  const hex = toHex(options.value)
-  const text = el("input", {
-    type: "text",
-    "aria-label": options.label,
-    value: hex ?? options.value,
-    "data-de-field": options.id,
-  }) as HTMLInputElement
-
-  const well = swatch(options.value, `${options.label} swatch`, (next) => {
-    text.value = next
-    options.onCommit(next)
-  })
-
-  const commitText = () => {
-    const next = text.value.trim()
-    if (!next) return
-    const parsed = toHex(next)
-    if (parsed) well.value = parsed
-    options.onCommit(next)
-  }
-  text.addEventListener("change", commitText)
-  text.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return
-    event.preventDefault()
-    commitText()
-    text.blur()
-  })
-
-  /*
-   * NO LEADING LABEL, because the swatch already is one.
-   *
-   * The row read `[swatch] Color #ffffff`, which names the thing twice before
-   * it gets to the value: a filled well is the universal mark for "this is a
-   * colour", and printing the word beside it spent a fifth of the field on
-   * saying so again. Figma's paint rows are a swatch and a value with nothing
-   * between them, and the caption above the group carries the noun.
-   *
-   * Only the DRAWING is dropped, not the name — the swatch and the text input
-   * both keep their `aria-label`, so the pair is still announced as "Color" and
-   * "Color swatch". `options.label` is therefore still required, and is now
-   * exactly what it says: the accessible name.
-   */
-  const field = el("div", { class: "de-field", style: "flex:1" }, [text])
-  return el("div", { class: "de-row" }, [well, field])
 }
 
 /* ---------- paint rows: Fill, Stroke and Effects share these ---------- */
@@ -244,7 +183,7 @@ function typedColor(raw: string): string | null {
   return CSS.supports("color", text) ? text : null
 }
 
-export interface PaintRowOptions {
+interface PaintRowOptions {
   /** Field-id stem: `fill`, `stroke`, `type.color`'s row uses `text`. */
   id: string
   /** Accessible name of the swatch and the value: "Fill color". */

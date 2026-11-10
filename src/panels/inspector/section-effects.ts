@@ -26,7 +26,7 @@ import { leaveRow, revealGroup } from "../../core/leave"
 import { icon } from "../../core/icons"
 import { tokens } from "../../core/tokens"
 import { alphaOf, emptyPaintSection, paintRow, withAlpha } from "./color"
-import { isExpanded, miniButton, numberField, propRow, selectField, setExpanded, takeJustExpanded } from "./field"
+import { disclosure, miniButton, numberField, propRow, selectField, shiftDisclosures } from "./field"
 import { styledSection } from "../../options/panel"
 import { hasUtility, tokenRow } from "./token-row"
 import { isMulti, mixedPaintSection, selectedOf, sharedValue } from "./multi"
@@ -94,6 +94,7 @@ export const effectsSection: InspectorSection = (context) => {
   // take the whole `SectionContext`, and a partial rebuilt from four of its
   // fields is a second, silently divergent copy of the panel's own state.
   const { selection, computed, writer, invalidate } = context
+  const disclosureStem = `${EXPANDER}.${selection.key}`
 
   const visible =
     computed.boxShadow === "none" ? [] : splitLayers(computed.boxShadow).map(parseShadow).filter((s): s is Shadow => s !== null)
@@ -198,17 +199,18 @@ export const effectsSection: InspectorSection = (context) => {
 
     /*
      * Figma opens an effect's numbers in a popover from the row's icon. Here
-     * they open under the row instead, remembered per effect index, so the
-     * closed list is one row per effect and an open one stays open across the
-     * rebuild every commit causes.
+     * they open under the row instead, remembered per layer and per effect
+     * index, so the closed list is one row per effect, an open one stays open
+     * across the rebuild every commit causes, and selecting another layer does
+     * not open its effect of the same number.
      */
-    const key = `${EXPANDER}.${index}`
-    const open = isExpanded(key)
+    const details = disclosure(`${disclosureStem}.${index}`)
+    const open = details.open
     const settings = miniButton({
       label: "Effect settings",
       glyph: icon("Settings", tokens.icon.action),
       onClick: () => {
-        setExpanded(key, !open)
+        details.toggle()
         invalidate()
       },
     })
@@ -247,14 +249,18 @@ export const effectsSection: InspectorSection = (context) => {
       onClick: (event: Event) => {
         // The whole effect leaves, its open settings with it.
         const block = (event.currentTarget as HTMLElement).closest(".de-effect")
-        const write = () => commit(rows.filter((_, at) => at !== index), "Remove effect")
+        const write = () => {
+          // The open settings below it move up with their effects.
+          shiftDisclosures(disclosureStem, index)
+          commit(rows.filter((_, at) => at !== index), "Remove effect")
+        }
         const closing = block instanceof HTMLElement ? leaveRow(block) : null
         if (closing) void closing.then(write)
         else write()
       },
     })
 
-    const details = open
+    const settingsBlock = open
       ? el("div", { class: "de-effect-settings" }, [
           propRow({ id: `effects.${index}.offset`, cells: [scalar("x", "X", "Offset X"), scalar("y", "Y", "Offset Y")] }),
           propRow({ id: `effects.${index}.size`, cells: [scalar("blur", "B", "Blur"), scalar("spread", "S", "Spread")] }),
@@ -279,11 +285,11 @@ export const effectsSection: InspectorSection = (context) => {
           }),
         ])
       : null
-    if (details && takeJustExpanded(key)) revealGroup(details)
+    if (settingsBlock && details.justOpened()) revealGroup(settingsBlock)
 
     return el("div", { class: "de-effect" }, [
       propRow({ id: `effects.${index}`, cells: [head], trailing: remove }),
-      details,
+      settingsBlock,
     ])
   })
 

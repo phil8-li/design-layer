@@ -12,7 +12,7 @@ import {
   type ResponsiveClassBinding,
 } from "../../core/responsive"
 import { canvasWidth } from "../../shell/shell"
-import { isExpanded, miniButton, section, setExpanded, textField } from "./field"
+import { disclosure, miniButton, section, textField } from "./field"
 import type { InspectorSection } from "./index"
 import type { LayerElement } from "../../core/types"
 
@@ -222,7 +222,8 @@ export const responsiveSection: InspectorSection = ({ selection, computed, write
   )
 
   const containerContext = Boolean(scope || containerBindings.length)
-  const showAllContainers = isExpanded(CONTAINER_EXPANDER)
+  const allContainers = disclosure(CONTAINER_EXPANDER)
+  const showAllContainers = allContainers.open
   const defaultContainerSteps = containerSteps.filter(
     (step) => step.documented || authored("container", step.name).length > 0
   )
@@ -273,7 +274,7 @@ export const responsiveSection: InspectorSection = ({ selection, computed, write
         glyph: icon(showAllContainers ? "ChevronsDownUp" : "ChevronsUpDown", tokens.icon.marker),
         pressed: showAllContainers,
         onClick: () => {
-          setExpanded(CONTAINER_EXPANDER, !showAllContainers)
+          allContainers.toggle()
           invalidate()
         },
       })

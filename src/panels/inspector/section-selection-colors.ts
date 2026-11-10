@@ -54,13 +54,13 @@ const UNFOLDED_MAX = 4
 const SUMMARY_CHITS = 3
 const SHAPES = "path, rect, circle, ellipse, line, polyline, polygon, text, use"
 
-export interface ColorMember {
+interface ColorMember {
   element: LayerElement
   /** The CSS property this element paints the colour with. */
   property: string
 }
 
-export interface ColorGroup {
+interface ColorGroup {
   /** Hex plus alpha, or the raw string for a colour hex cannot hold. */
   key: string
   /** The colour as computed on the first member. */

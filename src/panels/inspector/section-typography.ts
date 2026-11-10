@@ -17,12 +17,11 @@ import { icon, type IconName } from "../../core/icons"
 import { tokens } from "../../core/tokens"
 import { TIP_ATTR } from "../../core/tooltip"
 import {
+  disclosure,
   iconSegmented,
-  isExpanded,
   numberField,
   propRow,
   selectField,
-  setExpanded,
   textField,
   trailingToggle,
 } from "./field"
@@ -190,7 +189,8 @@ export const typographySection: InspectorSection = (context) => {
   const textCase = shared((style) => style.textTransform || "none")
   const vertical = verticalAxis(computed)
   const verticalPlace = vertical ? shared((style) => verticalAxis(style)?.current ?? null) : null
-  const settingsOpen = isExpanded(TYPE_SETTINGS_EXPANDER)
+  const typeSettings = disclosure(TYPE_SETTINGS_EXPANDER)
+  const settingsOpen = typeSettings.open
 
   /**
    * One rail, built from a `Choice[]`. `enabled` blanks the value as well as
@@ -348,7 +348,7 @@ export const typographySection: InspectorSection = (context) => {
         glyph: icon("Settings", tokens.icon.action),
         pressed: settingsOpen,
         onClick: () => {
-          setExpanded(TYPE_SETTINGS_EXPANDER, !settingsOpen)
+          typeSettings.toggle()
           invalidate()
         },
       }),

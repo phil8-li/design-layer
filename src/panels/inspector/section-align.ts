@@ -73,7 +73,7 @@ import type { SectionContext } from "./index"
 
 export type Place = "flex-start" | "center" | "flex-end"
 export type Axis = "horizontal" | "vertical"
-export type AlignProperty = "justify-content" | "align-items"
+type AlignProperty = "justify-content" | "align-items"
 
 /** Computed `justify-content`/`align-items` collapsed onto the three we write. */
 function placeOf(value: string): Place | null {
