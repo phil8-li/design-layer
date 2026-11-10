@@ -344,26 +344,17 @@ async function undo(page) {
   await sleep(250)
 }
 
-async function applyToCode(page) {
+/** The Changes tab's edit notes, as their one line of text each. */
+async function editNotes(page) {
   await page.click("#de-tab-annotations")
-  const apply = await page.waitForSelector("button:has-text('Apply to code')", { timeout: WAIT })
-    .catch(() => { throw new Fail("no Apply to code button in the Changes tab") })
-  await apply.click()
-  await sleep(300)
+  await sleep(200)
+  const lines = await page.$$eval(".de-ann-item--edit .de-ann-item-line", (nodes) => nodes.map((node) => node.textContent.trim()))
   await page.click("#de-tab-design")
+  await sleep(150)
+  return lines
 }
 
-async function sourceHas(pattern, timeout = 10000) {
-  const file = path.join(tmpDir, "src", "App.jsx")
-  const start = Date.now()
-  let text = ""
-  while (Date.now() - start < timeout) {
-    text = fs.readFileSync(file, "utf8")
-    if (pattern.test(text)) return text
-    await sleep(200)
-  }
-  throw new Fail(`source never matched ${pattern}:\n${text.split("\n").filter((line) => line.includes("grow")).join("\n")}`)
-}
+const hostSource = () => fs.readFileSync(path.join(tmpDir, "src", "App.jsx"), "utf8")
 
 /** The panel reads what the element is, give or take the rounding both sides do. */
 function agrees(state, label) {
@@ -612,17 +603,20 @@ const FLOWS = [
     },
   },
   {
-    // Last, because it rewrites the host's source; `main` puts it back.
-    name: "apply-resize",
+    // A resize is a note since edits stopped writing source: it lands in the
+    // Changes tab for Send to agent, and App.jsx stays byte-for-byte as it was.
+    name: "resize-note",
     async run(page) {
+      const source = hostSource()
+      const before = await editNotes(page)
       await select(page, "grow")
       await dragHandle(page, "e", -40)
       await sleep(150)
-      const { width } = await read(page, "grow")
-      await applyToCode(page)
-      // Off its grow, at the width it was dragged to, in one class list.
-      await sourceHas(/id="grow" className="[^"]*\bflex-none\b[^"]*"/)
-      await sourceHas(new RegExp(`id="grow" className="[^"]*\\bw-\\[${width - 16}px\\]`))
+      const lines = await editNotes(page)
+      const added = lines.filter((line) => !before.includes(line))
+      check(lines.length > before.length || added.length > 0, `the resize left no note in the Changes tab; notes: ${lines.join(" | ")}`)
+      await sleep(1000)
+      check(hostSource() === source, "the resize wrote to App.jsx; an edit must stay a note")
     },
   },
 ]

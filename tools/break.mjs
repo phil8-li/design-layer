@@ -3,11 +3,10 @@
  * Two surfaces, rendered under worst-case content, on one page you read top to
  * bottom.
  *
- * The third of the review tools and the only one that is not a comparison.
- * `before-after.mjs` measures two revisions of the start screen against each
- * other; `chrome-demo.mjs` does the same for the editor's chrome. Both answer
- * "did this change land". Neither answers "does it survive a 200-character
- * package name", because both feed their surfaces the same tidy fixtures — a
+ * A review tool that is not a comparison. `before-after.mjs` measures two
+ * revisions of the start screen against each other, which answers "did this
+ * change land". It does not answer "does it survive a 200-character package
+ * name", because it feeds its surface the same tidy fixtures — a
  * project called `workspaces`, two dev servers, a path three folders deep — and
  * a surface built against one happy path looks finished right up until real
  * content arrives.
@@ -37,9 +36,9 @@
  * own network-failure branch.
  *
  * The chooser is TypeScript that needs a context, a bridge and a stylesheet, so
- * it is bundled with esbuild and stood up by its shipped installer — the rig in
- * `chrome-demo.mjs`. That tool's scene file is reused rather than rewritten:
- * `tools/chrome-demo-scene.js` already mounts `installAppChooser` over a real
+ * it is bundled with esbuild and stood up by its shipped installer. The scene
+ * file left by the retired chrome before/after tool is reused rather than
+ * rewritten: `tools/chrome-demo-scene.js` already mounts `installAppChooser` over a real
  * `createContext`, and a second scene that did the same thing slightly
  * differently would be a second thing to keep true. What this file adds on top
  * of it is a panel whose width varies, a config whose app name varies, and a
@@ -717,8 +716,8 @@ function chooserConfig(spec) {
 /* ---------- Playwright, borrowed rather than depended on ---------- */
 
 /*
- * Same resolution order as `panel-harness.mjs`, `before-after.mjs` and
- * `chrome-demo.mjs`, and for the same reason: this repo does not depend on
+ * Same resolution order as `panel-harness.mjs` and `before-after.mjs`, and
+ * for the same reason: this repo does not depend on
  * Playwright and should not start. See the long note in `panel-harness.mjs`.
  */
 async function loadPlaywright() {
@@ -879,8 +878,8 @@ async function shootChooser(browser, js, spec) {
         )
         /*
          * The panel's width is a scenario, so it is set from here rather than
-         * baked into the scene: the scene is shared with `chrome-demo.mjs`,
-         * which has one width and no reason to grow a parameter.
+         * baked into the scene: the scene has one width and no reason to
+         * grow a parameter.
          */
         const host = document.querySelector(".de-panel--left")
         if (host) host.style.width = `${spec.panel ?? 240}px`
