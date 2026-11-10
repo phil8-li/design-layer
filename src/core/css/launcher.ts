@@ -31,13 +31,14 @@ import { TOOLBAR_HEIGHT } from "./toolbar"
  * scrollbars and corner affordances that live in exactly that corner on the
  * pages this editor is pointed at.
  *
- * Kept in agreement with `EDGE` in `shell/launcher.ts`, which is the margin a
- * DRAGGED disc clamps to — a dragged surface has to be able to land exactly
- * where an undragged one sits, or the resting position is somewhere the user
- * cannot choose.
+ * Exported as `LAUNCHER_INSET` because it is also the margin a DRAGGED disc
+ * clamps to (`shell/launcher.ts`) — a dragged surface has to be able to land
+ * exactly where an undragged one sits, or the resting position is somewhere
+ * the user cannot choose.
  */
 const SIZE = TOOLBAR_HEIGHT
 const INSET = 32
+export { INSET as LAUNCHER_INSET }
 
 /** How far above the page's bottom edge the resting disc's top sits — what a toast in this corner has to clear. */
 export const LAUNCHER_CLEARANCE = INSET + SIZE

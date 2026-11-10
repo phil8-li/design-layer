@@ -85,7 +85,15 @@ const bundled = await build({
       export { controlRow } from "./src/panels/controls"
       export { shellCss } from "./src/core/css"
       export { mountShell } from "./src/shell/shell"
-      export { editorOwnsInput, setState } from "./src/core/store"
+      export {
+        editorOwnsInput,
+        getState,
+        modeChanged,
+        setMode,
+        setState,
+        subscribe,
+      } from "./src/core/store"
+      export { installCompanionApi } from "./src/core/companion-api"
       export { record, canUndo, canRedo, resetHistory } from "./src/core/history"
     `,
     resolveDir: PACKAGE_DIR,
@@ -492,6 +500,204 @@ await check("interactive mode hands the gesture to the app, and only then", () =
   editorModule.setState({ interactive: false })
   press()
   assert.equal(reached, 1, "the app stayed reachable after the mode was switched back off")
+})
+
+/*
+ * The app's own calls are the app's (B-SF-1).
+ *
+ * Interactive mode, hidden chrome and canvas view hand the pointer back, and
+ * neutering the vendor's guard is how — but it used to neuter the APP's own
+ * `preventDefault()` and `stopPropagation()` with it, for every click. A router
+ * link then followed its `href` as a full page load, which reboots the editor.
+ * jsdom does not navigate, so `defaultPrevented` stands in for "the link did
+ * not navigate" and a body listener for an outer "click outside" handler.
+ */
+await check("the app's own preventDefault and stopPropagation hold while the editor stands down", () => {
+  const link = window.document.createElement("a")
+  link.href = "/next-page"
+  window.document.body.append(link)
+  let handled = 0
+  let outer = 0
+  link.addEventListener("click", (event) => {
+    handled += 1
+    event.preventDefault()
+    event.stopPropagation()
+  })
+  const onBody = () => {
+    outer += 1
+  }
+  window.document.body.addEventListener("click", onBody)
+  // The vendor's guard, as it really behaves: every click, chrome or app.
+  const guard = (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+  }
+  window.document.addEventListener("click", guard, true)
+  const click = () => {
+    const event = new window.MouseEvent("click", { bubbles: true, cancelable: true })
+    link.dispatchEvent(event)
+    return event
+  }
+  try {
+    for (const [label, patch] of [
+      ["interactive mode", { interactive: true, chromeHidden: false, canvasView: false }],
+      ["hidden chrome", { interactive: false, chromeHidden: true, canvasView: false }],
+      ["canvas view", { interactive: false, chromeHidden: false, canvasView: true }],
+    ]) {
+      editorModule.setState(patch)
+      handled = 0
+      outer = 0
+      const event = click()
+      assert.equal(handled, 1, `${label}: the vendor's guard still kept the click from the app`)
+      assert.equal(event.defaultPrevented, true, `${label}: the app's preventDefault did nothing, so its link navigates`)
+      assert.equal(outer, 0, `${label}: the app's stopPropagation did nothing`)
+    }
+    // While the editor owns input the guard is the vendor's to keep.
+    editorModule.setState({ interactive: false, chromeHidden: false, canvasView: false })
+    handled = 0
+    click()
+    assert.equal(handled, 0, "inspecting: the app answered a click the vendor guards")
+  } finally {
+    window.document.removeEventListener("click", guard, true)
+    window.document.body.removeEventListener("click", onBody)
+    link.remove()
+    editorModule.setState({ interactive: false, chromeHidden: false, canvasView: false })
+  }
+})
+
+await check("a chrome control still gets past the vendor's guard, in every mode", () => {
+  const button = window.document.createElement("button")
+  context.slots.overlay.append(button)
+  let heard = 0
+  button.addEventListener("click", () => {
+    heard += 1
+  })
+  const guard = (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+  }
+  window.document.addEventListener("click", guard, true)
+  try {
+    for (const patch of [{ interactive: false }, { interactive: true }]) {
+      editorModule.setState(patch)
+      const event = new window.MouseEvent("click", { bubbles: true, cancelable: true })
+      button.dispatchEvent(event)
+      assert.equal(event.defaultPrevented, false, "the guard cancelled a chrome click")
+    }
+    assert.equal(heard, 2, "the guard stopped a chrome click before it reached the control")
+  } finally {
+    window.document.removeEventListener("click", guard, true)
+    button.remove()
+    editorModule.setState({ interactive: false })
+  }
+})
+
+/*
+ * The gate class follows the gate, whatever order its inputs move in
+ * (B-boot-state-2). Interactive → canvas view → V: the mode write wakes the
+ * shell, then the board closes itself in a nested write. Keyed on the mode
+ * alone, the class was computed while the board was still up and never again.
+ */
+await check("the inspecting class comes back after Interactive, canvas view, then V", () => {
+  const html = window.document.documentElement
+  // The board's own rule, subscribed after the shell the way the product's is.
+  const closeBoard = editorModule.subscribe((next, previous) => {
+    if (next.canvasView && editorModule.modeChanged(next, previous)) {
+      editorModule.setState({ canvasView: false })
+    }
+  })
+  try {
+    editorModule.setMode("interactive")
+    editorModule.setState({ canvasView: true })
+    assert.equal(html.classList.contains("designlayer-inspecting"), false)
+    editorModule.setMode("inspecting")
+    assert.equal(editorModule.getState().canvasView, false, "the board did not close on the mode change")
+    assert.equal(editorModule.editorOwnsInput(), true)
+    assert.equal(
+      html.classList.contains("designlayer-inspecting"),
+      true,
+      "inspecting the live page with the gate class missing: app icons are unselectable"
+    )
+  } finally {
+    closeBoard()
+    editorModule.setState({ canvasView: false })
+    editorModule.setMode("inspecting")
+  }
+})
+
+/*
+ * A listener that writes while the store is notifying does not interleave
+ * (B-boot-state-13): later listeners hear the outer write first, with its own
+ * diff, and the nested write after it as a round of its own.
+ */
+await check("a write from inside a listener is announced after the write that caused it", () => {
+  editorModule.setState({ canvasView: true, interactive: false })
+  const heard = []
+  const closeBoard = editorModule.subscribe((next, previous) => {
+    if (next.interactive !== previous.interactive) editorModule.setState({ canvasView: false })
+  })
+  const listen = editorModule.subscribe((next, previous) => {
+    heard.push(`${previous.interactive}->${next.interactive} ${previous.canvasView}->${next.canvasView}`)
+  })
+  try {
+    editorModule.setState({ interactive: true })
+    assert.deepEqual(heard, ["false->true true->true", "true->true true->false"])
+  } finally {
+    closeBoard()
+    listen()
+    editorModule.setState({ canvasView: false, interactive: false })
+  }
+})
+
+/*
+ * One writer for hiding (B-boot-state-9, B-SF-6): the escape stop went around
+ * it and left `hovered` set, which keeps the canvas frame loop awake.
+ */
+await check("the escape stop hides the editor through the one writer, hover and all", () => {
+  const target = window.document.createElement("div")
+  window.document.body.append(target)
+  editorModule.setState({ chromeHidden: false, hovered: target })
+  shell.root.querySelector(".de-escape").click()
+  assert.equal(editorModule.getState().chromeHidden, true)
+  assert.equal(editorModule.getState().hovered, null, "hidden with a stale hover target")
+  editorModule.setState({ hovered: target })
+  shell.root.querySelector(".de-launcher").click()
+  assert.equal(editorModule.getState().chromeHidden, false)
+  assert.equal(editorModule.getState().hovered, null)
+  target.remove()
+})
+
+/*
+ * A companion hands the pointer back without touching the panels
+ * (B-boot-state-3), and re-arming under a name it still holds takes the
+ * pointer again after the person took it back (B-boot-state-11).
+ */
+await check("a companion's claim and release never open or retab the inspector", () => {
+  editorModule.installCompanionApi(context)
+  const surface = window.__DESIGNLAYER__
+  editorModule.setMode("inspecting")
+  editorModule.setState({ inspectorOpen: false, inspectorTab: "system" })
+  const release = surface.claimPointer("probe")
+  assert.equal(surface.mode(), "interactive")
+  release()
+  assert.equal(surface.mode(), "inspecting")
+  assert.equal(editorModule.getState().inspectorOpen, false, "the release threw the inspector open")
+  assert.equal(editorModule.getState().inspectorTab, "system", "the release retabbed the inspector")
+  surface.setMode("annotating")
+  assert.equal(editorModule.getState().inspectorOpen, false, "a companion's setMode opened the inspector")
+  surface.setMode("inspecting")
+  editorModule.setState({ inspectorOpen: true, inspectorTab: "design" })
+})
+
+await check("a companion that re-arms under a name it holds takes the pointer back", () => {
+  const surface = window.__DESIGNLAYER__
+  editorModule.setMode("inspecting")
+  const release = surface.claimPointer("probe")
+  editorModule.setMode("inspecting") // the person presses Inspect
+  surface.claimPointer("probe")
+  assert.equal(surface.mode(), "interactive", "the re-claim was ignored")
+  release()
+  assert.equal(surface.mode(), "inspecting")
 })
 
 /*

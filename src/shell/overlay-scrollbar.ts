@@ -27,6 +27,20 @@ const THUMB_BOX = 12
 type Axis = "x" | "y"
 
 /**
+ * Ink a scrollbar while it scrolls: `data-scrolling` on, then off `idleMs`
+ * after the last call. The chrome-wide bar (`markScrolling` in `shell.ts`) and
+ * these thumbs both call it, so the two clear on the same rule.
+ */
+export function inkWhileScrolling(idleMs: number): (node: Element) => void {
+  const timers = new WeakMap<Element, ReturnType<typeof setTimeout>>()
+  return (node) => {
+    node.setAttribute("data-scrolling", "")
+    clearTimeout(timers.get(node))
+    timers.set(node, setTimeout(() => node.removeAttribute("data-scrolling"), idleMs))
+  }
+}
+
+/**
  * The pane that scrolls on `axis`. Vertically, the visible tab panel, else
  * the panel body; sideways, only a visible pane that opted in.
  */
@@ -50,7 +64,7 @@ export function mountOverlayScrollbar(panel: HTMLElement, idleMs: number): () =>
   /** Each thumb's length along its bar, and the length of the track it runs in. */
   const sizes: Record<Axis, number> = { x: 0, y: 0 }
   const tracks: Record<Axis, number> = { x: 0, y: 0 }
-  const idle: Record<Axis, ReturnType<typeof setTimeout> | undefined> = { x: undefined, y: undefined }
+  const inkNode = inkWhileScrolling(idleMs)
   /** Each pane's offsets at its last scroll, to tell which axis an event moved. */
   const seen = new WeakMap<HTMLElement, { top: number; left: number }>()
 
@@ -94,11 +108,7 @@ export function mountOverlayScrollbar(panel: HTMLElement, idleMs: number): () =>
     placeX()
   }
 
-  const ink = (axis: Axis) => {
-    thumbs[axis].setAttribute("data-scrolling", "")
-    clearTimeout(idle[axis])
-    idle[axis] = setTimeout(() => thumbs[axis].removeAttribute("data-scrolling"), idleMs)
-  }
+  const ink = (axis: Axis) => inkNode(thumbs[axis])
 
   const onScroll = (event: Event) => {
     const target = event.target
@@ -131,15 +141,17 @@ export function mountOverlayScrollbar(panel: HTMLElement, idleMs: number): () =>
       if (across) target.scrollLeft = next
       else target.scrollTop = next
     }
+    // A capture lost without a pointerup (the thumb hidden mid-drag, an OS
+    // interruption) ends the drag too, or `data-dragging` and the move
+    // listener would outlive it.
+    const ends = ["pointerup", "pointercancel", "lostpointercapture"] as const
     const onUp = () => {
       thumb.removeAttribute("data-dragging")
       thumb.removeEventListener("pointermove", onMove)
-      thumb.removeEventListener("pointerup", onUp)
-      thumb.removeEventListener("pointercancel", onUp)
+      for (const type of ends) thumb.removeEventListener(type, onUp)
     }
     thumb.addEventListener("pointermove", onMove)
-    thumb.addEventListener("pointerup", onUp)
-    thumb.addEventListener("pointercancel", onUp)
+    for (const type of ends) thumb.addEventListener(type, onUp)
   }
 
   // The content can grow, shrink or switch tabs without a scroll; re-measure
@@ -153,8 +165,6 @@ export function mountOverlayScrollbar(panel: HTMLElement, idleMs: number): () =>
   thumbs.x.addEventListener("pointerdown", startDrag("x"))
 
   return () => {
-    clearTimeout(idle.x)
-    clearTimeout(idle.y)
     resized.disconnect()
     panel.removeEventListener("scroll", onScroll, true)
     panel.removeEventListener("pointerenter", place)

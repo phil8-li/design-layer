@@ -91,16 +91,16 @@ export function installShortcuts(context: EditorContext): void {
 
   /* ── Tools ──────────────────────────────────────────────────────────────── */
 
-  // Straight to `setMode`, never to the two booleans: it is the only path that
-  // cannot leave the editor interactive and annotating at once. V (and A) and C
+  // Through `chooseMode`, never the two booleans: a key is a person choosing,
+  // so it brings the mode's inspector tab with it, as the buttons do. V (and A) and C
   // are toggles: pressing the key for the mode you are already in drops back to
   // interactive, which is what the toolbar's Inspect and Notes buttons do. H is
   // the "off" state itself, so it only ever sets.
   const toggle = (mode: EditorMode) => () =>
-    context.setMode(editorMode() === mode ? "interactive" : mode)
+    context.chooseMode(editorMode() === mode ? "interactive" : mode)
   registerCommand("mode.inspect", toggle("inspecting"))
   registerCommand("mode.notes", toggle("annotating"))
-  registerCommand("mode.interactive", () => context.setMode("interactive"))
+  registerCommand("mode.interactive", () => context.chooseMode("interactive"))
 
   /* ── View ───────────────────────────────────────────────────────────────── */
 
@@ -170,8 +170,8 @@ export function installShortcuts(context: EditorContext): void {
 
   /**
    * The eye, from the keyboard, through the writer every other panel writes
-   * through — so it previews now, lands as a real change at "Apply to code",
-   * and ⌘Z undoes it like anything else.
+   * through — so it previews now, becomes a note in the Changes tab like every
+   * direct edit, and ⌘Z undoes it like anything else.
    *
    * One `applyStyles` per element rather than a batch, which is a real cost:
    * hiding six elements is six undo steps. It is the honest one available here
@@ -370,20 +370,6 @@ function shortcutsPanel(): ShortcutsPanel {
     [shortcut.chord, ...(shortcut.aliases ?? [])].map((chord) => chordLabel(chord)).join("  ")
 
   /**
-   * "Left panel: second view" is honest and unhelpful, so the sheet says which
-   * view that currently IS.
-   *
-   * The tab rows are positional on purpose — see `core/keymap.ts` — which means
-   * the name cannot live in the table without going stale the next time a panel
-   * gains or loses a tab. It is read off the live strip instead, at the moment
-   * the sheet is drawn, so it is right by construction.
-   *
-   * Both strips are `.de-tabs` / `role="tab"` and their ids are prefixed per
-   * panel, which is a contract `panels/left.ts` states in its own header. A
-   * panel that is not mounted contributes nothing and the row keeps the plain
-   * label, which is the correct thing to print when there is no tab to name.
-   */
-  /**
    * A key with nothing behind it is left OUT of the sheet.
    *
    * The table is the set of keys this editor can have; what it actually has
@@ -400,6 +386,20 @@ function shortcutsPanel(): ShortcutsPanel {
   const live = (shortcut: Shortcut): boolean =>
     shortcut.owner === "canvas" || hasCommand(shortcut.command)
 
+  /**
+   * "Left panel: second view" is honest and unhelpful, so the sheet says which
+   * view that currently IS.
+   *
+   * The tab rows are positional on purpose — see `core/keymap.ts` — which means
+   * the name cannot live in the table without going stale the next time a panel
+   * gains or loses a tab. It is read off the live strip instead, at the moment
+   * the sheet is drawn, so it is right by construction.
+   *
+   * Both strips are `.de-tabs` / `role="tab"` and their ids are prefixed per
+   * panel, which is a contract `panels/left.ts` states in its own header. A
+   * panel that is not mounted contributes nothing and the row keeps the plain
+   * label, which is the correct thing to print when there is no tab to name.
+   */
   const named = (shortcut: Shortcut): string => {
     const slot = /^panel\.(left|inspector)\.tab(\d)$/.exec(shortcut.command)
     if (!slot) return shortcut.label

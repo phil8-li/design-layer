@@ -5,15 +5,17 @@
  */
 
 import { config } from "./config"
-import type { ToastAction, ToastMessage } from "./toast"
+import type { ToastAction, ToastKind, ToastMessage } from "./toast"
 import {
   elementKey,
   getState,
   primarySelection,
+  setChromeHidden,
   setMode,
   setState,
   subscribe,
   type EditorMode,
+  type EditorState,
 } from "./store"
 import { resolveElementSource, toSourceRef, type RewriteBridge } from "./bridge"
 import type { LayerElement, Selection, ToolId } from "./types"
@@ -29,41 +31,44 @@ export interface EditorSlots {
   right: HTMLElement
 }
 
+/**
+ * What a lane may write through `setState`: everything but the mode pair and
+ * the hide switch, which have one writer each (`setMode`, `setChromeHidden`)
+ * so the illegal (interactive, annotating) pair and a stale hover after a hide
+ * cannot be written by accident. Suites that need a raw write import the
+ * store's own `setState`.
+ */
+export type LaneStatePatch = Partial<Omit<EditorState, "interactive" | "annotating" | "chromeHidden">>
+
 export interface EditorContext {
   bridge: RewriteBridge
   slots: EditorSlots
   getState: typeof getState
-  setState: typeof setState
+  setState(patch: LaneStatePatch): void
   subscribe: typeof subscribe
   primarySelection: typeof primarySelection
   /** Selects an element (or clears selection with `null`). */
   select(el: LayerElement | null, options?: { additive?: boolean }): void
   /** Replaces the selection in one store write — one repaint, not one per element. */
   selectMany(els: LayerElement[]): void
+  /**
+   * `tool` is a one-member union today (`ToolId`); kept because suites outside
+   * this lane still call it. No product caller.
+   */
   setTool(tool: ToolId): void
   /**
-   * Enters or leaves pass-through mode. Entering it drops the hover target as
-   * well: the highlight is suppressed either way, but a stale `hovered` would
-   * keep the chrome's frame loop awake for a canvas nobody is painting.
-   */
-  setInteractive(interactive: boolean): void
-  /**
-   * Moves to one of the three pointer modes, clearing the others.
-   *
-   * Offered beside `setInteractive` rather than replacing it because the shell
-   * and the keymap still speak in "hand the pointer back", which is one edge of
-   * the same idea. Anything CHOOSING a mode should call this: it is the only
-   * path that cannot leave the editor interactive and annotating at once.
-   *
-   * It also BRINGS THE RIGHT PANEL WITH IT — Design for `inspecting`, Changes
-   * for `annotating`. See the implementation for why that rule lives here
-   * rather than on the two buttons.
+   * Moves to one of the three pointer modes, and nothing else — the store's
+   * pure `setMode`. For a restore or a scripted switch (a companion, a suite).
    */
   setMode(mode: EditorMode): void
   /**
-   * Stands the whole editor down to a single floating button, or brings it
-   * back. Drops the hover target for the same reason `setInteractive` does.
+   * A PERSON choosing a mode: the mode, and the right panel that answers it —
+   * Design for `inspecting`, Changes for `annotating`. The toolbar's buttons
+   * and the mode keys call this. See the implementation for why that rule
+   * lives here rather than on the buttons.
    */
+  chooseMode(mode: EditorMode): void
+  /** Stands the editor down to the launcher disc, or brings it back. */
   setChromeHidden(hidden: boolean): void
   /** Rebuilds every registered panel. Cheap: panels diff internally. */
   refresh(): void
@@ -76,19 +81,19 @@ export interface EditorContext {
    * the reason `core/toast.ts` gives on `ToastAction`: a toast reports, and the
    * only interaction that belongs on a report is unmaking it.
    */
-  toast(message: ToastMessage, kind?: "info" | "error", action?: ToastAction): void
+  toast(message: ToastMessage, kind?: ToastKind, action?: ToastAction): void
   /** Base URL for designlayer server routes, e.g. `/__designlayer`. */
   apiBase: string
 }
 
-const refreshListeners = new Set<() => void>()
-
 export function createContext(bridge: RewriteBridge, slots: EditorSlots): EditorContext {
+  // Per context, so two contexts in one suite do not refresh each other.
+  const refreshListeners = new Set<() => void>()
   /**
    * React 19 dropped `fiber._debugSource`, so the synchronous walk behind
    * `toSourceRef` answers `null` for every element in this app — measured 0/12
-   * on a live page, against 12/12 for the owner-stack resolver. The writer
-   * already copes by resolving lazily at Apply time, but a Selection built here
+   * on a live page, against 12/12 for the owner-stack resolver. The handover
+   * copes by resolving lazily when notes are sent, but a Selection built here
    * is also what the inspector header reads, which is why it showed a component
    * name and no file. Nothing else may re-derive an element's source: this
    * patches the stored Selection in place when the resolver lands, so the panel
@@ -181,9 +186,7 @@ export function createContext(bridge: RewriteBridge, slots: EditorSlots): Editor
       setState({ tool })
     },
 
-    setInteractive(interactive) {
-      setState(interactive ? { interactive, hovered: null } : { interactive })
-    },
+    setMode,
 
     /**
      * The mode, and the right panel that answers it.
@@ -195,11 +198,11 @@ export function createContext(bridge: RewriteBridge, slots: EditorSlots): Editor
      * doing the editor's filing for it — and the pairing is not a guess, it is
      * the only tab either mode has anything to say to.
      *
-     * HERE rather than in the toolbar's two click handlers, because the modes
-     * have three doors: the buttons, the keymap (`mode.inspect`, `mode.notes`)
-     * and anything else that reaches a mode through this context. A rule
-     * written on the buttons would leave the keys switching a mode into a panel
-     * still showing the other one's tab.
+     * HERE rather than in the toolbar's two click handlers, because a person
+     * reaches a mode by two doors: the buttons and the keymap (`mode.inspect`,
+     * `mode.notes`). A rule written on the buttons would leave the keys
+     * switching a mode into a panel still showing the other one's tab. A
+     * companion is not a person choosing: it goes through the pure `setMode`.
      *
      * The panel is OPENED, not merely retabbed, which is the same bargain
      * `panel.inspector.tab1..3` already struck: a tab switched behind a closed
@@ -212,19 +215,13 @@ export function createContext(bridge: RewriteBridge, slots: EditorSlots): Editor
      * open panel on the old tab for a frame, and every subscriber in the editor
      * would run twice for one user action.
      */
-    setMode(mode) {
+    chooseMode(mode) {
       setMode(mode)
       const tab = mode === "annotating" ? "annotations" : mode === "inspecting" ? "design" : null
       if (tab) setState({ inspectorOpen: true, inspectorTab: tab })
     },
 
-    setChromeHidden(hidden) {
-      // Cleared in BOTH directions, unlike the mode switch. Going out, a stale
-      // hover would keep the frame loop awake over a canvas nobody is drawing;
-      // coming back, the pointer has been over the app for a while and the
-      // element it last rested on is not news worth painting an outline for.
-      setState({ chromeHidden: hidden, hovered: null })
-    },
+    setChromeHidden,
 
     refresh() {
       for (const listener of refreshListeners) listener()

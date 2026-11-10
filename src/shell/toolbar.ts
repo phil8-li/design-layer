@@ -77,24 +77,21 @@
  * The two mode controls also REACH the right panel, which is the one place this
  * bar's clusters touch. Inspect raises Design, Notes raises Changes; each mode
  * has exactly one tab that is the rest of it, and the pairing is enforced in
- * `setMode` (`core/context.ts`) rather than here, so the keymap cannot arrive
- * at a different panel than the buttons do.
+ * `chooseMode` (`core/context.ts`) rather than here, so the keymap cannot
+ * arrive at a different panel than the buttons do.
  *
  * The pill also MOVES. It is a floating surface over someone else's product,
  * and the product does not know it is coming: parked at the bottom centre it
  * covers a tab bar on one app and a cookie banner on the next, and the only
  * remedy was to hide the whole editor. It is draggable by its ground now, the
  * way Agentation's is, and it remembers where it was put. The disc remembers
- * its own corner separately — `shell/launcher.ts` owns the gesture both use,
- * and nothing else about either of them.
+ * its own corner separately — `shell/drag.ts` owns the gesture both use, and
+ * nothing else about either of them.
  */
 
-import { onAngularQueueChange } from "../core/angular"
 import { copyHandover } from "../annotations/handover"
-import { onAnnotationsChange } from "../annotations/store"
-import { onEditsChange } from "../annotations/journal"
-import { onPreviewOnlyChange } from "../core/change-prompt"
-import { editorMode } from "../core/store"
+import { TOOLBAR_INSET } from "../core/css/toolbar"
+import { editorMode, modeChanged } from "../core/store"
 import { el } from "../core/dom"
 import { focusControl } from "../core/focus"
 import { canRedo, canUndo, onHistoryChange, redo, undo } from "../core/history"
@@ -102,11 +99,12 @@ import { icon, type IconName, type IconWeight } from "../core/icons"
 import { swapMark, type SwapMark } from "../core/swap-mark"
 import { chordLabel, SHORTCUTS } from "../core/keymap"
 import { registerCommand, runCommand } from "../core/commands"
-import { onRemovalQueueChange } from "../core/removal"
+import { readPref, writePref } from "../core/prefs"
+import { tipAttrs } from "../core/tooltip"
 import { tokens, type ThemeName } from "../core/tokens"
 import type { EditorContext } from "../core/context"
-import { installDrag } from "./launcher"
-import { onInsetsChange } from "./shell"
+import { DRAG_SLACK, installDrag } from "./drag"
+import { onInsetsChange } from "./insets"
 
 /**
  * The one size every glyph in this strip is drawn at.
@@ -118,25 +116,6 @@ import { onInsetsChange } from "./shell"
  * once was into a compile error rather than something to catch in review.
  */
 const GLYPH = tokens.icon.action
-
-/**
- * How far the pointer travels on the pill's ground before it is a drag.
- *
- * Ten, which is the disc's figure and Agentation's, where this used to be four.
- * The old four had a real argument behind it — this ground has no press to
- * steal, so the threshold only had to beat a tremor, and every pixel above
- * that is slop between the pointer and an object meant to be stuck to it.
- *
- * What that argument missed is the hand. The bar and the disc are separate
- * objects, but they are moved by the same gesture and a hand does not steady
- * itself differently for a 600px pill than for a 44px disc — so a threshold
- * written twice is a number that drifts for no reason anybody could point at.
- * Six pixels of extra travel is not a cost a hand can feel.
- *
- * (`canvas/marquee.ts` still uses three, and should: a marquee is not this
- * object, and its press has a selection to protect rather than a position.)
- */
-const DRAG_SLACK = 10
 
 /**
  * Everything in the bar that is a control rather than ground.
@@ -169,8 +148,8 @@ const CONTROLS = "button, a, input, select, textarea"
  *
  * ## Why the guard outlived the rewrite
  *
- * `syncPressed` runs on selection, on history and on every queue change, and
- * the weight is unchanged in nearly all of them. Under the old build an
+ * `syncPressed` runs on every mode, panel and history change, and the weight
+ * is unchanged in nearly all of them. Under the old build an
  * unconditional call tore the node out from under the pointer — dropping hover
  * until it moved — and restarted the stroke transition in `css/icons.ts`, so a
  * glyph flickered while a selection was being dragged around. Under this one a
@@ -206,25 +185,6 @@ function drawGlyph(button: HTMLElement, name: IconName, weight: IconWeight): voi
 }
 
 /**
- * Hover text for an icon-only control, plus the label everyone else reads.
- *
- * `data-de-tip` rather than `title`: the native tooltip waits about a second
- * and then paints in the OS's own chrome, which next to this strip reads as the
- * page having glitched rather than as an answer. The CSS in `css/toolbar.ts`
- * draws it above the strip. The `aria-label` is not a duplicate of it — a
- * pseudo-element is not an accessible name, so a tooltip on its own leaves the
- * control unnamed.
- *
- * `second` is whatever the name cannot say on its own: the shortcut for the
- * controls that have one, and for the mode switch the consequence of pressing
- * it. It is one parameter rather than two because the tip has one shape, and a
- * second overload would be how the separator ends up spelled two ways.
- */
-function tip(label: string, second?: string): Record<string, string> {
-  return { "data-de-tip": second ? `${label} · ${second}` : label, "aria-label": label }
-}
-
-/**
  * The key a control answers to, spelled the platform's way, read off the one
  * table in `core/keymap.ts`.
  *
@@ -243,8 +203,8 @@ function keyFor(command: string): string | undefined {
  *
  * The key leads because the sentence after it is long, and a tip is read left
  * to right until it stops being useful — "V" is the part a designer is looking
- * for the second time they hover. `tip` joins on one separator, so the two are
- * composed here rather than by teaching it a third slot nothing else wants.
+ * for the second time they hover. `tipAttrs` joins on one separator, so the two
+ * are composed here rather than by teaching it a third slot nothing else wants.
  */
 function modeDetail(detail: string): string {
   const key = keyFor("mode.inspect")
@@ -252,34 +212,19 @@ function modeDetail(detail: string): string {
 }
 
 /**
- * The two halves of the mode, spelled out.
+ * The pointer mode, in the two states this one control can show.
  *
- * The switch used to be labelled "Interactive" in both states and told apart
- * only by a pressed treatment, which meant the label was a promise in one state
- * and a lie in the other — you had to look at the ring to learn whether the
- * editor was still holding your clicks. So each half names the state you are
- * STANDING IN, and carries a second sentence for what pressing would do; those
- * were being asked to share one string.
- *
- * Both now reach the user through the tip and the accessible name rather than
- * through a word on the button. `label` is still the state and `detail` still
- * the consequence — losing the pill did not merge them, which is the failure
- * that would actually cost something.
+ * `label` names what the control IS, and pressed means the mode is live. It
+ * used to wear the name of the current state while its `aria-pressed` tracked
+ * `interactive`, so the arrow filled at the exact moment the editor handed the
+ * pointer away — a lit control announcing its own feature was off. `detail` is
+ * the consequence, and it reaches the user through the tip.
  *
  * The glyph is the same arrow in both states — filled while the editor holds
  * the pointer, hollow once it has handed it over. Weight, not colour: this pair
  * is read in the corner of the eye at `GLYPH`, and a mode told apart by hue
  * alone is not told apart at all. It is also the same arrow the floating
  * launcher wears, because it is the same claim about who owns the pointer.
- */
-/**
- * The pointer mode, in the two states this one control can show.
- *
- * `label` names what the control IS, and pressed means the mode is live. That
- * is the flip: it used to wear the name of the current state while its
- * `aria-pressed` tracked `interactive`, so the arrow filled at the exact moment
- * the editor handed the pointer away — a lit control announcing its own feature
- * was off.
  *
  * Interactive has no button of its own. It is what you get when neither Inspect
  * nor Notes is on; a third control would offer two ways into one state and a
@@ -298,19 +243,6 @@ const MODES = {
   },
 } as const satisfies Record<string, { label: string; weight: IconWeight; detail: string }>
 
-/**
- * The chrome's own paint, in the two states this one control can show.
- *
- * Shaped like `MODES` above, and for the same reason: one stable name, because
- * this is one thing that is on or off rather than two controls sharing a
- * square, and `aria-pressed` carries which. A name that rewrote itself under
- * the pointer would announce two different controls in the same place.
- *
- * The name is "Light mode" in both states — the thing the button OFFERS —
- * rather than "Theme", which names a category and tells you nothing about what
- * pressing does. `detail` is the half that moves, and it says the state you are
- * standing in exactly as the mode switch's does.
- */
 /**
  * An ACTION, not a toggle, and the glyph is the whole of it.
  *
@@ -332,7 +264,7 @@ const THEMES = {
 /**
  * Where the choice is kept, and it IS kept — unlike the bar's drag position.
  *
- * `shell/launcher.ts` argues its position out of storage on the grounds that a
+ * `shell/drag.ts` argues the bar's position out of storage on the grounds that a
  * 600px pill reappearing mid-page reads as a broken layout rather than as a
  * preference. A theme is the opposite case: it is a preference in the plainest
  * sense, there is nothing surprising about the editor looking the way you left
@@ -342,31 +274,14 @@ const THEMES = {
 const THEME_KEY = "designlayer:theme"
 
 /**
- * The stored choice, or null when there is not one that can be trusted.
- *
- * Every read is wrapped, because `localStorage` does not return null when an
- * origin's storage is blocked — Safari with cross-site tracking prevention,
- * Chrome with third-party cookies off and this overlay served from the proxy,
- * or any browser in a hardened profile — it THROWS on property access. This
- * runs during `installToolbar`, before the bar is appended, so an unguarded
- * read there does not cost a theme, it costs the whole editor.
+ * The stored choice, or null when there is not one that can be trusted. The raw
+ * string "light" or "dark"; `core/prefs.ts` guards the blocked-storage throw,
+ * which here would cost the whole editor rather than a theme, because this runs
+ * during `installToolbar`.
  */
 function storedTheme(): ThemeName | null {
-  try {
-    const raw = window.localStorage.getItem(THEME_KEY)
-    return raw === "light" || raw === "dark" ? raw : null
-  } catch {
-    return null
-  }
-}
-
-function rememberTheme(theme: ThemeName): void {
-  try {
-    window.localStorage.setItem(THEME_KEY, theme)
-  } catch {
-    // Same bargain the launcher's saved corner makes: the toggle still worked,
-    // it just will not outlive the tab.
-  }
+  const raw = readPref(THEME_KEY)
+  return raw === "light" || raw === "dark" ? raw : null
 }
 
 /**
@@ -432,17 +347,18 @@ export function installToolbar(context: EditorContext): void {
       class: "de-tool de-button--mode",
       type: "button",
       "aria-pressed": "true",
-      ...tip(MODES.inspecting.label, modeDetail(MODES.inspecting.detail)),
+      ...tipAttrs(MODES.inspecting.label, { second: modeDetail(MODES.inspecting.detail) }),
       /*
        * Pressing an ON mode turns it OFF, and off means interactive.
        *
        * That is the whole three-mode rule stated once: Inspect and Notes are
        * the two things the editor can be doing with a click, and interactive is
-       * the absence of both. Writing `setMode` rather than flipping a boolean
+       * the absence of both. Choosing a mode rather than flipping a boolean
        * is what stops the fourth, undescribable state where the editor has
        * handed the pointer away and is still intercepting clicks to pin notes.
+       * `chooseMode`, because a person pressed it: Inspect also raises Design.
        */
-      onclick: () => context.setMode(editorMode() === "inspecting" ? "interactive" : "inspecting"),
+      onclick: () => context.chooseMode(editorMode() === "inspecting" ? "interactive" : "inspecting"),
     },
     [icon("Cursor", GLYPH, MODES.inspecting.weight)]
   )
@@ -452,11 +368,11 @@ export function installToolbar(context: EditorContext): void {
     const inspecting = editorMode() === "inspecting"
     const mode = inspecting ? MODES.inspecting : MODES.interactive
     interactiveButton.setAttribute("aria-pressed", String(inspecting))
-    // Through `tip` rather than two `setAttribute` calls with the separator
+    // Through `tipAttrs` rather than two `setAttribute` calls with the separator
     // written out again here: the name and the hover text are built the same
     // way for every other control in the bar, and this is the only one that
     // rebuilds them after install.
-    for (const [name, value] of Object.entries(tip(mode.label, modeDetail(mode.detail)))) {
+    for (const [name, value] of Object.entries(tipAttrs(mode.label, { second: modeDetail(mode.detail) }))) {
       interactiveButton.setAttribute(name, value)
     }
     /*
@@ -471,19 +387,10 @@ export function installToolbar(context: EditorContext): void {
   }
 
   /*
-   * Nothing here reports the queue any more, and that is deliberate.
-   *
-   * The bar used to build a committer, then an indicator that replaced it: a
-   * square carrying `owedCount()` that opened the Changes tab on a press. Both
-   * are gone. The committer went because the tab writes better than a tick in a
-   * toolbar can; the indicator went because it was a second, quieter way to say
-   * what the tab's own badge already says, on a control whose only action was
-   * "open the panel" — which the inspector toggle three glyphs to its left
-   * already does.
-   *
-   * What the split left behind is still worth stating: the queues (what can be
-   * written) and the outbox (what the designer is owed) are different lists,
-   * and the bar now reads neither. The count lives in one place, on the tab.
+   * Nothing here reports the queue or the outbox, and that is deliberate. The
+   * count lives in one place, the Changes tab's badge; a square here carrying
+   * it was a second reader that could disagree with the panel it pointed at,
+   * and its only action, "open the panel", is what the inspector toggle does.
    */
 
   /**
@@ -542,7 +449,7 @@ export function installToolbar(context: EditorContext): void {
       type: "button",
       // Spelled the way the platform spells it, since the tooltip is the only
       // place the shortcut is written down.
-      ...tip("Undo", keyFor("history.undo")),
+      ...tipAttrs("Undo", { second: keyFor("history.undo") }),
       onclick: () => travel("undo"),
     },
     [icon("ToolUndo", GLYPH)]
@@ -553,7 +460,7 @@ export function installToolbar(context: EditorContext): void {
     {
       class: "de-tool",
       type: "button",
-      ...tip("Redo", keyFor("history.redo")),
+      ...tipAttrs("Redo", { second: keyFor("history.redo") }),
       onclick: () => travel("redo"),
     },
     [icon("ToolRedo", GLYPH)]
@@ -622,7 +529,7 @@ export function installToolbar(context: EditorContext): void {
       {
         class: quiet ? "de-tool de-tool--quiet" : "de-tool",
         type: "button",
-        ...tip(label, key),
+        ...tipAttrs(label, { second: key }),
         onclick: () => write(!read()),
       },
       [icon(glyph, GLYPH)]
@@ -739,9 +646,9 @@ export function installToolbar(context: EditorContext): void {
     // and was still swallowing clicks.
     //
     // Raising it also raises the Changes tab, which is where the notes it pins
-    // land. That rule is `setMode`'s rather than this button's, so the ⌥ key
-    // bound to the same mode cannot arrive at a different panel.
-    write: (next) => context.setMode(next ? "annotating" : "interactive"),
+    // land. That rule is `chooseMode`'s rather than this button's, so the ⌥
+    // key bound to the same mode cannot arrive at a different panel.
+    write: (next) => context.chooseMode(next ? "annotating" : "interactive"),
     key: keyFor("mode.notes"),
   })
 
@@ -758,16 +665,6 @@ export function installToolbar(context: EditorContext): void {
    * after the one that removes the bar is a control in the wrong place. So the
    * run escalates: one panel, the other panel, how it is all painted, then all
    * of it away.
-   *
-   * `Square`, and it is the honest pick rather than the obvious one: this set
-   * has no sun, no moon and no half-filled contrast disc, and `tools/build-icons
-   * .mjs` is not this change's to edit. What `Square` has is two weights and no
-   * drawing of its own, so the `aria-pressed` rule in `css/icons.ts` turns it
-   * into exactly the contrast chip the missing glyph would have been — a hollow
-   * chip on the dark chrome, a solid one once the light theme is on. The layers
-   * tree also draws `Square` as its "plain element" mark; that is a 12px mark
-   * in a tree and never appears in this bar, so the two cannot be read side by
-   * side and mistaken for each other.
    *
    * No `prefers-color-scheme`, on first run or ever. See the note on
    * `storedTheme` for where the choice lives; the reason not to seed it from
@@ -803,7 +700,7 @@ export function installToolbar(context: EditorContext): void {
     {
       class: "de-tool",
       type: "button",
-      ...tip(THEMES[theme].label),
+      ...tipAttrs(THEMES[theme].label),
       onclick: () => setTheme(theme === "light" ? "dark" : "light"),
     },
     [themeMark.node]
@@ -811,7 +708,7 @@ export function installToolbar(context: EditorContext): void {
 
   /** Name, tip and glyph are one fact about the theme, so one function writes them. */
   const paintTheme = (): void => {
-    for (const [name, value] of Object.entries(tip(THEMES[theme].label))) {
+    for (const [name, value] of Object.entries(tipAttrs(THEMES[theme].label))) {
       themeButton.setAttribute(name, value)
     }
     themeMark.show(theme === "light")
@@ -820,7 +717,7 @@ export function installToolbar(context: EditorContext): void {
   const setTheme = (next: ThemeName): void => {
     theme = next
     applyTheme(next)
-    rememberTheme(next)
+    writePref(THEME_KEY, next)
     paintTheme()
   }
 
@@ -841,16 +738,15 @@ export function installToolbar(context: EditorContext): void {
    *
    * No `aria-pressed`. A toggle reports a state you can see it in; press this
    * and the button itself is gone, so the honest thing is a plain action whose
-   * name says where it goes. No keyboard shortcut either: a key would have to
-   * be live while the editor is invisible, which is how an app ends up with
-   * chrome nobody can explain the arrival of.
+   * name says where it goes. Its tip names the `chrome.toggle` key (⌘.),
+   * because that key also brings the editor back.
    */
   const hideButton = el(
     "button",
     {
       class: "de-tool",
       type: "button",
-      ...tip("Hide editor", keyFor("chrome.toggle")),
+      ...tipAttrs("Hide editor", { second: keyFor("chrome.toggle") }),
       onclick: () => context.setChromeHidden(true),
     },
     /*
@@ -943,7 +839,7 @@ export function installToolbar(context: EditorContext): void {
    * the panels while it faded, which is the exact jump those variables were
    * introduced to prevent, now applied to a bar that has been dragged.
    *
-   * `panelInset` as the margin, because that is the inset the pill rests at.
+   * `TOOLBAR_INSET` as the margin, because that is the inset the pill rests at.
    * A dragged surface should be able to land exactly where an undragged one
    * sits, or the resting position is somewhere the user cannot choose.
    */
@@ -975,7 +871,7 @@ export function installToolbar(context: EditorContext): void {
     element: slots.toolbar,
     dragging: "de-toolbar--dragging",
     slack: DRAG_SLACK,
-    inset: tokens.size.panelInset,
+    inset: TOOLBAR_INSET,
     sides: ["--de-bar-left", "--de-bar-right"],
     size: measure,
     grabbable: (event) =>
@@ -1005,10 +901,12 @@ export function installToolbar(context: EditorContext): void {
     /**
      * Where the pill rests: the middle of the WINDOW, at the bottom inset.
      *
-     * The same two numbers `css/toolbar.ts` writes, restated here because the
-     * clamp cannot read a stylesheet. Keep them in agreement — a second answer
-     * to "where does it rest" is a bar that jumps the first time a panel is
-     * toggled, which is the exact bug this pair exists to close.
+     * Where `css/toolbar.ts` puts it — `left: 50vw` and `bottom: TOOLBAR_INSET`
+     * — restated here because the clamp cannot read a stylesheet. The inset is
+     * the one shared constant; the centring is restated, so keep it in
+     * agreement — a second answer to "where does it rest" is a bar that jumps
+     * the first time a panel is toggled, which is the exact bug this pair
+     * exists to close.
      *
      * A top-LEFT, where the stylesheet writes a centre, because that is the
      * corner `installDrag` bounds and paints from. `paint` above converts back.
@@ -1017,7 +915,7 @@ export function installToolbar(context: EditorContext): void {
       const { width, height } = measure()
       return {
         x: (window.innerWidth - width) / 2,
-        y: window.innerHeight - height - tokens.size.panelInset,
+        y: window.innerHeight - height - TOOLBAR_INSET,
       }
     },
   })
@@ -1045,21 +943,15 @@ export function installToolbar(context: EditorContext): void {
     canvasToggle.paint()
     undoButton.toggleAttribute("disabled", !canUndo())
     redoButton.toggleAttribute("disabled", !canRedo())
-    /*
-     * No count is painted here any more.
-     *
-     * The bar used to mirror `owedCount()` onto a Changes square, which meant
-     * two lanes reading one list and a standing risk that the bar and the panel
-     * it pointed at disagreed. The tab's own badge is the single reader now.
-     */
   }
 
-  // The engine pushes its own change events below; from our store only the two
-  // modes, the two panel flags and the dirty flag affect this row. Anything
-  // broader would re-query the engine on every pointermove.
+  // What `syncPressed` reads, and who announces it: the mode, the two panel
+  // flags and the canvas view come from our store (below); Undo and Redo from
+  // the history, which notifies on every change to either stack. Anything
+  // broader would repaint the bar on every pointermove.
   //
-  // `annotating` has to be in this list, not just in `syncPressed`. The toggle
-  // writes the flag and paints nothing itself, so a key missing from here is a
+  // The mode has to be in this list, not just in `syncPressed`. The toggle
+  // writes it and paints nothing itself, so a key missing from here is a
   // button that shows the wrong state until something unrelated happens to
   // repaint the bar — and the state it shows wrong is which mode a click is in.
   context.subscribe((next, previous) => {
@@ -1090,12 +982,10 @@ export function installToolbar(context: EditorContext): void {
       drag.place()
     }
     if (
-      next.interactive === previous.interactive &&
-      next.annotating === previous.annotating &&
+      !modeChanged(next, previous) &&
       next.layersOpen === previous.layersOpen &&
       next.inspectorOpen === previous.inspectorOpen &&
-      next.canvasView === previous.canvasView &&
-      next.dirty === previous.dirty
+      next.canvasView === previous.canvasView
     ) {
       return
     }
@@ -1103,18 +993,6 @@ export function installToolbar(context: EditorContext): void {
   })
   context.onRefresh(syncPressed)
   onHistoryChange(syncPressed)
-  try {
-    bridge.store.onStateChange(syncPressed)
-  } catch {
-    // Older engine builds do not expose every subscription.
-  }
-  // The Angular lane keeps its queue outside the vendor store, so the button's
-  // disabled state has to hear from it directly — the engine has nothing to say
-  // about a write it is not carrying.
-  onAngularQueueChange(syncPressed)
-  // Deletions are queued outside both of those, so they need their own line
-  // here for the same reason: nothing else will tell the button they exist.
-  onRemovalQueueChange(syncPressed)
 
   /*
    * This bar has no keyboard listener. It publishes what its controls DO, and
@@ -1173,21 +1051,6 @@ export function installToolbar(context: EditorContext): void {
   registerCommand("history.redo", () => travel("redo"))
   registerCommand("notes.copy", copyBrief)
   registerCommand("theme.toggle", () => setTheme(theme === "light" ? "dark" : "light"))
-
-  /*
-   * The outbox moves the indicator's count, and nothing else in this bar was
-   * watching it.
-   *
-   * The existing subscriptions cover the QUEUES — the vendor store, the Angular
-   * queue, the removal queue — which is what the old commit button cared about.
-   * The count is a different list: a pinned note or a stranded write changes it
-   * without touching any queue, and a commit clearing `queued` changes it
-   * without touching the store. Both of those left the number stale for as long
-   * as the bar sat there, which on a collapsed panel is the whole session.
-   */
-  onAnnotationsChange(syncPressed)
-  onEditsChange(syncPressed)
-  onPreviewOnlyChange(syncPressed)
 
   syncPressed()
 }
