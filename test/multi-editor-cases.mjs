@@ -380,6 +380,142 @@ await check("a child that ignores SIGTERM is killed, and the next start goes ahe
   }
 })
 
+/*
+ * A stop asks a ready editor over IPC before it signals, so the editor can
+ * close its MCP endpoint (a parked `wait_for_change` is answered, not cut).
+ * A signal could not: the vendor's SIGTERM handler exits synchronously.
+ */
+console.log("\nStopping over IPC")
+
+/**
+ * A fake child with an IPC channel. `events` records, in order, each message
+ * sent to it and each signal, with the time since the first; `onStop` and
+ * `onSignal` decide whether it leaves.
+ */
+function ipcChild(argv, { onStop = () => {}, onSignal = () => {}, sendError = null } = {}) {
+  const child = fakeChild(argv)
+  child.events = []
+  let first = null
+  const stamp = (what) => {
+    first ??= Date.now()
+    child.events.push({ what, at: Date.now() - first })
+  }
+  child.connected = true
+  child.send = (message, callback) => {
+    stamp(`send:${message?.type}`)
+    setImmediate(() => {
+      callback?.(sendError)
+      if (!sendError) onStop(child, message)
+    })
+    return true
+  }
+  child.kill = (signal) => {
+    stamp(signal)
+    onSignal(child, signal)
+  }
+  child.leave = (code, signal = null) => setImmediate(() => child.emit("exit", code, signal))
+  child.order = () => child.events.map((event) => event.what)
+  return child
+}
+
+async function withIpcSupervisor(childOptions, timing, run) {
+  const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {} })
+  const children = []
+  const supervisor = runEditors(screen, {
+    log: () => {},
+    ...timing,
+    allocatePorts: async ({ taken }) => ({ proxyPort: 3456 + taken.length, wsPort: 3457 + taken.length }),
+    spawnEditor: (argv) => {
+      const child = ipcChild(argv, childOptions)
+      children.push(child)
+      return child
+    },
+  })
+  const press = (url, projectRoot) => post(`${screen.url}/api/start`, { url, projectRoot, devScript: null })
+  const stopId = (id) => post(`${screen.url}/api/stop`, { id })
+  const status = async (id) => (await json(`${screen.url}/api/status?id=${id}`)).body
+  try {
+    await run({ children, press, stopId, status, supervisor })
+  } finally {
+    for (const child of children) child.emit("exit", null, "SIGKILL")
+    supervisor.killAll()
+    screen.close()
+    await supervisor.done
+  }
+}
+
+await check("a ready editor is asked to stop over IPC, and one that leaves on it gets no signal", async () => {
+  await withIpcSupervisor(
+    { onStop: (child, message) => message?.type === "stop" && child.leave(0) },
+    // A bound no test waits out: the child leaves on the message.
+    { stopAskMs: 10_000, stopGraceMs: 10_000 },
+    async ({ children, press, stopId, status, supervisor }) => {
+      const started = await press("http://127.0.0.1:4101", shop)
+      await until(() => children.length === 1, "the child")
+      children[0].ready("http://127.0.0.1:3456")
+      const before = Date.now()
+      assert.equal((await stopId(started.body.id)).status, 200)
+      await until(() => supervisor.stateOf(started.body.id) === "exited", "the child to exit on the message")
+      assert.ok(Date.now() - before < 2000, "the stop waited on a bound the child never needed")
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      assert.deepEqual(children[0].order(), ["send:stop"], "a child that left on the message was signalled")
+      // The screen keeps the reason it was stopped with, not "closed".
+      assert.match((await status(started.body.id)).stopped, /was stopped/)
+    }
+  )
+})
+
+await check("an editor that ignores the ask gets SIGTERM after the bound, then SIGKILL after the grace", async () => {
+  await withIpcSupervisor(
+    // Ignores the message and SIGTERM, as a stuck event loop does.
+    { onSignal: (child, signal) => signal === "SIGKILL" && child.leave(null, "SIGKILL") },
+    { stopAskMs: 80, stopGraceMs: 80 },
+    async ({ children, press }) => {
+      await press("http://127.0.0.1:4101", shop)
+      await until(() => children.length === 1, "the child")
+      children[0].ready("http://127.0.0.1:3456")
+      // A replacement waits on the old editor's exit, so it starts only after SIGKILL.
+      await press("http://127.0.0.1:4101", shopCopy)
+      await until(() => children.length === 2, "the replacement to start after SIGKILL", 3000)
+      assert.deepEqual(children[0].order(), ["send:stop", "SIGTERM", "SIGKILL"])
+      const [, term, kill] = children[0].events
+      assert.ok(term.at >= 75, `SIGTERM came ${term.at} ms after the ask, inside the 80 ms bound`)
+      assert.ok(term.at < 1000, `SIGTERM came ${term.at} ms after the ask, far past the 80 ms bound`)
+      assert.ok(kill.at - term.at >= 75, `SIGKILL came ${kill.at - term.at} ms after SIGTERM, inside the grace`)
+    }
+  )
+})
+
+await check("an editor still starting is signalled at once, with no ask", async () => {
+  await withIpcSupervisor(
+    { onSignal: (child, signal) => child.leave(null, signal) },
+    { stopAskMs: 10_000 },
+    async ({ children, press, stopId }) => {
+      const started = await press("http://127.0.0.1:4101", shop)
+      await until(() => children.length === 1, "the child")
+      // No "ready": the launcher is not listening yet, and nothing serves MCP.
+      await stopId(started.body.id)
+      await until(() => children[0].events.length > 0, "the stop")
+      assert.deepEqual(children[0].order(), ["SIGTERM"])
+    }
+  )
+})
+
+await check("an ask the channel fails to deliver is followed by SIGTERM at once", async () => {
+  await withIpcSupervisor(
+    { sendError: new Error("channel closed"), onSignal: (child, signal) => child.leave(null, signal) },
+    { stopAskMs: 10_000 },
+    async ({ children, press, stopId }) => {
+      const started = await press("http://127.0.0.1:4101", shop)
+      await until(() => children.length === 1, "the child")
+      children[0].ready("http://127.0.0.1:3456")
+      await stopId(started.body.id)
+      await until(() => children[0].events.length === 2, "SIGTERM after the failed ask", 1000)
+      assert.deepEqual(children[0].order(), ["send:stop", "SIGTERM"])
+    }
+  )
+})
+
 await check("the port flags beat the first editor's remembered pair, and only the first's", async () => {
   const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {} })
   const asked = []

@@ -69,6 +69,13 @@ const CLI_PATH = fileURLToPath(import.meta.url)
 
 /** How long a child asked to stop gets before SIGKILL. See `runEditors`. */
 const STOP_GRACE_MS = 5000
+/**
+ * How long a ready child asked to stop over IPC gets to exit by itself before
+ * SIGTERM. It outlasts the child's own bounded MCP close (1.5 s in
+ * `shutdownMcpControl`, of which `closeEndpoint`'s grace is 1 s) plus its exit
+ * hooks; a child that ignores the message delays a stop by this and no more.
+ */
+const STOP_ASK_MS = 2500
 
 export function parseArgs(argv) {
   const options = {
@@ -474,7 +481,10 @@ async function updateFromTerminal(options) {
  *   (none)     --stop arrives before its choice-->     exited   (the choice is dropped when it comes)
  *   allocating --stop, stopAll or killAll-->           exited   (never spawned)
  *   allocating --ports found, still wanted-->          running  (the --proxy-port pair is spent here)
- *   running    --stop, replaced, stopAll, killAll-->   stopping (SIGTERM; SIGKILL after the grace)
+ *   running    --stop, replaced, stopAll-->            stopping (ready: IPC {type:"stop"}, SIGTERM after
+ *                                                                the ask, SIGKILL after the grace; not
+ *                                                                ready: SIGTERM, SIGKILL after the grace)
+ *   running    --killAll-->                            stopping (SIGTERM: the supervisor is exiting now)
  *   running    --exits, or fails to spawn-->           exited   (the reason goes to the screen)
  *   stopping   --exits-->                              exited   (silently: the screen holds the reason)
  *
@@ -490,7 +500,14 @@ async function updateFromTerminal(options) {
  */
 export function runEditors(
   screen,
-  { options = {}, spawnEditor = spawnChild, allocatePorts, log = console.log, stopGraceMs = STOP_GRACE_MS } = {}
+  {
+    options = {},
+    spawnEditor = spawnChild,
+    allocatePorts,
+    log = console.log,
+    stopGraceMs = STOP_GRACE_MS,
+    stopAskMs = STOP_ASK_MS,
+  } = {}
 ) {
   const editors = new Map()
   // The flag pair beats the first editor's remembered pair, and only the
@@ -511,17 +528,53 @@ export function runEditors(
    * the replacement already took the editor's place.
    *
    * Every later start of the same app waits on this, so a child that ignores
-   * SIGTERM (a stuck dev server, a busy event loop) would hold that app
-   * behind it. It gets a few seconds to close its servers, then SIGKILL.
+   * the ask and SIGTERM (a stuck dev server, a busy event loop) would hold
+   * that app behind it. It gets `stopAskMs` to leave by itself, then a few
+   * seconds after SIGTERM to close its servers, then SIGKILL.
    */
   function stop(record) {
     if (record.state === "allocating") transition(record, "exited")
     if (transition(record, "stopping")) {
-      record.child.kill("SIGTERM")
-      const escalate = setTimeout(() => record.child.kill("SIGKILL"), stopGraceMs)
-      record.gone.then(() => clearTimeout(escalate))
+      const { child } = record
+      const timers = new Set()
+      const later = (ms, fn) => timers.add(setTimeout(fn, ms))
+      let signalled = false
+      const terminate = () => {
+        if (signalled) return
+        signalled = true
+        child.kill("SIGTERM")
+        later(stopGraceMs, () => child.kill("SIGKILL"))
+      }
+      if (askToStop(record, terminate)) later(stopAskMs, terminate)
+      else terminate()
+      record.gone.then(() => timers.forEach(clearTimeout))
     }
     return record.gone ?? Promise.resolve()
+  }
+
+  /*
+   * Asks a ready child to stop over IPC, so it closes its MCP endpoint before
+   * it exits: a parked `wait_for_change` then gets `endpoint_closing` instead
+   * of a cut socket. A signal cannot do this, because the vendor's own SIGTERM
+   * handler calls `process.exit` synchronously and no async close outlives it.
+   *
+   * Only once the child said "ready": the launcher listens for the message
+   * from `launch()` on, and nothing serves MCP before the proxy binds, so a
+   * child still starting has nothing to close and is signalled at once.
+   * Returns false when nothing was sent. `failed` runs if the send itself
+   * fails later, so a closed channel costs no wait.
+   */
+  function askToStop(record, failed) {
+    const { child } = record
+    if (!record.ready || !child.connected || typeof child.send !== "function") return false
+    try {
+      child.send({ type: "stop" }, (error) => {
+        if (error) failed()
+      })
+      return true
+    } catch {
+      return false
+    }
   }
 
   /** Ports held or about to be bound by this supervisor's editors. */
@@ -558,6 +611,10 @@ export function runEditors(
     const { child, exited } = startEditor(options, choice, screen, { ports, spawnEditor, log })
     transition(record, "running", { child, ports })
     flagsSpent = true
+    // From here the child listens for the stop message. See `askToStop`.
+    child.on("message", (message) => {
+      if (message?.type === "ready") record.ready = true
+    })
     record.gone = exited.then((reason) => {
       const asked = record.state === "stopping"
       transition(record, "exited", { child: null })
