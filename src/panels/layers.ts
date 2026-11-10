@@ -18,15 +18,18 @@ import { getResolver } from "../core/resolve"
 import { scrollerFor } from "../core/scroll"
 import { elementKey } from "../core/store"
 import { elementName } from "../annotations/identify"
-// The tree shows a count of saved styles per row — see `savedKeys`. This is the
-// only thing the layers panel takes from the options subsystem, and it takes a
-// reader rather than a verb: acting on a saved style is the right panel's job.
-import { visibleOptions } from "../options/store"
+// The tree shows a count of saved styles per row — see `savedKeys`. The layers
+// panel takes a reader and the load from the options subsystem, never a verb:
+// acting on a saved style is the right panel's job.
+import { optionsStore, visibleOptions } from "../options/store"
 import { createWriter } from "../core/writer"
 import type { EditorContext } from "../core/context"
 import type { LayerElement, Selection } from "../core/types"
 import { tokens } from "../core/tokens"
 import { plural } from "../core/format"
+// A function import only, so the cycle with `left.ts` (which mounts this tree)
+// is resolved long before either calls it.
+import { leftPaneOnScreen } from "./left"
 
 const INDENT = LAYER_INDENT, INSET = tokens.space["2xs"], MAX_DEPTH = 40
 /** Filtering is the only full-tree walk; bound it so typing can never lock up. */
@@ -82,7 +85,11 @@ export function sidewaysScroll(
   return from < view.left ? from : to - view.width
 }
 
-/** Everything the vendor server needs to move a node among its JSX siblings. */
+/**
+ * Where a row sits in its JSX: its own line, and the component line it sits
+ * in. The vendor's `getSiblings` answers from the parent half, and the drop
+ * line names a sibling by its `fromLine`; nothing on the page moves.
+ */
 interface DragRef { filePath: string; fromLine: number; parentPath: string; parentLine: number }
 interface Meta { name: string; tag: string; promoted: boolean; drag: DragRef | null }
 /** What `layerKindOf` needs from the cascade, copied out before any row is written. */
@@ -105,7 +112,7 @@ function setAttr(node: Element, name: string, value: string | null): void {
  * name the same kind. A box with children is a frame, split by layout the way
  * Figma splits auto layout; a box without children is a rectangle.
  */
-export type LayerKind = "component" | "image" | "vector" | "text" | "stack-horizontal" | "stack-vertical"
+type LayerKind = "component" | "image" | "vector" | "text" | "stack-horizontal" | "stack-vertical"
   | "grid" | "frame" | "rectangle"
 
 /**
@@ -114,7 +121,7 @@ export type LayerKind = "component" | "image" | "vector" | "text" | "stack-horiz
  * as `Pencil`. The kind is still written on the row (`data-kind`), so swapping
  * a glyph in is one line here.
  */
-export const KIND_GLYPH: Record<LayerKind, IconName> = {
+const KIND_GLYPH: Record<LayerKind, IconName> = {
   component: "Component",
   image: "Image",
   vector: "Vector",
@@ -128,7 +135,7 @@ export const KIND_GLYPH: Record<LayerKind, IconName> = {
 
 const MEDIA = new Set(["img", "picture", "video", "canvas"])
 
-export function layerKindOf(element: LayerElement, promoted: boolean, look: Look | null): LayerKind {
+function layerKindOf(element: LayerElement, promoted: boolean, look: Look | null): LayerKind {
   if (promoted) return "component"
   const tag = element.tagName.toLowerCase()
   if (MEDIA.has(tag)) return "image"
@@ -801,8 +808,8 @@ export function installLayersPanel(context: EditorContext): void {
   let reveal: LayerElement | null = null
   /** Whether that reveal came from the tree itself — a click, a key; see `sidewaysScroll`. */
   let revealSoft = false
-  const showing = (state = context.getState()) =>
-    state.layersOpen && state.leftTab === "layers" && !state.chromeHidden
+  // The left panel's one rule for "this pane can be seen".
+  const showing = (state = context.getState()) => leftPaneOnScreen(state, "layers")
 
   function request(): void {
     if (batching) owed = true
@@ -869,8 +876,8 @@ export function installLayersPanel(context: EditorContext): void {
 
   /**
    * The eye is a real edit, so it goes through the writer every other panel
-   * writes through: `display: none` previews now and lands as `hidden` at
-   * "Apply to code", and Cmd+Z undoes it like any other change.
+   * writes through: `display: none` previews now and becomes a note for the
+   * agent like every direct edit, and Cmd+Z undoes it like any other change.
    *
    * Showing has to name a value — `applyStyles` sets, it cannot unset — so the
    * display the element had when it was hidden is kept for the trip back.
@@ -1030,17 +1037,42 @@ export function installLayersPanel(context: EditorContext): void {
     } else activate(row.element, true)
   }
 
-  // Drop lines come from the vendor's `getSiblings`, the only thing that knows
-  // the real JSX sibling list. `reorder` always inserts *before* `toLine`, so
-  // dropping below a row targets the next sibling instead.
-  // The dragged ELEMENT is carried alongside the reference the server needs,
-  // because the lift is drawn on the row and a row is found by its element.
-  // Keeping it on `drag` rather than in a second variable is what makes "a drag
-  // is running" and "this is the row it is running on" one fact: `buildRow`
-  // restates the class off it, so the two cannot disagree across a repaint.
+  /*
+   * Drag to reorder, which files a note and moves nothing.
+   *
+   *   idle     --dragstart on a row with a JSX line-->   lifting   (asks the vendor for siblings)
+   *   lifting  --siblingsList-->                         dragging  (drop lines known)
+   *   dragging --dragover-->                             dragging  (target line or none)
+   *   any      --drop / dragend anywhere / next dragstart--> idle
+   *
+   * `startDrag` and `endDrag` are the only writers of `drag` and
+   * `stopSiblings`. Drop lines come from the vendor's `getSiblings`, the only
+   * thing that knows the real JSX sibling list; the line under the drop names
+   * the sibling the layer goes in front of, so dropping below a row targets
+   * the next sibling instead.
+   *
+   * The dragged ELEMENT is carried alongside its reference, because the lift
+   * is drawn on the row and a row is found by its element. Keeping it on
+   * `drag` rather than in a second variable is what makes "a drag is running"
+   * and "this is the row it is running on" one fact: `buildRow` restates the
+   * class off it, so the two cannot disagree across a repaint.
+   */
   let drag: { ref: DragRef; element: LayerElement; parent: LayerElement | null
     lines: Set<number>; to: number } | null = null
   let stopSiblings: (() => void) | null = null
+
+  function startDrag(row: Row, ref: DragRef): void {
+    // A drag whose end was never heard still holds a siblings subscription.
+    endDrag()
+    drag = { ref, element: row.element, parent: row.parent, lines: new Set(), to: 0 }
+    stopSiblings = context.bridge.subscribe((message) => {
+      if (message.type !== "siblingsList") return
+      stopSiblings?.()
+      stopSiblings = null
+      for (const s of (message.siblings ?? []) as Array<{ lineNumber: number }>) drag?.lines.add(s.lineNumber)
+    })
+    context.bridge.send({ type: "getSiblings", filePath: ref.parentPath, parentLine: ref.parentLine })
+  }
 
   function endDrag(): void {
     stopSiblings?.()
@@ -1163,7 +1195,7 @@ export function installLayersPanel(context: EditorContext): void {
     const ref = row?.meta.drag
     if (!row || !ref) return event.preventDefault()
     ;(event as DragEvent).dataTransfer?.setData("text/plain", row.meta.name)
-    drag = { ref, element: row.element, parent: row.parent, lines: new Set(), to: 0 }
+    startDrag(row, ref)
     /*
      * The lift goes on a frame late, and the delay is the point rather than a
      * hedge. The browser snapshots this row for the drag image once the handler
@@ -1178,13 +1210,6 @@ export function installLayersPanel(context: EditorContext): void {
     requestAnimationFrame(() => {
       if (drag?.element === row.element) rowByElement.get(row.element)?.classList.add("de-layer--dragging")
     })
-    stopSiblings = context.bridge.subscribe((message) => {
-      if (message.type !== "siblingsList") return
-      stopSiblings?.()
-      stopSiblings = null
-      for (const s of (message.siblings ?? []) as Array<{ lineNumber: number }>) drag?.lines.add(s.lineNumber)
-    })
-    context.bridge.send({ type: "getSiblings", filePath: ref.parentPath, parentLine: ref.parentLine })
   })
   tree.addEventListener("dragover", (event) => {
     if (!drag) return
@@ -1213,7 +1238,15 @@ export function installLayersPanel(context: EditorContext): void {
     }
     writer.noteReorder(describe(pending.element), `before:${name}`)
   })
-  tree.addEventListener("dragend", endDrag)
+  /*
+   * On the document, in capture, not on the tree. Rows are virtualized, so a
+   * long drag that auto-scrolls can take the dragged row out of the tree, and
+   * its `dragend` then fires on a detached node that never bubbles here — the
+   * drag stayed set and a later drop over the tree filed a note for it.
+   */
+  document.addEventListener("dragend", () => {
+    if (drag) endDrag()
+  }, true)
   search.addEventListener("input", request)
 
   context.subscribe((state, previous) => {
@@ -1273,6 +1306,12 @@ export function installLayersPanel(context: EditorContext): void {
   })
 
   request()
+  /*
+   * The saved-style counts read `optionSets`, so the persisted sets are asked
+   * for at boot rather than when the Design tab first draws a styled section;
+   * the subscription above repaints the counts the moment they land.
+   */
+  void optionsStore(context).ready()
   /*
    * The tree first paints in the task that committed the app, before the page
    * has been styled even once, so a computed `display` there is a restyle of

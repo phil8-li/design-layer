@@ -84,6 +84,31 @@
  * editor starts, so a session that had nothing to lose at the click can have
  * something by the time the editor is ready. Then the page does not go: the
  * menu offers the ready editor as a row, and that row arms like any other.
+ *
+ * ## The switch, as a machine
+ *
+ *   idle       --app row-->                    requesting  (POST /apps/switch)
+ *   idle       --editor row or ready row-->    checking    (does that editor answer?)
+ *   requesting --accepted with an id-->        waiting     (polls /apps/started)
+ *   requesting --refused or dropped-->         idle        (`fail`)
+ *   checking   --it answers-->                 leaving, or idle when the desk shows it
+ *   checking   --it does not answer-->         idle        (said in a toast, and in the menu when open)
+ *   waiting    --ready, nothing to lose-->     leaving, or idle when the desk shows it
+ *   waiting    --ready, edits made meanwhile-->ready       (`holdReady`)
+ *   waiting    --stopped, or out of time-->    idle        (`fail`)
+ *   waiting | ready --another row-->           requesting | checking  (the later choice replaces the earlier)
+ *
+ * `setSwitch` is the only writer of `switchState`. Each operation carries a
+ * token, and an answer whose token is not the current state's is dropped, so a
+ * wait that a second choice replaced never moves the page. Whether a row can be
+ * pressed, and what its slot says while its app starts, are derived from the
+ * state each time rows are drawn (`paintSwitch`) — never painted onto nodes a
+ * closing menu might park — and a menu closed mid-switch parks nothing.
+ *
+ * During `checking` and `requesting` every row is dead: both take a moment. A
+ * start takes up to two minutes, so during `waiting` the menu lists the apps
+ * again under the sentence that says what is starting, and picking another one
+ * is how a wait is abandoned. There is no Cancel control (DESIGN.md names none).
  */
 
 import { createApply } from "../core/apply"
@@ -92,12 +117,15 @@ import { config } from "../core/config"
 import { el } from "../core/dom"
 import { focusControl } from "../core/focus"
 import { icon } from "../core/icons"
-import { arriveFrom, playExit } from "../core/motion"
+import { playExit } from "../core/motion"
 import { tokens } from "../core/tokens"
 import { tip } from "../core/tooltip"
 import type { EditorContext } from "../core/context"
 import { plural } from "../core/format"
-import { goInDesk, isInDesk, tellDesk } from "../shell/desk"
+import { goInDesk, isInDesk } from "../shell/desk"
+import { createArm } from "./arm"
+import { installPageReporter } from "./page-reporter"
+import type { PageReporter } from "./page-reporter"
 
 /**
  * One row of the chooser, and there are two kinds of them.
@@ -113,17 +141,16 @@ import { goInDesk, isInDesk, tellDesk } from "../shell/desk"
  * screen can find those and only a supervisor can act on one, so `target` is
  * null and switching means the slower path: ask the screen for an editor, wait
  * until it is ready, go to it.
+ *
+ * `kind` names which, and `editorTarget` reads it: a row the server calls an
+ * `app` is never navigated to, and an `editor` row needs a target to be one.
  */
 interface RunningApp {
   kind?: "editor" | "app"
   /**
-   * Nullable, which this said it was not.
-   *
    * `appRow` and `editorRow` in `server/apps.mjs` both write
-   * `typeof x === "number" ? x : null`, so a scan that found a server without
-   * reading a port off it sends `null` — and this interface promised a number,
-   * so nothing on this side was obliged to check. Nothing read the field until
-   * `portOf` did, which is the only reason it never printed.
+   * `typeof x === "number" ? x : null`: a scan that found a server without
+   * reading a port off it sends `null`. `portOf` checks.
    */
   port: number | null
   url: string
@@ -221,10 +248,9 @@ function isRecordLike(value: unknown): value is AppsResponse {
  * package name and differ only here.
  *
  * Read off the url rather than off `app.port`, because the url is what the row
- * is ABOUT and the two can disagree — `server/apps.mjs` types the port as
- * `number | null` while the interface here promises a number, so the field is
- * the one of the two that can arrive empty. An unparseable url falls back to
- * it, and a row with neither says nothing rather than saying `null`.
+ * is ABOUT and the two can disagree, and `port` is the one of the two that can
+ * arrive empty (`number | null`). An unparseable url falls back to it, and a
+ * row with neither says nothing rather than saying `null`.
  */
 function portOf(app: RunningApp): string {
   try {
@@ -252,6 +278,12 @@ function appLabel(app: RunningApp, folder: string | null): string {
   // The folder first, by the rule every surface uses (runtime/app-name.mjs):
   // copies of one template share a package name and a title.
   return folder || app.packageName || app.title || app.url
+}
+
+/** The proxy an `editor` row goes to, or null for a row that is started instead. */
+function editorTarget(app: RunningApp): string | null {
+  if (app.kind === "app") return null
+  return typeof app.target === "string" && app.target.length > 0 ? app.target : null
 }
 
 function folderOf(app: RunningApp): string | null {
@@ -336,10 +368,6 @@ export function onLocalhost(target: string): string {
   }
 }
 
-function currentPage(): string {
-  return `${window.location.pathname}${window.location.search}${window.location.hash}`
-}
-
 /**
  * Where going to another editor lands: its proxy, on the page its app was last
  * used on.
@@ -359,10 +387,28 @@ export function editorAddress(target: string, page: string | null | undefined): 
   }
 }
 
-export function installAppChooser(context: EditorContext): {
+type SwitchState =
+  | { kind: "idle" }
+  | { kind: "checking"; token: number; url: string; label: string }
+  | { kind: "requesting"; token: number; appUrl: string; label: string }
+  | { kind: "waiting"; token: number; appUrl: string; label: string }
+  | { kind: "ready"; url: string; label: string; appUrl: string }
+  | { kind: "leaving" }
+
+/**
+ * `pages` files the page this document is on (`page-reporter.ts`). The left
+ * panel hands in the one it mounted; a chooser mounted on its own, as the
+ * suites do, mounts and tears down its own.
+ */
+export function installAppChooser(
+  context: EditorContext,
+  pages?: PageReporter
+): {
   node: HTMLElement
   destroy(): void
 } {
+  const ownPages = pages ? null : installPageReporter(context)
+  const reporter = pages ?? (ownPages as PageReporter)
   const menuId = freeMenuId()
   const current = config.app
   const named = typeof current.name === "string" && current.name.length > 0
@@ -426,29 +472,20 @@ export function installAppChooser(context: EditorContext): {
   let isOpen = false
   /** Set while a menu is opened from the keyboard and its rows have not arrived yet. */
   let focusFirstOnLoad = false
-  /** True from the first accepted click until the page goes or the choice fails. Rows go dead. */
-  let switching = false
-  /** The navigation is one-way and must not be attempted twice. */
-  let leaving = false
   /**
-   * The sentence for an editor being started, while it is. A menu closed and
-   * reopened during the wait shows this rather than a list of dead rows.
+   * What a switch is doing; see "The switch, as a machine" above. In `ready`,
+   * `appUrl` is the app's own row, left out of the list while the ready
+   * editor's row stands in for it.
    */
-  let waitingNote: string | null = null
-  /**
-   * An editor a switch started that is ready and was not opened, because edits
-   * were made during the wait. The menu offers it as a row until it is opened
-   * or another choice replaces it. `appUrl` is the app's own row, left out of
-   * the list while this one stands in for it.
-   */
-  let ready: { url: string; label: string; appUrl: string } | null = null
+  let switchState: SwitchState = { kind: "idle" }
+  /** The token the next operation takes. */
+  let generation = 0
   /** Torn down. The start wait reads it, because it outlives the element. */
   let destroyed = false
   /**
-   * The last answer this machine gave, seeded from storage so that the FIRST
-   * open of a session is warm too — including the first open in an editor
-   * just switched to, which is a new document, and which is exactly when
-   * someone who has just used this menu is most likely to use it again.
+   * The last answer this machine gave, seeded from storage so that the first
+   * open after this editor's page loads is warm too. Storage is per origin and
+   * every editor is its own proxy origin, so another editor keeps its own copy.
    */
   let cached: AppsResponse | null = null
   /**
@@ -473,6 +510,13 @@ export function installAppChooser(context: EditorContext): {
    * reachable by pointer users only, who are the ones who could already read it
    * off the second line. So it stays in the walk and simply refuses to act.
    */
+  /** Every row is dead while the switch is checking, requesting or leaving. */
+  const busy = (): boolean =>
+    switchState.kind === "checking" || switchState.kind === "requesting" || switchState.kind === "leaving"
+  /** The app whose editor is being asked for or started, whose row says so. */
+  const startingUrl = (): string | null =>
+    switchState.kind === "requesting" || switchState.kind === "waiting" ? switchState.appUrl : null
+
   const walkable = (row: HTMLButtonElement): boolean =>
     row.classList.contains("de-app-menu-row--unplaced") ||
     row.getAttribute("aria-disabled") !== "true"
@@ -596,11 +640,6 @@ export function installAppChooser(context: EditorContext): {
     const top = flipped ? Math.max(EDGE, anchor.top - height - GAP) : below
     menu.style.left = `${left}px`
     menu.style.top = `${top}px`
-    // The flip is decided here and nowhere else, so the entrance is aimed here
-    // too: a card that ends up above the chooser has to grow out of its bottom
-    // edge and settle upward, or it opens travelling away from the control that
-    // was just pressed. See `arriveFrom`.
-    arriveFrom(menu, flipped ? "above" : "below")
   }
 
   /** The list the last close took down, kept for an open that would draw the same one. */
@@ -625,30 +664,18 @@ export function installAppChooser(context: EditorContext): {
   const committer = createApply({ bridge: context.bridge, toast: context.toast })
 
   /**
-   * The row waiting for its second click, and the way back from it.
+   * The row waiting for its second click, and the way back from it
+   * (`panels/arm.ts`).
    *
    * Arming is painted directly onto the row rather than through `render`,
    * exactly as the annotations tab's clear-all does it: arming changes nothing
    * in any store, and repainting the whole list to move one sentence would
-   * throw away the rows the reader is looking at mid-decision. `restore` is the
-   * row's own closure over its resting strings, so nothing here has to know
-   * what a row says.
+   * throw away the rows the reader is looking at mid-decision. The restore is
+   * the row's own closure over its resting strings, so nothing here has to
+   * know what a row says.
    */
-  const ARMED_MS = 6000
-  let armedRow: HTMLButtonElement | null = null
-  let armedTimer = 0
-  let restoreArmedRow: (() => void) | null = null
-
-  const disarm = (): void => {
-    if (armedTimer) {
-      window.clearTimeout(armedTimer)
-      armedTimer = 0
-    }
-    const restore = restoreArmedRow
-    armedRow = null
-    restoreArmedRow = null
-    restore?.()
-  }
+  const arm = createArm()
+  const disarm = (): void => arm.disarm()
 
   /*
    * One click when there is nothing to lose, two when there is, for every kind
@@ -674,8 +701,13 @@ export function installAppChooser(context: EditorContext): {
     metaLine: HTMLElement,
     label: string,
     meta: string,
-    ariaLabel: string
+    ariaLabel: string,
+    event?: Event
   ): boolean => {
+    // The second click of a double-click is the same gesture as the click that
+    // armed the row, not the confirmation it asks for.
+    if (arm.repeats(row, event)) return true
+    const armedRow = arm.target()
     if (armedRow === row || isInDesk() || !committer.hasPendingChanges()) {
       disarm()
       return false
@@ -690,13 +722,11 @@ export function installAppChooser(context: EditorContext): {
      * will be lost" would be the one sentence here that argues for pressing on.
      */
     const owed = Math.max(1, committer.pendingCount())
-    armedRow = row
-    restoreArmedRow = () => {
+    arm.arm(row, () => {
       row.classList.remove("de-app-menu-row--danger")
       metaLine.textContent = meta
       row.setAttribute("aria-label", ariaLabel)
-    }
-    armedTimer = window.setTimeout(disarm, ARMED_MS)
+    })
     row.classList.add("de-app-menu-row--danger")
     /*
      * The row names the OUTCOME of the next click rather than asking a
@@ -737,8 +767,10 @@ export function installAppChooser(context: EditorContext): {
     // now and an inert clone plays the kit's 150ms dismissal. See `playExit`.
     playExit(menu)
     menu.style.display = "none"
+    // Only a resting list is parked. Rows drawn mid-switch carry its state, and
+    // reopening onto them after the switch failed showed a dead menu.
     parked =
-      shownSignature !== null && rows().length > 0
+      switchState.kind === "idle" && shownSignature !== null && rows().length > 0
         ? { signature: shownSignature, nodes: Array.from(menu.childNodes) }
         : null
     menu.replaceChildren()
@@ -763,7 +795,7 @@ export function installAppChooser(context: EditorContext): {
      * missing from it: the destination is a URL that is already serving, so the
      * folder question below cannot arise.
      */
-    const target = typeof app.target === "string" && app.target.length > 0 ? app.target : null
+    const target = editorTarget(app)
     const folder = folderOf(app)
     const label = labels.get(app) ?? appLabel(app, folder)
     /*
@@ -880,15 +912,16 @@ export function installAppChooser(context: EditorContext): {
      * stays in the arrow-key walk for the same reason; see `walkable`.
      */
     if (!placed && !isCurrent) row.setAttribute("aria-disabled", "true")
+    rowFacts.set(row, { appUrl: app.url, meta })
 
-    row.addEventListener("click", () => {
-      if (switching) return
+    row.addEventListener("click", (event) => {
+      if (busy() || startingUrl() === app.url) return
       if (isCurrent) {
         close(true)
         return
       }
       if (!placed) return
-      if (armed(row, metaLine, label, meta, ariaLabel)) return
+      if (armed(row, metaLine, label, meta, ariaLabel, event)) return
       /*
        * An editor of its own is already running, so this is a link: no POST
        * and no wait. It lands on the app's last page, not the bare proxy root.
@@ -897,10 +930,9 @@ export function installAppChooser(context: EditorContext): {
         void goTo(editorAddress(target, app.page), label)
         return
       }
-      // The row is handed over so the start can be reported in it — see
-      // `reportSwitching`. It is the one row the user pressed, and the only one
-      // with anything to say.
-      void switchTo(app, label, row)
+      // The row reports the start in its own slot — see `paintSwitch`. It is
+      // the one row the user pressed, and the only one with anything to say.
+      void switchTo(app, label)
     })
 
     return row
@@ -926,23 +958,37 @@ export function installAppChooser(context: EditorContext): {
       },
       [el("span", { class: "de-app-menu-name" }, [held.label]), metaLine, icon("ArrowRight", tokens.icon.marker)]
     )
-    row.addEventListener("click", () => {
-      if (switching) return
-      if (armed(row, metaLine, held.label, meta, ariaLabel)) return
+    rowFacts.set(row, { appUrl: null, meta })
+    row.addEventListener("click", (event) => {
+      if (busy()) return
+      if (armed(row, metaLine, held.label, meta, ariaLabel, event)) return
       void goTo(held.url, held.label)
     })
     return row
   }
 
   /**
-   * Every row goes dead the moment one of them is accepted; a second choice
-   * cannot be queued.
+   * What each row needs to repaint itself from `switchState`: the app it
+   * starts, if any, and what its slot says at rest.
+   */
+  const rowFacts = new WeakMap<HTMLElement, { appUrl: string | null; meta: string }>()
+
+  /**
+   * The rows as the switch state says they are, written onto whatever rows the
+   * menu holds now. Called by `setSwitch` and by every draw, so a row can never
+   * keep a state the switch has left.
    *
-   * Re-enabling skips the rows that were never switchable in the first place.
+   * ## Dead rows
+   *
+   * Every row goes dead while a choice is being checked or asked for, so a
+   * second choice cannot be queued behind it. The row of an app being started
+   * stays dead for the whole wait; the others come back with the list.
+   *
+   * Waking a row skips the ones that were never switchable in the first place.
    * A refused switch puts the menu back the way it was, and "the way it was"
    * included an app with no project folder sitting there unpressable — waking
-   * it on the way back would turn a failed switch into a row that now offers a
-   * switch guaranteed to fail.
+   * it would turn a failed switch into a row that offers a switch guaranteed to
+   * fail.
    *
    * `aria-disabled` plus a class, not the native attribute. A native `disabled`
    * on the row the reader just pressed makes that row unfocusable in the same
@@ -951,68 +997,55 @@ export function installAppChooser(context: EditorContext): {
    * the document while the switch they asked for is still in flight. The class
    * carries `pointer-events: none`, which is the half the pointer needs and the
    * half a keyboard must not have.
+   *
+   * ## The starting row's slot
+   *
+   * The row whose app is being started says so in the slot that otherwise
+   * holds its port, in one word. The row must not change height or line count
+   * while it does: the slot is `flex: none` and `white-space: nowrap` in the
+   * sheet, and the phrase is one word because the slot takes its width out of
+   * the name beside it — a phrase long enough to push a long name onto a second
+   * line would move the card under a pointer that is waiting. (The row used to
+   * measure itself and pin a `min-height` for this, from when it was two lines
+   * with a wrapping url; a one-line row has nothing to pin.)
    */
-  const setRowsDisabled = (disabled: boolean): void => {
+  const paintSwitch = (): void => {
+    const dead = busy()
+    const starting = startingUrl()
     for (const row of rows()) {
-      const unplaced = row.classList.contains("de-app-menu-row--unplaced")
-      if (!disabled && unplaced) continue
-      row.classList.toggle("de-app-menu-row--busy", disabled)
-      if (disabled) row.setAttribute("aria-disabled", "true")
+      const facts = rowFacts.get(row)
+      const isStarting = starting !== null && facts?.appUrl === starting
+      const off = dead || isStarting
+      row.classList.toggle("de-app-menu-row--busy", off)
+      if (off || row.classList.contains("de-app-menu-row--unplaced")) row.setAttribute("aria-disabled", "true")
       else row.removeAttribute("aria-disabled")
+      const slot = row.querySelector<HTMLElement>(".de-app-menu-where")
+      if (!slot || !facts) continue
+      if (isStarting) {
+        row.setAttribute("data-de-switching", "")
+        slot.textContent = "Starting\u2026"
+      } else if (row.hasAttribute("data-de-switching")) {
+        row.removeAttribute("data-de-switching")
+        slot.textContent = facts.meta
+      }
     }
   }
 
-  /**
-   * The row the user pressed reports its own switch, in the slot that
-   * otherwise holds its port.
-   *
-   * ## Why there is no longer a height to pin
-   *
-   * This used to measure the row and write the measurement into `min-height`
-   * before touching anything, and the pin was real work for a real problem: the
-   * row was two lines, the second of them a wrapping url, so a phrase swapped
-   * into it was one line for a short path and two for a long one and the card
-   * resized under a pointer that was waiting for the page to be replaced.
-   *
-   * A one-line row has no such thing to protect. The slot is `flex: none` and
-   * `white-space: nowrap` in the sheet, so whatever is written into it stays on
-   * one line by construction, and the pin became a measurement taken on every
-   * switch, written into an inline style, cleared on the failure path and
-   * load-bearing nowhere. Dead code that measures something looks far more
-   * necessary than dead code that does not, which is why it is called out here
-   * rather than quietly removed.
-   *
-   * The constraint the pin existed for has not gone anywhere: the row must not
-   * change height or line count while it is handing over. It is now the sheet's
-   * job, and the phrase's — which is why the phrase is one word. The slot takes
-   * its width out of the name beside it, and a phrase long enough to push a
-   * long name onto a second line would move the card exactly as the old wrap
-   * did.
-   *
-   * ## Why one phrase and not two
-   *
-   * There were two, "asking the supervisor" and then "waiting for it to come
-   * up", named as the separately observable stages of the request. The second
-   * one was never observable: the accepted switch replaces the whole card with
-   * the waiting note in the same task, so the row it was written into was
-   * detached before a frame could paint it. One phrase, on the row, for as long
-   * as the row exists; the sentence that covers the rest of the wait is the
-   * note that replaces it.
-   */
-  const reportSwitching = (row: HTMLElement, phrase: string): void => {
-    const slot = row.querySelector<HTMLElement>(".de-app-menu-where")
-    if (!slot) return
-    row.setAttribute("data-de-switching", "")
-    slot.textContent = phrase
+  /** The one writer of `switchState`. A list parked at rest is not a list to reopen onto mid-switch. */
+  const setSwitch = (next: SwitchState): void => {
+    switchState = next
+    if (next.kind !== "idle") parked = null
+    paintSwitch()
   }
 
-  const switchTo = async (app: RunningApp, label: string, row?: HTMLElement): Promise<void> => {
-    switching = true
-    ready = null
-    parked = null
-    setRowsDisabled(true)
-    if (row) reportSwitching(row, "Starting\u2026")
-    reportPage()
+  /** Whether an operation's answer still belongs to the state it started. */
+  const still = (kind: "checking" | "requesting" | "waiting", token: number): boolean =>
+    !destroyed && switchState.kind === kind && switchState.token === token
+
+  const switchTo = async (app: RunningApp, label: string): Promise<void> => {
+    const token = ++generation
+    setSwitch({ kind: "requesting", token, appUrl: app.url, label })
+    reporter.report()
 
     let failure: string | null = null
     let id: string | null = null
@@ -1043,12 +1076,12 @@ export function installAppChooser(context: EditorContext): {
       failure = refusedSentence(label)
     }
 
-    if (destroyed) return
+    if (!still("requesting", token)) return
     if (failure || !id) {
-      fail(failure ?? refusedSentence(label), row)
+      fail(failure ?? refusedSentence(label))
       return
     }
-    void waitForEditor(id, label, app.url)
+    void waitForEditor(token, id, label, app.url)
   }
 
   /**
@@ -1057,14 +1090,8 @@ export function installAppChooser(context: EditorContext): {
    * note is what is still there a second later, under the row they pressed,
    * when they look back at the menu.
    */
-  const fail = (sentence: string, row?: HTMLElement): void => {
-    switching = false
-    waitingNote = null
-    setRowsDisabled(false)
-    // `showNote` replaces the card, so nothing on screen depends on this today;
-    // it keeps a later change that leaves the list up from showing a row
-    // stuck mid-switch.
-    if (row) row.removeAttribute("data-de-switching")
+  const fail = (sentence: string): void => {
+    setSwitch({ kind: "idle" })
     if (isOpen) showNote(sentence)
     context.toast(sentence, "error")
   }
@@ -1108,14 +1135,12 @@ export function installAppChooser(context: EditorContext): {
    * browser tab this document is replaced.
    */
   const go = (url: string): void => {
-    switching = false
-    waitingNote = null
     if (goInDesk(url)) {
-      setRowsDisabled(false)
+      setSwitch({ kind: "idle" })
       close()
       return
     }
-    leaving = true
+    setSwitch({ kind: "leaving" })
     close()
     window.location.assign(url)
   }
@@ -1131,28 +1156,26 @@ export function installAppChooser(context: EditorContext): {
    * typing the old address from memory.
    *
    * One round trip against the destination buys that back, on a gesture that
-   * was about to cost a whole page load. A dead target drops the list rather
-   * than the row: `shownSignature` is cleared so the refresh behind it is
-   * allowed to repaint, since the answer that produced the stale row would
-   * otherwise match the signature and be thrown away as "nothing changed".
+   * was about to cost a whole page load. A dead target is said whether or not
+   * the menu is still open — a press that does nothing visible is the one
+   * outcome worse than a failure — and drops the list rather than the row:
+   * `shownSignature` is cleared so the refresh behind it is allowed to repaint,
+   * since the answer that produced the stale row would otherwise match the
+   * signature and be thrown away as "nothing changed".
    */
   const goTo = async (url: string, label: string): Promise<void> => {
-    if (leaving || switching) return
-    switching = true
-    ready = null
-    parked = null
-    setRowsDisabled(true)
+    if (busy()) return
+    const token = ++generation
+    setSwitch({ kind: "checking", token, url, label })
     const reachable = await answers(url)
-    if (destroyed) return
+    if (!still("checking", token)) return
     if (reachable) {
       go(url)
       return
     }
-    switching = false
-    setRowsDisabled(false)
-    if (!isOpen) return
+    setSwitch({ kind: "idle" })
     const gone = `${label} is no longer running. Start it again, or choose another app.`
-    showNote(gone)
+    if (isOpen) showNote(gone)
     context.toast(gone, "error")
     shownSignature = null
     void load(true)
@@ -1214,15 +1237,11 @@ export function installAppChooser(context: EditorContext): {
    * a toast cannot carry the second press, and the row can.
    */
   const holdReady = (url: string, label: string, appUrl: string): void => {
-    switching = false
-    waitingNote = null
-    ready = { url, label, appUrl }
-    parked = null
+    setSwitch({ kind: "ready", url, label, appUrl })
     if (isOpen) {
-      render(cached)
-      // Recorded, so a refresh with the same answer leaves the drawn rows
-      // alone rather than repainting an armed row back to rest.
-      shownSignature = signatureOf(cached)
+      // `drawList` records what it drew, so a refresh with the same answer
+      // leaves the rows alone rather than repainting an armed row back to rest.
+      drawList(cached)
       position()
     }
     context.toast(
@@ -1233,7 +1252,7 @@ export function installAppChooser(context: EditorContext): {
   }
 
   const openReady = (): void => {
-    if (!ready || destroyed || switching) return
+    if (switchState.kind !== "ready" || destroyed) return
     if (!isOpen) open(false)
     const row = menu.querySelector<HTMLButtonElement>(".de-app-menu-row--ready")
     if (!row) return
@@ -1241,17 +1260,20 @@ export function installAppChooser(context: EditorContext): {
     row.click()
   }
 
-  const waitForEditor = async (id: string, label: string, appUrl: string): Promise<void> => {
-    waitingNote = `Starting ${label}. It opens when it is ready.`
+  const waitingSentence = (label: string): string => `Starting ${label}. It opens when it is ready.`
+
+  const waitForEditor = async (token: number, id: string, label: string, appUrl: string): Promise<void> => {
+    setSwitch({ kind: "waiting", token, appUrl, label })
     context.toast(`Starting ${label}\u2026`)
-    if (isOpen) showNote(waitingNote)
+    if (isOpen) showNote(waitingSentence(label))
     const deadline = Date.now() + START_BUDGET_MS
     while (Date.now() < deadline) {
       // The loop outlives the element, and what it does at the end is leave
-      // the page; a torn-down control must not.
-      if (destroyed) return
+      // the page; a torn-down control must not, and neither may a wait that a
+      // later choice replaced.
+      if (!still("waiting", token)) return
       const answer = await startedAnswer(id)
-      if (destroyed) return
+      if (!still("waiting", token)) return
       if (answer.stopped) {
         fail(answer.stopped)
         return
@@ -1266,7 +1288,7 @@ export function installAppChooser(context: EditorContext): {
       }
       await wait(POLL_MS)
     }
-    if (destroyed) return
+    if (!still("waiting", token)) return
     fail(
       config.chooserUrl
         ? `${label} did not start. Try again, or start it from ${config.chooserUrl}.`
@@ -1286,17 +1308,27 @@ export function installAppChooser(context: EditorContext): {
      * the menu they are looking at.
      */
     const held = menu.contains(document.activeElement)
-    // An editor is being started: the rows are dead until it is, and the
-    // sentence saying so is worth more than a list nobody can press.
-    if (waitingNote) {
-      showNote(waitingNote)
+    // An editor is being started: the sentence says which, and the list under
+    // it stays pressable — another app is how a long wait is abandoned. The
+    // starting app's own row is dead and says "Starting…" (`paintSwitch`).
+    if (switchState.kind === "waiting") {
+      const sentence = waitingSentence(switchState.label)
+      const apps = payload && !payload.error && Array.isArray(payload.apps) ? payload.apps : []
+      if (apps.length === 0) {
+        showNote(sentence)
+        return
+      }
+      const labels = rowLabels(apps)
+      menu.replaceChildren(liveRegion, ...apps.map((app) => rowFor(app, labels)))
+      liveRegion.replaceChildren(note(sentence))
+      settleRows(held)
       return
     }
     // A ready editor that did not open leads the card, with the sentence that
     // says why, and the rest of the list stays pressable under it. Drawn even
     // when the list cannot be, since it does not depend on the list.
-    if (ready) {
-      const standing = ready
+    if (switchState.kind === "ready") {
+      const standing = switchState
       const others =
         payload && !payload.error && Array.isArray(payload.apps)
           ? payload.apps.filter((app) => app.url !== standing.appUrl)
@@ -1379,9 +1411,9 @@ export function installAppChooser(context: EditorContext): {
     settleRows(held)
   }
 
-  /** What a freshly drawn list owes the reader: disabled mid-switch, a tab stop, focus. */
+  /** What a freshly drawn list owes the reader: the switch state, a tab stop, focus. */
   const settleRows = (held: boolean): void => {
-    if (switching) setRowsDisabled(true)
+    paintSwitch()
     /*
      * One row owns the tab stop from the moment the list is drawn, not from the
      * first arrow key.
@@ -1409,6 +1441,34 @@ export function installAppChooser(context: EditorContext): {
    * so a change nobody can see is not a change.
    */
   let shownSignature: string | null = null
+
+  /**
+   * The one way a list reaches the menu: drawn — from the rows the last close
+   * parked when they describe the same answer, built otherwise — and recorded
+   * as what is shown, in the same call. A draw that did not record its
+   * signature let a later open or refresh trust a stale one.
+   */
+  const drawList = (payload: AppsResponse | null): void => {
+    const signature = signatureOf(payload)
+    /*
+     * The rows the last close took down, when they describe the same apps.
+     *
+     * Building them was most of what an open cost in script, and a list that
+     * says the same thing is the same nodes: arming was undone by `disarm` on
+     * the way out and only a list at rest is parked, so all a parked row can
+     * have kept is where the roving tab stop last rested, which is put back to
+     * the first row as a fresh list would have it.
+     */
+    if (parked?.signature === signature && switchState.kind === "idle") {
+      menu.replaceChildren(...parked.nodes)
+      for (const row of rows()) if (row.tabIndex !== -1) row.tabIndex = -1
+      settleRows(false)
+    } else {
+      render(payload)
+    }
+    parked = null
+    shownSignature = signature
+  }
 
   const signatureOf = (payload: AppsResponse | null): string =>
     payload === null
@@ -1515,9 +1575,8 @@ export function installAppChooser(context: EditorContext): {
      * server is only worth reporting when there is nothing else to show.
      */
     if (payload === null && shownSignature !== null && shownSignature !== "unreachable") return
-    const signature = signatureOf(payload)
-    if (signature === shownSignature) return
-    render(payload)
+    if (signatureOf(payload) === shownSignature) return
+    drawList(payload)
     position()
   }
 
@@ -1532,13 +1591,10 @@ export function installAppChooser(context: EditorContext): {
    * pointer interface that a click is coming, and it buys the round trip the
    * distance between hovering a control and pressing it.
    */
-  let warmedAt = 0
   const warm = (): void => {
-    // A hand resting on the control must not become a request per frame, and
-    // two opens in quick succession should not each pay for a scan.
-    if (isOpen || Date.now() - warmedAt < 1500) return
-    warmedAt = Date.now()
-    void load()
+    // `load` already joins a scan in flight and asks nothing within `FRESH_MS`
+    // of a good answer, so a hand resting on the control costs one scan.
+    if (!isOpen) void load()
   }
 
   const open = (fromKeyboard: boolean): void => {
@@ -1567,25 +1623,8 @@ export function installAppChooser(context: EditorContext): {
      * The note is now only for a menu that genuinely has nothing to show yet,
      * which after the first open of the first session is nobody.
      */
-    if (cached || ready) {
-      const signature = signatureOf(cached)
-      /*
-       * The rows the last close took down, when they describe the same apps.
-       *
-       * Building them was most of what an open cost in script, and a list that
-       * says the same thing is the same nodes: arming was undone by `disarm` on
-       * the way out and a switch discards the parked list, so all a parked row
-       * can have kept is where the roving tab stop last rested, which is put
-       * back to the first row as a fresh list would have it.
-       */
-      if (parked?.signature === signature) {
-        menu.replaceChildren(...parked.nodes)
-        for (const row of rows()) if (row.tabIndex !== -1) row.tabIndex = -1
-        settleRows(false)
-      } else {
-        render(cached)
-      }
-      shownSignature = signature
+    if (cached || switchState.kind === "ready" || switchState.kind === "waiting") {
+      drawList(cached)
     } else {
       showNote(CHOOSER.looking)
       shownSignature = null
@@ -1742,62 +1781,6 @@ export function installAppChooser(context: EditorContext): {
   window.addEventListener("scroll", onScroll, true)
   window.addEventListener("resize", onScroll)
   window.addEventListener("blur", onBlur)
-  // Leaving by any route — a reload, a typed address, a closed tab — files this
-  // app's page for the next switch back to it.
-  /*
-   * The page this document is on, filed with the server under this app: on
-   * every change, and on the way out. An app that routes with pushState fires
-   * no event for it, so a change is also looked for on a timer.
-   *
-   * Only once the person has used the app itself. An app redirects on load —
-   * from its root to its home, from a stale link to a default — and filing
-   * that page wrote the app's shared home over the page the person had been
-   * working on, so the next switch opened a page that looks like every other
-   * copy of the template. Clicks and keys in the editor's own chrome do not
-   * count: they are not a choice of page.
-   */
-  let used = false
-  const onUse = (event: Event): void => {
-    const target = event.target instanceof Element ? event.target : null
-    if (target?.closest("[data-designlayer], [class^='de-'], [class*=' de-']")) return
-    used = true
-  }
-  let reported = ""
-  const reportPage = (beacon = false): void => {
-    const page = currentPage()
-    if (!used || !config.app.url || (page === reported && !beacon)) return
-    reported = page
-    const body = JSON.stringify({ appUrl: config.app.url, page })
-    const url = `${context.apiBase}/apps/page`
-    if (beacon && typeof navigator.sendBeacon === "function") {
-      navigator.sendBeacon(url, new Blob([body], { type: "application/json" }))
-      return
-    }
-    void fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body, keepalive: true }).catch(
-      () => {}
-    )
-  }
-  // The Mac app names each tab from this, and reopens it on this page. Not
-  // gated on use: a tab's name has to be right from the first paint.
-  let told = ""
-  const tellDeskPage = (): void => {
-    const page = currentPage()
-    if (page === told) return
-    told = page
-    tellDesk(config.app.name ?? null, page)
-  }
-  const onPageHide = (): void => reportPage(true)
-  const onRouteChange = (): void => {
-    reportPage()
-    tellDeskPage()
-  }
-  const pageTimer = window.setInterval(onRouteChange, 2000)
-  tellDeskPage()
-  window.addEventListener("pointerdown", onUse, true)
-  window.addEventListener("keydown", onUse, true)
-  window.addEventListener("pagehide", onPageHide)
-  window.addEventListener("hashchange", onRouteChange)
-  window.addEventListener("popstate", onRouteChange)
   // Closed when the editor is hidden. The menu hangs off `document.body`, not
   // off the panel, so nothing that hides carries it away: ⌘. left it open over
   // the page, its rows still switching apps. Same call as the library sign-in.
@@ -1810,7 +1793,7 @@ export function installAppChooser(context: EditorContext): {
     /*
      * Tears down everything that outlives the trigger, which is all of it.
      *
-     * The menu is in `document.body` and the five listeners are on `window`, so
+     * The menu is in `document.body` and its listeners are on `window`, so
      * removing the button from the panel would leave both behind — a menu that
      * can still be opened by a keystroke aimed at whatever replaced it. The
      * start wait goes too, and it is the one that matters: it outlives the
@@ -1832,12 +1815,7 @@ export function installAppChooser(context: EditorContext): {
       window.removeEventListener("scroll", onScroll, true)
       window.removeEventListener("resize", onScroll)
       window.removeEventListener("blur", onBlur)
-      window.removeEventListener("pagehide", onPageHide)
-      window.removeEventListener("pointerdown", onUse, true)
-      window.removeEventListener("keydown", onUse, true)
-      window.removeEventListener("hashchange", onRouteChange)
-      window.removeEventListener("popstate", onRouteChange)
-      window.clearInterval(pageTimer)
+      ownPages?.destroy()
       stopWatchingChrome()
       menu.remove()
     },

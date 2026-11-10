@@ -9,9 +9,19 @@
  * ## Where Code went
  *
  * This strip carried a Code tab between the two — the selected element written
- * back out as JSX, HTML or Tailwind classes. It was removed. The view module
- * (`panels/inspector/tab-code.ts`) and its generator (`core/element-code.ts`)
- * are left in the tree, unmounted, so it can come back without a rewrite.
+ * back out as JSX, HTML or Tailwind classes. It was removed, and nothing in
+ * this panel mounts it; the ⌥ keys below are positional, so the two tabs left
+ * kept their keys.
+ *
+ * ## Which tab is showing
+ *
+ * The store's `leftTab` is the only record of it. A click writes the store and
+ * the subscription below paints from it, which is the path a key, the inspector
+ * and the layer header take too, so there is no second copy to fall out of
+ * step:
+ *
+ *   any --tab click / ⌥1 ⌥2 / another panel's write of leftTab--> that tab
+ *   any --a leftTab that names no tab here--> Layers
  *
  * ## Why Controls is here, when it is the one tab you EDIT things in
  *
@@ -87,9 +97,25 @@ import { installTabPill } from "../core/travelling-surface"
 import { registerCommand } from "../core/commands"
 import { controlsTab } from "./controls"
 import { installAppChooser } from "./app-chooser"
+import { installPageReporter } from "./page-reporter"
 import { installLayersPanel } from "./layers"
 import { macAppBanner } from "./mac-app"
 import type { EditorContext } from "../core/context"
+import type { EditorState } from "../core/store"
+
+/**
+ * Whether one of this panel's panes is on screen: the panel open, the chrome
+ * shown, and that tab chosen. The one rule for it: the tree reads it, and the
+ * controls pane is handed it, rather than each writing their own.
+ */
+export function leftPaneOnScreen(state: Readonly<EditorState>, id: string): boolean {
+  return leftPanelShown(state) && state.leftTab === id
+}
+
+/** The panel itself is on screen, whichever tab it shows. */
+function leftPanelShown(state: Readonly<EditorState>): boolean {
+  return state.layersOpen && !state.chromeHidden
+}
 
 /**
  * What a pane hands back, and it is the inspector's `InspectorTab` shape by
@@ -166,7 +192,10 @@ export function installLeftPanel(context: EditorContext): void {
    * called; the control's own cleanup stays correct and simply goes unused
    * until this panel grows a real one.
    */
-  const chooser = installAppChooser(context)
+  // Files this app's page for the next switch back to it, and names the Mac
+  // app's tab. Its own module, mounted here beside the chooser that also asks
+  // it to file the page as a switch starts.
+  const chooser = installAppChooser(context, installPageReporter(context))
   context.slots.left.append(chooser.node, strip, layersPane, controlsPane)
   // The foot: "Open in Mac app", on a Mac with the app and outside it. After
   // the panes rather than inside one, so it stays put under every tab and the
@@ -197,7 +226,7 @@ export function installLeftPanel(context: EditorContext): void {
    * adapted one the tree takes — it touches no slot, so the substitution would
    * be one with no effect, which the chooser's comment above refuses to make.
    */
-  const controls = controlsTab(context)
+  const controls = controlsTab(context, () => leftPaneOnScreen(context.getState(), "controls"))
   controlsPane.append(controls.node)
 
   const tabs: TabDefinition[] = [
@@ -235,7 +264,9 @@ export function installLeftPanel(context: EditorContext): void {
     },
   ]
 
-  let activeId = tabs[0].id
+  /** The tab the store names, or Layers when it names none of these. */
+  const chosen = (state = context.getState()): TabDefinition =>
+    tabs.find((definition) => definition.id === state.leftTab) ?? tabs[0]
   const buttons = new Map<string, HTMLElement>()
 
   for (const definition of tabs) {
@@ -247,14 +278,14 @@ export function installLeftPanel(context: EditorContext): void {
         role: "tab",
         id: tabId(definition.id),
         "aria-controls": paneId(definition.id),
-        "aria-selected": String(definition.id === activeId),
+        "aria-selected": String(definition.id === chosen().id),
         onclick: () => activate(definition.id),
       },
       [definition.label]
     )
     buttons.set(definition.id, button)
     strip.append(button)
-    definition.pane.hidden = definition.id !== activeId
+    definition.pane.hidden = definition.id !== chosen().id
   }
 
   /*
@@ -267,7 +298,7 @@ export function installLeftPanel(context: EditorContext): void {
    * helper's first-placement guard, so the initial position is a jump and every
    * one after it is a move.
    */
-  requestAnimationFrame(() => pill.track(buttons.get(activeId)))
+  requestAnimationFrame(() => pill.track(buttons.get(chosen().id)))
 
   /**
    * Switching tabs updates the tab you switch TO, and only that one.
@@ -279,18 +310,16 @@ export function installLeftPanel(context: EditorContext): void {
    * every selection change.
    */
   function activate(id: string): void {
-    activeId = id
-    /*
-     * Published, so the keyboard can ask for a tab without reaching into this
-     * closure — the same contract `panels/inspector/index.ts` keeps for its own
-     * strip, and the shortcut layer is the caller.
-     *
-     * Written on every switch and not only on a user click, because the store
-     * is the record of WHICH TAB IS SHOWING; a switch this function made for
-     * any other reason is still a switch. Guarded on inequality so the write
-     * that comes back through the subscription below cannot loop.
-     */
+    // The store is the record of which tab is showing, so a click is a write
+    // and the subscription below does the showing. A click on the tab already
+    // showing writes nothing and is shown again, which re-reads it.
     if (context.getState().leftTab !== id) context.setState({ leftTab: id })
+    else show()
+  }
+
+  /** Paints the strip and the panes from the store, and re-reads the tab it shows. */
+  function show(): void {
+    const id = chosen().id
     for (const definition of tabs) {
       const selected = definition.id === id
       buttons.get(definition.id)?.setAttribute("aria-selected", String(selected))
@@ -312,7 +341,7 @@ export function installLeftPanel(context: EditorContext): void {
     // holds. Nothing here is async — the scroll is synchronous and `nearest`
     // usually does nothing at all — so this is still one frame.
     pill.track(buttons.get(id))
-    tabs.find((definition) => definition.id === id)?.update()
+    chosen().update()
   }
 
   let scheduled = 0
@@ -320,7 +349,8 @@ export function installLeftPanel(context: EditorContext): void {
   let owedFull = false
   /** An update skipped while the panel was closed, paid when it opens. */
   let owedOnShow = false
-  const offScreen = (state = context.getState()) => !state.layersOpen || state.chromeHidden
+  // Tab-agnostic on purpose: whichever tab is chosen gets the owed update.
+  const offScreen = (state = context.getState()) => !leftPanelShown(state)
   const invalidate = (selectionOnly = false) => {
     if (!selectionOnly) owedFull = true
     if (scheduled) return
@@ -332,7 +362,7 @@ export function installLeftPanel(context: EditorContext): void {
       }
       const full = owedFull
       owedFull = false
-      tabs.find((definition) => definition.id === activeId)?.update(!full)
+      chosen().update(!full)
     })
   }
 
@@ -360,17 +390,14 @@ export function installLeftPanel(context: EditorContext): void {
   })
 
   /*
-   * The other direction: something else asked for a tab.
-   *
-   * Only the keyboard does today, and the guard is the same one the inspector's
-   * strip uses — act on the value only when it names a tab we are not already
-   * showing, so `activate`'s own write cannot come back round and re-enter.
-   * An unknown id is ignored rather than blanking the panel; the store's type
-   * is `string` precisely because this panel owns the list.
+   * Every write of `leftTab` — this strip's clicks, the ⌥ keys, the
+   * inspector's "N app controls" button, the layer header's "Show in layers" —
+   * is shown from here. An unknown id shows Layers rather than blanking the
+   * panel; the store's type is `string` precisely because this panel owns the
+   * list.
    */
   context.subscribe((next, previous) => {
-    if (next.leftTab === previous.leftTab || next.leftTab === activeId) return
-    if (tabs.some((definition) => definition.id === next.leftTab)) activate(next.leftTab)
+    if (next.leftTab !== previous.leftTab) show()
   })
 
   /*
@@ -400,11 +427,9 @@ export function installLeftPanel(context: EditorContext): void {
     )
   })
 
-  // Every pane once at boot, so the tab you switch to before the first write is
-  // not empty. After this only the visible one is kept current.
-  // Only the tab on screen is built at boot; the other is built by `activate`
-  // the moment it is chosen, before that frame paints — the inspector's rule.
+  // Only the tab on screen is built at boot; the other is built by `show` the
+  // moment it is chosen, before that frame paints — the inspector's rule.
   // Building Design options here read the host's whole control inventory on
   // every page load, for a pane most sessions never open.
-  tabs.find((definition) => definition.id === activeId)?.update()
+  chosen().update()
 }

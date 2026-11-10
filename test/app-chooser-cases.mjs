@@ -273,7 +273,7 @@ const RUNNING_APPS_CACHE = "designlayer.running-apps"
  */
 const server = {
   /** What `GET {apiBase}/apps` answers with, or a thrown request. */
-  apps: { chooser: true, apps: clone(APPS) },
+  apps: { apps: clone(APPS) },
   appsUnreachable: false,
   /** What `POST {apiBase}/apps/switch` answers with. */
   switch: { ok: true, status: 200, body: { ok: true, id: "e2", existing: false } },
@@ -292,7 +292,7 @@ const server = {
   chooserMalformed: false,
   calls: [],
   reset() {
-    server.apps = { chooser: true, apps: clone(APPS) }
+    server.apps = { apps: clone(APPS) }
     server.appsUnreachable = false
     server.switch = { ok: true, status: 200, body: { ok: true, id: "e2", existing: false } }
     server.switchUnreachable = false
@@ -1484,9 +1484,13 @@ await check("a dropped switch request is reported and goes nowhere", async () =>
 
 /*
  * This editor keeps running while the other one starts, so the menu holding
- * the waiting note closes like any menu. The wait goes on behind it, a reopen
- * shows the note rather than rows that cannot be pressed, and the page still
- * goes once the editor is ready.
+ * the waiting note closes like any menu. The wait goes on behind it, and the
+ * page still goes once the editor is ready.
+ *
+ * A reopen during the wait shows the sentence AND the list. It used to show
+ * the sentence alone, so for up to two minutes there was no way to pick
+ * anything else, and the page then left for an app the reader may have long
+ * stopped wanting. The app being started keeps its row, dead, saying so.
  */
 await check("the waiting note can be dismissed, and the page still goes when ready", async () => {
   server.reset()
@@ -1498,14 +1502,54 @@ await check("the waiting note can be dismissed, and the page still goes when rea
   key("Escape")
   assert.equal(ui.menu.style.display, "none", "Escape did not close a menu over a working editor")
   await opened(ui)
-  assert.deepEqual(ui.rows(), [], "a reopen during the wait offered rows that cannot be pressed")
   assert.match(ui.note().textContent, /Starting docs/)
+  assert.deepEqual(
+    ui.rows().map((row) => row.querySelector(".de-app-menu-name").textContent),
+    ["shop", "docs", "sketch"],
+    "a reopen during the wait offered nothing else to pick"
+  )
+  const starting = ui.rows()[1]
+  assert.equal(starting.querySelector(".de-app-menu-where").textContent, "Starting\u2026")
+  assert.equal(starting.getAttribute("aria-disabled"), "true", "the app being started can be started again")
+  assert.ok(starting.classList.contains("de-app-menu-row--busy"))
+  assert.equal(ui.rows()[2].getAttribute("aria-disabled"), null, "the other apps are dead during the wait")
   pointerDownOn(window.document.getElementById("app"))
   assert.equal(ui.menu.style.display, "none")
 
   server.started = [{ ok: true, status: 200, body: { ready: true, url: "http://localhost:3458/", stopped: null } }]
   await sleep(600)
   assert.deepEqual(navigations, ["http://localhost:3458/"], "a closed menu gave up the wait")
+  ui.destroy()
+  server.reset()
+})
+
+/*
+ * And picking another app during the wait replaces it: the second app is
+ * started, and the first editor coming up afterwards moves the page nowhere.
+ */
+await check("another app picked during the wait replaces it, and the first never opens", async () => {
+  server.reset()
+  const ui = await opened(mount(named))
+  press(ui.rows()[1])
+  await settle()
+  key("Escape")
+  await opened(ui)
+  server.switch = { ok: true, status: 200, body: { ok: true, id: "e3", existing: false } }
+  press(ui.rows()[2])
+  await settle()
+  const posted = server.calls.filter((call) => call.method === "POST" && call.url === `${API}/apps/switch`)
+  assert.deepEqual(posted.map((call) => call.body.url), ["http://127.0.0.1:4200", "http://127.0.0.1:5173"])
+  assert.match(ui.note().textContent, /Starting sketch/)
+  // Whatever the start screen says from here on, only the id the latest
+  // choice was answered with may move the page.
+  server.started = [{ ok: true, status: 200, body: { ready: true, url: "http://localhost:3458/", stopped: null } }]
+  await sleep(600)
+  const polled = server.calls.filter((call) => call.url.startsWith(`${API}/apps/started?`)).map((call) => call.url)
+  assert.ok(polled.length > 0)
+  const afterSwitch = polled.slice(polled.indexOf(`${API}/apps/started?id=e3`))
+  assert.ok(afterSwitch.length > 0, "the second app was never waited for")
+  assert.ok(afterSwitch.every((url) => url.endsWith("id=e3")), "the replaced wait went on polling")
+  assert.equal(navigations.length, 1, "the page went twice")
   ui.destroy()
   server.reset()
 })
@@ -1735,7 +1779,11 @@ console.log("\nRelaying the question to the start screen")
 await check("one editor and no start screen is an empty list, not a missing chooser", async () => {
   server.reset()
   const apps = createAppSwitcher({ chooserUrl: null, editors: () => [] })
-  assert.deepEqual(await apps.list(), { chooser: true, apps: [] })
+  // Whatever else the answer carries (a constant `chooser: true` nothing reads
+  // is on its way out of the server), it is an empty list with no error.
+  const answer = await apps.list()
+  assert.deepEqual(answer.apps, [])
+  assert.equal(answer.error, undefined)
   assert.deepEqual(server.calls, [], "it went looking for a screen that does not exist")
   assert.equal(apps.chooserUrl, null)
 })
@@ -1819,7 +1867,6 @@ for (const [name, arrange] of [
     server.chooserMalformed = false
     arrange()
     const answer = await createAppSwitcher({ chooserUrl: CHOOSER, editors: () => [] }).list()
-    assert.equal(answer.chooser, true, "the session does have a screen; it is just not talking")
     assert.deepEqual(answer.apps, [])
     assert.ok(readsAsASentence(answer.error), `not a sentence: ${answer.error}`)
   })
@@ -2092,9 +2139,9 @@ const EDITOR_ROW = {
 
 await check("an app with an editor of its own is offered, with no start screen in sight", async () => {
   server.reset()
-  // `chooser: true` with no chooser URL anywhere: switching between editors
+  // No chooser URL anywhere: switching between editors
   // needs nothing but their addresses.
-  server.apps = { chooser: true, apps: [clone(EDITOR_ROW)] }
+  server.apps = { apps: [clone(EDITOR_ROW)] }
   const ui = mount(ghost)
   await opened(ui)
   assert.equal(ui.note(), null, "it still claimed there was nothing to switch to")
@@ -2130,7 +2177,7 @@ await check("an app with an editor of its own is offered, with no start screen i
  */
 await check("clicking it moves the page, with no process swapped anywhere", async () => {
   server.reset()
-  server.apps = { chooser: true, apps: [clone(EDITOR_ROW)] }
+  server.apps = { apps: [clone(EDITOR_ROW)] }
   const ui = mount(ghost)
   await opened(ui)
   const before = server.calls.filter((call) => call.method === "POST" && call.url === `${API}/apps/switch`).length
@@ -2158,7 +2205,7 @@ await check("clicking it moves the page, with no process swapped anywhere", asyn
  */
 await check("an editor row lands on its app's last page, not the root", async () => {
   server.reset()
-  server.apps = { chooser: true, apps: [{ ...clone(EDITOR_ROW), page: "/#/orders?tab=open" }] }
+  server.apps = { apps: [{ ...clone(EDITOR_ROW), page: "/#/orders?tab=open" }] }
   const ui = await opened(mount(ghost))
   press(ui.rows()[0])
   await settle()
@@ -2179,7 +2226,7 @@ await check("an editor row lands on its app's last page, not the root", async ()
  */
 await check("an editor row arms with work outstanding, and goes on the second press", async () => {
   server.reset()
-  server.apps = { chooser: true, apps: [clone(EDITOR_ROW)] }
+  server.apps = { apps: [clone(EDITOR_ROW)] }
   const ui = mount(ghost, { pending: true })
   await opened(ui)
   const row = ui.rows()[0]
@@ -2198,7 +2245,7 @@ await check("an editor row arms with work outstanding, and goes on the second pr
 
 await check("an editor row goes on one click when nothing is pending", async () => {
   server.reset()
-  server.apps = { chooser: true, apps: [clone(EDITOR_ROW)] }
+  server.apps = { apps: [clone(EDITOR_ROW)] }
   const ui = await opened(mount(ghost))
   press(ui.rows()[0])
   await settle()
@@ -2220,7 +2267,7 @@ await check("an editor row goes on one click when nothing is pending", async () 
  */
 await check("a row whose editor died between the refresh and the click goes nowhere", async () => {
   server.reset()
-  server.apps = { chooser: true, apps: [clone(EDITOR_ROW)] }
+  server.apps = { apps: [clone(EDITOR_ROW)] }
   const ui = mount(ghost)
   await opened(ui)
 
@@ -2232,7 +2279,7 @@ await check("a row whose editor died between the refresh and the click goes nowh
     if (/^http:\/\/(127\.0\.0\.1|localhost):3464\b/.test(String(input))) throw new Error("Failed to fetch")
     return live(input, init)
   }
-  server.apps = { chooser: true, apps: [] }
+  server.apps = { apps: [] }
   press(ui.rows()[0])
   await settle()
   globalThis.fetch = window.fetch = live
@@ -2249,6 +2296,45 @@ await check("a row whose editor died between the refresh and the click goes nowh
 })
 
 /*
+ * The same death, found while the menu is shut: the reader pressed the row and
+ * dismissed the card before the check came back. The press still has to say
+ * what happened, and the list behind it still has to go back for an answer.
+ */
+await check("an editor that died is said even when the menu closed during the check", async () => {
+  server.reset()
+  server.apps = { apps: [clone(EDITOR_ROW)] }
+  const ui = mount(ghost)
+  await opened(ui)
+
+  let release = () => {}
+  const gate = new Promise((resolve) => (release = resolve))
+  const live = serve
+  globalThis.fetch = window.fetch = async (input, init) => {
+    if (/^http:\/\/(127\.0\.0\.1|localhost):3464\b/.test(String(input))) {
+      await gate
+      throw new Error("Failed to fetch")
+    }
+    return live(input, init)
+  }
+  press(ui.rows()[0])
+  key("Escape")
+  const scansBefore = server.calls.filter((call) => call.url === `${API}/apps`).length
+  release()
+  await settle()
+  globalThis.fetch = window.fetch = live
+
+  assert.deepEqual(navigations, [])
+  assert.equal(ui.toasts.at(-1)?.kind, "error", "the press did nothing anyone could see")
+  assert.match(ui.toasts.at(-1).message, /shop is no longer running\./)
+  assert.ok(
+    server.calls.filter((call) => call.url === `${API}/apps`).length > scansBefore,
+    "the list that held the dead row was not asked for again"
+  )
+  ui.destroy()
+  server.reset()
+})
+
+/*
  * An editor row is switchable whatever else is missing from it. The folder is
  * what the slow path needs in order to start something; this path starts
  * nothing, so a row with no project root behind it is still a live address.
@@ -2256,7 +2342,6 @@ await check("a row whose editor died between the refresh and the click goes nowh
 await check("an editor row with no project folder is still somewhere to go", async () => {
   server.reset()
   server.apps = {
-    chooser: true,
     apps: [{ ...clone(EDITOR_ROW), projectRoot: null, packageName: null, title: "Shop" }],
   }
   const ui = mount(ghost)
@@ -2295,7 +2380,7 @@ async function inDeskFrame(fn) {
 await check("in the Mac app an editor row asks the desk to show it, and does not navigate", () =>
   inDeskFrame(async () => {
     server.reset()
-    server.apps = { chooser: true, apps: [{ ...clone(EDITOR_ROW), page: "/#/orders" }] }
+    server.apps = { apps: [{ ...clone(EDITOR_ROW), page: "/#/orders" }] }
     const ui = await opened(mount(inDesk))
     deskPosts.length = 0
     press(ui.rows()[0])
@@ -2338,7 +2423,7 @@ await check("in the Mac app a started editor is handed to the desk when ready", 
  */
 await check("outside the Mac app the same session navigates and posts nothing", async () => {
   server.reset()
-  server.apps = { chooser: true, apps: [clone(EDITOR_ROW)] }
+  server.apps = { apps: [clone(EDITOR_ROW)] }
   const ui = await opened(mount(inDesk))
   deskPosts.length = 0
   press(ui.rows()[0])
@@ -2361,7 +2446,7 @@ const deskGoes = () =>
 await check("in the Mac app no row arms, because this tab stays", () =>
   inDeskFrame(async () => {
     server.reset()
-    server.apps = { chooser: true, apps: [clone(EDITOR_ROW)] }
+    server.apps = { apps: [clone(EDITOR_ROW)] }
     const editorRow = await opened(mount(inDesk, { pending: true }))
     press(editorRow.rows()[0])
     await settle()
@@ -2432,7 +2517,7 @@ const deskMessages = () => deskPosts.filter((post) => String(post.message?.type)
 await check("a page that frames the editor and names the frame like the desk is told nothing", () =>
   framedBy("https://example.com", "designlayer-desk:x", async () => {
     server.reset()
-    server.apps = { chooser: true, apps: [clone(EDITOR_ROW)] }
+    server.apps = { apps: [clone(EDITOR_ROW)] }
     const ui = await opened(mount(inDesk, { pending: true }))
     assert.deepEqual(deskMessages(), [], "the app's name and page went to a page that is not the desk")
     // To everyone else this is a browser tab, so the row arms and then navigates.
@@ -2467,7 +2552,7 @@ await check("another loopback port is not the desk either", () =>
 await check("the desk on either loopback spelling is the desk", async () => {
   await framedBy(NEW_DESK, "designlayer-desk:1", async () => {
     server.reset()
-    server.apps = { chooser: true, apps: [clone(EDITOR_ROW)] }
+    server.apps = { apps: [clone(EDITOR_ROW)] }
     const ui = await opened(mount(inDesk))
     assert.deepEqual(deskMessages()[0], {
       message: { type: "designlayer-desk:showing", name: "shop-web", page: "/" },
@@ -2542,7 +2627,6 @@ await check("it still asks, and a list that really changed is redrawn", async ()
 
   const ui = mount(named)
   server.apps = {
-    chooser: true,
     apps: [
       clone(APPS[0]),
       { port: 7777, url: "http://127.0.0.1:7777", title: "Just started", projectRoot: "/work/new", packageName: "brand-new" },
@@ -2649,7 +2733,7 @@ await check("a failed refresh keeps the list rather than replacing it with an ap
  */
 await check("an error is never what the next open starts from", async () => {
   server.reset()
-  server.apps = { chooser: true, apps: [], error: "The start screen did not answer." }
+  server.apps = { apps: [], error: "The start screen did not answer." }
   const ui = mount(named)
   await opened(ui)
   assert.match(ui.note().textContent, /did not answer/)
@@ -2705,7 +2789,6 @@ console.log("\nA running app with no project folder behind it")
 const unplacedServer = () => {
   server.reset()
   server.apps = {
-    chooser: true,
     apps: [
       { ...clone(APPS[0]) },
       { port: 9100, url: "http://127.0.0.1:9100", title: "Nameless", projectRoot: null, packageName: null },
@@ -2937,6 +3020,104 @@ await check("a switch that destroys the focused row hands focus to the explanati
     "a reader looking at the canvas was dragged back into the menu"
   )
   elsewhere.destroy()
+  server.reset()
+})
+
+// ── What a switch leaves behind ────────────────────────────────────────────
+
+console.log("\nWhat a switch leaves behind")
+
+/*
+ * A menu closed while a switch is asked for, and the switch then refused.
+ *
+ * The close used to park the rows as they stood — dead, and the pressed one
+ * saying "Starting…" — and the refusal could only wake rows in the live menu,
+ * which by then was empty. The reopen put the parked rows back: every one
+ * `aria-disabled`, the menu dead until a scan happened to answer differently.
+ */
+await check("a switch refused while the menu is closed is said, and the rows come back alive", async () => {
+  server.reset()
+  let release = () => {}
+  server.gate = new Promise((resolve) => (release = resolve))
+  server.switch = { ok: false, status: 400, body: { ok: false, message: "There is no dev script in that folder." } }
+  // Banked first, so the open draws from the cache and the close has a list to park.
+  await bankAnAnswer()
+  const ui = await opened(mount(named))
+  press(ui.rows()[1])
+  key("Escape")
+  release()
+  server.gate = null
+  await settle()
+  assert.equal(ui.toasts.at(-1).message, "There is no dev script in that folder.")
+  assert.equal(ui.toasts.at(-1).kind, "error")
+
+  await opened(ui)
+  assert.equal(ui.rows().length, 3)
+  assert.deepEqual(
+    ui.rows().map((row) => [row.classList.contains("de-app-menu-row--busy"), row.getAttribute("aria-disabled")]),
+    [[false, null], [false, null], [false, null]],
+    "the reopened rows are still dead from the refused switch"
+  )
+  assert.equal(ui.rows()[1].querySelector(".de-app-menu-where").textContent, "4200")
+  assert.equal(ui.rows()[1].getAttribute("data-de-switching"), null)
+  ui.destroy()
+  server.reset()
+})
+
+/*
+ * The list a refresh drew is the list a close parks, under its own signature.
+ *
+ * A refresh used to draw without recording what it drew, so the close parked
+ * the new rows under the OLD answer's signature. When the machine went back to
+ * the old answer, the reopen matched that signature and put back rows for an
+ * app that had stopped — drawn as if current, and the revalidate threw the true
+ * answer away as unchanged.
+ */
+await check("a reopen never shows the rows of an answer the machine has moved on from", async () => {
+  server.reset()
+  const before = clone(APPS)
+  const after = [...clone(APPS), { port: 6006, url: "http://127.0.0.1:6006", title: "", projectRoot: "/work/storybook", packageName: null }]
+  server.apps = { apps: before }
+  await bankAnAnswer()
+  server.apps = { apps: after }
+  await sleep(1600)
+  const ui = mount(named)
+  await opened(ui)
+  assert.equal(ui.rows().length, 4, "the refresh did not draw the new list")
+  key("Escape")
+  server.apps = { apps: before }
+  await sleep(1600)
+  ui.trigger.dispatchEvent(new window.MouseEvent("pointerenter"))
+  await settle()
+  await opened(ui)
+  assert.deepEqual(
+    ui.rows().map((row) => row.querySelector(".de-app-menu-name").textContent),
+    ["shop", "docs", "sketch"],
+    "the menu reopened onto rows for an app that is no longer running"
+  )
+  ui.destroy()
+  server.reset()
+})
+
+/*
+ * A double-click is one gesture. Its second click landed on the row the first
+ * had just armed and counted as the confirmation, so the warning that asks for
+ * two deliberate presses could be passed with one reflexive one.
+ */
+await check("a double-click arms the row and does not confirm it", async () => {
+  server.reset()
+  const ui = await opened(mount(named, { pending: true }))
+  const row = ui.rows()[1]
+  row.dispatchEvent(new window.MouseEvent("click", { bubbles: true, detail: 1 }))
+  row.dispatchEvent(new window.MouseEvent("click", { bubbles: true, detail: 2 }))
+  await settle()
+  const posts = () => server.calls.filter((call) => call.method === "POST" && call.url === `${API}/apps/switch`).length
+  assert.equal(posts(), 0, "a double-click passed the confirm")
+  assert.ok(row.classList.contains("de-app-menu-row--danger"), "the double-click disarmed the row")
+  press(row)
+  await settle()
+  assert.equal(posts(), 1, "a deliberate second press after it did not go")
+  ui.destroy()
   server.reset()
 })
 
