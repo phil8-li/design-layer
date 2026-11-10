@@ -42,17 +42,22 @@
  */
 
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 
 import { normalizeDesignSystemManifest } from "../server/design-system-manifest.mjs"
+import { parseUrlLibrary } from "../server/library-url.mjs"
 import {
+  CATALOG_READER_VERSION,
   LIBRARY_SOURCE_KINDS,
+  describeCatalog,
   describeLibrary,
   detectLibraryKind,
   libraryCounts,
   libraryId,
   parseLibrary,
+  readLibraryText,
 } from "../server/library-sources.mjs"
 
 import { PACKAGE_DIR } from "./host.mjs"
@@ -1841,8 +1846,8 @@ check("counts are derived from the catalog, including the drawings", () => {
   assert.equal(libraryCounts(meridian).colors, 2)
 })
 
-check("the description names the biggest groups, at most three of them", () => {
-  const line = describeLibrary("css", nimbus)
+check("the description names the first three groups that have anything in them", () => {
+  const line = describeCatalog(nimbus)
   assert.equal(typeof line, "string")
   assert.ok(line.length > 0, "a library with seven populated groups described itself as nothing")
   assert.ok(
@@ -1850,7 +1855,11 @@ check("the description names the biggest groups, at most three of them", () => {
     `"${line}" names more than three groups, which does not fit a 260px card`
   )
   assert.match(line, /3 colou?rs/)
-  assert.equal(describeLibrary("icons", glyphs), "2 icons")
+  assert.equal(describeCatalog(glyphs), "2 icons")
+  // Fixed group order, not size: colours lead whatever else outnumbers them.
+  assert.match(line, /^3 colou?rs · /)
+  // The store's older call, kind first, says the same thing.
+  assert.equal(describeLibrary("css", nimbus), line)
 })
 
 check("one of something is not one somethings", () => {
@@ -1858,9 +1867,9 @@ check("one of something is not one somethings", () => {
     "icons",
     JSON.stringify({ dot: { nodes: [["circle", { cx: "12", cy: "12", r: "2" }]] } })
   )
-  assert.equal(describeLibrary("icons", one), "1 icon")
+  assert.equal(describeCatalog(one), "1 icon")
   const colour = parseLibrary("css", ":root { --color-only: #fff; }")
-  assert.match(describeLibrary("css", colour), /^1 colou?r$/)
+  assert.match(describeCatalog(colour), /^1 colou?r$/)
 })
 
 // ── Refusal ────────────────────────────────────────────────────────────────
@@ -1901,6 +1910,237 @@ check("a kind nobody defined throws instead of guessing one", () => {
   assert.throws(() => parseLibrary("sketch", THEME))
   assert.throws(() => parseLibrary(null, THEME))
 })
+
+// ── Hostile input ──────────────────────────────────────────────────────────
+
+console.log("\nA file nobody vetted costs time in proportion to its size")
+
+/**
+ * Runs `fn` and fails when it takes longer than `limitMs`. The limits are a
+ * hundred times what these inputs take after the fix and a hundredth of what
+ * they took before, so a slow CI machine passes and a regression does not.
+ */
+function within(limitMs, label, fn) {
+  const started = performance.now()
+  const result = fn()
+  const took = performance.now() - started
+  assert.ok(took < limitMs, `${label} took ${Math.round(took)}ms (limit ${limitMs}ms)`)
+  return result
+}
+
+/*
+ * The census input: eight levels of aliases, each naming the level below
+ * twelve times. 1 KB of CSS that took 9.9 s and 2.4 GB to parse, because every
+ * mention of a variable was settled again from scratch and the settled text
+ * grew twelvefold per level.
+ */
+check("a self-multiplying alias chain is refused quickly, and the rest of the file still reads", () => {
+  let css = ":root{--l0: 1px;"
+  for (let level = 1; level <= 8; level += 1) {
+    css += `--l${level}: ${Array(12).fill(`var(--l${level - 1})`).join(" ")};`
+  }
+  css += "--q-color:#fff;--r-color:#000;}"
+  assert.ok(css.length < 1100)
+  const catalog = within(2000, "the alias fan-out", () => parseLibrary("css", css))
+  assert.deepEqual(catalog.colors.map((token) => token.cssVar), ["--q-color", "--r-color"])
+  // A level small enough to settle still does.
+  const small = parseLibrary("css", ":root{--a: 4px; --space-pair: var(--a) var(--a); --space-one: var(--a);}")
+  assert.equal(small.spacing.find((token) => token.cssVar === "--space-one")?.values.default, 4)
+})
+
+check("a long run of digits in a value is read in linear time", () => {
+  // JSON, so the digits reach the number patterns: the stylesheet lexer drops
+  // a value this long before any pattern sees it.
+  const digits = "1".repeat(100_000)
+  const file = JSON.stringify({
+    space: { a: { $value: `${digits}x`, $type: "dimension" }, b: { $value: "4px", $type: "dimension" } },
+    color: { c: { $value: `${digits}%`, $type: "color" } },
+    type: { d: { $value: { fontSize: "16px", lineHeight: `${digits}%`, letterSpacing: `${digits}q` }, $type: "typography" } },
+  })
+  const catalog = within(1000, "100,000 digits", () => parseLibrary("tokens", file))
+  assert.deepEqual(catalog.spacing.map((token) => token.name), ["space/b"])
+  within(1000, "100,000 digits in a stylesheet", () =>
+    parseLibrary("css", `:root{--a-color:#fff;--b-color:#000;--space-1:${digits}x;--shadow-x:${digits}px 1px;}`)
+  )
+})
+
+check("a value or a selector too long to be a token is not read", () => {
+  const long = `${"a".repeat(2100)}`
+  const catalog = parseLibrary("css", `:root{--a-color:#fff;--b-font:${long};}`)
+  assert.deepEqual(catalog.colors.map((token) => token.cssVar), ["--a-color"])
+  // An overlong selector still closes its block, so what follows is read.
+  const after = parseLibrary("css", `.${"x".repeat(5000)}{--z-color:#111;}:root{--a-color:#fff;}`)
+  assert.deepEqual(after.colors.map((token) => token.cssVar), ["--a-color"])
+})
+
+/*
+ * The qualifier pattern behind theme detection read `:a(b)` two ways, so a
+ * selector of thirty of them that failed at the end was tried 2^30 ways —
+ * twenty seconds from 150 characters. Found by the lane that fixed the
+ * patterns the census listed; the census had not listed this one.
+ */
+check("a selector of many pseudo-classes is judged in linear time", () => {
+  const selector = ":root" + ":a(b)".repeat(40) + " .x"
+  within(1000, "40 pseudo-classes", () => parseLibrary("css", `${selector}{--a-color:#fff;}:root{--b-color:#000;}`))
+  const themed = parseLibrary("css", ":root{--a-color:#fff;}:root:not(.x)[data-theme='y']{--b-color:#000;}")
+  assert.deepEqual(themed.colors.map((token) => token.cssVar).sort(), ["--a-color", "--b-color"])
+  const named = ".theme" + "theme".repeat(8000) + "!"
+  within(1000, "a long theme class", () => parseLibrary("css", `:root{--a-color:#fff;}${named}{--x-color:#fff;}`))
+})
+
+check("unclosed comments and runs of hyphens cost one pass", () => {
+  const openers = "/*".repeat(100_000)
+  within(1000, "100,000 unclosed comments", () => {
+    assert.throws(() => parseLibrary("css", openers))
+    detectLibraryKind("x.css", openers)
+  })
+  const hyphens = "-".repeat(200_000)
+  within(1000, "a run of 200,000 hyphens", () => detectLibraryKind("x.css", hyphens))
+  within(1000, "unclosed @property blocks", () =>
+    parseLibrary("css", `:root{--a-color:#fff;}${"@property --x {".repeat(20_000)}`)
+  )
+  // A closed comment is still removed, and an unclosed one is still left.
+  const read = parseLibrary("css", ":root{/* --gone-color: #000; */--a-color:#fff;}")
+  assert.deepEqual(read.colors.map((token) => token.cssVar), ["--a-color"])
+})
+
+check("a stylesheet of many half-finished type families is read in linear time", () => {
+  // Leadings with no size beside them: each family is released, and releasing
+  // one rescanned every other family — 20,000 of them took nine seconds.
+  const css = ":root{" + Array.from({ length: 20_000 }, (_, index) => `--line-height-x${index}:20px`).join(";") + ";--a-color:#fff}"
+  const catalog = within(2000, "20,000 leading-only families", () => parseLibrary("css", css))
+  assert.deepEqual(catalog.colors.map((token) => token.cssVar), ["--a-color"])
+})
+
+check("a token file stops at the leaf ceiling", () => {
+  const flat = {}
+  for (let index = 0; index < 20_000; index += 1) flat[`c${index}`] = { $value: "#123456", $type: "color" }
+  assert.equal(parseLibrary("tokens", JSON.stringify(flat)).colors.length, 5000)
+  const plain = { color: {} }
+  for (let index = 0; index < 20_000; index += 1) plain.color[`c${index}`] = "#123456"
+  assert.equal(parseLibrary("tokens", JSON.stringify(plain)).colors.length, 5000)
+})
+
+check("a keyword font weight on a custom-property text style is read", () => {
+  const catalog = parseLibrary(
+    "css",
+    ":root{--font-size-body:16px;--line-height-body:24px;--font-weight-body:bold;--a-color:#fff}" +
+      ".x-cap{font-size:12px;line-height:16px;font-weight:semibold}"
+  )
+  const weights = Object.fromEntries(catalog.textStyles.map((style) => [style.name, style.values.default.fontWeight]))
+  assert.deepEqual(weights, { body: 700, "x-cap": 600 })
+})
+
+check("detect-and-parse reads a file once and agrees with the two steps it replaces", () => {
+  for (const [file, text] of [["m.json", MANIFEST], ["t.json", TOKENS], ["i.json", ICONS], ["theme.css", THEME]]) {
+    const read = readLibraryText(file, text, { name: "N" })
+    const kind = detectLibraryKind(file, text)
+    assert.equal(read.kind, kind)
+    assert.deepEqual(read.catalog, parseLibrary(kind, text, { name: "N" }))
+  }
+  assert.equal(readLibraryText("x.json", '{"name":"pkg","version":"1.0.0"}'), null)
+})
+
+// ── The reader version ────────────────────────────────────────────────────
+
+console.log("\nA change to the reading rules bumps the reader version")
+
+/**
+ * What the reading rules make of fixed inputs, as one hash, and the reader
+ * version it was taken at.
+ *
+ * A URL library's catalog is cached and only re-read when
+ * `CATALOG_READER_VERSION` moves, so a rule change shipped without a bump
+ * leaves every installed URL library on the old reading with nothing to say
+ * so. This turns that memory into a failing check. The inputs cover both rule
+ * sources: the parsers behind `library-sources.mjs`, and the URL reader that
+ * decides which documents are read and how they merge.
+ *
+ * When this fails on purpose: bump the version, then set both fields to what
+ * the failure message prints.
+ */
+const READER_FINGERPRINT = { version: 5, hash: "bfe3c113c1d09318" }
+
+/** A site served from a map of URL to `[status, body, headers]`; 404 for anything else. */
+function site(routes) {
+  return {
+    fetchImpl: async (url) => {
+      const [status, body, headers] = routes[String(url)] ?? [404, "", {}]
+      return { status, headers: new Headers(headers ?? {}), text: async () => body }
+    },
+    runHelper: async () => null,
+  }
+}
+
+async function readerFingerprint() {
+  const catalogs = [
+    parseLibrary("manifest", MANIFEST),
+    parseLibrary("tokens", TOKENS),
+    parseLibrary("icons", ICONS),
+    parseLibrary("css", THEME),
+    parseLibrary(
+      "css",
+      ":root{--font-size-body:16px;--line-height-body:1.5;--font-weight-body:bold;--letter-spacing-body:-0.01em;" +
+        "--brand-color:#123;--space-2:calc(var(--space-1) * 2);--space-1:4px;--shadow-md:0 1px var(--blur) #000;--blur:3px}" +
+        ".dark{--brand-color:#456}@media (prefers-color-scheme: dark){:root{--surface-color:#000}}" +
+        ".x-body{font-size:15px;line-height:20px;font-weight:400}"
+    ),
+  ]
+  const html = (body) => [200, `<!doctype html><html><head>${body}</head><body></body></html>`, { "content-type": "text/html" }]
+  const css = (body) => [200, body, { "content-type": "text/css" }]
+  const json = (body) => [200, JSON.stringify(body), { "content-type": "application/json" }]
+  const reads = [
+    ["https://sb.example.com/kit/button", {
+      "https://sb.example.com/kit/index.json": json({ entries: { a: { title: "Kit/Button", name: "Primary", type: "story" } } }),
+    }],
+    ["https://cdn.example.com/tokens.css", { "https://cdn.example.com/tokens.css": css(THEME) }],
+    ["https://docs.example.com/system/components/chip", {
+      "https://docs.example.com/system/components/chip": html(
+        '<link rel="stylesheet" href="/infima.css"><link rel="preload" as="style" href="/tokens.css"><style>:root{--accent-color:#f0f}</style>'
+      ),
+      "https://docs.example.com/infima.css": css(
+        `:root{${Array.from({ length: 10 }, (_, index) => `--ifm-color-${index}:#00${index}`).join(";")}}`
+      ),
+      "https://docs.example.com/tokens.css": css('@import "./space.css";:root{--brand-color:#123456;--radius-sm:2px}'),
+      "https://docs.example.com/space.css": css(":root{--space-sm:4px;--space-md:8px}"),
+      "https://docs.example.com/system/components/chip/index.json": [302, "", { location: "https://login.example.org/oauth2/authorize?client_id=x&response_type=code" }],
+    }],
+    ["https://walled.example.com/a/b", {
+      "https://walled.example.com/a/b/index.json": [302, "", { location: "https://login.example.org/oauth2/authorize?client_id=x&response_type=code" }],
+      "https://walled.example.com/a/b": html("<title>B</title>"),
+    }],
+  ]
+  for (const [url, routes] of reads) {
+    const { catalog, detail, error, auth, signIn, via } = await parseUrlLibrary(url, site(routes))
+    catalogs.push({ catalog, detail, error, auth: auth ?? null, signIn: signIn ?? null, via: via ?? null })
+  }
+  return createHash("sha256").update(JSON.stringify(catalogs)).digest("hex").slice(0, 16)
+}
+
+{
+  const name = "the catalogs fixed inputs read to match the reader version they were taken at"
+  try {
+    const hash = await readerFingerprint()
+    const fix =
+      `set READER_FINGERPRINT to { version: ${CATALOG_READER_VERSION}, hash: "${hash}" } ` +
+      "in test/library-source-cases.mjs"
+    if (CATALOG_READER_VERSION === READER_FINGERPRINT.version) {
+      assert.equal(
+        hash,
+        READER_FINGERPRINT.hash,
+        "The reading rules changed what fixed inputs read to, and CATALOG_READER_VERSION did not move. " +
+          `Bump it in server/library-sources.mjs, then ${fix}.`
+      )
+    } else {
+      assert.fail(`CATALOG_READER_VERSION moved to ${CATALOG_READER_VERSION}: ${fix}.`)
+    }
+    passed += 1
+    console.log(`  ok   ${name}`)
+  } catch (error) {
+    failed += 1
+    console.log(`  FAIL ${name}\n       ${error.message}`)
+  }
+}
 
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed === 0 ? 0 : 1)
