@@ -38,22 +38,37 @@ export function nthOfType(element: Element): number {
 }
 
 /**
+ * Whether an attribute NAME could have been written by hand, the one rule for
+ * every view that claims to show an element as its source.
+ *
+ * Angular stamps `_nghost-*` / `_ngcontent-*` (style encapsulation, with a hash
+ * that changes on every rebuild), `ng-reflect-*` in dev builds and `ng-version`
+ * on the element it bootstrapped into; this editor stamps its own `data-de-*`.
+ * None appears in a source file. Two filters used to answer this separately and
+ * disagreed: the Code tab carried `data-de-*`, the target dropped no
+ * `ng-version`.
+ */
+export function isAuthoredAttribute(name: string): boolean {
+  if (name.startsWith("_ng") || name.startsWith("ng-reflect-") || name === "ng-version") return false
+  return !name.startsWith("data-de-")
+}
+
+/**
  * Static attributes worth sending, which is to say: the ones that could have
  * been written by hand.
  *
- * `class`, `style` and `id` travel as their own fields. Angular's `_nghost-*` /
- * `_ngcontent-*` markers and `ng-reflect-*`, and this editor's own `data-de-*`,
- * are stamped at runtime and appear in no source file, so matching on them
- * would score every candidate identically — worse than not matching at all,
- * because it turns a clean miss into a tie.
+ * `class`, `style` and `id` travel as their own fields. Matching on a runtime
+ * attribute (see `isAuthoredAttribute`) would score every candidate identically
+ * — worse than not matching at all, because it turns a clean miss into a tie.
+ * A value over 120 characters is left out too: it bloats a descriptor that
+ * can travel in a URL.
  */
 function staticAttributes(element: Element): Record<string, string> {
   const attributes: Record<string, string> = {}
   for (const attribute of Array.from(element.attributes)) {
     const name = attribute.name
     if (name === "class" || name === "style" || name === "id") continue
-    if (name.startsWith("_ng") || name.startsWith("ng-reflect-")) continue
-    if (name.startsWith("data-de-")) continue
+    if (!isAuthoredAttribute(name)) continue
     if (attribute.value.length > 120) continue
     attributes[name] = attribute.value
   }

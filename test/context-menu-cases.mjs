@@ -538,6 +538,22 @@ await check("hiding the editor closes the menu", () => {
   assert.equal(shown, "none", "the menu stayed open over the page after the editor was hidden")
 })
 
+await check("standing the editor down closes the menu: interactive, Notes, canvas view", () => {
+  for (const [down, up] of [
+    [{ interactive: true }, { interactive: false }],
+    [{ annotating: true }, { annotating: false }],
+    [{ canvasView: true }, { canvasView: false }],
+  ]) {
+    reset()
+    rightClick($("buyA"))
+    assert.equal(menu().style.display, "block")
+    setState(down)
+    const shown = menu().style.display
+    setState(up)
+    assert.equal(shown, "none", `the menu stayed open over the page after ${Object.keys(down)[0]}`)
+  }
+})
+
 await check("the menu flips to stay inside the viewport", () => {
   reset()
   rightClick($("buyA"), { clientX: window.innerWidth - 20, clientY: window.innerHeight - 20 })
@@ -552,6 +568,31 @@ await check("right-click in interactive mode leaves the menu shut", () => {
   rightClick($("buyA"))
   assert.equal(menu().style.display, "none")
   setState({ interactive: false })
+})
+
+await check("Copy as code leaves out runtime attributes and keeps authored ones", async () => {
+  reset()
+  // The editor's own `data-de-*` and Angular's encapsulation marker are in the
+  // DOM and in no source file; `aria-label` is what the author wrote.
+  const button = $("plain")
+  button.setAttribute("aria-label", "Go now")
+  button.setAttribute("_ngcontent-abc", "")
+  button.setAttribute("data-de-deleted", "")
+  try {
+    context.selectMany([button])
+    rightClick(button)
+    itemNamed("Copy as code").click()
+    await tick()
+    assert.equal(copied.length, 1)
+    assert.match(copied[0], /aria-label="Go now"/)
+    assert.doesNotMatch(copied[0], /data-de-/, "Copy as code carried the editor's own attribute")
+    assert.doesNotMatch(copied[0], /_ngcontent/, "Copy as code carried Angular's runtime marker")
+  } finally {
+    for (const name of ["aria-label", "_ngcontent-abc", "data-de-deleted"]) button.removeAttribute(name)
+    // Last case: a selection left behind keeps the painter's rest poll (a
+    // 250ms timer) alive, and the process would never exit.
+    reset()
+  }
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)
