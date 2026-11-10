@@ -56,23 +56,68 @@ const FOLDER_HELP = el.folderHelp.textContent
 // running compiles nothing, so that wait says none of it.
 const WAITING_NOTE = el.waitingNote.textContent
 
-let apps = []
+let apps = []      // written only by setApps
 let root = null   // { path, info } — the folder the editor will write source into
 let devScript = null
+// A Start's request is in flight: the button is disabled for it.
 let busy = false
+// A press is being handled, from its first line: the folder lookup it awaits
+// comes before \`busy\`, and a second press in that gap used to start twice.
+let submitting = false
 let typing = 0
 let addressTyping = 0
 // Who put the folder in the field: the address it was looked up for, or null
 // when the user typed it. Only a looked-up folder follows the address.
 let rootFor = null
-// The card's poll while an editor on it is still starting.
-let currentTimer = 0
-// Which wait is current. Every face but the wait bumps it, so a poll left over
-// from a wait the user walked away from can never move the tab later.
-let waitId = 0
+// The latest folder lookup. Each lookup takes the next number, and an answer
+// whose number is no longer the latest is dropped: clicking row A then row B,
+// A's slower answer used to land last and put A's folder beside B's address.
+let lookup = 0
 // A Stop on the wait is in flight: an editor that turns ready meanwhile is not
 // opened, because the user just asked for it to go away.
 let stopping = false
+
+/*
+ * WHICH FACE IS UP. One of:
+ *
+ *   "chooser"  the form: pick a running app, or describe one
+ *   "card"     "Continue editing?", the editors already running
+ *   "waiting"  a Start on its way up
+ *   "lost"     the same wait, after three status reads in a row got no answer
+ *
+ * \`setFace\` is the one writer. It owns the four faces' \`hidden\` flags, the
+ * card's poll, the wait's number and the lost-contact look, so no face leaves
+ * one of them behind for the next:
+ *
+ *   boot --editors running, outside the desk--> card, else chooser
+ *   chooser --Start accepted--> waiting
+ *   card --Open another app, or the last editor stopped--> chooser
+ *   waiting --ready--> the editor (a browser tab leaves; a desk tab: card or chooser)
+ *   waiting --it stopped, or Stop--> chooser
+ *   waiting --three reads unanswered--> lost --an answer again--> waiting
+ *   waiting|lost --Back--> card, else chooser
+ *
+ * \`data-face\` on <main> says which, for a harness or a test; nothing styles it.
+ */
+let face = "chooser"
+// Which wait is current. Every face but the wait bumps it, so a poll left over
+// from a wait the user walked away from can never move the tab later.
+let waitId = 0
+// The card's poll while an editor on it is still starting.
+let currentTimer = 0
+const main = document.querySelector("main")
+
+function setFace(next) {
+  if (next === "chooser" || next === "card") waitId += 1
+  clearTimeout(currentTimer)
+  face = next
+  main.dataset.face = next
+  el.chooseTitle.hidden = next !== "chooser"
+  el.form.hidden = next !== "chooser"
+  el.current.hidden = next !== "card"
+  el.waiting.hidden = next !== "waiting" && next !== "lost"
+  el.progress.classList.toggle("progress--stalled", next === "lost")
+}
 
 /*
  * INSIDE THE MAC APP THIS PAGE IS A HOME TAB, one frame among tabs that each
@@ -387,7 +432,12 @@ async function askServer(path, errorNode, init) {
   return data
 }
 
-function adoptProject(project) {
+/** A token for a folder lookup about to start. See \`lookup\`. */
+const nextLookup = () => ++lookup
+
+/** The folder a lookup found, unless a later lookup or a keystroke has taken over. */
+function adoptProject(token, project) {
+  if (token !== lookup) return false
   root = { path: project.path, info: project }
   // Only when it differs, so confirming what was pasted does not move the caret.
   if (el.path.value !== project.path) el.path.value = project.path
@@ -400,6 +450,17 @@ function adoptProject(project) {
     el.script.append(option)
   }
   if (devScript) el.script.value = devScript
+  return true
+}
+
+/*
+ * The one writer of the list of running apps: the rows, and whether the
+ * screen offers the list as the first of two ways in (\`.has-apps\`).
+ */
+function setApps(list) {
+  apps = list
+  el.apps.replaceChildren(...apps.map(appRow))
+  el.form.classList.toggle("has-apps", apps.length > 0)
 }
 
 /*
@@ -513,6 +574,7 @@ el.apps.addEventListener("keydown", (event) => {
  * reports.
  */
 function forgetProject(app) {
+  nextLookup()
   const had = root !== null || el.path.value.trim() !== ""
   root = null
   devScript = null
@@ -545,10 +607,14 @@ async function chooseApp(app) {
   if (matchedApp() !== app) el.url.value = app.url
   rootFor = portOf(app.url)
   if (app.projectRoot) {
+    const token = nextLookup()
     const data = await askServer("/api/project?path=" + encodeURIComponent(app.projectRoot), el.folderError)
-    if (data) adoptProject(data.project)
+    // Another row, a typed folder, or a typed address took over meanwhile.
+    if (token !== lookup) return false
+    if (data) adoptProject(token, data.project)
   } else forgetProject(app)
   render()
+  return true
 }
 
 /*
@@ -566,11 +632,12 @@ async function followAddress() {
   if (rootFor === null && el.path.value.trim() !== "") return
   const app = matchedApp()
   if (app) return chooseApp(app)
+  const token = nextLookup()
   const data = await askServer("/api/app-folder?url=" + encodeURIComponent(typed), el.folderError)
   // Typed on while that was in flight; the later keystroke owns the field.
-  if (!data || el.url.value.trim() !== typed) return
+  if (!data || token !== lookup || el.url.value.trim() !== typed) return
   rootFor = port
-  if (data.project) adoptProject(data.project)
+  if (data.project) adoptProject(token, data.project)
   else forgetProject({ port, url: "http://127.0.0.1:" + port, title: "" })
   render()
 }
@@ -601,21 +668,24 @@ async function resolveTyped() {
     fail(el.folderError, el.path, "That is not a full path. It should start with / or ~.")
     return
   }
+  const token = nextLookup()
   const data = await askServer("/api/project?path=" + encodeURIComponent(value), el.folderError)
   // Typed on while that was in flight; the later keystroke owns the field.
-  if (!data || el.path.value.trim() !== value) return
+  if (!data || token !== lookup || el.path.value.trim() !== value) return
   if (!data.project.isDirectory) {
     fail(el.folderError, el.path, "No folder at that path. Check the spelling.")
     return
   }
-  adoptProject(data.project)
+  adoptProject(token, data.project)
   render()
 }
 
 el.path.addEventListener("input", () => {
   clearErrors()
   // Anything already adopted is stale the moment the path changes, so the
-  // screen goes back to asking for a folder rather than starting the wrong one.
+  // screen goes back to asking for a folder rather than starting the wrong one,
+  // and a lookup still in flight for a row no longer gets to fill it in.
+  nextLookup()
   root = null
   devScript = null
   rootFor = null
@@ -645,18 +715,8 @@ async function readStatus(id) {
   return response && response.ok ? await response.json().catch(() => null) : null
 }
 
-/*
- * Every editor the server is running. A server that predates the list still
- * reports its one ready editor in \`editing\`, so that answer becomes a list of
- * one with no id, which shows a Continue and no Stop.
- */
-function editorsOf(status) {
-  if (!status) return []
-  if (Array.isArray(status.editors)) return status.editors
-  if (!status.ready) return []
-  const editing = status.editing || {}
-  return [{ id: null, state: "ready", url: status.url, ...editing, name: editing.name || editing.packageName || null }]
-}
+/** Every live editor the server is running: \`editors\` on \`/api/status\`. */
+const editorsOf = (status) => (status && Array.isArray(status.editors) ? status.editors : [])
 
 /*
  * Where an editor's app lives, as one line: its address and its folder.
@@ -755,20 +815,15 @@ function showCurrent(status) {
     const again = item && [...item.querySelectorAll("[data-action]")].find((node) => node.dataset.action === keep.action)
     ;(again || el.currentName).focus()
   }
-  waitId += 1
-  el.chooseTitle.hidden = true
-  el.form.hidden = true
-  el.waiting.hidden = true
-  el.current.hidden = false
-  clearTimeout(currentTimer)
+  setFace("card")
   if (editors.some((editor) => editor.state !== "ready")) currentTimer = setTimeout(refreshCurrent, 1000)
 }
 
 /** The card again, from the server, while it is the face that is up. */
 async function refreshCurrent() {
-  if (el.current.hidden) return
+  if (face !== "card") return
   const status = await readStatus()
-  if (!status || el.current.hidden) return
+  if (!status || face !== "card") return
   if (editorsOf(status).length) showCurrent(status)
   else showChooser()
 }
@@ -797,8 +852,7 @@ async function stopEditor(id, button) {
   show(el.stopped, "")
   show(el.stopped, await askStop(id))
   // The list's markers are about editors, so the stopped one loses its own.
-  apps = apps.map((app) => (app.editor && app.editor.id === id ? { ...app, editor: null } : app))
-  el.apps.replaceChildren(...apps.map(appRow))
+  setApps(apps.map((app) => (app.editor && app.editor.id === id ? { ...app, editor: null } : app)))
   render()
   const status = await readStatus()
   if (editorsOf(status).length) {
@@ -809,12 +863,7 @@ async function stopEditor(id, button) {
 }
 
 function showChooser() {
-  waitId += 1
-  clearTimeout(currentTimer)
-  el.current.hidden = true
-  el.waiting.hidden = true
-  el.chooseTitle.hidden = false
-  el.form.hidden = false
+  setFace("chooser")
   el.url.focus()
 }
 
@@ -872,7 +921,16 @@ el.currentChange.addEventListener("click", () => {
  */
 el.form.addEventListener("submit", async (event) => {
   event.preventDefault()
-  if (busy) return
+  if (busy || submitting) return
+  submitting = true
+  try {
+    await submit()
+  } finally {
+    submitting = false
+  }
+})
+
+async function submit() {
   clearErrors()
   // An address pasted and submitted at once has not had its folder looked up.
   clearTimeout(addressTyping)
@@ -939,7 +997,7 @@ el.form.addEventListener("submit", async (event) => {
   // and the wait below is then only as long as one status read.
   const name = (app && appLabel(app)) || folderOf({ projectRoot: root.path }) || "your app"
   waitForEditor(data && data.id, name, Boolean(data && data.existing), script)
-})
+}
 
 /*
  * A first Next.js compile routinely runs past thirty seconds, so this state has
@@ -952,24 +1010,20 @@ el.form.addEventListener("submit", async (event) => {
  * \`openEditor\`.
  */
 function waitForEditor(id, name, existing, script) {
-  clearTimeout(currentTimer)
-  el.chooseTitle.hidden = true
-  el.form.hidden = true
-  el.current.hidden = true
+  setFace("waiting")
   show(el.stopped, "")
-  el.waiting.hidden = false
-  el.progressText.textContent = existing
+  const heading = existing
     ? "Opening " + name + "…"
     : script
       ? "Starting your app…"
       : "Starting the editor…"
+  el.progressText.textContent = heading
   show(el.waitingNote, existing ? "" : WAITING_NOTE)
   /*
    * Stop is for the editor this press is starting. An editor that was already
-   * running may be open in another tab, and opening it is no reason to end it;
-   * a server that gave no id has nothing to name in the request.
+   * running may be open in another tab, and opening it is no reason to end it.
    */
-  el.waitingStop.hidden = existing || !id
+  el.waitingStop.hidden = existing
   el.waitingStop.disabled = false
   el.waitingStop.dataset.id = id || ""
   el.waitingStop.setAttribute("aria-label", "Stop " + name)
@@ -1014,6 +1068,14 @@ function waitForEditor(id, name, existing, script) {
       return
     }
     misses = data === null ? misses + 1 : 0
+    const slow = Date.now() - startedAt > ${SLOW_MS}
+    // An answer again: the wait was only interrupted, and says so no longer.
+    if (misses === 0 && face === "lost") {
+      setFace("waiting")
+      el.progressText.textContent = heading
+      show(el.stopped, "")
+      show(el.waitingNote, existing ? "" : WAITING_NOTE)
+    }
     /*
      * Contact lost, said where a failure is said and not as a footnote.
      *
@@ -1030,15 +1092,15 @@ function waitForEditor(id, name, existing, script) {
      * is where this screen says what to do about it.
      */
     if (misses >= 3) {
+      setFace("lost")
       el.progressText.textContent = "Lost contact with the editor"
-      el.progress.classList.add("progress--stalled")
       show(el.stopped, LOST_CONTACT)
       // Emptied rather than written: \`LOST_CONTACT\` above already names the
       // terminal and the reload, and this note used to say both again three
       // lines below it. One failure, said once.
       show(el.waitingNote, "")
     }
-    else if (Date.now() - startedAt > ${SLOW_MS}) {
+    else if (slow) {
       show(el.waitingNote, "Still working. A first compile can take several minutes.")
     }
     setTimeout(poll, 500)
@@ -1052,9 +1114,9 @@ function waitForEditor(id, name, existing, script) {
  * Back ends the WAITING and leaves the start alone: the card comes up with the
  * editor still starting on it, and it gains its Continue there when it is
  * ready. The tab no longer moves by itself, because the person pressing this
- * said they wanted to do something else. A server with no editor list cannot
- * show that card, so the chooser comes back with a sentence saying the app may
- * still be starting.
+ * said they wanted to do something else. Inside the desk, where a Home tab
+ * never shows the card, or once the editor has already gone, the chooser comes
+ * back with a sentence saying the app may still be starting.
  */
 el.waitingBack.addEventListener("click", async () => {
   waitId += 1
@@ -1113,8 +1175,7 @@ async function boot() {
    * already taken.
    */
   const scanned = data !== null
-  apps = (data && data.apps) || []
-  el.apps.replaceChildren(...apps.map(appRow))
+  setApps((data && data.apps) || [])
   /*
    * THE SECOND WAY IN IS ONLY AN ALTERNATIVE WHEN THERE IS A FIRST.
    *
@@ -1126,9 +1187,9 @@ async function boot() {
    *
    * It starts off, which is the state the first paint is in: the list is empty
    * and the note says the scan is still running. Turning it on when rows
-   * actually arrive is the same moment the rows appear, so nothing moves twice.
+   * actually arrive (\`setApps\`) is the same moment the rows appear, so nothing
+   * moves twice.
    */
-  el.form.classList.toggle("has-apps", apps.length > 0)
   show(
     el.appsNote,
     apps.length
@@ -1156,12 +1217,13 @@ async function boot() {
      * open there is nothing to add, and the first row is as good as any.
      */
     const first = apps.find((app) => !app.editor) ?? apps[0]
-    await chooseApp(first)
+    const kept = await chooseApp(first)
     // "Choose another row if that is not the one" used to follow this, and the
     // rows it refers to are directly above it, each one a control that says so
     // by being one. What is NOT visible is that the screen chose, so that is
-    // all this says.
-    if (apps.length > 1) show(el.appsNote, "Picked " + appLabel(first) + " for you.")
+    // all this says — and only while its pick stands: a click that landed
+    // first is the user's choice, not the screen's.
+    if (kept && apps.length > 1) show(el.appsNote, "Picked " + appLabel(first) + " for you.")
   } else render()
 }
 
@@ -1170,6 +1232,27 @@ async function boot() {
  * shows what it found and runs the update on one press. The update restarts
  * the server under this page, so the page follows it through the gap and
  * reloads once the server answers with the new commit.
+ *
+ * THE BANNER is one state, worked out by \`bannerOf\` from the server's answer
+ * and the press:
+ *
+ *   "hidden"      nothing to say: up to date, not checked yet, a check that
+ *                 failed (being offline is not news), no updater
+ *   "offered"     an update is available; or blocked, with why and no button
+ *   "failed"      the update failed: its sentence, and Try again
+ *   "updating"    the server says updating (its step); and from the press on,
+ *                 whatever else it says — a check still answering, or the
+ *                 state from before the press — until it says otherwise
+ *   "restarting"  the files are new and the server restarts; the page
+ *                 reloads when the server answers with another commit
+ *
+ *   hidden|offered|failed --press--> updating (the button stays disabled)
+ *   updating --"updated"--> restarting --another commit answers--> reload
+ *   updating|restarting --"error" during the update--> failed (button usable)
+ *   updating --"current" (nothing new after all)--> hidden
+ *
+ * One poll, \`pollUpdate\`: every second while updating or restarting, every
+ * five seconds until the server's first check is in, else every ten minutes.
  */
 const update = {
   root: $("update"), pulse: $("update-pulse"), title: $("update-title-text"), changes: $("update-changes"),
@@ -1179,8 +1262,13 @@ const CHANGES_LISTED = 3
 // The commit this page was served from, once known: the restart is over when
 // the server reports another one.
 let updateFrom = null
-let updateTimer = 0
+// From the press until the reload, a failure, or nothing to update after all.
+let applying = false
 let restarting = false
+let updateTimer = 0
+// Which poll is the loop: a press starts it over, and an older one still
+// waiting on its answer then stops there.
+let updatePoll = 0
 
 async function readUpdate() {
   const response = await fetch("/api/update", { cache: "no-store" }).catch(() => null)
@@ -1190,19 +1278,49 @@ async function readUpdate() {
 
 const plural = (n, one, many) => n + " " + (n === 1 ? one : many)
 
-function showUpdate(status) {
+/** The banner for this answer (null when the server did not answer), or "reload". */
+function bannerOf(status) {
   const state = status && status.state
-  const offered = state === "available" || state === "blocked" || (state === "error" && status.failed === "update")
-  const working = state === "updating" || state === "updated" || restarting
-  update.root.hidden = !offered && !working
+  if (restarting && status && status.running && updateFrom && status.running !== updateFrom) return "reload"
+  if (!restarting && status && status.running) updateFrom = status.running
+  if (state === "updated") {
+    restarting = true
+    return "restarting"
+  }
+  if (state === "updating") return "updating"
+  if (state === "error" && status.failed === "update") {
+    applying = false
+    restarting = false
+    return "failed"
+  }
+  // The server went away, or came back on the same commit: still restarting.
+  if (restarting) return "restarting"
+  if (applying) {
+    // A server that stops answering mid-update is restarting under the page.
+    if (!status) {
+      restarting = true
+      return "restarting"
+    }
+    if (state !== "current" && state !== "error") return "updating"
+    applying = false
+  }
+  if (state === "available" || state === "blocked") return "offered"
+  return "hidden"
+}
+
+function showUpdate(banner, status) {
+  update.root.hidden = banner === "hidden"
   if (update.root.hidden) return
+  const working = banner === "updating" || banner === "restarting"
+  const state = status && status.state
   update.pulse.hidden = !working
   update.actions.hidden = working || state === "blocked"
-  show(update.error, state === "error" && !working ? status.error : "")
+  update.apply.disabled = applying
+  show(update.error, banner === "failed" ? status.error : "")
   update.changes.replaceChildren()
   if (working) {
-    update.title.textContent = state === "updating" ? "Updating DesignLayer" : "Restarting DesignLayer"
-    show(update.note, state === "updating" ? (status.step || "Updating") + "…" : "This page reloads when DesignLayer is back.")
+    update.title.textContent = banner === "updating" ? "Updating DesignLayer" : "Restarting DesignLayer"
+    show(update.note, banner === "updating" ? ((status && status.step) || "Updating") + "…" : "This page reloads when DesignLayer is back.")
     return
   }
   update.title.textContent = "Update available"
@@ -1219,7 +1337,7 @@ function showUpdate(status) {
     item.textContent = "and " + plural(more, "more change", "more changes")
     update.changes.append(item)
   }
-  update.apply.textContent = state === "error" ? "Try again" : "Update and restart"
+  update.apply.textContent = banner === "failed" ? "Try again" : "Update and restart"
   const open = Number(status.openEditors) || 0
   show(
     update.note,
@@ -1231,55 +1349,42 @@ function showUpdate(status) {
   )
 }
 
-/* While an update runs, and through the restart, ask every second. */
-async function followUpdate() {
+async function pollUpdate() {
   clearTimeout(updateTimer)
+  const poll = ++updatePoll
   const status = await readUpdate()
-  if (status && status.running && updateFrom === null) updateFrom = status.running
-  if (restarting && status && status.running && status.running !== updateFrom) {
+  if (poll !== updatePoll) return
+  const banner = bannerOf(status)
+  if (banner === "reload") {
     location.reload()
     return
   }
-  if (status && status.state === "updated") restarting = true
-  // The server went away mid-restart: say so, and keep asking.
-  if (!status && restarting) showUpdate({ state: "updated" })
-  else showUpdate(status)
-  updateTimer = restarting || (status && status.state === "updating") ? setTimeout(followUpdate, 1000) : 0
+  showUpdate(banner, status)
+  const pending = status && (status.state === "idle" || status.state === "checking")
+  const period = banner === "updating" || banner === "restarting" ? 1000 : pending ? 5000 : 10 * 60 * 1000
+  updateTimer = setTimeout(pollUpdate, period)
 }
 
 update.apply.addEventListener("click", async () => {
+  applying = true
   update.apply.disabled = true
   const response = await fetch("/api/update/apply", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: "{}",
   }).catch(() => null)
-  update.apply.disabled = false
   const status = response ? await response.json().catch(() => null) : null
   if (!response || !response.ok || !status) {
+    applying = false
+    update.apply.disabled = false
     show(update.error, (status && status.error) || "Could not start the update. Try again.")
     return
   }
-  updateFrom = status.running || updateFrom
-  showUpdate(status)
-  followUpdate()
+  showUpdate(bannerOf(status), status)
+  pollUpdate()
 })
 
-/*
- * On load, then every ten minutes: the server checks GitHub far less often.
- * Every five seconds while the server's first check is still to come.
- */
-async function watchUpdate() {
-  const status = await readUpdate()
-  if (restarting) return
-  if (status && status.running) updateFrom = status.running
-  showUpdate(status)
-  if (status && (status.state === "updating" || status.state === "updated") && !updateTimer) followUpdate()
-  const pending = status && (status.state === "idle" || status.state === "checking")
-  setTimeout(watchUpdate, pending ? 5000 : 10 * 60 * 1000)
-}
-
-watchUpdate()
+pollUpdate()
 boot()
 `
 

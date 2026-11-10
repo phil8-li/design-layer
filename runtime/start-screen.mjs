@@ -4,39 +4,47 @@
  * Until now the only way in was `designlayer --dev 3000`, so the port, the
  * project root and the dev script all had to be known before anything was on
  * screen. This server is the other order: bind on loopback first, let the page
- * ask what is running and what is on disk, and end with one validated choice.
- * `chosen` IS that handoff — the CLI awaits it, then loads that project's
- * config and boots the proxy.
+ * ask what is running and what is on disk, and hand each validated choice to
+ * the supervisor in cli.mjs, which loads that project's config and boots the
+ * proxy in a child process.
  *
  * One choice used to be all there was: `/api/start` latched shut after the
  * first press and the page redirected to the editor forever after, so the only
  * way to design a different app was to kill the process. The handoff is a
- * sequence now — `nextChoice()` for each choice, `reportReady` and
- * `reportStopped` for what became of it — and this server outlives every editor
- * it hands off to.
+ * sequence now — `nextChoice()` for each choice, `nextStop()` for each Stop,
+ * and `reportReady` and `reportStopped` for what became of each editor — and
+ * this server outlives every editor it hands off to.
  *
  * And several editors run at once, one per app. The supervisor used to run one
  * and kill it on every choice, so opening a second app in a new tab of the Mac
  * app took the first app's editor away from the tab still showing it. Each
  * choice is an editor of its own now, with an id; a choice for an app that
  * already has one returns that one, and only Stop, a crash, or a choice that
- * replaces it (same app port, another folder) ends it.
+ * replaces it (same app port, another folder) ends it. The editor machine is
+ * in `createStartScreen`.
  *
- * The page is untrusted input like any other client, so the refusals on
- * `/api/start` are the safety story of the feature, not a formality: this
- * process rewrites source files and proxies whatever origin it is handed. Each
- * refusal is a sentence, because whoever reads one is looking at a screen.
+ * What a choice is made of, and every refusal of one, is in
+ * runtime/start-choice.mjs.
  */
 
-import fs from "node:fs"
 import { createRequire } from "node:module"
-import os from "node:os"
 import path from "node:path"
 
 import { appName } from "./app-name.mjs"
 import { listEditors } from "./editor-registry.mjs"
 import { lastPage } from "./last-pages.mjs"
-import { DEFAULT_SCAN_PORTS, describeProject, isDirectory, projectRootForPort, scanLocalApps } from "./local-apps.mjs"
+import { DEFAULT_SCAN_PORTS, describeProject, projectRootForPort, scanLocalApps } from "./local-apps.mjs"
+import {
+  badRequest,
+  inBrowser,
+  isLoopbackHost,
+  parseAppUrl,
+  pastedPath,
+  portOfOrigin,
+  realFolder,
+  resolveDevScript,
+  resolveProject,
+} from "./start-choice.mjs"
 import { startScreenPage } from "./start-screen-page.mjs"
 
 /*
@@ -69,60 +77,10 @@ export const PREFERRED_START_SCREEN_PORT = 3455
 const MAX_BODY_BYTES = 16 * 1024
 /** How long one app scan answers repeat asks. See `scanApps`. */
 const SCAN_REUSE_MS = 3000
-
-function badRequest(message, statusCode = 400) {
-  const error = new Error(message)
-  error.statusCode = statusCode
-  return error
-}
-
-/** Takes a bare `host` header as readily as a full origin. */
-function isLoopbackHost(value) {
-  if (typeof value !== "string" || value.length === 0) return false
-  let host
-  try {
-    host = new URL(value.includes("://") ? value : `http://${value}`).hostname.replace(/^\[|\]$/g, "")
-  } catch {
-    return false
-  }
-  return host === "localhost" || host === "127.0.0.1" || host === "::1"
-}
-
-/**
- * The one thing a pasted path may be that `path.isAbsolute` refuses.
- *
- * A path arrives here from a text field, and that field is the only way to name
- * a project the scan did not find for itself. Every other source of a path on
- * this machine — the shell, `pwd`, Finder's Copy as Pathname — writes `~` for
- * the home directory, so a field that rejected it would be rejecting the most
- * likely thing to be typed into it, with nothing else left to try.
- */
-function expandHome(value) {
-  if (typeof value !== "string") return value
-  if (value !== "~" && !value.startsWith("~/")) return value
-  return path.join(os.homedir(), value.slice(1))
-}
-
-/**
- * The other thing a pasted path may be: shell-escaped.
- *
- * Dragging a folder onto a terminal — the most direct way there is to get a
- * path out of the Finder and into a field — writes `IG\ Projects\ Local`, and
- * `\ ` is the shell's escaping, not a folder called `IG\`. Copying the command
- * line of a running dev server produces the same thing. A path that exists
- * exactly as typed always wins, so the rare real backslash in a filename is
- * still reachable; only a path that is otherwise not there is unescaped.
- *
- * Windows paths are exempt, where a backslash IS the separator.
- */
-function unescapePastedPath(value) {
-  if (!value.startsWith("/") || !value.includes("\\") || fs.existsSync(value)) return value
-  return value.replace(/\\(.)/g, "$1")
-}
-
-/** Everything done to a path between the text field and the filesystem. */
-const pastedPath = (value) =>
-  typeof value === "string" ? unescapePastedPath(expandHome(value.trim())) : value
+/** How many editors that ended are remembered, for a tab still polling one. */
+const MAX_ENDED = 50
+/** A moment for the page's next poll to see "updated" before the restart. */
+const RESTART_DELAY_MS = 600
 
 /**
  * Mirrors `isLocalRequest` in server/routes.mjs, including the reason `"null"`
@@ -174,172 +132,6 @@ async function readJsonBody(req) {
   }
 }
 
-function parseAppUrl(value) {
-  if (typeof value !== "string" || value.trim() === "") throw badRequest("Choose an app, or type the address of the one to edit.")
-
-  let parsed
-  try {
-    parsed = new URL(value.trim())
-  } catch {
-    throw badRequest(`"${value.trim()}" is not a valid address. Try http://localhost:3000.`)
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw badRequest(`Use an http:// or https:// address.`)
-  if (!isLoopbackHost(parsed.origin)) {
-    throw badRequest(
-      `Only apps on this machine can be edited: localhost, 127.0.0.1 or ::1.`
-    )
-  }
-  return {
-    appUrl: parsed.origin,
-    appPort: Number(parsed.port) || (parsed.protocol === "https:" ? 443 : 80),
-    appPath: appPathOf(parsed),
-  }
-}
-
-/**
- * The editor's address as a browser should use it: on `localhost`.
- *
- * Apps branch on `location.hostname`: a dev-only sign-in bypass, an auth
- * provider's allowlist, a feature flag, and the usual test is
- * `=== "localhost"`. Served from `127.0.0.1`, such an app showed its signed-out
- * screen inside the editor while the same app in a plain tab showed itself. It
- * did so whether the app was typed, picked from a row, or switched to from the
- * editor's own chooser, so the name is not taken from what was typed: every
- * address this server sends a browser to is on `localhost`. The proxy listens
- * on 127.0.0.1, which `localhost` reaches in every browser.
- */
-function inBrowser(url) {
-  try {
-    const parsed = new URL(url)
-    if (parsed.hostname !== "127.0.0.1") return url
-    parsed.hostname = "localhost"
-    // `href` adds a "/" to a bare origin, and every URL this server reports is
-    // a bare origin with the page put back on after.
-    return parsed.origin
-  } catch {
-    return url
-  }
-}
-
-/**
- * The page half of the address, kept apart from the origin the editor is aimed
- * at.
- *
- * The chooser is where you say which app AND which page, and the two answers
- * have different destinations: the origin picks the child process, the page
- * picks where the browser lands on the proxy that child puts up. Nothing about
- * the child differs by one page — the proxy serves the whole app — so the path
- * never travels with the choice, only alongside it.
- *
- * A bare origin has to stay bare. `pathname` is "/" even for a URL that was
- * typed without one, and turning `http://127.0.0.1:3456` into
- * `http://127.0.0.1:3456/` would change every URL this server has ever
- * reported.
- *
- * The fragment is kept. It never reaches a server, but this path is not for a
- * server: it is where the browser lands, and an app with a hash router keeps
- * its whole page there. Dropping it opened `/#/settings?tab=a` on the app's
- * home page instead.
- */
-function appPathOf(parsed) {
-  const page = `${parsed.pathname}${parsed.search}${parsed.hash}`
-  return page === "/" ? "" : page
-}
-
-/**
- * The vendored CLI also refuses a project without React, but it refuses AFTER
- * boot from inside its own banner. Checking here is the difference between an
- * inline message on the screen and a terminal that simply stops.
- */
-function resolveProject(raw) {
-  if (typeof raw !== "string" || raw.trim() === "") throw badRequest("Confirm the project folder before starting.")
-  const value = pastedPath(raw)
-  if (!path.isAbsolute(value)) throw badRequest(`Enter a full path, like /Users/you/Projects/app.`)
-
-  let projectRoot
-  try {
-    projectRoot = fs.realpathSync(value)
-  } catch (error) {
-    // A protected folder refuses `realpath` along with `stat` while still
-    // opening and reading; the path as pasted is then the best name it has.
-    if (error.code !== "EPERM" || !isDirectory(value)) throw badRequest(`There is no folder at ${value}. Check the path.`)
-    projectRoot = value
-  }
-
-  if (!isDirectory(projectRoot)) throw badRequest(`${value} is a file, not a project folder. Pick the folder that contains it.`)
-
-  let text
-  try {
-    text = fs.readFileSync(path.join(projectRoot, "package.json"), "utf8")
-  } catch {
-    throw badRequest(`No package.json in ${projectRoot}. Pick the folder that contains it.`)
-  }
-  let manifest
-  try {
-    manifest = JSON.parse(text)
-  } catch {
-    throw badRequest(`The package.json in ${projectRoot} is not valid JSON. Fix the file, then try again.`)
-  }
-
-  const dependencies = { ...manifest.dependencies, ...manifest.devDependencies }
-  const name = manifest.name ?? path.basename(projectRoot)
-  /*
-   * A project this editor has a lane for. React was the only answer when this
-   * guard was written, and it stayed the only answer after the Angular lane
-   * landed — so the start screen refused, by name, the exact projects the
-   * editor had just learned to edit. Every other entry point had been taught
-   * about Angular; this one had not, and it is the one a designer uses.
-   *
-   * The two dependencies are the same signals `resolveHostFramework` reads, and
-   * they are checked here rather than delegated because this must fail as a
-   * sentence on the page. Refusing later, inside the child process, reaches the
-   * terminal that nobody running the start screen is looking at.
-   */
-  if (typeof dependencies.react !== "string" && typeof dependencies["@angular/core"] !== "string") {
-    throw badRequest(
-      `${name} does not use React or Angular, the two frameworks the editor supports.`
-    )
-  }
-
-  return { projectRoot, manifest, packageName: name }
-}
-
-/**
- * `describeProject` offers the page a shortlist of likely dev scripts, but that
- * list is a heuristic and this is a guard, so the name is checked against the
- * manifest itself: nothing but a real `npm run` target can be handed on.
- */
-function resolveDevScript(value, projectRoot, manifest) {
-  if (value === null || value === undefined) return null
-  if (typeof value !== "string" || typeof manifest.scripts?.[value] !== "string") {
-    throw badRequest(
-      `No "${value}" script in ${path.basename(projectRoot)}/package.json.`
-    )
-  }
-  return value
-}
-
-/**
- * The endpoint file is written by the launcher, and it is the only thing this
- * server sees of the editor it handed off to on the runs where the launcher is
- * a separate process. A file left by a previous run is indistinguishable from
- * success and the page would redirect to a dead port, so the pid has to be
- * ours.
- *
- * It is the second answer, not the first — see `reportReady`.
- */
-function readStatus(endpointFile) {
-  if (!endpointFile) return { ready: false }
-  let endpoint
-  try {
-    endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8"))
-  } catch {
-    return { ready: false }
-  }
-  if (endpoint?.pid !== process.pid || !endpoint.proxyPort) return { ready: false }
-  return { ready: true, url: `http://${LOOPBACK}:${endpoint.proxyPort}` }
-}
-
 /**
  * Things the supervisor has to act on, in order, whenever it next asks.
  *
@@ -379,35 +171,50 @@ function openQueue(closedMessage) {
   }
 }
 
-/** The real folder, for comparing two names of one project. */
-function realFolder(dir) {
-  if (typeof dir !== "string" || dir.length === 0) return null
-  try {
-    return fs.realpathSync(dir)
-  } catch {
-    return dir
-  }
-}
-
-function portOfOrigin(url) {
-  try {
-    const parsed = new URL(url)
-    return Number(parsed.port) || (parsed.protocol === "https:" ? 443 : 80)
-  } catch {
-    return null
-  }
-}
-
 /**
  * Serves the start screen and hands over each choice the user makes.
  *
  * The port defaults to the preferred one rather than to 0, because the caller
  * that matters — the supervisor in cli.mjs — keeps this screen up for the whole
  * session and prints its URL as somewhere to come back to.
+ *
+ * THE EDITORS, by id. Every record carries `state`, an `EditorState`:
+ *
+ *   "starting"  chosen and handed to the supervisor; no proxy yet
+ *   "ready"     its proxy is up (`url`, `editing`)
+ *   "stopping"  Stop, or a choice that replaces it, asked it to go; its
+ *               process may still be running
+ *   "gone"      its process is over, or it never had one
+ *
+ * A stopping or gone record carries `reason`, the sentence a tab still polling
+ * it is told. `transition(id, event)` is the one place a record moves:
+ *
+ *   (a choice)      --------------------> starting
+ *   starting|ready  --ready(url)-------> ready
+ *   starting|ready  --stop(reason)-----> stopping   (Stop, or replaced)
+ *   starting|ready  --exit(reason)-----> gone       (a crash, a failed start)
+ *   stopping        --exit-------------> gone       (keeps the reason it went with)
+ *   stopping|gone   --ready------------> unchanged  (a late "ready" brings nothing back)
+ *
+ * "Live" is starting or ready. Only a live editor is listed, counted, resumed
+ * after a restart, or answers a press for its app. A choice for an app whose
+ * editor is still stopping names that editor in `replaces`, so the supervisor
+ * waits for the old process to exit before it starts the new one: Stop then
+ * Start used to run both at once, on two pairs of ports.
+ *
+ * The supervisor reports the exit of a stopping editor with `reportStopped`.
+ * Until it does (a supervisor that reports only crashes), the record stays
+ * stopping, out of every list, and a new choice for its app still waits on it.
  */
 export async function createStartScreen({
   host = LOOPBACK,
-  port = PREFERRED_START_SCREEN_PORT,
+  /*
+   * The port to step aside from when it is taken. Only tests pass another: a
+   * suite that checked the stepping aside on 3455 itself bound the port the
+   * user's own start screen holds.
+   */
+  preferredPort = PREFERRED_START_SCREEN_PORT,
+  port = preferredPort,
   log = console.log,
   /*
    * Options for the MCP endpoint this screen can serve between apps, or null
@@ -425,7 +232,9 @@ export async function createStartScreen({
    * The updater (runtime/updater.mjs) whose status this screen shows, or null
    * for none. Only the supervisor passes one, with `onRestart`: what to do
    * once an update is on disk. It is called with the editors to start again
-   * after the restart, as `resume` takes them.
+   * after the restart, as `resume` takes them, once per entry into "updated",
+   * and may return a promise; a throw or a rejection is told to the updater
+   * (`restartFailed`), which the page then shows.
    */
   updater = null,
   onRestart = null,
@@ -449,27 +258,20 @@ export async function createStartScreen({
     return mcpHub
   }
 
-  let endpointFile = null
   let closed = false
   /*
-   * Every live editor this screen started, by id, in start order. A record:
-   * { id, state: "starting" | "ready", appUrl, appPort, projectRoot,
-   *   packageName, devScript, path, url, editing }.
+   * Every editor this screen started, by id, in start order: the live ones,
+   * and the last MAX_ENDED that ended. A record:
+   * { id, state, appUrl, appPort, projectRoot, packageName, devScript, path,
+   *   url, editing, reason }.
    *
    * `path` is the page the browser lands on: the page the choice typed, else
    * the page that app was last used on, else "". It lives here rather than
    * travelling to the launcher because the launcher has no use for it: the
    * proxy serves the whole app either way. `url` is the proxy's origin once
    * the editor says it is up.
-   *
-   * This map is also the per-app latch the old global one became: a press for
-   * an app with a record here, starting or ready, is that editor, not a second.
    */
-  const editors = new Map()
-  // Why each editor that is gone went, so a tab still polling it is told.
-  // Bounded: one sentence per editor ever stopped would grow all session.
-  const stoppedReasons = new Map()
-  const MAX_STOPPED = 50
+  const records = new Map()
   /*
    * Every proxy port an editor of this screen has reported, kept after it
    * ends, so the registry's copy of one of ours is never taken for an editor
@@ -485,33 +287,42 @@ export async function createStartScreen({
   let nextId = 1
   const choices = openQueue("The start screen closed before an app was chosen")
   const stops = openQueue("The start screen closed")
-  let resolveChosen
-  let rejectChosen
-  const chosen = new Promise((resolve, reject) => {
-    resolveChosen = resolve
-    rejectChosen = reject
-  })
-  chosen.catch(() => {})
   let reportedCount = 0
 
+  const isLive = (record) => record.state === "starting" || record.state === "ready"
+  const liveRecords = () => [...records.values()].filter(isLive)
+
   function liveCountChanged() {
-    if (editors.size === reportedCount) return
-    reportedCount = editors.size
-    mcpHub?.editorsChanged?.(reportedCount)
-    onEditorsChanged?.(reportedCount)
+    const count = liveRecords().length
+    if (count === reportedCount) return
+    reportedCount = count
+    mcpHub?.editorsChanged?.(count)
+    onEditorsChanged?.(count)
   }
 
-  function rememberStop(id, reason) {
-    stoppedReasons.delete(id)
-    stoppedReasons.set(id, reason)
-    for (const old of [...stoppedReasons.keys()].slice(0, Math.max(0, stoppedReasons.size - MAX_STOPPED))) {
-      stoppedReasons.delete(old)
+  /** The one writer of a record's state. See the table above. False when the event does not apply. */
+  function transition(id, event, { url = null, editing = null, reason = null } = {}) {
+    const record = records.get(id)
+    if (!record) return false
+    if (event === "ready") {
+      if (!isLive(record)) return false
+      record.state = "ready"
+      record.url = url
+      record.editing = editing
+    } else if (event === "stop") {
+      if (!isLive(record)) return false
+      record.state = "stopping"
+      record.reason = reason
+    } else if (event === "exit") {
+      if (record.state === "gone") return false
+      if (record.state !== "stopping") record.reason = reason
+      record.state = "gone"
+    } else {
+      throw new Error(`No editor transition "${event}"`)
     }
-  }
-
-  function endEditor(id, reason) {
-    if (!editors.delete(id)) return false
-    rememberStop(id, reason)
+    // Bounded: one sentence per editor ever ended would grow all session.
+    const ended = [...records.values()].filter((other) => !isLive(other))
+    for (const old of ended.slice(0, Math.max(0, ended.length - MAX_ENDED))) records.delete(old.id)
     liveCountChanged()
     return true
   }
@@ -528,23 +339,17 @@ export async function createStartScreen({
     }
   }
 
-  /** The old one-editor answer, for one editor or for the latest choice. */
-  function statusOf(id, { endpointFallback = false } = {}) {
-    const record = id === null ? null : editors.get(id)
+  /** The old one-editor answer, for one editor. */
+  function statusOf(record) {
     if (record?.state === "ready") {
       return { ready: true, url: browserUrl(record), editing: editingOf(record), stopped: null }
     }
-    // The endpoint file names a port, never a page or an app; it only ever
-    // answered for the one editor of a run, so only the latest choice reads it.
-    const proxy = endpointFallback ? readStatus(endpointFile) : { ready: false }
-    if (proxy.ready) proxy.url = inBrowser(proxy.url) + (record?.path ?? "")
-    const stopped = record || id === null ? null : (stoppedReasons.get(id) ?? null)
-    return { ...proxy, editing: null, stopped }
+    return { ready: false, editing: null, stopped: record && !isLive(record) ? record.reason : null }
   }
 
   /** The editors to start again after a restart, in start order, as `resume` takes them. */
   function resumable() {
-    return [...editors.values()].map((record) => ({
+    return liveRecords().map((record) => ({
       url: record.appUrl + (record.path ?? ""),
       projectRoot: record.projectRoot,
       devScript: record.devScript ?? null,
@@ -573,7 +378,7 @@ export async function createStartScreen({
     const root = realFolder(app.projectRoot)
     const sameRoot = (other) => root === null || realFolder(other) === root
     const landing = (projectRoot) => lastPage({ port: app.port, projectRoot }) ?? ""
-    for (const record of editors.values()) {
+    for (const record of records.values()) {
       if (record.state !== "ready" || record.appPort !== app.port || !sameRoot(record.projectRoot)) continue
       return { id: record.id, url: inBrowser(record.url) + landing(record.projectRoot) }
     }
@@ -672,7 +477,8 @@ export async function createStartScreen({
      * editor's address with its landing page once it is up, else null; a
      * caller handed `id: null` has no editor here to poll, and goes to `url`.
      */
-    const sameApp = [...editors.values()].find(
+    const live = liveRecords()
+    const sameApp = live.find(
       (record) => record.appPort === appPort && realFolder(record.projectRoot) === realFolder(projectRoot)
     )
     if (sameApp) {
@@ -700,18 +506,24 @@ export async function createStartScreen({
 
     // The same port from another folder is another app, and the port can only
     // be proxied for one of them: the old editor is replaced, and only it.
-    const displaced = [...editors.values()].find((record) => record.appPort === appPort)
+    const displaced = live.find((record) => record.appPort === appPort)
     if (displaced) {
-      endEditor(displaced.id, `The editor for ${appName(displaced)} was replaced by ${appName({ projectRoot, packageName })}.`)
+      const queued = displaced.state === "starting"
+      transition(displaced.id, "stop", {
+        reason: `The editor for ${appName(displaced)} was replaced by ${appName({ projectRoot, packageName })}.`,
+      })
       // One still starting may be waiting in the queue, and spawning it only
       // to kill it can start its dev server for nothing. It is cancelled
       // the way Stop cancels it; a spawned one is stopped by either path.
-      if (displaced.state === "starting") stops.push({ id: displaced.id })
+      if (queued) stops.push({ id: displaced.id })
     }
+    // Else an editor of this app's port may still be on its way out (Stop,
+    // then Start again before it exited). The new one waits for it.
+    const stopping = displaced ? null : [...records.values()].findLast((record) => record.state === "stopping" && record.appPort === appPort)
 
     const id = String(nextId++)
-    const choice = { id, appUrl, appPort, projectRoot, devScript, packageName, replaces: displaced?.id ?? null }
-    editors.set(id, {
+    const choice = { id, appUrl, appPort, projectRoot, devScript, packageName, replaces: (displaced ?? stopping)?.id ?? null }
+    records.set(id, {
       id,
       state: "starting",
       appUrl,
@@ -722,21 +534,42 @@ export async function createStartScreen({
       path: appPath || (remembered ?? ""),
       url: null,
       editing: null,
+      reason: null,
     })
     latest = id
     liveCountChanged()
     log(`[designlayer] editing ${appUrl}${appPath} from ${projectRoot}`)
-    resolveChosen(choice)
     choices.push(choice)
     return { ok: true, id, existing: false, replaced: choice.replaces, url: null }
   }
+
+  /*
+   * One restart per entry into "updated", however many presses or tabs asked
+   * for the update: the subscription is the only caller of `onRestart`. A
+   * restart that throws becomes the updater's error, with the reason.
+   */
+  let restartTimer = null
+  let updaterWas = updater?.status().state ?? null
+  const unsubscribe = updater?.onChange((status) => {
+    const entered = status.state === "updated" && updaterWas !== "updated"
+    updaterWas = status.state
+    if (!entered || !onRestart) return
+    log("[designlayer] restarting to run the update")
+    clearTimeout(restartTimer)
+    restartTimer = setTimeout(() => {
+      Promise.resolve()
+        .then(() => onRestart(resumable()))
+        .catch((error) => updater.restartFailed(error?.message ?? String(error)))
+    }, RESTART_DELAY_MS)
+  })
 
   // The page is a pure function of modules already loaded, so it is built once,
   // on the first ask, rather than as ~73KB of template on every load.
   let page = null
 
-  // Read-only and stateless, all of them, except `/api/start` — which is the
-  // point — and the MCP routes at the end, which only an editor can call.
+  // Read-only and stateless, all of them, except `/api/start` and `/api/stop`
+  // — which are the point — the update, and the MCP routes at the end, which
+  // only an editor can call.
   const routes = {
     "GET /": (_req, res) => send(res, 200, "text/html; charset=utf-8", (page ??= startScreenPage())),
     /*
@@ -775,11 +608,14 @@ export async function createStartScreen({
      * is up, what it is editing so a tab that merely arrived here can be told,
      * and the sentence explaining an editor that is gone. `ready`, `url`,
      * `editing` and `stopped` keep the shape they had when there was one
-     * editor, and answer for the most recent choice; `editors` lists them all.
+     * editor, and answer for the most recent choice; `editors` lists the live
+     * ones.
      *
-     * `?id=` asks about one editor. An id this screen does not know — an
-     * editor stopped long ago, or a screen restarted since — answers with a
-     * sentence rather than a 404, so a poller stops instead of retrying.
+     * `?id=` asks about one editor. A stopping editor already answers with
+     * the sentence it was stopped with, as a gone one does. An id this screen
+     * does not know — an editor stopped long ago, or a screen restarted since
+     * — answers with a sentence rather than a 404, so a poller stops instead
+     * of retrying.
      *
      * Every URL is the proxy's origin with the page put back on: this is where
      * the two halves of the typed address meet again, so the tab that presses
@@ -788,8 +624,9 @@ export async function createStartScreen({
     "GET /api/status": (_req, res, url) => {
       const id = url.searchParams.get("id")
       if (id !== null) {
-        if (editors.has(id) || stoppedReasons.has(id)) {
-          const { ready, url: editorUrl, editing, stopped } = statusOf(id)
+        const record = records.get(id)
+        if (record) {
+          const { ready, url: editorUrl, editing, stopped } = statusOf(record)
           sendJson(res, 200, ready ? { ready, url: editorUrl, editing, stopped } : { ready, editing, stopped })
           return
         }
@@ -800,7 +637,8 @@ export async function createStartScreen({
         })
         return
       }
-      sendJson(res, 200, { ...statusOf(latest, { endpointFallback: true }), editors: [...editors.values()].map(editorRow) })
+      const status = statusOf(latest === null ? null : records.get(latest))
+      sendJson(res, 200, { ...status, editors: liveRecords().map(editorRow) })
     },
     "POST /api/start": async (req, res) => {
       const body = await readJsonBody(req)
@@ -809,15 +647,15 @@ export async function createStartScreen({
     },
     /*
      * Stop one editor, and only that one. The supervisor does the killing; the
-     * record goes now, so the editor leaves every list the moment Stop is
-     * pressed rather than when its process gets round to exiting.
+     * record turns "stopping" now, so the editor leaves every list the moment
+     * Stop is pressed rather than when its process gets round to exiting.
      */
     "POST /api/stop": async (req, res) => {
       const body = (await readJsonBody(req)) ?? {}
       const id = typeof body.id === "string" ? body.id : String(body.id ?? "")
-      const record = editors.get(id)
-      if (!record) throw badRequest("No editor with that id is running.", 404)
-      endEditor(id, `The editor for ${appName(record)} was stopped. Choose an app to start again.`)
+      const record = records.get(id)
+      if (!record || !isLive(record)) throw badRequest("No editor with that id is running.", 404)
+      transition(id, "stop", { reason: `The editor for ${appName(record)} was stopped. Choose an app to start again.` })
       log(`[designlayer] stopping the editor for ${appName(record)}`)
       stops.push({ id })
       sendJson(res, 200, { ok: true })
@@ -840,25 +678,18 @@ export async function createStartScreen({
      * updater, which only tests and embedders do.
      */
     "GET /api/update": (_req, res) =>
-      sendJson(res, 200, updater ? { ...updater.status(), openEditors: editors.size } : { state: "off" }),
-    "POST /api/update/check": async (_req, res) => {
-      if (!updater) throw badRequest("This start screen has no updater.", 404)
-      sendJson(res, 200, { ...(await updater.check()), openEditors: editors.size })
-    },
+      sendJson(res, 200, updater ? { ...updater.status(), openEditors: liveRecords().length } : { state: "off" }),
     /*
      * Update, then restart: one press. It answers at once, since an update
-     * takes up to a few minutes; the page follows along on GET /api/update,
-     * and through the restart, when this server is briefly gone.
+     * takes up to a few minutes, and the answer already says "updating"; the
+     * page follows along on GET /api/update, and through the restart, when
+     * this server is briefly gone. The restart itself is the subscription
+     * above, so a second press, or a second tab, is the same update.
      */
     "POST /api/update/apply": (_req, res) => {
       if (!updater) throw badRequest("This start screen has no updater.", 404)
-      void updater.apply().then((status) => {
-        if (status.state !== "updated" || !onRestart) return
-        log("[designlayer] restarting to run the update")
-        // A moment for the page's next poll to see "updated" before the restart.
-        setTimeout(() => onRestart(resumable()), 600)
-      })
-      sendJson(res, 202, { ...updater.status(), openEditors: editors.size })
+      void updater.apply()
+      sendJson(res, 202, { ...updater.status(), openEditors: liveRecords().length })
     },
   }
 
@@ -919,7 +750,7 @@ export async function createStartScreen({
     // Only the preferred port steps aside. A port asked for by name is a port
     // somebody is pointing something else at, so a silent move would be worse
     // than the refusal.
-    if (error.code !== "EADDRINUSE" || port !== PREFERRED_START_SCREEN_PORT) throw error
+    if (error.code !== "EADDRINUSE" || port !== preferredPort) throw error
     await listenOn(0)
   }
 
@@ -927,7 +758,6 @@ export async function createStartScreen({
 
   return {
     url: `http://${host}:${server.address().port}`,
-    chosen,
     /** Handed to each editor this screen starts, so it can reach the routes above. */
     mcpToken: mcpHub?.token ?? null,
 
@@ -936,23 +766,24 @@ export async function createStartScreen({
      * `{ id, appUrl, appPort, projectRoot, devScript, packageName, replaces }`.
      *
      * A press for an app that already has an editor is answered here and never
-     * reaches this queue. `replaces` is the id of the one editor to stop first
-     * (same app port, another folder), or null; no other editor is touched.
-     *
-     * `chosen` is the first choice and keeps its own name, because for the
-     * one-app callers that is the entire handoff. Choices queue, so two presses
-     * that land while the supervisor is busy spawning are both delivered.
+     * reaches this queue. `replaces` is the id of the one editor to stop and
+     * wait for first — same app port, another folder; or an editor of that
+     * port still stopping — or null; no other editor is touched. Choices
+     * queue, so two presses that land while the supervisor is busy spawning
+     * are both delivered.
      */
     nextChoice() {
       return choices.next()
     },
 
     /**
-     * The next editor the user asked to stop with POST /api/stop: `{ id }`.
+     * The next editor the user asked to stop with POST /api/stop, or a
+     * replaced one still starting: `{ id }`.
      *
-     * The record is already gone from this screen when this resolves; the
-     * supervisor's part is to end the process, quietly, since the reason is
-     * already on record. Rejects when the screen closes, like `nextChoice`.
+     * The record is already "stopping" when this resolves; the supervisor's
+     * part is to end the process, quietly, since the reason is already on
+     * record, and then to say so with `reportStopped`. Rejects when the screen
+     * closes, like `nextChoice`.
      */
     nextStop() {
       return stops.next()
@@ -973,76 +804,43 @@ export async function createStartScreen({
       }
     },
 
-    /** Where the launcher will write the proxy's ports, once one exists. */
-    reportEndpointFile(absolutePath) {
-      endpointFile = absolutePath
-    },
-
     /**
-     * The proxy is up, said in memory rather than through the endpoint file.
-     *
-     * The file was never the fact — only a way of carrying it, and one that
-     * fails outright when the project folder is somewhere macOS will not let
-     * this process write. That leaves the proxy running, the page polling, and
-     * "Starting the editor…" on screen forever. Said directly, the page moves
-     * on whether or not the disk cooperated.
+     * Editor `id`'s proxy is up at `url`, said in memory over the supervisor's
+     * IPC rather than through the endpoint file, which fails outright when the
+     * project folder is somewhere macOS will not let this process write.
      *
      * `current` is what the editor is editing, for the tab that arrives here
      * later and has to be told what is already running rather than bounced into
-     * it. Callers with nothing to say about it pass nothing.
-     *
-     * `id` names the editor; left out, it is the latest choice. An id this
-     * screen has let go of — stopped or replaced while it booted — is ignored,
-     * so a late "ready" cannot bring an editor back. Left out with no choice to
-     * stand for, it records an editor of its own, which is what a one-editor
-     * caller that never went through `/api/start` means by it.
+     * it. An id this screen has let go of — stopped or replaced while it
+     * booted — is ignored, so a late "ready" cannot bring an editor back.
      */
-    reportReady(url, current = null, id = undefined) {
+    reportReady(url, current, id) {
       // Ours even when ignored below: a replaced editor still running is in
       // the registry until it exits.
       const port = portOfOrigin(url)
       if (port) startedPorts.add(port)
-      const defaulted = id === undefined
-      const key = defaulted ? latest : String(id)
-      let record = key === null ? undefined : editors.get(key)
-      if (!record) {
-        if (!defaulted) return
-        const appUrl = current?.appUrl ?? null
-        record = {
-          id: String(nextId++),
-          appUrl,
-          appPort: portOfOrigin(appUrl),
-          projectRoot: current?.projectRoot ?? null,
-          packageName: current?.packageName ?? null,
-          devScript: null,
-          path: "",
-        }
-        editors.set(record.id, record)
-        latest = record.id
-      }
-      record.state = "ready"
-      record.url = url
-      record.editing = current ? { ...current, name: current.name ?? appName(current) } : null
-      liveCountChanged()
+      transition(String(id), "ready", {
+        url,
+        editing: current ? { ...current, name: current.name ?? appName(current) } : null,
+      })
     },
 
     /**
-     * An editor is gone — it crashed, its port was taken, its project turned
-     * out not to be one. A dead child must not be a dead terminal, so the
-     * screen carries the sentence explaining what happened, for the latest
-     * status and for a poller of that id, rather than leaving a page that polls
-     * forever for a process nobody is running. `id` defaults to the latest
-     * choice; an editor already let go of keeps the reason it went with.
+     * Editor `id`'s process is over. On its own — it crashed, its port was
+     * taken, its project turned out not to be one — `reason` is the sentence
+     * the screen carries for a tab polling it, rather than leaving a page that
+     * polls forever for a process nobody is running. After a Stop or a
+     * replacement it keeps the reason it was stopped with.
      */
-    reportStopped(reason, id = latest) {
-      if (id === null) return
-      endEditor(String(id), reason)
+    reportStopped(reason, id) {
+      transition(String(id), "exit", { reason })
     },
 
     close() {
       if (closed) return
       closed = true
-      rejectChosen(new Error("The start screen closed before an app was chosen"))
+      unsubscribe?.()
+      clearTimeout(restartTimer)
       choices.close()
       stops.close()
       // The page holds a keep-alive socket open for its status poll, and
