@@ -932,17 +932,3 @@ export function buildAnnotationBrief(items: OutboxItem[] = outboxItems()): strin
   // item ends, as Agentation's copy does.
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()
 }
-
-/**
- * What is safe to put on someone's clipboard.
- *
- * Only the path rule of `sanitizeChangePrompt`: an absolute path is cut to its
- * `src/` tail so a screen-shared brief does not carry the user's home directory
- * and their name. The other rule — dropping `**Source:**` lines — is NOT
- * applied, because in this brief `**Source:**` is Agentation's field name and
- * every path on it already passed `isProjectSourcePath`. The helper is imported
- * rather than copied so the next fix to the regex lands in one place.
- */
-export function sanitizeBrief(text: string): string {
-  return shortenAbsolutePaths(text)
-}

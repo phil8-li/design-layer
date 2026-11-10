@@ -490,16 +490,6 @@ export const annotationsCss = `/* ---------- annotation overlay ---------- */
 .de-ann .de-section-body { padding: 0 ${GUTTER}px ${SECTION_GAP}px; }
 
 /*
- * A section is a title and its contents, and the space under it is the only
- * thing separating it from the next.
- *
- * No hairline between them on purpose: the notes section already closes with a
- * bordered box, and a rule under that would land parallel to the box's own
- * bottom edge 8px away and read as a mis-drawn double border.
- */
-.de-ann-section { display: flex; flex-direction: column; }
-.de-ann-section + .de-ann-section { margin-top: ${SECTION_GAP}px; }
-/*
  * THIS TAB'S HEADINGS ARE THE SHELL'S, not its own.
  *
  * There was a \`.de-ann-section-title\` here — a whole heading treatment, dim ink
@@ -1138,20 +1128,6 @@ export const annotationsCss = `/* ---------- annotation overlay ---------- */
  */
 .de-ann-setting > .de-ann-toggle { margin-left: auto; }
 
-/*
- * A control too wide to sit beside its own name — today, the MCP address and
- * the Copy button that follows it.
- *
- * Wrap is switched back on for this variant only, and it is the CONTROL that
- * claims the whole second line rather than the label claiming the first: label
- * and help dot have to stay together on line one, which they do for free now
- * that the dot is inside the label rather than beside it.
- */
-.de-ann-setting--stacked {
-  flex-wrap: wrap; row-gap: ${t.space.sm}px;
-  padding-top: ${t.space["2xs"]}px; padding-bottom: ${t.space["2xs"]}px;
-}
-.de-ann-setting--stacked > :not(.de-ann-setting-label) { flex: 1 1 100%; }
 
 /*
  * THE CHECKBOX VARIANT IS GONE, and about ninety lines of drawing with it.
@@ -1352,9 +1328,6 @@ export const annotationsCss = `/* ---------- annotation overlay ---------- */
  * session they dropped it in, and the shipped blue is legible on a white page
  * and a dark one alike. The setting behind them, \`markerColor\`, is retired
  * too: the pin wears the chrome's indigo accent.
- *
- * \`.de-ann-setting--stacked\` survives for a row whose control is too wide to
- * sit beside its name; MCP no longer uses it, as it is a section of its own.
  */
 
 /*

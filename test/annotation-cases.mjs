@@ -205,7 +205,6 @@ const bundled = await build({
         cssPath,
         outboxItems,
         buildAnnotationBrief,
-        sanitizeBrief,
       } from "./src/annotations/output"
       export { installAnnotations } from "./src/annotations/canvas"
       export { annotationsTab } from "./src/panels/inspector/tab-annotations"
@@ -1303,27 +1302,6 @@ check("a note stored before names were captured still gets a heading and locatio
 })
 
 console.log("\nWhat leaves the machine")
-
-check("sanitizeBrief shortens an absolute path to its src tail", () => {
-  const cleaned = editor.sanitizeBrief("**Source:** /Users/someone/app/src/components/card.tsx:42")
-  assert.equal(cleaned, "**Source:** src/components/card.tsx:42")
-  // The failure it exists to prevent is a screen-share, not a broken path: a
-  // brief on a projector carrying the user's home directory and their name.
-  assert.ok(!cleaned.includes("/Users/"))
-})
-
-check("a relative path that merely contains src survives untouched", () => {
-  const line = "**Source:** packages/ui/src/button.tsx:7"
-  assert.equal(editor.sanitizeBrief(line), line, "a monorepo path was chopped at src/")
-})
-
-check("the brief's own **Source:** lines survive sanitizing", () => {
-  // `**Source:**` is Agentation's field name, and the brief is in Agentation's
-  // format. The change prompt's rule that deletes such lines would delete the
-  // one fact the brief is surest of, so sanitizeBrief does not apply it.
-  const brief = '### 1. button "Save"\n**Location:** .row > .btn\n**Source:** src/card.tsx:42\n**Feedback:** x'
-  assert.equal(editor.sanitizeBrief(brief), brief)
-})
 
 check("the brief as built carries no home directory anywhere in it", () => {
   seedBrief()

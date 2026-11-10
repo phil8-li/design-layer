@@ -687,10 +687,38 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
     title: "Checking…",
   })
 
-  function setMcpState(state: "on" | "idle" | "off", sentence: string): void {
+  /**
+   * What the MCP section says, as one value; `paintMcp` is its one painter and
+   * `mcpViewOf` turns a `/mcp/status` answer into it.
+   *
+   *   checking --status: port down----------------> off{reason}
+   *   checking --status: up, no agent-------------> idle
+   *   checking --status: up, agent parked---------> on{working: false}
+   *   checking --status: up, agent mid-turn-------> on{working: true}
+   *   any      --route unreachable----------------> off{reason}
+   *   any      --a later answer for any of these--> the same table
+   *
+   * An answer for an older request is dropped (`mcpRequest`), so two refreshes
+   * that cross never paint the older status last.
+   */
+  type McpView =
+    | { kind: "checking" }
+    | { kind: "off"; reason: string }
+    | { kind: "idle" }
+    | { kind: "on"; working: boolean }
+
+  function paintMcp(view: McpView): void {
+    const [state, sentence] =
+      view.kind === "checking"
+        ? ["checking", "checking"]
+        : view.kind === "off"
+          ? ["off", view.reason]
+          : view.kind === "idle"
+            ? ["idle", "No agent connected. Paste this address into your agent."]
+            : ["on", view.working ? "Connected. Your agent is working." : "Connected. Waiting for changes."]
     mcpState.dataset.deState = state
     mcpState.setAttribute("aria-label", `MCP: ${sentence}`)
-    mcpState.title = sentence
+    mcpState.title = view.kind === "checking" ? "Checking…" : sentence
   }
 
   /*
@@ -824,12 +852,16 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
    * and the panel is usually not even on screen. A socket for this would be
    * more machinery than the question deserves.
    *
-   * Three states, and the middle one is why `connected` and `waiting` are both
-   * reported. An agent that is attached but busy is a WORKING setup; showing it
-   * as disconnected the moment it went off to do the work it was just handed is
-   * how a correct configuration comes to look broken.
+   * Three states, and the middle one is why `agents` (how many completed a
+   * handshake) and `waiting` (how many are parked in `wait_for_change`) are
+   * both reported. An agent that is attached but busy is a WORKING setup;
+   * showing it as disconnected the moment it went off to do the work it was
+   * just handed is how a correct configuration comes to look broken.
    */
+  let mcpRequest = 0
   async function refreshMcp(): Promise<void> {
+    mcpRequest += 1
+    const request = mcpRequest
     try {
       const response = await fetch(`${editor.apiBase}/mcp/status`)
       if (!response.ok) throw new Error("status")
@@ -844,6 +876,7 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
         /** Why the start screen could not host the shared address, when it could not. */
         reason?: string
       }
+      if (request !== mcpRequest) return
       mcpAddress.textContent = status.url ?? "not running"
       stay.row.hidden = status.canStay !== true
       if (!staySwitching) {
@@ -869,21 +902,21 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
       if (!status.url || !status.listening) {
         // The start screen's own reason when it holds the shared address and
         // could not bind it; the general sentence otherwise.
-        setMcpState(
-          "off",
-          typeof status.reason === "string" && status.reason.length > 0
-            ? `Not running. ${status.reason}`
-            : "Not running. Another editor may be using the port."
-        )
+        paintMcp({
+          kind: "off",
+          reason:
+            typeof status.reason === "string" && status.reason.length > 0
+              ? `Not running. ${status.reason}`
+              : "Not running. Another editor may be using the port.",
+        })
       } else if (status.agents < 1) {
-        setMcpState("idle", "No agent connected. Paste this address into your agent.")
-      } else if (status.waiting > 0) {
-        setMcpState("on", "Connected. Waiting for changes.")
+        paintMcp({ kind: "idle" })
       } else {
-        // Attached but not parked in `wait_for_change`. A working setup, mid-turn
-        // — and it must not read as a broken one, or a correct configuration
-        // looks like a failure every time the agent goes off to do its job.
-        setMcpState("on", "Connected. Your agent is working.")
+        // Attached but not parked in `wait_for_change` is a working setup,
+        // mid-turn — and it must not read as a broken one, or a correct
+        // configuration looks like a failure every time the agent goes off to
+        // do its job.
+        paintMcp({ kind: "on", working: !(status.waiting > 0) })
       }
       // The first handshake is what makes "Send to agent" worth offering.
       if (!agentReady && status.url && status.listening && status.agents > 0) {
@@ -891,9 +924,10 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
         paintPrimary()
       }
     } catch {
+      if (request !== mcpRequest) return
       // A dead route reads the same as a refusal, the bargain `ai/transport.ts`
       // makes too: say nothing confident rather than invent a state.
-      setMcpState("off", "Could not reach the DesignLayer server.")
+      paintMcp({ kind: "off", reason: "Could not reach the DesignLayer server." })
     }
   }
 
