@@ -23,7 +23,7 @@
  * `libraryComponents()` still feeds the Design tab's instance properties. Turn
  * a library on here and all of that grows its contents on the next repaint;
  * turn it off and they lose them. That is the whole of what this section is
- * for, and it is why the empty state says it in words.
+ * for.
  *
  * ## The two ways in, and why they are not peers
  *
@@ -51,7 +51,6 @@
  */
 
 import { clear, el } from "../core/dom"
-import { leaveRow } from "../core/leave"
 import { holdScroll } from "../core/scroll"
 import { focusControl } from "../core/focus"
 import { playExit } from "../core/motion"
@@ -61,11 +60,13 @@ import { section } from "../panels/inspector/field"
 import { copyLibrarySnippet } from "./snippet"
 import {
   addLibrary,
+  budgetOf,
   canOpenProviderSignIn,
   discoverLibraries,
   forgetLibrarySignIn,
   isStaleServerNotice,
   libraryList,
+  libraryListState,
   LibraryAuthError,
   librarySignIns,
   loadLibraries,
@@ -74,6 +75,8 @@ import {
   setLibraryEnabled,
   signInToLibrary,
   subscribeToLibraries,
+  type AddLibraryInput,
+  type LibraryListState,
 } from "./store"
 import type {
   Library,
@@ -81,53 +84,9 @@ import type {
   LibraryChallenge,
   LibraryCredentialScheme,
   LibrarySignIn,
-  LibrarySource,
-  LibrarySourceKind,
 } from "./types"
 import type { EditorContext } from "../core/context"
 import { formatDate } from "../core/format"
-
-/**
- * A library as this section reads it: the wire record, plus the two fields the
- * URL route adds to it.
- *
- * Declared here rather than added to `Library` in `libraries/types.ts` for the
- * reason the old assets browser gave about the same kind of widening: this lane
- * does not own the file the URL route is landing in, and both fields are
- * optional, so a `Library` is assignable to this exactly as it stands and the
- * two converge without a coordinated edit. Until the server sends them the
- * fields are simply absent at run time and the row degrades the way it should —
- * no `detail` means the counts write the summary, and no `url` means the source
- * line is the path it always was.
- */
-interface InstalledLibrary extends Library {
-  /**
-   * The server's own one-line description of a library it fetched over HTTP.
-   *
-   * Preferred over the counts for a URL library because the counts are a poor
-   * description of one: a Storybook's worth is its components and its stories,
-   * and the server is the only thing on either side that has read the index.
-   */
-  detail?: string
-  source: LibrarySource & { url?: string }
-}
-
-/**
- * What an add is, as this section builds one: a path inside the project, or a
- * link on the internet.
- *
- * There used to be a cast beside this — `addLibrary` was narrowed here while
- * the lane that taught the store about `{ url }` was still in flight, with a
- * note saying the cast could go once the widening landed. It has landed, so it
- * has gone. The interface stays, because the section needs a NAME for an add it
- * is holding on to: a refused one is replayed after a sign-in, and "the input
- * that was refused" has to be storable in a variable.
- */
-interface AddLibraryInput {
-  path?: string
-  kind?: LibrarySourceKind
-  url?: string
-}
 
 /**
  * How many candidate rows are dealt out on a stagger before the rest simply
@@ -144,6 +103,9 @@ interface AddLibraryInput {
  */
 const ARRIVAL_STEPS = 5
 
+/** A list that did not load, in the line a failed scan uses. */
+const LIST_FAILED = "Could not load the libraries. Select an element or reopen this tab to try again."
+
 /** The four things `detectLibraryKind` knows how to read, said in one breath. */
 const RECOGNISED =
   "Looks for manifests, token files (DTCG, Style Dictionary), icon sets and CSS custom properties."
@@ -153,6 +115,9 @@ function kindBadge(kind: string): HTMLElement {
   return el("span", { class: "de-lib-kind", title: `Read as a ${kind} file` }, [kind])
 }
 
+/** What a link add says when the server gave no sentence of its own. */
+const LINK_FALLBACK = "Could not read that link. Check the address, then add it again"
+
 /** A thrown `Error`'s own words, which are the server's, or a stated fallback. */
 function messageOf(error: unknown, fallback: string): string {
   const message = error instanceof Error ? error.message.trim() : ""
@@ -160,6 +125,41 @@ function messageOf(error: unknown, fallback: string): string {
 }
 
 /* ---------- signing in to a walled origin ---------- */
+
+/**
+ * The identity providers worth naming on a button, by the host a wall redirects
+ * to.
+ *
+ * Mirrors the server's table in `library-signin.mjs` and exists for the same
+ * one reason: "Sign in with Okta" tells a designer exactly which screen is
+ * about to appear, and "Sign in" alone does not. The fallback is the generic
+ * sentence, never a guess — `classifyWall` is right to refuse hostnames, and
+ * the difference here is that a wrong label costs a word rather than a
+ * misreading of the wall.
+ */
+const PROVIDER_HOSTS: ReadonlyArray<{ host: string; label: string }> = [
+  { host: "login.microsoftonline.com", label: "Microsoft" },
+  { host: "okta.com", label: "Okta" },
+  { host: "onelogin.com", label: "OneLogin" },
+  { host: "auth0.com", label: "Auth0" },
+  { host: "github.com", label: "GitHub" },
+  { host: "gitlab.com", label: "GitLab" },
+]
+
+/** Who the wall handed off to, or "" when the redirect named nobody we know. */
+function providerOf(wall: LibraryChallenge | null): string {
+  if (!wall?.location) return ""
+  let host = ""
+  try {
+    host = new URL(wall.location).hostname.toLowerCase()
+  } catch {
+    return ""
+  }
+  const found = PROVIDER_HOSTS.find(
+    (entry) => host === entry.host || host.endsWith(`.${entry.host}`)
+  )
+  return found ? found.label : ""
+}
 
 /**
  * What each wall means, said the way a designer would say it.
@@ -197,41 +197,6 @@ function messageOf(error: unknown, fallback: string): string {
  * `WWW-Authenticate` scheme and the shape of a redirect, and never a hostname,
  * so a label claiming to know WHICH sign-in this is would be a guess.
  */
-/**
- * The identity providers worth naming on a button, by the host a wall redirects
- * to.
- *
- * Mirrors the server's table in `library-signin.mjs` and exists for the same
- * one reason: "Sign in with Okta" tells a designer exactly which screen is
- * about to appear, and "Sign in" alone does not. The fallback is the generic
- * sentence, never a guess — `classifyWall` is right to refuse hostnames, and
- * the difference here is that a wrong label costs a word rather than a
- * misreading of the wall.
- */
-const PROVIDER_HOSTS: ReadonlyArray<{ host: string; label: string }> = [
-  { host: "login.microsoftonline.com", label: "Microsoft" },
-  { host: "okta.com", label: "Okta" },
-  { host: "onelogin.com", label: "OneLogin" },
-  { host: "auth0.com", label: "Auth0" },
-  { host: "github.com", label: "GitHub" },
-  { host: "gitlab.com", label: "GitLab" },
-]
-
-/** Who the wall handed off to, or "" when the redirect named nobody we know. */
-function providerOf(wall: LibraryChallenge | null): string {
-  if (!wall?.location) return ""
-  let host = ""
-  try {
-    host = new URL(wall.location).hostname.toLowerCase()
-  } catch {
-    return ""
-  }
-  const found = PROVIDER_HOSTS.find(
-    (entry) => host === entry.host || host.endsWith(`.${entry.host}`)
-  )
-  return found ? found.label : ""
-}
-
 const WALL_SUMMARY: Record<LibraryChallenge["kind"], string> = {
   oauth: "needs you to sign in",
   redirect: "needs you to sign in",
@@ -382,13 +347,20 @@ const NO_TARGET_NOTE =
 /**
  * When the wait's copy moves, and when the editor gives up on it.
  *
- * Both are timers on the CLIENT, and neither of them stops the server: the
- * sign-in route has no cancel of its own. See `WAITING_LONG_NOTE` for why the
- * first is twenty seconds and `DEADLINE_NOTE` for why the second is longer than
- * the ~5m40s the server itself can take.
+ * Both are timers on the CLIENT. The deadline aborts the request, and the
+ * route aborts its own run when the request closes, so it stops the server as
+ * well. See `WAITING_LONG_NOTE` for why the nudge is twenty seconds.
+ *
+ * The deadline must outlast the server's own worst case (`DEADLINE_NOTE` says
+ * why), so it comes from the server: every sign-in answer, and the status GET
+ * on a server that reports it, carries `budgetMs`, the longest an answer can
+ * take, and the deadline is that plus a margin for the loopback. Until a
+ * server has said, `WAITING_DEADLINE_MS` stands in; it is longer than the
+ * budget the server states today.
  */
 const WAITING_NUDGE_MS = 20_000
 const WAITING_DEADLINE_MS = 390_000
+const DEADLINE_MARGIN_MS = 15_000
 
 /**
  * What the window sign-in answers with, taken off the call rather than written
@@ -507,24 +479,53 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
    * switch.
    */
   let addOpen = false
-  let scanning = false
-  let scanned = false
-  let candidates: LibraryCandidate[] = []
-  let scanError = ""
-  let loaded = false
   /*
-   * Whether the NEXT paint of the candidate list is the one the walk just
-   * produced, and the reason it is a flag rather than an inference.
+   * The project scan, as one value.
    *
-   * `renderCandidates()` runs on every store notification while the fold is
-   * open — a switch flipped two sections up rebuilds these rows — so a list
-   * that animated whenever it was built would deal itself out again as
-   * punctuation for edits that have nothing to do with the scan. Same call
-   * `takeJustExpanded` makes for the inspector's disclosure groups, and made
-   * the same way: the arrival is asked for by the one event that earned it and
-   * consumed by the render that plays it.
+   *     idle     --open fold-->    scanning
+   *     failed   --open fold-->    scanning      (the retry)
+   *     scanning --answer-->       done(arriving = any found)
+   *     scanning --error-->        failed(message)
+   *     done(arriving) --paint-->  done
+   *
+   * `arriving` says the NEXT paint of the candidate list is the one the walk
+   * just produced. `renderCandidates()` runs on every store notification while
+   * the fold is open — a switch flipped two sections up rebuilds these rows —
+   * so a list that animated whenever it was built would deal itself out again
+   * as punctuation for edits that have nothing to do with the scan. Same call
+   * `takeJustExpanded` makes for the inspector's disclosure groups: the arrival
+   * is asked for by the one event that earned it and consumed by the render
+   * that plays it.
+   *
+   * Whether a candidate is already added is NOT kept here: it is read off the
+   * library list at paint time (`installedNow`), the same set the server
+   * builds `installed` from, so an add or a remove needs no edit to this.
    */
-  let justScanned = false
+  type Scan =
+    | { kind: "idle" }
+    | { kind: "scanning" }
+    | { kind: "done"; candidates: LibraryCandidate[]; arriving: boolean }
+    | { kind: "failed"; message: string }
+  let scan: Scan = { kind: "idle" }
+  /*
+   * Adds in flight, by what they add: one press, one request. Keyed by the
+   * link or the path rather than by the button, because the boxes take Enter
+   * and Enter never looked at whether Add was disabled — two presses on a slow
+   * link sent two POSTs and raised two "Added" toasts.
+   */
+  const adding = new Set<string>()
+  /*
+   * A row's request in flight, by library id. Held here rather than on the
+   * switch or the X, because the list is rebuilt on every store notification
+   * and a fact kept on a node is gone the first time another row changes —
+   * the switch came back enabled mid-request and a second press sent a second
+   * PATCH. `render` builds each row from this, and drops an entry once the
+   * list shows its answer (`settlePending`).
+   */
+  type RowPending = { kind: "toggling"; next: boolean } | { kind: "removing" }
+  const pending = new Map<string, RowPending>()
+  /** Whether the first paint has asked for the sign-ins and the window check. */
+  let askedSignIns = false
 
   /*
    * The sign-in flow's own state, and the one thing that is NOT here.
@@ -561,6 +562,19 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
    * THE SIGN-IN IN FLIGHT, AS ONE OBJECT, AND THE NUMBER THE DIALOG IS ATTACHED
    * TO — and the pair of them is a bug fix rather than a tidy-up.
    *
+   *     none          --Sign in-->              window(run, waiting)
+   *     none          --Use this token-->       token(run)
+   *     window        --20 s-->                 window(nudged)
+   *     window        --Cancel-->               none   (phase cancelled, then abort)
+   *     window        --deadline-->             none   (phase expired, then abort)
+   *     window|token  --answer-->               none   (acts on the dialog only if mine)
+   *     window|token  --Close / new wall-->     detached (signInRun moves on)
+   *
+   * "Mine" is `flight.run === signInRun`, the ONE ownership test both paths use
+   * after their await. A detached window run still blocks a new one — one
+   * browser profile, see `busyNote` — and a detached token check does not,
+   * because it holds nothing but a fetch.
+   *
    * This used to be a plain `let signInWaiting = false` that `openProviderWindow`
    * set and its own `finally` cleared. `closeSignIn` cleared five other pieces
    * of state and not that one, and the result was the worst report this feature
@@ -572,41 +586,43 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
    * A flag that one path sets and another forgets to clear is a bug waiting to
    * be rediscovered, so the flag is gone. What is here instead:
    *
-   *  - `signIn` is the request itself — the run that is happening ANYWHERE,
-   *    with the controller that can stop it and the timers watching it. One at
-   *    a time, because every run drives the same Chrome profile on the server
-   *    and two of them racing produce "the browser did not open"; see
-   *    `busyNote`;
+   *  - `flight` is the request itself — a window run or a token check,
+   *    happening ANYWHERE. A window run carries the controller that can stop
+   *    it and the timers watching it;
    *  - `signInRun` is which run THIS DIALOG belongs to. `closeSignIn` bumps it,
    *    which detaches the dialog from whatever is in flight without pretending
    *    the flight ended.
    *
-   * Everything the dialog draws is then DERIVED from the two — waiting is
-   * `signIn.run === signInRun` and nothing else — so there is no third place
-   * for the truth to be forgotten. The response that lands afterwards compares
-   * its own run against `signInRun` to decide whether it still owns the surface:
-   * a stale one may report the credential it won, and may not close a dialog
-   * that is now asking about a different site.
+   * Everything the dialog draws is then DERIVED from the two, so there is no
+   * third place for the truth to be forgotten. The token check used to be a
+   * bare `signInSubmitting` boolean with no run number: closing the dialog
+   * mid-check left the next site's dialog reading "Checking…", and the old
+   * check's answer then printed its refusal on, or closed, that dialog.
    */
-  interface SignInRun {
-    run: number
-    /** The host in the copy, for the sentence a SECOND dialog has to show. */
-    host: string
-    abort: AbortController
-    /** Whether the wait has gone on long enough to change what it says. */
-    nudged: boolean
-    /** Set before the abort, so the rejection knows which sentence it is. */
-    cancelled: boolean
-    expired: boolean
-    nudge: ReturnType<typeof setTimeout> | null
-    deadline: ReturnType<typeof setTimeout> | null
-  }
-  let signIn: SignInRun | null = null
+  type Flight =
+    | {
+        kind: "window"
+        run: number
+        /** The host in the copy, for the sentence a SECOND dialog has to show. */
+        host: string
+        abort: AbortController
+        /**
+         * Waiting, then nudged once the wait has gone on long enough to change
+         * what it says. Cancel and the deadline set their word BEFORE the abort,
+         * so the rejection knows which sentence it is.
+         */
+        phase: "waiting" | "nudged" | "cancelled" | "expired"
+        nudge: ReturnType<typeof setTimeout> | null
+        deadline: ReturnType<typeof setTimeout> | null
+      }
+    | { kind: "token"; run: number }
+  type WindowFlight = Extract<Flight, { kind: "window" }>
+  let flight: Flight | null = null
   let signInRun = 0
-  /** Whether the token fold's own request is out; see `submitSignIn`. */
-  let signInSubmitting = false
   /** Whether this machine has a browser to open at all; see `canOpenProviderSignIn`. */
   let canOpenWindow = true
+  /** The server's stated budget for a sign-in answer, 0 until it states one. */
+  let signInBudgetMs = 0
   let signIns: LibrarySignIn[] = []
   /*
    * Where the keyboard was standing when the wall interrupted it.
@@ -875,7 +891,7 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
    *
    * It used to be the last child of `signInPanel`, next to the credential box,
    * which reads perfectly for the token path and was catastrophic for the other
-   * one. The panel is `hidden` whenever the "I have an access token" fold is
+   * one. The panel is `hidden` whenever the "Use an access token" fold is
    * shut, and shut is the default for every new wall — the whole design of this
    * surface is that most readers never open it. Worse than `hidden`: the drawer
    * clips the panel to a zero-height grid row and `.de-lib-signin-panel[hidden]`
@@ -984,7 +1000,7 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
    * `.de-lib-dismiss` with the disclosure toggle — both were a quiet word
    * declining the loud thing beside them — and that was right when the loud
    * thing was on screen. It is not any more: with the fold shut, a quiet "Close"
-   * sits directly under a quiet "I have an access token" at the same weight, in
+   * sits directly under a quiet "Use an access token" at the same weight, in
    * the same colour, on the same margin, and the pair reads as two links rather
    * than as a disclosure and the only action the dialog has. A `.de-button`
    * separates them by rank, which is the true relationship.
@@ -1125,7 +1141,7 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
        *
        * `showModal()` does not focus the dialog when it has a focusable
        * descendant — it picks the first one in tree order, which here is the
-       * "I have an access token" toggle. That is the wrong landing: a screen
+       * "Use an access token" toggle. That is the wrong landing: a screen
        * reader would announce a collapsed disclosure before it had said which
        * site this is about. So `openSignIn` focuses the card itself, and a
        * `<dialog>` is not focusable on its own for an explicit `focus()` call.
@@ -1190,7 +1206,7 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
    * 800-character token to one would send them back for it at the exact moment
    * they are most likely to give up on the feature.
    *
-   * So the two ways out are both deliberate: "Not now", and Escape. Neither is
+   * So the two ways out are both deliberate: "Close", and Escape. Neither is
    * reachable by a mis-aimed click.
    */
 
@@ -1322,64 +1338,71 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
     // Scanned once per session, not once per open. The walk reads up to four
     // thousand files, and re-running it because somebody folded the panel shut
     // and open again would spend that on an answer nothing has changed.
-    if (open && !scanned && !scanning) void scan()
+    if (open && (scan.kind === "idle" || scan.kind === "failed")) void runScan()
     else if (open) renderCandidates()
   }
 
-  async function scan(): Promise<void> {
-    scanning = true
-    scanError = ""
+  async function runScan(): Promise<void> {
+    scan = { kind: "scanning" }
     renderCandidates()
     try {
-      candidates = await discoverLibraries(editor.apiBase)
-      scanned = true
-      // Only here, and only on the way out of a walk that actually returned
-      // something: an arrival is a statement that the answer has landed, and
-      // playing one over the error hint below would dress a failure up as a
-      // result.
-      justScanned = candidates.length > 0
+      const candidates = await discoverLibraries(editor.apiBase)
+      // `arriving` only here, and only on the way out of a walk that actually
+      // returned something: an arrival is a statement that the answer has
+      // landed, and playing one over the error hint below would dress a
+      // failure up as a result.
+      scan = { kind: "done", candidates, arriving: candidates.length > 0 }
     } catch {
       // Said on the surface as well as in a toast: a toast is gone in seconds
       // and this fold is then an empty list claiming the project has nothing in
       // it, which is a different and much worse statement than "the scan
       // failed". The path box below is still the way in either way.
-      scanError = "Could not scan this project for design-system files. Add one by path below."
+      scan = {
+        kind: "failed",
+        message: "Could not scan this project for design-system files. Add one by path below.",
+      }
       editor.toast({ title: "Could not scan this project", description: "Add a design-system file by path below." }, "error")
-    } finally {
-      scanning = false
-      renderCandidates()
     }
+    renderCandidates()
+  }
+
+  /** Whether a scanned file is already a library, read off the list itself. */
+  function installedNow(candidate: LibraryCandidate): boolean {
+    if (libraryListState().status !== "ready") return candidate.installed
+    return libraryList().some((library) => library.source.path === candidate.path)
   }
 
   /**
    * The one add path, for all three ways in.
    *
    * Reports whether it landed, because the callers want different things from
-   * the answer: a candidate row is about to be rebuilt by `render()` with its
-   * button reading "Added", so it needs nothing back, while the two boxes are
-   * built once and live forever and have to clear their own field and stand
-   * their own button back up.
+   * the answer: a candidate row has already been rebuilt by the store's
+   * notification with its button reading "Added", so it needs nothing back,
+   * while the two boxes are built once and live forever and have to clear
+   * their own field and stand their own button back up.
+   *
+   * A second call for the same link or path while the first is out answers
+   * false and sends nothing; see `adding`.
    */
   async function addFrom(
     input: AddLibraryInput,
     button: HTMLButtonElement,
     fallback: string
   ): Promise<boolean> {
+    const key = input.url ? `url:${input.url}` : `path:${input.path ?? ""}`
+    if (adding.has(key)) return false
+    adding.add(key)
     button.disabled = true
     try {
+      // The store's notification repaints the list — the new row, and a
+      // candidate's "Added", which `installedNow` reads off that list — so
+      // nothing here renders again.
       const library = await addLibrary(editor.apiBase, input)
-      // Marked locally rather than by rescanning: the walk that produced this
-      // list costs thousands of stats, and the only thing about it that just
-      // became untrue is one row's `installed`.
-      for (const candidate of candidates) {
-        if (input.path && candidate.path === input.path) candidate.installed = true
-      }
       editor.toast(`Added ${library.name}`)
       // The Design tab is built from the merged catalog, and it does not
       // subscribe to this store — `refresh()` is how the tokens this library
       // just contributed reach the fill picker without a reselection.
       editor.refresh()
-      render()
       return true
     } catch (error) {
       button.disabled = false
@@ -1409,7 +1432,14 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
       // the entire help available at the moment of the mistake.
       editor.toast(messageOf(error, fallback), "error")
       return false
+    } finally {
+      adding.delete(key)
     }
+  }
+
+  /** The add a sign-in was for, replayed into the URL box's own path. */
+  async function replayAdd(replay: AddLibraryInput): Promise<void> {
+    if (await addFrom(replay, urlAdd, LINK_FALLBACK)) clearUrlField(replay)
   }
 
   /**
@@ -1437,7 +1467,7 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
     // Cleared rather than left for a second press: adding it again is a no-op
     // the store answers idempotently, but a box still holding a link that is
     // now a row above it reads as unfinished.
-    if (await addFrom({ url }, urlAdd, "Could not read that link. Check the address, then add it again")) clearUrlField({ url })
+    if (await addFrom({ url }, urlAdd, LINK_FALLBACK)) clearUrlField({ url })
   }
 
   async function addManual(): Promise<void> {
@@ -1527,7 +1557,7 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
    * written from four places between them, `paintSignIn` deriving one value
    * while `openProviderWindow` imperatively set the same one two lines later,
    * and that is the arrangement the "Waiting…" leak grew in. Everything here
-   * reads `signIn` and `signInRun`; nothing outside this function touches a
+   * reads `flight` and `signInRun`; nothing outside this function touches a
    * `hidden` or a `disabled` on them.
    */
   function paintSignIn(): void {
@@ -1552,9 +1582,11 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
      * dialog is not its owner, which is the state a second wall opens into
      * while the first is still in a browser window.
      */
-    const waiting = signIn !== null && signIn.run === signInRun
-    const elsewhere = signIn !== null && !waiting
-    signInCancel.hidden = signIn === null
+    const run = windowFlight()
+    const waiting = run !== null && run.run === signInRun
+    const elsewhere = run !== null && !waiting
+    const checking = flight?.kind === "token" && flight.run === signInRun
+    signInCancel.hidden = run === null
     /*
      * The token path is held back for the length of a window sign-in, because
      * the two race for the same answer: both adopt the credential, both close
@@ -1563,12 +1595,14 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
      * and pastes a token is not doing anything unreasonable — the fold is right
      * there — so the interlock is the code's job, not theirs.
      */
-    signInSubmit.disabled = signInSubmitting || signIn !== null
-    // "Checking…" while it is out, because the request behind it can take
-    // fifteen seconds and a grey button with its original label on it is
-    // indistinguishable from a press that was ignored. No icon inside it, so
-    // `textContent` is safe where the offer above needs a span of its own.
-    signInSubmit.textContent = signInSubmitting ? "Checking…" : "Use this token"
+    signInSubmit.disabled = checking || run !== null
+    // "Checking…" while THIS dialog's check is out, because the request behind
+    // it can take fifteen seconds and a grey button with its original label on
+    // it is indistinguishable from a press that was ignored. A check left
+    // behind by a closed dialog is not this one's, so a new wall never opens on
+    // it. No icon inside it, so `textContent` is safe where the offer above
+    // needs a span of its own.
+    signInSubmit.textContent = checking ? "Checking…" : "Use this token"
     /*
      * The same attribute the project scan wears while it is running, so the two
      * indeterminate waits in this chrome are one idea rather than two. It is
@@ -1668,11 +1702,11 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
      * `WAITING_LONG_NOTE` carries why.
      */
     const situation = waiting
-      ? signIn?.nudged
+      ? run?.phase === "nudged"
         ? WAITING_LONG_NOTE
         : WAITING_NOTE
       : elsewhere
-        ? busyNote(signIn?.host ?? "another site")
+        ? busyNote(run?.host ?? "another site")
         : challenge.kind === "forbidden"
           ? REFUSED_NOTE
           : offersWindow
@@ -1848,20 +1882,6 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
   }
 
   /**
-   * Post the credential, and on a 200 replay the add it was refused for.
-   *
-   * The 200 is the whole of the evidence this surface has, and it is enough:
-   * the route re-fetches the URL with the credential attached and refuses to
-   * store one that does not open the wall, so a resolved promise here means the
-   * site actually answered. Nothing below marks a sign-in optimistically, and
-   * nothing marks one from a request this side merely sent.
-   *
-   * The replay is what makes the flow one act rather than two. The designer
-   * pasted a link, was asked for a credential, and gave one; asking them to
-   * find the link again afterwards would be the editor forgetting the errand it
-   * interrupted them for.
-   */
-  /**
    * Start the two timers that watch a wait, and stop them when it is over.
    *
    * Both belong to the RUN rather than to the closure, so a response that
@@ -1870,23 +1890,57 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
    * twice for the same run — Cancel calls it before the abort, and the rejection
    * the abort produces calls it again on the way through.
    */
-  function watchWait(run: SignInRun): void {
+  function watchWait(run: WindowFlight): void {
     run.nudge = setTimeout(() => {
-      run.nudged = true
-      if (signIn === run) paintSignIn()
+      if (run.phase === "waiting") run.phase = "nudged"
+      if (flight === run) paintSignIn()
     }, WAITING_NUDGE_MS)
     run.deadline = setTimeout(() => {
-      run.expired = true
+      run.phase = "expired"
       run.abort.abort()
-    }, WAITING_DEADLINE_MS)
+    }, signInBudgetMs > 0 ? signInBudgetMs + DEADLINE_MARGIN_MS : WAITING_DEADLINE_MS)
   }
 
-  function release(run: SignInRun): void {
+  function release(run: WindowFlight): void {
     if (run.nudge !== null) clearTimeout(run.nudge)
     if (run.deadline !== null) clearTimeout(run.deadline)
     run.nudge = null
     run.deadline = null
-    if (signIn === run) signIn = null
+    if (flight === run) flight = null
+  }
+
+  /** The window run in flight anywhere, or null. */
+  function windowFlight(): WindowFlight | null {
+    return flight?.kind === "window" ? flight : null
+  }
+
+  /** Whether THIS dialog has a token check out; a second press waits for it. */
+  function checkingHere(): boolean {
+    return flight?.kind === "token" && flight.run === signInRun
+  }
+
+  /**
+   * A sign-in landed after its dialog was closed or moved on: the errand
+   * outlives the dialog.
+   *
+   * The designer closed it while it was in flight and the credential landed
+   * anyway — which is not an abandonment, it is them doing what the dialog
+   * asked. Dropping the add here is what the old code did, and it produced the
+   * worst possible pair of outcomes: a toast saying the sign-in worked, and no
+   * library.
+   *
+   * The one case it is NOT allowed to finish is when another wall is on
+   * screen. Replaying then would answer a question the designer is in the
+   * middle of a different one of, so the add is handed back in words instead.
+   * Both flights end here, so the window and the token path cannot drift.
+   */
+  async function finishDetached(replay: AddLibraryInput | null): Promise<void> {
+    if (!replay) return
+    if (challenge) {
+      editor.toast(`Signed in. Add ${replay.url || replay.path} again to finish it.`)
+      return
+    }
+    await replayAdd(replay)
   }
 
   /**
@@ -1904,9 +1958,9 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
    * the way" is a thing any dialog is entitled to stop.
    */
   function cancelSignIn(): void {
-    const run = signIn
+    const run = windowFlight()
     if (!run) return
-    run.cancelled = true
+    run.phase = "cancelled"
     release(run)
     run.abort.abort()
     signInProblem = CANCELLED_NOTE
@@ -1955,11 +2009,14 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
      * launch the same Chrome profile twice and the second loses the singleton
      * race, which the designer reads as "the browser did not open".
      */
-    if (signIn) {
-      signInProblem = busyNote(signIn.host)
+    const running = windowFlight()
+    if (running) {
+      signInProblem = busyNote(running.host)
       paintSignIn()
       return
     }
+    // This dialog's token check is still out; one answer at a time.
+    if (checkingHere()) return
     const target = challenge.url || pendingAdd?.url || ""
     if (!target) {
       signInProblem = NO_TARGET_NOTE
@@ -1968,17 +2025,16 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
     }
 
     const replay = pendingAdd
-    const run: SignInRun = {
+    const run: WindowFlight = {
+      kind: "window",
       run: (signInRun += 1),
       host: hostOf(challenge),
       abort: new AbortController(),
-      nudged: false,
-      cancelled: false,
-      expired: false,
+      phase: "waiting",
       nudge: null,
       deadline: null,
     }
-    signIn = run
+    flight = run
     signInProblem = ""
     paintSignIn()
     // The press has just taken its own button off the row, so the keyboard is
@@ -2000,6 +2056,7 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
         (error: unknown) => ({ ok: false as const, error })
       )
     release(run)
+    if (settled.ok) signInBudgetMs = budgetOf(settled.answer.budgetMs) || signInBudgetMs
     // Whether this response still owns the surface. A stale one may report what
     // it won and may not touch what is on screen.
     const mine = run.run === signInRun
@@ -2012,9 +2069,9 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
        * from the run and the error is only consulted for failures nobody asked
        * for.
        */
-      const said = run.cancelled
+      const said = run.phase === "cancelled"
         ? CANCELLED_NOTE
-        : run.expired
+        : run.phase === "expired"
           ? DEADLINE_NOTE
           : messageOf(settled.error, "Could not open the sign-in")
       /*
@@ -2037,7 +2094,7 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
       // designer asked for this and was told at the time — and anything else
       // goes to a toast, because a failure with nowhere to print is still a
       // failure somebody is waiting on.
-      if (!run.cancelled && !isStaleServerNotice(said)) editor.toast(said, "error")
+      if (run.phase !== "cancelled" && !isStaleServerNotice(said)) editor.toast(said, "error")
       return
     }
 
@@ -2073,33 +2130,28 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
       // question has been answered and the add that follows is the editor
       // finishing the errand rather than something still waiting on the reader.
       closeSignIn(urlField)
-      if (replay && (await addFrom(replay, urlAdd, "Could not read that link. Check the address, then add it again"))) {
-        clearUrlField(replay)
-      }
+      if (replay) await replayAdd(replay)
       return
     }
 
-    /*
-     * Detached, and the errand outlives the dialog.
-     *
-     * The designer closed this while it was in flight and then finished signing
-     * in anyway — which is not an abandonment, it is them doing what the dialog
-     * asked. Dropping the add here is what the old code did, and it produced
-     * the worst possible pair of outcomes: a toast saying the sign-in worked,
-     * and no library.
-     *
-     * The one case it is NOT allowed to finish is when another wall is on
-     * screen. Replaying then would answer a question the designer is in the
-     * middle of a different one of, so the add is handed back in words instead.
-     */
-    if (!replay) return
-    if (challenge) {
-      editor.toast(`Signed in. Add ${replay.url || replay.path} again to finish it.`)
-      return
-    }
-    if (await addFrom(replay, urlAdd, "Could not read that link. Check the address, then add it again")) clearUrlField(replay)
+    // Detached: see `finishDetached`.
+    await finishDetached(replay)
   }
 
+  /**
+   * Post the credential, and on a 200 replay the add it was refused for.
+   *
+   * The 200 is the whole of the evidence this surface has, and it is enough:
+   * the route re-fetches the URL with the credential attached and refuses to
+   * store one that does not open the wall, so a resolved promise here means the
+   * site actually answered. Nothing below marks a sign-in optimistically, and
+   * nothing marks one from a request this side merely sent.
+   *
+   * The replay is what makes the flow one act rather than two. The designer
+   * pasted a link, was asked for a credential, and gave one; asking them to
+   * find the link again afterwards would be the editor forgetting the errand it
+   * interrupted them for.
+   */
   async function submitSignIn(): Promise<void> {
     if (!challenge) return
     /*
@@ -2110,11 +2162,16 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
      * length of the wait; this is the keyboard's way in, since the field still
      * takes Enter.
      */
-    if (signIn) {
-      signInProblem = busyNote(signIn.host)
+    const running = windowFlight()
+    if (running) {
+      signInProblem = busyNote(running.host)
       paintSignIn()
       return
     }
+    // And not twice: the field takes Enter, and Enter never looked at whether
+    // the button was disabled — two presses sent two checks, and two successes
+    // replayed the add twice.
+    if (checkingHere()) return
     const value = credentialField.value.trim()
     if (!value) {
       signInProblem = "Paste the credential first."
@@ -2139,18 +2196,33 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
      * nothing on screen changed at all: a press with no observable consequence.
      */
     signInProblem = ""
-    signInSubmitting = true
+    const check: Flight = { kind: "token", run: signInRun }
+    flight = check
     paintSignIn()
     // Captured before the await, for the reason `openProviderWindow` gives at
     // length: `pendingAdd` is the dialog's current errand, and fifteen seconds
     // is long enough for the dialog to have been closed and reopened on another
     // site. The request carries the add it was made for.
     const replay = pendingAdd
-    try {
-      const record = await signInToLibrary(editor.apiBase, { url: target, scheme, value })
-      signInSubmitting = false
-      adoptSignIn(record)
-      editor.toast(`Signed in to ${record.origin}`)
+    const settled: { ok: true; record: LibrarySignIn } | { ok: false; error: unknown } =
+      await signInToLibrary(editor.apiBase, { url: target, scheme, value }).then(
+        (record) => ({ ok: true as const, record }),
+        (error: unknown) => ({ ok: false as const, error })
+      )
+    // Over before either outcome is handled, for the reason `openProviderWindow`
+    // settles rather than using `finally`: the handlers repaint.
+    if (flight === check) flight = null
+    const mine = check.run === signInRun
+
+    if (settled.ok) {
+      // The credential is real whether or not this dialog is still up: the
+      // server verified it against the live URL and stored it before answering.
+      adoptSignIn(settled.record)
+      editor.toast(`Signed in to ${settled.record.origin}`)
+      if (!mine) {
+        await finishDetached(replay)
+        return
+      }
       /*
        * Closed BEFORE the replay, not after it.
        *
@@ -2164,29 +2236,31 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
        * be disabled for the length of that request.
        */
       closeSignIn(urlField)
-      if (replay && (await addFrom(replay, urlAdd, "Could not read that link. Check the address, then add it again"))) {
-        clearUrlField(replay)
-      }
-    } catch (error) {
-      /*
-       * The field KEEPS what is in it, and this is the whole reason the
-       * refusal is drawn here rather than thrown away in a toast.
-       *
-       * A refused token is usually a token that lost its last character to a
-       * bad copy, or one that expired eleven minutes ago. Clearing the box
-       * sends the designer back to a terminal for a string they already have,
-       * and it does it at the exact moment they are most likely to give up on
-       * the feature.
-       */
-      signInProblem = messageOf(error, "The site refused that credential. Check that it has not expired, then try again")
-      focusControl(credentialField, { preventScroll: true })
-    } finally {
-      // Both paths, and painted from here rather than from each of them: the
-      // label and the disabled state are derived, so the one thing either
-      // outcome has to do is say the request is over and repaint.
-      signInSubmitting = false
-      paintSignIn()
+      if (replay) await replayAdd(replay)
+      return
     }
+
+    const said = messageOf(settled.error, "The site refused that credential. Check that it has not expired, then try again")
+    if (!mine) {
+      // Its dialog is gone or asks about another site now; the refusal is
+      // still news to the person who pasted the credential.
+      paintSignIn()
+      editor.toast(said, "error")
+      return
+    }
+    /*
+     * The field KEEPS what is in it, and this is the whole reason the
+     * refusal is drawn here rather than thrown away in a toast.
+     *
+     * A refused token is usually a token that lost its last character to a
+     * bad copy, or one that expired eleven minutes ago. Clearing the box
+     * sends the designer back to a terminal for a string they already have,
+     * and it does it at the exact moment they are most likely to give up on
+     * the feature.
+     */
+    signInProblem = said
+    paintSignIn()
+    focusControl(credentialField, { preventScroll: true })
   }
 
   /* ---------- what this editor is signed in to ---------- */
@@ -2205,11 +2279,16 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
    * with the names of the installed libraries read from that origin, and the
    * link itself moves to the hover title. Before any library from the origin
    * has landed (the add is replayed after the sign-in), the bare host stands in.
+   *
+   * A URL library is `{ kind: "url", path: <the link> }` on the wire
+   * (`server/library-url.mjs`); this used to read a `source.url` the server
+   * never sends, so every row showed the bare host.
    */
   function signedLabel(entry: LibrarySignIn): { name: string; link: string } {
-    const opened = (libraryList() as InstalledLibrary[]).filter((library) => {
+    const opened = libraryList().filter((library) => {
+      if (library.source.kind !== "url") return false
       try {
-        return !!library.source.url && new URL(library.source.url).origin === entry.origin
+        return new URL(library.source.path).origin === entry.origin
       } catch {
         return false
       }
@@ -2218,7 +2297,7 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
     if (!opened.length) return { name: host, link: entry.origin }
     return {
       name: opened.map((library) => library.name).join(", "),
-      link: opened.map((library) => library.source.url).join("\n"),
+      link: opened.map((library) => library.source.path).join("\n"),
     }
   }
 
@@ -2327,19 +2406,20 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
   }
 
   function candidateRow(candidate: LibraryCandidate): HTMLElement {
+    const installed = installedNow(candidate)
     const add = el(
       "button",
       {
         class: "de-button",
         type: "button",
-        disabled: candidate.installed,
-        title: candidate.installed ? "Already added" : `Add ${candidate.path}`,
-        "aria-label": candidate.installed
+        disabled: installed || adding.has(`path:${candidate.path}`),
+        title: installed ? "Already added" : `Add ${candidate.path}`,
+        "aria-label": installed
           ? `${candidate.name} is already added`
           : `Add ${candidate.name}`,
         "data-de-lib": "candidate-add",
       },
-      [candidate.installed ? "Added" : "Add"]
+      [installed ? "Added" : "Add"]
     ) as HTMLButtonElement
     add.addEventListener("click", () => {
       void addFrom(
@@ -2389,6 +2469,7 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
 
   function renderCandidates(): void {
     clear(candidateList)
+    const scanning = scan.kind === "scanning"
     status.textContent = scanning ? "Scanning the project…" : ""
     /*
      * The same attribute the lint header's button wears while its audit is in
@@ -2406,14 +2487,17 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
     if (scanning) status.setAttribute("data-de-busy", "")
     else status.removeAttribute("data-de-busy")
 
-    if (scanning) {
+    if (scan.kind === "scanning") {
       candidateList.append(scanSkeleton())
       return
     }
-    if (scanError) {
-      candidateList.append(el("p", { class: "de-lib-hint de-lib-error" }, [scanError]))
+    if (scan.kind === "failed") {
+      candidateList.append(el("p", { class: "de-lib-hint de-lib-error" }, [scan.message]))
       return
     }
+    // Idle draws nothing: the fold starts its scan the moment it opens.
+    if (scan.kind !== "done") return
+    const { candidates, arriving } = scan
     if (!candidates.length) {
       candidateList.append(
         el("p", { class: "de-lib-hint" }, [
@@ -2428,8 +2512,7 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
      * that one rule owns the step; capped, because the point of a stagger is
      * made in the first few rows and paid for in every row after them.
      */
-    const arriving = justScanned
-    justScanned = false
+    if (arriving) scan = { ...scan, arriving: false }
     candidates.forEach((candidate, index) => {
       const row = candidateRow(candidate)
       if (arriving) {
@@ -2457,18 +2540,23 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
    * does — flip a thing on now, not record a preference for later — is what a
    * switch means. The drawing is `de-lib-switch` in `css/libraries.ts`.
    */
-  function enableSwitch(library: InstalledLibrary): HTMLElement {
+  function enableSwitch(library: Library): HTMLElement {
+    const held = pending.get(library.id)
     const toggle = el("button", {
       class: "de-lib-switch",
       type: "button",
-      "aria-pressed": String(library.enabled),
+      disabled: held?.kind === "toggling",
+      "aria-pressed": String(held?.kind === "toggling" ? held.next : library.enabled),
       "aria-label": `Enable ${library.name}`,
       title: library.enabled ? `Turn ${library.name} off` : `Turn ${library.name} on`,
       "data-de-lib": "enable",
       "data-de-lib-id": library.id,
     }) as HTMLButtonElement
     toggle.addEventListener("click", () => {
+      if (pending.has(library.id)) return
       const next = toggle.getAttribute("aria-pressed") !== "true"
+      const mine: RowPending = { kind: "toggling", next }
+      pending.set(library.id, mine)
       // Painted before the round trip, and corrected if it fails. A switch that
       // waits for a loopback response reads as a dead control on the one gesture
       // this section exists for.
@@ -2476,12 +2564,13 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
       toggle.disabled = true
       void setLibraryEnabled(editor.apiBase, library.id, next)
         .then(() => {
+          // The store's notification has already repainted the row and settled
+          // `pending`; `endPending` only renders if the answer did not match.
+          endPending(library.id, mine)
           editor.refresh()
-          render()
         })
         .catch((error: unknown) => {
-          toggle.setAttribute("aria-pressed", String(library.enabled))
-          toggle.disabled = false
+          endPending(library.id, mine)
           editor.toast(
             messageOf(error, `Could not turn ${library.name} ${next ? "on" : "off"}. Try again.`),
             "error"
@@ -2501,12 +2590,12 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
    * nested six folders deep and a Storybook URL with a query on it fail the
    * same way and are fixed by the same rule.
    */
-  function sourceLine(library: InstalledLibrary): HTMLElement {
-    const where = library.source.url || library.source.path
+  function sourceLine(library: Library): HTMLElement {
+    const where = library.source.path
     return el("code", { class: "de-lib-path", title: where }, [where])
   }
 
-  function libraryRow(library: InstalledLibrary): HTMLElement {
+  function libraryRow(library: Library): HTMLElement {
     const remove = el(
       "button",
       {
@@ -2519,36 +2608,33 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
         "aria-label": `Remove ${library.name} (the file stays on disk)`,
         "data-de-lib": "remove",
         "data-de-lib-id": library.id,
+        disabled: pending.get(library.id)?.kind === "removing",
       },
       // `icon.marker`, like the annotation row's X: a 16px X fills the 18px
       // box edge to edge and reads louder than the name beside it.
       [icon("XSmall", tokens.icon.marker)]
     ) as HTMLButtonElement
     remove.addEventListener("click", () => {
+      if (pending.has(library.id)) return
+      const mine: RowPending = { kind: "removing" }
+      pending.set(library.id, mine)
       remove.disabled = true
+      /*
+       * The card leaves with the store's notification, which rebuilds the list
+       * without it — and a scanned file for the same path reads as addable
+       * again in that same paint (`installedNow`). There is no exit animation:
+       * the store notifies inside the request's own `.then`, so the card is
+       * already detached by the time this handler hears back, and the
+       * `leaveRow` call that used to sit here never had a card to animate.
+       */
       void removeLibrary(editor.apiBase, library.id)
-        .then(async () => {
-          // The path is free to be offered again the moment it is gone.
-          for (const candidate of candidates) {
-            if (candidate.path === library.source.path) candidate.installed = false
-          }
+        .then(() => {
+          endPending(library.id, mine)
           editor.toast(`Removed ${library.name}`)
           editor.refresh()
-          /*
-           * Close the card before the list is rebuilt without it.
-           *
-           * The request has already landed by here, so this is not a pending
-           * state — it is the ending, which used to be the card merely not
-           * appearing in the next render. The same helper the annotations list
-           * uses, deliberately: two panels removing a row two different ways is
-           * exactly the drift this codebase keeps closing elsewhere.
-           */
-          const card = remove.closest(".de-lib-card")
-          if (card instanceof HTMLElement) await leaveRow(card)
-          render()
         })
         .catch((error: unknown) => {
-          remove.disabled = false
+          endPending(library.id, mine)
           editor.toast(messageOf(error, `Could not remove ${library.name}. Try again.`), "error")
         })
     })
@@ -2605,8 +2691,32 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
     focusControl(match, { preventScroll: true })
   }
 
-  /** The list the rows were last built from; see `update`. */
+  /** The list, and its state, the rows were last built from; see `update`. */
   let painted: Library[] | null = null
+  let paintedState: LibraryListState | null = null
+
+  /**
+   * Drop a row's pending entry once the list shows its answer: the row is gone
+   * (removed), or its switch now reads what was asked for (toggled). Run by
+   * `render`, so the notification that carries the answer also unlocks the row.
+   */
+  function settlePending(libraries: readonly Library[]): void {
+    for (const [id, held] of pending) {
+      const library = libraries.find((entry) => entry.id === id)
+      if (!library || (held.kind === "toggling" && library.enabled === held.next)) pending.delete(id)
+    }
+  }
+
+  /**
+   * The request is over. If `render` has not already settled the entry — a
+   * failure, or an answer that did not match — drop it and repaint, which also
+   * puts a failed switch back where the list says it is.
+   */
+  function endPending(id: string, held: RowPending): void {
+    if (pending.get(id) !== held) return
+    pending.delete(id)
+    render()
+  }
 
   function render(): void {
     const memory = focusedControl()
@@ -2618,13 +2728,24 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
      * longer on screen. `core/scroll.ts` carries the mechanism.
      */
     const hold = holdScroll(node)
-    const libraries: InstalledLibrary[] = libraryList()
+    const libraries = libraryList()
+    const state = libraryListState()
     painted = libraries
+    paintedState = state
+    settlePending(libraries)
 
     // Silent at zero, the way the Handover heading's count is.
     count.textContent = libraries.length ? String(libraries.length) : ""
 
     clear(list)
+    /*
+     * A failed load says so, in the line a failed scan uses, rather than
+     * drawing the same empty list a project with no libraries draws. The
+     * next `update()` asks again.
+     */
+    if (state.status === "failed") {
+      list.append(el("p", { class: "de-lib-hint de-lib-error", "data-de-lib": "list-error" }, [LIST_FAILED]))
+    }
     for (const library of libraries) list.append(libraryRow(library))
     // A credential's row is named after the libraries it opens.
     paintSignedLabels()
@@ -2635,13 +2756,25 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
   }
 
   function update(): void {
-    // The first paint is what asks the server for the list. Doing it at mount
-    // time would put a request on every page load for a feature most sessions
-    // never open, which is the same call `core/icon-set.ts` makes about its
-    // 114KB of path data.
-    if (!loaded) {
-      loaded = true
-      void loadLibraries(editor.apiBase).then(() => render())
+    /*
+     * Ask for the list when nothing has, and AGAIN after a failure: a dev
+     * server that was still starting at page load answers the next ask. The
+     * store's notification paints the answer. A retry that lands also
+     * refreshes the editor, because the Design tab reads the merged catalog
+     * and does not subscribe — the enabled libraries' tokens and components
+     * return to the pickers without a reselection.
+     */
+    const state = libraryListState()
+    if (state.status === "idle" || state.status === "failed") {
+      const retry = state.status === "failed"
+      void loadLibraries(editor.apiBase).then((libraries) => {
+        if (retry && libraryListState().status === "ready" && libraries.some((library) => library.enabled)) {
+          editor.refresh()
+        }
+      })
+    }
+    if (!askedSignIns) {
+      askedSignIns = true
       /*
        * The sign-ins ride the same first paint, and a failure here is warned
        * about rather than toasted.
@@ -2671,8 +2804,9 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
        * waiting. It defaults to true so the ordinary case never waits on this
        * request, and only ever narrows.
        */
-      void canOpenProviderSignIn(editor.apiBase).then((available) => {
+      void canOpenProviderSignIn(editor.apiBase).then(({ available, budgetMs }) => {
         canOpenWindow = available
+        signInBudgetMs = budgetMs || signInBudgetMs
         if (challenge) paintSignIn()
       })
     }
@@ -2682,7 +2816,7 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
      * every write, so an unchanged identity means the rows on screen are still
      * the rows; every write also renders on its own through the subscription.
      */
-    if (libraryList() !== painted) render()
+    if (libraryList() !== painted || libraryListState() !== paintedState) render()
   }
 
   // The controls in the sign-in dialog that carry state in an attribute rather

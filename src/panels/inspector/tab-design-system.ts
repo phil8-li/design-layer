@@ -62,7 +62,8 @@ export function designSystemTab(editor: EditorContext): InspectorTab {
      * reads — `activeDesignSystem()` only merges an enabled library's tokens
      * once the list is in, so the Design tab's pickers would lack them until
      * this tab was first opened. The store dedupes, so the section's own first
-     * `update()` reuses this request.
+     * `update()` reuses this request, and if this one fails the section shows
+     * that and its next `update()` asks again (`libraryListState()`).
      *
      * The lint tool list once the page is idle — the slow answer on this tab,
      * a server that checks which checkers the project has — so the audit

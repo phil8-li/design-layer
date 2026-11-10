@@ -247,12 +247,17 @@ const BEACON = {
  * nothing about stories, and a section that wrote its own summary from them
  * would print "9 components" over a Storybook the server described completely
  * differently. That is the assertion the URL row is worth.
+ *
+ * The source is the server's real shape for a URL library, `{ kind: "url",
+ * path: <the link> }` (`server/library-url.mjs`). It used to be an invented
+ * `{ kind: "manifest", path, url }`, which hid a section that read
+ * `source.url` and so never named a signed-in row after its library.
  */
 const ORBIT = {
   id: "url-orbit",
   name: "Orbit",
   enabled: false,
-  source: { kind: "manifest", path: "orbit", url: "https://orbit.example.com/storybook" },
+  source: { kind: "url", path: "https://orbit.example.com/storybook" },
   addedAt: 1737100002000,
   counts: { ...noCounts, components: 9 },
   detail: "9 components across 24 stories",
@@ -399,7 +404,7 @@ const VAULT = {
   id: "url-vault",
   name: "Vault",
   enabled: false,
-  source: { kind: "manifest", path: "vault", url: WALL.url },
+  source: { kind: "url", path: WALL.url },
   addedAt: 1737100003000,
   counts: { ...noCounts, components: 12 },
   detail: "12 components across 30 stories",
@@ -450,6 +455,14 @@ const server = {
   staleSignIn: false,
   /** Whether this machine claims a browser to open one in. */
   canOpenWindow: true,
+  /** Whether `GET /libraries` fails, the way a dev server still starting does. */
+  failList: false,
+  /**
+   * Requests the stub HOLDS until the test releases them, matched by method
+   * and path, one request per entry. The way to stand inside a token check or
+   * a PATCH and do something else before it answers.
+   */
+  holds: [],
   reset() {
     server.libraries = []
     server.candidates = []
@@ -459,6 +472,8 @@ const server = {
     server.signInGate = null
     server.staleSignIn = false
     server.canOpenWindow = true
+    server.failList = false
+    server.holds = []
   },
 }
 
@@ -471,9 +486,20 @@ async function serve(input, init = {}) {
   const body = init.body ? JSON.parse(init.body) : null
   server.calls.push({ method, path: rest, body })
 
+  const hold = server.holds.find((entry) => entry.method === method && entry.path === rest && !entry.taken)
+  if (hold) {
+    hold.taken = true
+    await new Promise((resolve) => {
+      hold.release = resolve
+    })
+  }
+
   const reply = (payload) => ({ ok: true, status: 200, json: async () => payload })
 
   if (rest === "/libraries" && method === "GET") {
+    if (server.failList) {
+      return { ok: false, status: 500, json: async () => ({ message: "The dev server is still starting" }) }
+    }
     return reply({ libraries: clone(server.libraries) })
   }
   if (rest === "/libraries/available" && method === "GET") {
@@ -613,7 +639,7 @@ async function serve(input, init = {}) {
       server.libraries = [...server.libraries, library]
       return reply({ library: clone(library) })
     }
-    if (body?.url === ORBIT.source.url) {
+    if (body?.url === ORBIT.source.path) {
       const library = clone(ORBIT)
       server.libraries = [...server.libraries, library]
       return reply({ library: clone(library) })
@@ -680,7 +706,7 @@ const bundled = await build({
       export { librariesSection } from "./src/libraries/libraries-section"
       export { dsLintSection } from "./src/lint/panel"
       export { designSystemTab } from "./src/panels/inspector/tab-design-system"
-      export { libraryList, refreshLibraries } from "./src/libraries/store"
+      export { libraryList, reloadLibrariesForTest } from "./src/libraries/store"
     `,
     resolveDir: PACKAGE_DIR,
     loader: "ts",
@@ -746,7 +772,7 @@ const context = editor.createContext(bridge, {
 server.reset()
 server.libraries = [clone(PIER), clone(BEACON)]
 server.candidates = [clone(CANDIDATE)]
-await editor.refreshLibraries(API)
+await editor.reloadLibrariesForTest(API)
 
 const libraries = editor.librariesSection(context)
 right.append(libraries.node)
@@ -878,7 +904,7 @@ await check("the CTA is a URL field with a real name, and an Add beside it", () 
 
 await check("Add posts {url}, and the row that lands is the server's own", async () => {
   const field = one("url")
-  field.value = ORBIT.source.url
+  field.value = ORBIT.source.path
   const before = server.calls.length
   click(one("url-add"))
   await settle(8)
@@ -887,7 +913,7 @@ await check("Add posts {url}, and the row that lands is the server's own", async
     .slice(before)
     .find((call) => call.method === "POST" && call.path === "/libraries")
   assert.ok(post, "Add never reached the server")
-  assert.equal(post.body?.url, ORBIT.source.url, "the add posted something other than the link")
+  assert.equal(post.body?.url, ORBIT.source.path, "the add posted something other than the link")
   assert.equal(post.body?.path, undefined, "a link was posted as a project path")
 
   const added = row(ORBIT.id)
@@ -895,7 +921,7 @@ await check("Add posts {url}, and the row that lands is the server's own", async
   assert.match(added.textContent, /Orbit/)
   assert.equal(
     added.querySelector(".de-lib-path")?.getAttribute("title"),
-    ORBIT.source.url,
+    ORBIT.source.path,
     "the row shows a path where the library has a URL"
   )
   assert.equal(field.value, "", "the field kept the link it had already added")
@@ -1618,7 +1644,7 @@ await check("with nothing installed it draws no empty-state sentence", async () 
   const installed = clone(server.libraries)
 
   server.libraries = []
-  await editor.refreshLibraries(API)
+  await editor.reloadLibrariesForTest(API)
   await settle()
 
   assert.deepEqual(all("library"), [], "the section lists libraries this project does not have")
@@ -1631,7 +1657,7 @@ await check("with nothing installed it draws no empty-state sentence", async () 
 
   // Scaffolding: the libraries go back, so the file ends where it started.
   server.libraries = installed
-  await editor.refreshLibraries(API)
+  await editor.reloadLibrariesForTest(API)
   await settle()
   assert.equal(all("library").length, installed.length, "the borrowed libraries did not come back")
 })
@@ -2319,6 +2345,180 @@ await check("Forget does not claim a credential the server did not have", async 
   // Re-read from the server rather than asserted from here: the list on screen
   // is now the list the server answered with, whatever that turned out to be.
   assert.equal(one("signed-in"), null, "the row survived a list the server says is empty")
+})
+
+// ── One flight, one list state ─────────────────────────────────────────────
+
+console.log("\nEvery answer is checked against who still owns the screen")
+
+const enter = (node) =>
+  node.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }))
+const escape = () =>
+  signInDialog().dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))
+const posts = (path) => server.calls.filter((call) => call.method === "POST" && call.path === path)
+
+/*
+ * Enter never looked at whether the button was disabled: two presses on a slow
+ * check sent two POSTs, and two successes replayed the add twice.
+ */
+await check("two Enters in the credential box send one check", async () => {
+  server.credentials = []
+  await refuseAdd(WALL)
+  openCredentials()
+  one("signin-value").value = "wrong-token"
+  const before = posts("/libraries/auth").length
+  enter(one("signin-value"))
+  enter(one("signin-value"))
+  await settle(8)
+  assert.equal(posts("/libraries/auth").length - before, 1, "one paste was checked twice")
+  dismissSignIn()
+})
+
+await check("two Enters in the link box send one add", async () => {
+  toasts.length = 0
+  const before = posts("/libraries").length
+  one("url").value = "https://nope.example.com"
+  enter(one("url"))
+  enter(one("url"))
+  await settle(8)
+  assert.equal(posts("/libraries").length - before, 1, "one link was posted twice")
+  assert.equal(toasts.filter(([message]) => message === REFUSAL).length, 1, "the refusal was said twice")
+  one("url").value = ""
+})
+
+/*
+ * The token check had no run number: close the dialog mid-check, open another
+ * wall, and the new dialog opened reading "Checking…", then printed the old
+ * site's refusal on itself.
+ */
+await check("a token check that fails after its dialog closed leaves the next wall alone", async () => {
+  server.credentials = []
+  toasts.length = 0
+  await refuseAdd(WALL)
+  openCredentials()
+  one("signin-value").value = "wrong-token"
+  const hold = { method: "POST", path: "/libraries/auth" }
+  server.holds.push(hold)
+  click(one("signin-submit"))
+  await settle(4)
+  assert.equal(one("signin-submit").textContent, "Checking…", "the check did not say it was running")
+  escape()
+  await settle(4)
+  await refuseAdd(REDIRECT_WALL)
+  const submit = one("signin-submit")
+  assert.equal(submit.textContent, "Use this token", "the new wall opened on the old wall's check")
+  assert.equal(submit.disabled, false, "the new wall's submit is locked by a check it did not start")
+  hold.release()
+  await settle(8)
+  const said = one("signin-error")
+  assert.ok(said.hidden || !said.textContent, `the old refusal printed on the new wall: ${said.textContent}`)
+  assert.ok(signInShown(), "the old answer closed the new wall's dialog")
+  assert.ok(
+    toasts.some(([message, kind]) => kind === "error" && message === BAD_CREDENTIAL),
+    `the refusal went nowhere: ${JSON.stringify(toasts)}`
+  )
+  dismissSignIn()
+})
+
+await check("a token check that succeeds after its dialog moved on keeps the new wall and hands the old add back", async () => {
+  server.credentials = []
+  toasts.length = 0
+  await refuseAdd(WALL)
+  openCredentials()
+  one("signin-value").value = OPENS
+  const hold = { method: "POST", path: "/libraries/auth" }
+  server.holds.push(hold)
+  click(one("signin-submit"))
+  await settle(4)
+  escape()
+  await settle(4)
+  await refuseAdd(REDIRECT_WALL)
+  const before = posts("/libraries").length
+  hold.release()
+  await settle(10)
+  assert.ok(signInShown(), "the old answer closed the new wall's dialog")
+  assert.match(
+    signInDialog().querySelector(".de-lib-signin-title").textContent,
+    new RegExp(new URL(REDIRECT_WALL.origin).host.replace(/\./g, "\\.")),
+    "the dialog is no longer about the new wall"
+  )
+  assert.equal(posts("/libraries").length - before, 0, "the old add was replayed over the new wall")
+  assert.ok(
+    toasts.some(([message]) => /^Signed in\. Add .+ again to finish it\.$/.test(message)),
+    `the old add was dropped without a word: ${JSON.stringify(toasts)}`
+  )
+  assert.ok(control("signed-in", WALL.origin), "the credential that landed is not listed")
+  dismissSignIn()
+})
+
+/*
+ * Pending state lived on the switch, and the list is rebuilt on every store
+ * notification: mid-request the switch came back enabled, and a second press
+ * sent a second PATCH.
+ */
+await check("a switch whose request is out stays locked through a rebuild", async () => {
+  const target = server.libraries[0]
+  assert.ok(target && row(target.id), "no library row to toggle")
+  const was = target.enabled
+  const hold = { method: "PATCH", path: `/libraries/${target.id}` }
+  const patches = () => server.calls.filter((call) => call.method === "PATCH" && call.path === hold.path).length
+  const before = patches()
+  server.holds.push(hold)
+  click(control("enable", target.id))
+  await settle(2)
+  await editor.reloadLibrariesForTest(API)
+  await settle(2)
+  const rebuilt = control("enable", target.id)
+  assert.equal(rebuilt.disabled, true, "the rebuild unlocked a switch whose request is still out")
+  assert.equal(rebuilt.getAttribute("aria-pressed"), String(!was), "the rebuild dropped the optimistic paint")
+  rebuilt.disabled = false
+  click(rebuilt)
+  hold.release()
+  await settle(8)
+  assert.equal(patches() - before, 1, "one press sent two PATCHes")
+  const settled = control("enable", target.id)
+  assert.equal(settled.disabled, false, "the answer did not unlock the switch")
+  assert.equal(settled.getAttribute("aria-pressed"), String(!was), "the switch does not show the answer")
+})
+
+/*
+ * A failed load was stored as the same bits as "never asked", drawn as the
+ * same empty list as "no libraries", and never asked again.
+ */
+await check("a list that failed to load says so, and the next update loads it", async () => {
+  const expected = server.libraries.length
+  server.failList = true
+  // The store warns with the error, whose stack names this data: URL bundle.
+  const warn = console.warn
+  console.warn = () => {}
+  try {
+    await editor.reloadLibrariesForTest(API)
+  } finally {
+    console.warn = warn
+  }
+  await settle(4)
+  const line = one("list-error")
+  assert.ok(line, "a failed load drew nothing")
+  assert.ok(line.classList.contains("de-lib-hint") && line.classList.contains("de-lib-error"), "the failure is not the panel's error line")
+  assert.equal(line.textContent, "Could not load the libraries. Select an element or reopen this tab to try again.")
+  server.failList = false
+  const gets = server.calls.filter((call) => call.method === "GET" && call.path === "/libraries").length
+  libraries.update()
+  await settle(8)
+  assert.equal(
+    server.calls.filter((call) => call.method === "GET" && call.path === "/libraries").length - gets,
+    1,
+    "update() did not ask again"
+  )
+  assert.equal(one("list-error"), null, "the error line outlived a good load")
+  assert.equal(all("library").length, expected, "the rows did not come back")
+  libraries.update()
+  await settle(4)
+  assert.equal(
+    server.calls.filter((call) => call.method === "GET" && call.path === "/libraries").length - gets,
+    1,
+    "a loaded list was asked for again"
+  )
 })
 
 /*
