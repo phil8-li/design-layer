@@ -55,12 +55,12 @@ import path from "node:path"
 import { httpError as badRequest } from "../runtime/http-error.mjs"
 import { writeFileAtomicAsync } from "../runtime/state-dir.mjs"
 
-import { importedStylesheets } from "./design-system-detect.mjs"
+import { importedStylesheetFiles } from "./design-system-detect.mjs"
 import { looksLikeComponentLibrary, scanComponentLibrary } from "./library-components.mjs"
+import { describeCatalog, emptyCatalog, totalTokens, worthOffering } from "./library-catalog.mjs"
 import {
   CATALOG_READER_VERSION,
   LIBRARY_SOURCE_KINDS,
-  describeLibrary,
   detectLibraryKind,
   libraryCounts,
   libraryId,
@@ -176,69 +176,9 @@ function conventionallyPlaced(relative) {
 }
 const FRAMEWORK_LABELS = { react: "React", angular: "Angular" }
 
-/**
- * The bar a stylesheet clears to be OFFERED as a library, and the two shapes
- * that clear it.
- *
- * `detectLibraryKind` answers "can this file be read as a design system?", and
- * four custom properties is the right answer to THAT question: it is the
- * cheapest test that separates a stylesheet carrying tokens from one carrying
- * only rules. It is the wrong answer to the question discovery actually asks,
- * which is "would a designer ever mean this file?". Measured against a real
- * app, the four-property rule finds the project's design system and then a
- * dozen component stylesheets behind it, each declaring the two or three
- * one-off values that one component happened to need. Every one of them parses.
- * None of them is a library, and a chooser whose list is mostly noise is one a
- * designer stops reading — so the noise costs more than the misses do.
- *
- * DISCOVERY IS A RECOMMENDATION; `add` IS A CAPABILITY. Nothing here changes
- * what `add` accepts. A designer who types one of these paths into the manual
- * field still gets the library, because the editor can genuinely read the file
- * and refusing it would be the editor pretending it cannot. The bar governs
- * only what the editor volunteers unasked, which is why it is applied in `scan`
- * and nowhere near `sourceKind`.
- *
- * The bar is read off the PARSED catalog, never off the path. A path rule would
- * be one framework's convention — `*.component.css` is how Angular spells
- * "private stylesheet", and means nothing in a Vue, Svelte or plain-CSS project
- * — and what makes a file a design system is what is inside it.
- *
- * Two ways to clear it, because design systems come in both shapes:
- *
- *  - BREADTH. A system declares more than one axis and gives each one a scale.
- *    The shortest run of values anyone calls a scale is four steps (xs/sm/md/lg
- *    is the near-universal floor), so two axes at four steps each is eight
- *    tokens — the smallest count that is credibly a system rather than a
- *    handful of values one component needed. The component stylesheets this
- *    rule is aimed at carry one to three, so they are not near misses.
- *  - DEPTH. A file may be a single axis and still be a library: a palette is
- *    nothing but colours. With one group there is no second axis corroborating
- *    the claim, so the count has to carry it alone and the bar is higher.
- *    Twenty-four is a palette enumerated on purpose — eight hues in three
- *    shades, or a twelve-step ramp declared for light and again for dark —
- *    where a dozen colours is still what one busy component declares inline.
- */
-const MIN_SYSTEM_TOKENS = 8
-const MIN_SINGLE_AXIS_TOKENS = 24
-
-/** A catalog with nothing in it: what a source that cannot be read contributes. */
-function emptyCatalog(name) {
-  return {
-    name,
-    trackingUnit: "px",
-    colors: [],
-    spacing: [],
-    radii: [],
-    textStyles: [],
-    uiTextStyles: [],
-    effects: [],
-    icons: [],
-    motion: [],
-    components: [],
-    iconDrawings: [],
-    iconAttribute: "",
-  }
-}
+// The bars discovery applies (`worthOffering`) and the one detection applies
+// (`worthAdopting`) live in `library-catalog.mjs`, documented against each
+// other, so detection can read them without importing the store.
 
 /** `brand-tokens.json` -> `Brand Tokens`: a filename read as a label. */
 function nameFromPath(relative) {
@@ -249,88 +189,6 @@ function nameFromPath(relative) {
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
   return words.join(" ") || base || relative
-}
-
-function totalTokens(counts) {
-  return Object.values(counts ?? {}).reduce(
-    (total, value) => total + (Number.isFinite(value) ? value : 0),
-    0
-  )
-}
-
-/** How many of the count groups a source actually put anything in. */
-function filledGroups(counts) {
-  return Object.values(counts ?? {}).filter((value) => Number.isFinite(value) && value > 0).length
-}
-
-/**
- * Whether a parsed candidate is enough of a design system to be offered
- * unasked. See `MIN_SYSTEM_TOKENS` above for the bar and the reasoning.
- *
- * Only a stylesheet is judged against the counts. A manifest, a token file and
- * an icon set are already declarations of intent — somebody wrote that file in a
- * design-system format on purpose, and a small one is a small design system
- * rather than an accident — and a component directory had to pass
- * `looksLikeComponentLibrary` to get this far. A stylesheet is the one kind with
- * no intent behind it: every app has dozens, and it is the only kind the
- * four-property rule over-collects.
- *
- * WHAT NO KIND IS EXEMPT FROM IS BEING EMPTY. The detector for `tokens` matches
- * any JSON with a nested `{ value: … }` leaf, which is also the shape of an i18n
- * catalog, a Cypress fixture and a chart's data file — and `tokens` outranks
- * `css`, so `locales/en.json` was offered at the TOP of the list, describing
- * itself as "no tokens", above the project's real `src/styles/tokens.css`. A
- * candidate that parses to nothing is not a small design system, it is a file
- * that answered the detector's question by accident. Judging it on its parsed
- * catalog rather than on a tighter detector keeps the rule where every other
- * rule in this file already is: what makes a file a design system is what is
- * inside it.
- *
- * Exported because `server/design-system-detect.mjs` reads the same parsed
- * shape. It asks a DIFFERENT question, and `worthAdopting` below is that one —
- * the two sit together so the difference between them is stated once, where
- * both are read from.
- */
-export function worthOffering(kind, counts) {
-  const total = totalTokens(counts)
-  if (total === 0) return false
-  if (kind !== "css") return true
-  return filledGroups(counts) > 1 ? total >= MIN_SYSTEM_TOKENS : total >= MIN_SINGLE_AXIS_TOKENS
-}
-
-/**
- * Whether a stylesheet at a project's CONVENTIONAL ENTRY POINT is that
- * project's design system.
- *
- * The bar above answers "should this file, out of the hundreds in a project, be
- * offered to somebody who did not ask for it". It is strict because it chooses
- * from a whole tree: a lone list of a dozen colours could be a palette or could
- * be one busy component, and with nothing else to go on the count has to settle
- * it.
- *
- * The detector is not choosing from a tree. It has already been told where to
- * look — `src/index.css`, `app/globals.css`, or whatever `components.json`
- * names as the Tailwind entry — and a stylesheet at that path is the one the
- * BUILD treats as the project's own. That is the corroborating signal the depth
- * bar was standing in for, and it is a better signal than any count: a
- * component's private stylesheet is never the configured entry point.
- *
- * Applying the strict bar there rejected real projects. Measured across four
- * prototypes whose tokens live in `src/index.css`, two were adopted and two were
- * refused for declaring a palette and nothing else — thirteen colours in one,
- * seven in the other, both inside an explicit theme block with the words "Design
- * tokens" written above them. The editor then offered no tokens at all for a
- * project that plainly had them, which is the exact failure this detection was
- * added to end.
- *
- * So the only bar left is emptiness. A file that parses to nothing is still
- * nothing — which is what keeps a CSS reset, or an entry that does no more than
- * `@import` a framework, from being adopted — but a conventional entry that
- * declares any token at all is declaring the project's tokens, and the editor
- * should read them.
- */
-export function worthAdopting(counts) {
-  return totalTokens(counts) > 0
 }
 
 /**
@@ -571,12 +429,12 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
    * `index.css` over its global, colour and scale files — and read alone it
    * declared no custom properties: the library was refused as "carries no
    * tokens" while the tokens sat one file away. The same rule the host's own
-   * detection follows (`importedStylesheets`), plus the symlink check every
+   * detection follows (`importedStylesheetFiles`), plus the symlink check every
    * other path here goes through, because an import is a path too.
    */
   async function importedInProject(absolute, text) {
     const realRoot = (await canonical(projectRoot)) ?? projectRoot
-    const parts = importedStylesheets(absolute, text, projectRoot)
+    const parts = importedStylesheetFiles(absolute, text, projectRoot)
     const kept = []
     for (const part of parts) {
       const real = await canonical(part.absolute)
@@ -1020,7 +878,7 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
             path: relative,
             kind,
             name: name.slice(0, MAX_NAME),
-            detail: describeLibrary(kind, catalog) || "A design system file",
+            detail: describeCatalog(catalog),
             installed: false,
           },
         }

@@ -281,7 +281,7 @@ function contains(boundary, target) {
  * (`@import "tailwindcss/preflight.css"`) resolves to a path that does not
  * exist beside the entry and falls out at the read.
  */
-function importedStylesheetFiles(entryAbsolute, text, boundary) {
+export function importedStylesheetFiles(entryAbsolute, text, boundary) {
   const directory = path.dirname(entryAbsolute)
   const imported = []
   const seen = new Set()
@@ -299,13 +299,6 @@ function importedStylesheetFiles(entryAbsolute, text, boundary) {
   }
   return imported
 }
-
-/**
- * Transitional: the library store imports the old name, which collided with
- * the URL reader's `@import` follower. It goes once the store imports
- * `importedStylesheetFiles`.
- */
-export { importedStylesheetFiles as importedStylesheets }
 
 /**
  * One entry stylesheet and its imports, as the single stylesheet the cascade

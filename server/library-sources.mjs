@@ -52,7 +52,6 @@ import { normalizeDesignSystemManifest } from "./design-system-manifest.mjs"
 import { parseCssLibrary } from "./library-css.mjs"
 import { glyphList, looksLikeDrawings, parseIconLibrary } from "./library-icons.mjs"
 import { figmaVariableLeaves, hasTokenLeaf, parseTokenLibrary, readableTokenCount } from "./library-tokens.mjs"
-import { describeCatalog } from "./library-catalog.mjs"
 
 export { slug, componentId } from "./library-common.mjs"
 export {
@@ -323,13 +322,4 @@ function kindOf(relativePath, text, parsed) {
   const properties = source.match(CSS_CUSTOM_PROPERTY)
   if (properties && properties.length >= MIN_CSS_PROPERTIES) return "css"
   return null
-}
-
-/**
- * Transitional: the store still calls this with a kind first. The description
- * no longer depends on the kind (see `describeCatalog`), so once the store's
- * call becomes `describeCatalog(catalog)` this alias goes.
- */
-export function describeLibrary(_kind, catalog) {
-  return describeCatalog(catalog)
 }

@@ -52,7 +52,6 @@ import {
   CATALOG_READER_VERSION,
   LIBRARY_SOURCE_KINDS,
   describeCatalog,
-  describeLibrary,
   detectLibraryKind,
   libraryCounts,
   libraryId,
@@ -1858,8 +1857,6 @@ check("the description names the first three groups that have anything in them",
   assert.equal(describeCatalog(glyphs), "2 icons")
   // Fixed group order, not size: colours lead whatever else outnumbers them.
   assert.match(line, /^3 colou?rs · /)
-  // The store's older call, kind first, says the same thing.
-  assert.equal(describeLibrary("css", nimbus), line)
 })
 
 check("one of something is not one somethings", () => {
