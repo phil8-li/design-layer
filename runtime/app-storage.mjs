@@ -32,9 +32,9 @@ import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 
-import { registryDir } from "./editor-registry.mjs"
+import { stateRoot, writeFileAtomic } from "./state-dir.mjs"
 
-export const KEY_PREFIX = "designlayer."
+const KEY_PREFIX = "designlayer."
 export const MAX_KEY_LENGTH = 512
 // A page of notes is a few kilobytes. This is far above that and far below
 // what would make one key crowd the others out of the total.
@@ -42,10 +42,10 @@ export const MAX_VALUE_LENGTH = 256 * 1024
 // The total kept on disk. Past it, the entries written longest ago go first,
 // which drops the apps nobody has opened in the longest time.
 export const MAX_TOTAL_BYTES = 8 * 1024 * 1024
-export const MAX_ENTRIES = 2000
+export const MAX_STORED_ENTRIES = 2000
 
 export function storageDir() {
-  return path.join(path.dirname(registryDir()), "storage")
+  return path.join(stateRoot(), "storage")
 }
 
 // Hashed because a key holds a URL and a pathname, and neither is a file name.
@@ -89,27 +89,26 @@ export function readEntries() {
 }
 
 function writeEntry(entry) {
-  const file = fileFor(entry.key)
-  // Unique per write, not just per process: one editor can merge the same key
-  // twice before the first rename lands.
-  const temp = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(temp, `${JSON.stringify(entry)}\n`, "utf8")
-    fs.renameSync(temp, file)
+    writeFileAtomic(fileFor(entry.key), `${JSON.stringify(entry)}\n`)
     return true
   } catch {
-    try {
-      fs.rmSync(temp, { force: true })
-    } catch {
-      /* nothing else to try */
-    }
     return false
   }
 }
 
-// Ordered by the entry's own `updatedAt`, not the file's mtime: a merge of an
-// old note uploaded today is still an old note.
+/**
+ * Drops the entries written longest ago once the store is over either cap.
+ *
+ * Counted and sized from `stat` first, because the caps are rarely reached and
+ * this runs after every merge that took an entry — and the page copies each
+ * localStorage change here, so typing a note merged several times a second.
+ * Reading and parsing every file (up to 2,000 of them) on each of those merges
+ * was the cost; `updatedAt` is read only when something has to go.
+ *
+ * Ordered by the entry's own `updatedAt`, not the file's mtime: a merge of an
+ * old note uploaded today is still an old note.
+ */
 function prune() {
   const dir = storageDir()
   let names
@@ -126,14 +125,15 @@ function prune() {
     } catch {
       /* counted as empty */
     }
-    return { file, size, at: readFile(file)?.updatedAt ?? 0 }
+    return { file, size }
   })
   let total = files.reduce((sum, { size }) => sum + size, 0)
-  if (total <= MAX_TOTAL_BYTES && files.length <= MAX_ENTRIES) return
-  files.sort((a, b) => a.at - b.at)
-  let count = files.length
-  for (const { file, size } of files) {
-    if (total <= MAX_TOTAL_BYTES && count <= MAX_ENTRIES) break
+  if (total <= MAX_TOTAL_BYTES && files.length <= MAX_STORED_ENTRIES) return
+  const dated = files.map((entry) => ({ ...entry, at: readFile(entry.file)?.updatedAt ?? 0 }))
+  dated.sort((a, b) => a.at - b.at)
+  let count = dated.length
+  for (const { file, size } of dated) {
+    if (total <= MAX_TOTAL_BYTES && count <= MAX_STORED_ENTRIES) break
     try {
       fs.rmSync(file, { force: true })
     } catch {

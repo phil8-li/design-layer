@@ -120,6 +120,31 @@ await check("past the size bound the oldest entries are dropped first", () => {
   assert.ok(total <= storage.MAX_TOTAL_BYTES, `kept ${total} bytes`)
 })
 
+/*
+ * The page copies each localStorage change here, so a note being typed merges
+ * several times a second. Under both caps, a merge reads the one file it
+ * compares against and nothing else: the store is counted and sized by `stat`.
+ */
+await check("a merge under the caps reads only the entry it replaces", () => {
+  clearStore()
+  for (let index = 0; index < 50; index += 1) {
+    storage.mergeEntries([{ key: `designlayer.preview-only.app:/q${index}`, value: "x", updatedAt: 100 + index }])
+  }
+  const read = []
+  const realRead = fs.readFileSync
+  fs.readFileSync = function countedRead(file, ...rest) {
+    read.push(path.basename(String(file)))
+    return realRead.call(this, file, ...rest)
+  }
+  try {
+    assert.equal(storage.mergeEntries([{ key: NOTES, value: "typed", updatedAt: 500 }]).accepted, 1)
+  } finally {
+    fs.readFileSync = realRead
+  }
+  assert.equal(read.length, 1, `one merge read ${read.length} files`)
+  assert.equal(storage.readEntries().length, 51)
+})
+
 await check("an unwritable store answers empty and never throws", () => {
   clearStore()
   fs.mkdirSync(path.dirname(storage.storageDir()), { recursive: true })

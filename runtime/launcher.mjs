@@ -1,46 +1,52 @@
 /**
  * Runtime launcher: monkey-patches over `react-rewrite-cli@0.1.1`, the
- * overlay+chrome concatenation (served, cached and revalidated here rather than
- * by the vendor), and the loopback route mount.
+ * loopback route mount, and the editor's publication (registry entry and
+ * endpoint file). The overlay script is served by runtime/overlay-responder.mjs
+ * and the bundle freshness check lives in runtime/bundle-stamp.mjs; this
+ * module wires both in.
  *
  * The patches fix defects in the pinned vendor build — an unauthenticated
  * all-interfaces bind, a `content-length` + `transfer-encoding` conflict
  * browsers reject, React 19's percent-encoded owner-stack paths, and a health
  * check that walks away from a dev server whose app is throwing or still
- * compiling. None of them
- * know anything about the host app, so they ship verbatim.
+ * compiling. None of them know anything about the host app, so they ship
+ * verbatim. They are installed by `launch()`, not by importing this module.
  *
  * Everything that DID know about one host is now read from the resolved config:
  * the project root, the ports, the API prefix, and the chrome selectors handed
  * to the vendor patch.
  */
 
-import { createHash } from "node:crypto"
 import fs from "node:fs"
-import { publishEditor, withdrawEditor } from "./editor-registry.mjs"
 import net from "node:net"
 import path from "node:path"
-import { spawnSync } from "node:child_process"
 import { createRequire, syncBuiltinESMExports } from "node:module"
 import { fileURLToPath, pathToFileURL } from "node:url"
-import { promisify } from "node:util"
-import zlib from "node:zlib"
 
-import { browserPrelude } from "../config.mjs"
-import { wrapCompanion } from "../server/companions.mjs"
 import {
-  guardBoardFrames,
   stripFrameBlockingHeaders,
   stripFrameBlockingResponseHeaders,
   rewriteOverlayInjection,
 } from "./board-frame.mjs"
 import { installApplyAhead } from "./apply-ahead.mjs"
+import { appName } from "./app-name.mjs"
+import { ensureCurrentChromeBundle } from "./bundle-stamp.mjs"
 import { chooserUrlFromEnv, isLoopbackOrigin } from "./chooser-url.mjs"
 import { probePort, urlHost } from "./dev-server.mjs"
+import { publishEditor, withdrawEditor } from "./editor-registry.mjs"
+import { onExit } from "./exit-hooks.mjs"
 import { deskUrlFromHost } from "./mac-desk.mjs"
 import { openBrowser } from "./open-browser.mjs"
-import { buildStampIsCurrent } from "./bundle-stamp.mjs"
+import { createOverlayResponder } from "./overlay-responder.mjs"
+import {
+  NEXT_CONFIG_FILES,
+  VITE_CONFIG_FILES,
+  hasRootFile,
+  manifestDependencies,
+  packageNameOf,
+} from "./project-facts.mjs"
 import { patchProxyRetries } from "./proxy-retry.mjs"
+import { writeFileAtomic } from "./state-dir.mjs"
 import { patchOverlay } from "./vendor-patch.mjs"
 import { deferVendorTransform } from "./vendor-lazy.mjs"
 import { installVendorServerPatch } from "./vendor-server-patch.mjs"
@@ -88,21 +94,19 @@ export function vendorBindPort(ports, port, phase = null) {
   return port
 }
 
-const CHROME_BUNDLE = fileURLToPath(
-  new URL("../dist/designlayer.js", import.meta.url)
-)
-// The toaster's React half, built as a module of its own (see `build.mjs`).
-const TOASTER_BUNDLE = fileURLToPath(new URL("../dist/toaster.js", import.meta.url))
-
 /**
- * Re-exported, not defined here any more: `server/apps.mjs` reads the same
- * environment variable to find the screen it relays the app list from, and it
- * cannot import this module to get at it — importing this one patches `fs`,
- * `http` and `net`. The definition moved to runtime/chooser-url.mjs and the
- * name stays on this module's surface, because the callers that already read it
- * from here are not wrong about where it belongs.
+ * Re-exported for one reader, `test/toolbar-cases.mjs`, which imports it from
+ * here. The definition lives in runtime/chooser-url.mjs, where `server/apps.mjs`
+ * reads it too; once that test imports it from there, this line can go.
  */
 export { chooserUrlFromEnv }
+
+/**
+ * Re-exported for one reader, `test/companion-cases.mjs`. The overlay body is
+ * built in runtime/overlay-responder.mjs now; once that test imports it from
+ * there, this line can go.
+ */
+export { readCompanionBundles } from "./overlay-responder.mjs"
 
 /** The absolute URL a `fetch` argument names, or null when it names none. */
 function requestedUrl(input) {
@@ -178,8 +182,8 @@ export function acceptErroringDevServer(host, appPort) {
 
 /**
  * Prefers the HOST's copy of the vendor, so an app that already pins
- * `react-rewrite-cli` wins over the one installed beside this package. The 22
- * splices are only valid against 0.1.1 either way, which is why the dependency
+ * `react-rewrite-cli` wins over the one installed beside this package. The
+ * splices in vendor-patch.mjs are only valid against 0.1.1 either way, which is why the dependency
  * is exact-pinned rather than a peer.
  */
 export function resolveVendor(config) {
@@ -235,8 +239,8 @@ export function vendorDetectionShims(config) {
   } catch {
     return null
   }
-  const dependencies = { ...manifest.dependencies, ...manifest.devDependencies }
-  const has = (names) => names.some((name) => fs.existsSync(path.join(config.projectRoot, name)))
+  const dependencies = manifestDependencies(manifest)
+  const has = (names) => hasRootFile(config.projectRoot, names)
 
   if (config.host?.framework === "angular") {
     return {
@@ -247,7 +251,7 @@ export function vendorDetectionShims(config) {
       // Angular 17+ serves through Vite, so "vite" is the framework the vendor's
       // own vocabulary has for this host. The port it infers from that is
       // discarded — `--project-root` and the app port are both already known.
-      virtualConfig: has(["vite.config.js", "vite.config.ts"])
+      virtualConfig: has(VITE_CONFIG_FILES)
         ? null
         : path.join(config.projectRoot, "vite.config.ts"),
     }
@@ -257,311 +261,14 @@ export function vendorDetectionShims(config) {
   return {
     manifestPath,
     declareReact: false,
-    virtualConfig: has(["next.config.js", "next.config.ts", "next.config.mjs"])
+    virtualConfig: has(NEXT_CONFIG_FILES)
       ? null
       : path.join(config.projectRoot, "next.config.mjs"),
   }
 }
 
-export function readChromeBundle() {
-  try {
-    return fs.readFileSync(CHROME_BUNDLE, "utf8")
-  } catch {
-    console.warn(
-      "[designlayer] chrome bundle missing — run `npm run build` in the package"
-    )
-    return ""
-  }
-}
 
-/**
- * The configured companions, concatenated after the editor's own chrome.
- *
- * After, because the editor is the thing this package is responsible for: a
- * companion that blows up on evaluation must not be able to take it with it,
- * and `wrapCompanion` fences each one for the same reason. Not cached across
- * changes: `createOverlayResponder` keys its cache on each companion script's
- * mtime and size, so rebuilding a companion's bundle shows up on the next
- * reload — the editor's own dist is checked at launch as well, because a stale
- * dist is a fact about this tree that nobody rebuilds by hand mid-session.
- *
- * A companion that has gone missing since launch warns and is skipped. The
- * alternative is a 500 on the overlay, which takes down the editor over a file
- * that belongs to somebody else.
- */
-export function readCompanionBundles(config) {
-  return (config.companions ?? [])
-    .map((companion) => {
-      try {
-        return wrapCompanion(companion.name, fs.readFileSync(companion.script, "utf8"))
-      } catch (error) {
-        console.warn(
-          `[designlayer] companion "${companion.name}" could not be read (${error.message})`
-        )
-        return ""
-      }
-    })
-    .join("")
-}
 
-export const OVERLAY_PATH = "/__react-rewrite/overlay.js"
-export const TOASTER_PATH = "/__designlayer/toaster.js"
-
-const brotli = promisify(zlib.brotliCompress)
-const gzip = promisify(zlib.gzip)
-
-/** `mtimeMs:size`, or a fixed word for a file that is not there right now. */
-function fileStamp(file) {
-  try {
-    const stat = fs.statSync(file)
-    return `${stat.mtimeMs}:${stat.size}`
-  } catch {
-    return "missing"
-  }
-}
-
-/** The best encoding the request accepts: br, then gzip, then none. `q=0` refuses. */
-function pickEncoding(header) {
-  const accepted = new Set()
-  for (const part of String(header ?? "").split(",")) {
-    const [name, ...params] = part.trim().toLowerCase().split(";")
-    const refused = params.some((param) => /^\s*q\s*=\s*0(\.0*)?\s*$/.test(param))
-    if (name && !refused) accepted.add(name)
-  }
-  if (accepted.has("br")) return "br"
-  if (accepted.has("gzip")) return "gzip"
-  return null
-}
-
-/**
- * Serves `/__react-rewrite/overlay.js` itself, ahead of the vendor's handler.
- *
- * The vendor writes the overlay with a bare `Content-Type` and nothing else: no
- * validator, no compression. So every page load re-downloaded ~3MB and, with
- * nothing to revalidate against, Chrome threw away its V8 code cache for the
- * script each time — measured at ~20ms of top-level compile against ~0.1ms
- * with cached data, before the eager compile of the functions that run. By the
- * time the vendor's `createReadStream` runs it has already called `writeHead`,
- * so a 304 is impossible from there; it has to be answered before the vendor
- * sees the request.
- *
- * The body is exactly what was served before — prelude, patched vendor overlay,
- * chrome, companions, all inside `guardBoardFrames` — built once per key. The
- * key is every input that can change while this process lives: the prelude
- * text (its ports are filled in at bind), and `mtimeMs:size` of the chrome
- * bundle and of each companion script, so a rebuilt companion still shows up
- * on the next reload. A handful of `stat`s per request is the whole cost of a
- * hit. The ETag is the body's own hash, so a rebuild that produces the same
- * bytes keeps the browser's cache, and each encoding is compressed once per
- * body, off the main thread.
- *
- * The toaster's React half is served the same way at `TOASTER_PATH`: its own
- * file, keyed by its stamp. The overlay names its versioned URL in
- * `window.__DESIGNLAYER_TOASTER__`, so the first toast of a session imports
- * exactly the build the page was served beside, and every later page takes it
- * from cache.
- *
- * Returns `respond(req, res)`, true when it took the request; `warm()`, which
- * builds the current body and its brotli copy ahead of the first page; and
- * `versionedPath()`, the URL a page is handed, which is served as immutable — a
- * reload then runs the script from cache without even the 304's round trip.
- * Its `?v=` is a hash of the key rather than of the body: the key already
- * changes whenever the body can, and naming it costs a few `stat`s, where
- * hashing the body meant building it inside the first page's response.
- */
-export function createOverlayResponder({ config, runtime, patchedOverlay }) {
-  let cached = null
-  let toaster = null
-
-  const versionOf = (key) => createHash("sha1").update(key).digest("base64url")
-
-  function entryFor(key, text) {
-    const body = Buffer.from(text)
-    const etag = `"${createHash("sha1").update(body).digest("base64url")}"`
-    return { key, body, version: versionOf(key), etag, encoded: new Map() }
-  }
-
-  /** The toaster module's entry, or null while `dist/` has none. */
-  function currentToaster() {
-    const key = fileStamp(TOASTER_BUNDLE)
-    if (key === "missing") return (toaster = null)
-    if (toaster?.key === key) return toaster
-    let text = null
-    try {
-      text = fs.readFileSync(TOASTER_BUNDLE, "utf8")
-    } catch {
-      // No module, no URL: `core/toast.ts` falls back to its plain import.
-    }
-    toaster = text === null ? null : entryFor(key, text)
-    return toaster
-  }
-
-  /** Everything the body is made from, as one string; see the header. */
-  function overlayKey() {
-    const prelude = browserPrelude(config, runtime)
-    const toasterStamp = fileStamp(TOASTER_BUNDLE)
-    const key = [
-      prelude,
-      fileStamp(CHROME_BUNDLE),
-      toasterStamp,
-      ...(config.companions ?? []).map((companion) => fileStamp(companion.script)),
-    ].join("\n")
-    return { prelude, toasterStamp, key }
-  }
-
-  function current() {
-    const { prelude, toasterStamp, key } = overlayKey()
-    if (cached?.key === key) return cached
-    const named =
-      toasterStamp === "missing"
-        ? ""
-        : `window.__DESIGNLAYER_TOASTER__=${JSON.stringify(`${TOASTER_PATH}?v=${versionOf(toasterStamp)}`)};\n`
-    cached = entryFor(
-      key,
-      guardBoardFrames(
-        `${prelude}\n${named}${patchedOverlay}\n;\n${readChromeBundle()}\n;\n${readCompanionBundles(config)}`
-      )
-    )
-    return cached
-  }
-
-  function encodedBody(entry, encoding) {
-    if (!encoding) return Promise.resolve(entry.body)
-    let pending = entry.encoded.get(encoding)
-    if (!pending) {
-      // Brotli 5 is the measured sweet spot: 679KB in ~35ms, against gzip's
-      // 751KB in ~55ms. Higher qualities cost seconds for a few percent.
-      pending =
-        encoding === "br"
-          ? brotli(entry.body, {
-              params: {
-                [zlib.constants.BROTLI_PARAM_QUALITY]: 5,
-                [zlib.constants.BROTLI_PARAM_SIZE_HINT]: entry.body.length,
-              },
-            })
-          : gzip(entry.body, { level: 6 })
-      // A failed compression falls back to the plain body rather than a 500.
-      pending = pending.catch(() => entry.body)
-      entry.encoded.set(encoding, pending)
-    }
-    return pending
-  }
-
-  function respond(req, res) {
-    const url = new URL(req.url || "/", "http://localhost")
-    const entry =
-      url.pathname === OVERLAY_PATH ? current() : url.pathname === TOASTER_PATH ? currentToaster() : null
-    if (!entry) return false
-    const headers = {
-      "Content-Type": "application/javascript",
-      // The URL a page is handed names this exact body (`versionedPath`), so it
-      // can never go stale: the browser keeps it without asking again. Any
-      // other spelling — the bare path, a version from before a rebuild —
-      // revalidates against the ETag.
-      "Cache-Control":
-        url.searchParams.get("v") === entry.version ? "public, max-age=31536000, immutable" : "no-cache",
-      ETag: entry.etag,
-      Vary: "Accept-Encoding",
-    }
-    const tags = String(req.headers["if-none-match"] ?? "").split(",").map((tag) => tag.trim())
-    if (tags.includes(entry.etag) || tags.includes("*")) {
-      res.writeHead(304, headers)
-      res.end()
-      return true
-    }
-    const encoding = pickEncoding(req.headers["accept-encoding"])
-    void encodedBody(entry, encoding).then((payload) => {
-      if (res.destroyed) return
-      const plain = payload === entry.body
-      res.writeHead(200, {
-        ...headers,
-        ...(plain ? {} : { "Content-Encoding": encoding }),
-        "Content-Length": String(payload.length),
-      })
-      res.end(req.method === "HEAD" ? undefined : payload)
-    })
-    return true
-  }
-
-  function warm() {
-    try {
-      void encodedBody(current(), "br")
-      const view = currentToaster()
-      if (view) void encodedBody(view, "br")
-    } catch {
-      // A body that cannot be built now will say why on the request that asks.
-    }
-  }
-
-  /** The overlay's URL for a page being served now, naming the body it gets. */
-  function versionedPath() {
-    return `${OVERLAY_PATH}?v=${versionOf(overlayKey().key)}`
-  }
-
-  return { respond, warm, versionedPath }
-}
-
-const BUILD_SCRIPT = fileURLToPath(new URL("../build.mjs", import.meta.url))
-
-/**
- * `dist/` is gitignored, built by `build.mjs`, and read straight off disk by the
- * function above — so the browser gets whatever happens to be sitting there. A
- * MISSING bundle was loud. One that was merely BEHIND said nothing, and that is
- * the worse of the two: the editor ran two commits older than its own source
- * while `tsc` passed, every suite passed, and every source review was correct
- * about a feature that simply was not in the browser. `build.mjs --check`
- * already knew how to catch it; nothing on the path that actually serves the
- * bundle ever asked it.
- *
- * So the serving path asks, once, before the vendor boots. It asks by running
- * `build.mjs` in a child process rather than by calling esbuild inline, because
- * there must be exactly one description of how this package compiles: a second
- * copy of the target list here would drift from the real one and then either
- * miss a stale bundle or cry stale over a fresh one. The child costs ~100ms, so
- * it only runs when the stamp the last passing build left behind no longer
- * matches the files it was made from (`runtime/bundle-stamp.mjs`): a launch on
- * an untouched tree pays a few hundred `stat`s instead.
- *
- * Behind is rebuilt, not refused. The repair is one command, so refusing to
- * start would only make the user type it; and a rebuild that said nothing would
- * hide that the source had moved underneath them, which is precisely how this
- * went unnoticed. Rebuild, then say so in a line that cannot be mistaken for
- * routine output. When the rebuild is impossible — `esbuild` pruned from a
- * published install, a source tree that does not compile — the editor still
- * starts, because a prebuilt `dist/` with no rebuild wanted is a supported way
- * to consume this package; it just starts behind a warning that the thing in
- * the browser is not the source in this tree.
- */
-export function ensureCurrentChromeBundle() {
-  // The last passing build left a stamp of everything it compiled from; when
-  // none of it has moved, the bundle is current and there is nothing to prove.
-  if (buildStampIsCurrent(path.dirname(BUILD_SCRIPT))) return
-
-  const runBuild = (...args) =>
-    spawnSync(process.execPath, [BUILD_SCRIPT, ...args], {
-      cwd: path.dirname(BUILD_SCRIPT),
-      encoding: "utf8",
-    })
-
-  if (runBuild("--check").status === 0) return
-
-  const rebuilt = runBuild()
-  if (rebuilt.status === 0) {
-    console.warn("[designlayer] dist/ was behind src/ — rebuilt it before serving")
-    return
-  }
-
-  // Why it failed goes ABOVE the verdict, not below it. The reason is a compile
-  // error or a module resolution stack — tens of lines either way — and a
-  // warning printed on top of one is a warning nobody reads.
-  const reason = (rebuilt.stderr || rebuilt.error?.message || "").trim()
-  console.warn(
-    (reason ? `${reason}\n\n` : "") +
-      "[designlayer] dist/ does not match src/ and could not be rebuilt. The editor\n" +
-      "  in the browser is NOT the source in this tree — it is whatever was built last.\n" +
-      "  Run `npm run build` in the package to see your own changes."
-  )
-}
 
 async function loadRoutes(config) {
   try {
@@ -569,7 +276,7 @@ async function loadRoutes(config) {
     return createDesignLayerRoutes(config)
   } catch (error) {
     console.warn(
-      `[designlayer] routes unavailable — options and AI will be disabled (${error.message})`
+      `[designlayer] routes unavailable — options, lint and the agent handoff will be disabled (${error.message})`
     )
     return null
   }
@@ -589,14 +296,15 @@ async function loadRoutes(config) {
 async function startMcpEndpoint(config, runtime) {
   const port = typeof config.ports?.mcp === "number" ? config.ports.mcp : null
   try {
-    const [{ configureMcpControl }, { isLocalRequest }, { chooserUrlFromEnv }] = await Promise.all([
+    const [{ configureMcpControl }, { isLocalRequest }] = await Promise.all([
       import("../server/mcp-control.mjs"),
       import("../server/routes.mjs"),
-      import("./chooser-url.mjs"),
     ])
     const control = configureMcpControl({
       port,
-      hubUrl: chooserUrlFromEnv(process.env),
+      // The chooser this editor came from serves the shared endpoint, when it
+      // does. Read once at launch (see `runtime` in `launch`).
+      hubUrl: runtime.chooserUrl,
       token: process.env.DESIGNLAYER_MCP_TOKEN || null,
       isLocalRequest,
     })
@@ -614,7 +322,7 @@ async function startMcpEndpoint(config, runtime) {
       return
     }
     runtime.mcpPort = state.port
-    writeEndpointFile(config, runtime)
+    publishEndpoint(config, runtime)
     console.log(
       state.mode === "hub"
         ? `[designlayer] MCP http://${LOOPBACK}:${state.port}/mcp — served by the start screen, shared by every app`
@@ -646,15 +354,24 @@ function decodeSourcePath(value) {
 }
 
 /**
- * The endpoint file says where THIS editor is, inside the project it is
- * editing. The registry says the same thing somewhere every other editor can
- * read it — see `editor-registry.mjs` for why one is not enough.
+ * Where this editor is, said in two places: the endpoint file inside the
+ * project it edits (`<project>/.local/designlayer/endpoint.json`, read by the
+ * harness and by tools that know the project), and the registry entry every
+ * other editor and the start screen can read (see `editor-registry.mjs` for
+ * why one is not enough).
  *
- * Published from the same place and at the same moments, so the two can never
- * disagree about a port, and withdrawn on the way out so the chooser does not
- * offer a door into a process that has gone.
+ * One writer for both, so they never disagree about a port:
+ *
+ *   unpublished --proxy binds-->      published (no MCP)   + exit hook registered
+ *   published   --MCP endpoint up-->  published (with MCP)
+ *   published   --process exits-->    withdrawn: registry entry and endpoint file removed
+ *
+ * The endpoint file is removed only while it still names this process: a
+ * second editor of the same project (another app port) may have written it
+ * since. A process killed hard leaves both behind; the registry sweeps dead
+ * pids on read, and the endpoint file carries `pid` for the same check.
  */
-function publishToRegistry(config, runtime) {
+function publishEndpoint(config, runtime) {
   if (!runtime.proxyPort) return
   publishEditor({
     proxyPort: runtime.proxyPort,
@@ -662,47 +379,19 @@ function publishToRegistry(config, runtime) {
     appPort: runtime.appPort ?? null,
     appUrl: runtime.appPort ? `http://${LOOPBACK}:${runtime.appPort}` : null,
     projectRoot: config.projectRoot,
-    packageName: readPackageName(config.projectRoot),
+    packageName: runtime.packageName,
     url: `http://${BROWSER_HOST}:${runtime.proxyPort}`,
   })
-  if (!registryWithdrawal) {
+  if (!endpointPublished) {
+    endpointPublished = true
     const port = runtime.proxyPort
-    registryWithdrawal = () => withdrawEditor(port)
-    // Both, because they catch different exits: `exit` covers a normal return
-    // and an explicit `process.exit`, the signals cover Ctrl+C and a supervisor
-    // replacing this editor with the next one.
-    process.once("exit", registryWithdrawal)
-    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-      process.once(signal, () => {
-        registryWithdrawal?.()
-        process.exit(0)
-      })
-    }
+    onExit(() => {
+      withdrawEditor(port)
+      removeOwnEndpointFile(config.endpointFile)
+    })
   }
-}
-
-let registryWithdrawal = null
-
-/**
- * What the project calls itself, for a chooser row that has to name it. Read
- * from disk rather than carried in the config because the config does not have
- * it and nothing else needed it until now.
- */
-function readPackageName(projectRoot) {
   try {
-    const raw = fs.readFileSync(path.join(projectRoot, "package.json"), "utf8")
-    const name = JSON.parse(raw)?.name
-    return typeof name === "string" && name.length > 0 ? name : null
-  } catch {
-    return null
-  }
-}
-
-function writeEndpointFile(config, runtime) {
-  publishToRegistry(config, runtime)
-  try {
-    fs.mkdirSync(config.stateDir, { recursive: true })
-    fs.writeFileSync(
+    writeFileAtomic(
       config.endpointFile,
       `${JSON.stringify(
         {
@@ -719,12 +408,23 @@ function writeEndpointFile(config, runtime) {
         },
         null,
         2
-      )}\n`,
-      "utf8"
+      )}\n`
     )
   } catch (error) {
     // Port discovery is a convenience for the harness, never a launch blocker.
+    // The project folder may be one macOS will not let this process write to.
     console.warn(`[designlayer] could not write endpoint file (${error.message})`)
+  }
+}
+
+let endpointPublished = false
+
+/** Removes the endpoint file if this process is the one it names. Never throws. */
+function removeOwnEndpointFile(file) {
+  try {
+    if (JSON.parse(fs.readFileSync(file, "utf8"))?.pid === process.pid) fs.rmSync(file, { force: true })
+  } catch {
+    // Gone already, unreadable, or someone else's: nothing to remove.
   }
 }
 
@@ -778,6 +478,7 @@ export async function launch(config, { appPort, host, open, verbose = false, onR
     throw new Error(`Could not load 'ws' WebSocketServer from ${wsSpecifier}`)
   }
 
+  const packageName = packageNameOf(config.projectRoot)
   const originalExistsSync = fs.existsSync
   const originalReadFileSync = fs.readFileSync
   const originalCreateServer = http.createServer
@@ -801,6 +502,10 @@ export async function launch(config, { appPort, host, open, verbose = false, onR
     // A Mac app installed after this launch shows up at the next one, the same
     // bargain the chooser URL makes.
     deskUrl: deskUrlFromHost(),
+    // Read once rather than per page: the prelude names the app on every HTML
+    // response, and the registry entry carries the package name.
+    packageName,
+    appName: appName({ projectRoot: config.projectRoot, packageName }),
   }
   // The package stays immutable on disk: the pinned bundle is patched in memory
   // and served by the routed handler below, so the vendor's own overlay branch
@@ -903,10 +608,21 @@ export async function launch(config, { appPort, host, open, verbose = false, onR
   const restoreFetch = acceptErroringDevServer(host, appPort)
 
   /*
-   * Counted at the call, not on "listening": the vendor probes for the proxy's
-   * port in the same tick it asks the WebSocket server to bind, before that
-   * server has said it is listening. Its probes are plain net.Servers, so only
-   * its two http.Servers move the phase on.
+   * The vendor's bind sequence, as this process sees it:
+   *
+   *   health check (fetch patched) --first listen() of any server--> fetch restored
+   *   phase "ws"    --the vendor's first http.Server.listen()-->  phase "proxy"
+   *   phase "proxy" --its second http.Server.listen()-->          phase null
+   *   ws server "listening"    --> runtime.wsPort
+   *   proxy server "listening" --> runtime.proxyPort, publishEndpoint, onReady
+   *   (next tick)              --> MCP endpoint, overlay warm-up, browser open
+   *
+   * The phase is counted at the call, not on "listening": the vendor probes
+   * for the proxy's port in the same tick it asks the WebSocket server to
+   * bind, before that server has said it is listening. Its probes are plain
+   * net.Servers, so only its two http.Servers move the phase on. The ports
+   * are named on "listening", in the same order. MCP must bind after the
+   * proxy, or its http.Server would be counted as the proxy.
    */
   let vendorServersBound = 0
   const vendorPhase = () => (vendorServersBound === 0 ? "ws" : vendorServersBound === 1 ? "proxy" : null)
@@ -941,7 +657,7 @@ export async function launch(config, { appPort, host, open, verbose = false, onR
       if (runtime.wsPort === null) runtime.wsPort = address.port
       else if (runtime.proxyPort === null) {
         runtime.proxyPort = address.port
-        writeEndpointFile(config, runtime)
+        publishEndpoint(config, runtime)
         onReady(`http://${BROWSER_HOST}:${runtime.proxyPort}`)
         // The vendor's own banner reports the port it asked for, not the one it
         // got, so this line has to land after it to be the one a reader trusts.
@@ -1005,7 +721,7 @@ export async function launch(config, { appPort, host, open, verbose = false, onR
   }
 
   // The chrome needs a few endpoints the vendor WebSocket protocol has no verb
-  // for — saved element options and the AI handoff. Mounting them by wrapping the
+  // for — saved element options and the agent handoff. Mounting them by wrapping the
   // proxy's own request handler keeps them on the same loopback origin as the
   // page, so no CORS or second port is involved. The wrapper goes in whether or
   // not the routes loaded: it is also what serves the overlay, and an editor

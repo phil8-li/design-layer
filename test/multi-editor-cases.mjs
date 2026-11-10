@@ -404,6 +404,197 @@ await check("the port flags beat the first editor's remembered pair, and only th
   }
 })
 
+/** A child that takes `ms` to exit after SIGTERM, as a real editor closing its servers does. */
+function slowChild(argv, ms, events) {
+  const child = fakeChild(argv)
+  child.kill = (signal) => {
+    if (child.killed) return
+    child.killed = signal
+    setTimeout(() => {
+      events.push(`exit ${portOf(argv, "--proxy-port")}`)
+      child.emit("exit", null, signal)
+    }, ms)
+  }
+  return child
+}
+
+await check("Stop, then Start for the same app, waits for the old editor and keeps its ports", async () => {
+  const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {} })
+  const children = []
+  const events = []
+  const supervisor = runEditors(screen, {
+    log: () => {},
+    allocatePorts: async ({ taken }) => {
+      for (let proxyPort = 3456; ; proxyPort += 2) {
+        if (!taken.includes(proxyPort)) return { proxyPort, wsPort: proxyPort + 1 }
+      }
+    },
+    spawnEditor: (argv) => {
+      const child = slowChild(argv, 60, events)
+      events.push(`spawn ${portOf(argv, "--proxy-port")}`)
+      children.push(child)
+      return child
+    },
+  })
+  const press = (url, projectRoot) => post(`${screen.url}/api/start`, { url, projectRoot, devScript: null })
+  try {
+    const first = await press("http://127.0.0.1:4101", shop)
+    await until(() => children.length === 1, "the first child")
+    children[0].ready("http://127.0.0.1:3456")
+    await post(`${screen.url}/api/stop`, { id: first.body.id })
+    // Pressed again before the old process has exited.
+    const again = await press("http://127.0.0.1:4101", `${shop}/`)
+    assert.equal(again.body.existing, false)
+    await until(() => children.length === 2, "the second child")
+    assert.deepEqual(events, ["spawn 3456", "exit 3456", "spawn 3456"], "two editors ran for one app, on two origins")
+    assert.equal(supervisor.stateOf(first.body.id), "exited")
+    assert.equal(supervisor.stateOf(again.body.id), "running")
+  } finally {
+    supervisor.killAll()
+    for (const child of children) child.emit("exit", null, "SIGTERM")
+    screen.close()
+    await supervisor.done
+  }
+})
+
+await check("a first choice stopped while it finds its ports does not spend the port flags", async () => {
+  const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {} })
+  const asked = []
+  const children = []
+  let release
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  const supervisor = runEditors(screen, {
+    options: { proxyPort: 4800, wsPort: 4801 },
+    log: () => {},
+    allocatePorts: async (request) => {
+      asked.push(request)
+      if (asked.length === 1) await gate
+      return { proxyPort: 4800 + 2 * (asked.length - 1), wsPort: 4801 + 2 * (asked.length - 1) }
+    },
+    spawnEditor: (argv) => {
+      const child = fakeChild(argv)
+      children.push(child)
+      return child
+    },
+  })
+  const press = (url, projectRoot) => post(`${screen.url}/api/start`, { url, projectRoot, devScript: null })
+  try {
+    const first = await press("http://127.0.0.1:4101", shop)
+    await until(() => asked.length === 1, "the first choice to reach the ports")
+    await post(`${screen.url}/api/stop`, { id: first.body.id })
+    // Let the stop reach the supervisor before the ports come back.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    release()
+    await press("http://127.0.0.1:4102", docs)
+    await until(() => children.length === 1, "the second app's child")
+    assert.deepEqual(asked.map((request) => request.explicit), [true, true], "the stopped choice spent the flags")
+    assert.equal(children[0].argv[children[0].argv.indexOf("--project-root") + 1], docs)
+  } finally {
+    release()
+    supervisor.killAll()
+    screen.close()
+    await supervisor.done
+  }
+})
+
+await check("an update restart stops a choice still finding its ports, and nothing starts after", async () => {
+  const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {} })
+  const children = []
+  let asked = 0
+  let release
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  const supervisor = runEditors(screen, {
+    log: () => {},
+    allocatePorts: async () => {
+      asked += 1
+      await gate
+      return { proxyPort: 3456, wsPort: 3457 }
+    },
+    spawnEditor: (argv) => {
+      const child = fakeChild(argv)
+      children.push(child)
+      return child
+    },
+  })
+  try {
+    const choice = await post(`${screen.url}/api/start`, { url: "http://127.0.0.1:4101", projectRoot: shop, devScript: null })
+    await until(() => asked === 1, "the choice to reach the ports")
+    await supervisor.stopAll()
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assert.equal(children.length, 0, "an editor started after every editor was stopped for the restart")
+    assert.equal(supervisor.stateOf(choice.body.id), "exited")
+  } finally {
+    release()
+    supervisor.killAll()
+    screen.close()
+    await supervisor.done
+  }
+})
+
+await check("a stop for an editor that already exited cancels nothing", async () => {
+  // The screen's side of the race, by hand: the child dies in the same tick
+  // the screen pushes its Stop.
+  const choices = []
+  const stops = []
+  const waiting = { choice: null, stop: null }
+  const queue = (items, key) => () =>
+    items.length ? Promise.resolve(items.shift()) : new Promise((resolve) => (waiting[key] = resolve))
+  const push = (items, key, item) => (waiting[key] ? (waiting[key](item), (waiting[key] = null)) : items.push(item))
+  const reported = []
+  const screen = {
+    url: "http://127.0.0.1:1",
+    nextChoice: queue(choices, "choice"),
+    nextStop: queue(stops, "stop"),
+    reportReady: () => {},
+    reportStopped: (reason, id) => reported.push(id),
+  }
+  const children = []
+  const supervisor = runEditors(screen, {
+    log: () => {},
+    allocatePorts: async () => ({ proxyPort: 3456, wsPort: 3457 }),
+    spawnEditor: (argv) => {
+      const child = fakeChild(argv)
+      children.push(child)
+      return child
+    },
+  })
+  push(choices, "choice", { id: "1", appPort: 4101, projectRoot: shop, appUrl: "http://127.0.0.1:4101", replaces: null })
+  await until(() => children.length === 1, "the child")
+  children[0].crash(1)
+  await until(() => supervisor.stateOf("1") === "exited", "the crash")
+  push(stops, "stop", { id: "1" })
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.equal(supervisor.stateOf("1"), "exited")
+  assert.deepEqual(reported, ["1"], "the crash was reported once")
+  // An id the supervisor has not seen yet is still cancelled before it starts.
+  push(stops, "stop", { id: "2" })
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  push(choices, "choice", { id: "2", appPort: 4102, projectRoot: docs, appUrl: "http://127.0.0.1:4102", replaces: null })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(children.length, 1, "a choice stopped while queued was spawned")
+  supervisor.killAll()
+})
+
+await check("an editor that exits through its exit hooks after a signal reads as stopped", async () => {
+  await withSupervisor(async ({ children, start, status }) => {
+    const a = await start("http://127.0.0.1:4101", shop)
+    await until(() => children.length === 1, "the child")
+    children[0].ready("http://127.0.0.1:3456")
+    // runtime/exit-hooks.mjs exits 128 + 15 on SIGTERM rather than dying of it.
+    children[0].crash(143)
+    await until(async () => (await status(a.body.id)).stopped !== null, "the exit to be reported")
+    assert.equal(
+      (await status(a.body.id)).stopped,
+      "The editor for shop was stopped (SIGTERM). Choose an app to start again."
+    )
+  })
+})
+
 await check("a row edited by an editor started elsewhere opens that editor, not a second", async () => {
   try {
     rememberPage({ port: 4111, projectRoot: shop, page: "/#/cart" })
@@ -686,14 +877,52 @@ await check("busy and taken ports are skipped, and a busy remembered pair moves"
   } finally {
     await release()
   }
-  // A remembered pair that something else now holds is not reused.
+  // A remembered pair that something else now holds is not reused, and the
+  // app's memory moves with it: that pair is lost to another program.
   const squat = await hold(base + 2)
   try {
     const moved = await allocatePorts({ projectRoot: shop, appPort: 4101, preferred })
     assert.deepEqual(moved, { proxyPort: base, wsPort: base + 1 })
+    assert.deepEqual(rememberedPorts({ projectRoot: shop, appPort: 4101 }), moved)
   } finally {
     await squat()
   }
+})
+
+await check("a remembered pair an editor of the same app still holds stays remembered", async () => {
+  fs.rmSync(portsFile(), { force: true })
+  const base = await freeBase(8)
+  const preferred = { proxyPort: base, wsPort: base + 1 }
+  const own = await allocatePorts({ projectRoot: shop, appPort: 4140, preferred })
+  assert.deepEqual(own, preferred)
+  // The app's previous editor, still up (shutting down, or started from
+  // another terminal): bound, and on the register.
+  const held = await hold(own.proxyPort)
+  publishEditor({ proxyPort: own.proxyPort, wsPort: own.wsPort, appPort: 4140, projectRoot: `${shop}/`, url: `http://localhost:${own.proxyPort}` })
+  try {
+    const borrowed = await allocatePorts({ projectRoot: shop, appPort: 4140, preferred })
+    assert.notDeepEqual(borrowed, own)
+    assert.deepEqual(rememberedPorts({ projectRoot: shop, appPort: 4140 }), own, "the app lost its origin to one run")
+    // Held by one of the caller's own editors counts the same.
+    fs.rmSync(registryDir(), { recursive: true, force: true })
+    await allocatePorts({ projectRoot: shop, appPort: 4140, preferred, taken: [own.proxyPort, own.wsPort] })
+    assert.deepEqual(rememberedPorts({ projectRoot: shop, appPort: 4140 }), own)
+  } finally {
+    await held()
+    fs.rmSync(registryDir(), { recursive: true, force: true })
+  }
+  // Free again: the app is back on it.
+  assert.deepEqual(await allocatePorts({ projectRoot: shop, appPort: 4140, preferred }), own)
+})
+
+await check("a pair that is not free is handed out but never written down", async () => {
+  fs.rmSync(portsFile(), { force: true })
+  const base = await freeBase(2)
+  // Every pair the scan could try, taken.
+  const taken = Array.from({ length: 400 }, (_, index) => base + index)
+  const pair = await allocatePorts({ projectRoot: docs, appPort: 4150, preferred: { proxyPort: base, wsPort: base + 1 }, taken })
+  assert.deepEqual(pair, { proxyPort: base, wsPort: base + 1 })
+  assert.equal(rememberedPorts({ projectRoot: docs, appPort: 4150 }), null)
 })
 
 await check("an unreadable ports file costs the memory, not the launch", async () => {

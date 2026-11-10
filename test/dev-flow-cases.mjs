@@ -29,7 +29,9 @@ import path from "node:path"
 
 import { healthCheck } from "react-rewrite-cli/dist/detect.js"
 
-import { parseArgs } from "../cli.mjs"
+import { spawn } from "node:child_process"
+
+import { USAGE, parseArgs } from "../cli.mjs"
 import { DEFAULT_CONFIG } from "../config.mjs"
 import { ensureAppRunning, probePort } from "../runtime/dev-server.mjs"
 import { acceptErroringDevServer } from "../runtime/launcher.mjs"
@@ -125,6 +127,46 @@ await check("the supervisor's flags are taken, and documented like the rest", ()
   assert.match(usage, /^ {2}--start-screen-port <n> Port for the start screen/m)
 })
 
+await check("a port flag takes a port, and says so when it is not one", () => {
+  assert.equal(parseArgs(["--proxy-port", "4800"]).proxyPort, 4800)
+  assert.equal(parseArgs(["--ws-port", "4801"]).wsPort, 4801)
+  assert.equal(parseArgs(["--start-screen-port", "0"]).startScreenPort, 0)
+  for (const [flag, value] of [
+    ["--proxy-port", "abc"],
+    ["--ws-port", "0"],
+    ["--start-screen-port", "70000"],
+    ["--proxy-port", "48.5"],
+  ]) {
+    assert.throws(() => parseArgs([flag, value]), new RegExp(`${flag} needs a port number from [01] to 65535 \\(got ${value.replace(".", "\\.")}\\)`))
+  }
+})
+
+await check("every flag the parser takes is in the usage text", () => {
+  for (const flag of ["--verbose", "--check-update", "--update", "--print-config", "--verify", "--help"]) {
+    assert.match(USAGE, new RegExp(`^ {2}${flag}\\b`, "m"), flag)
+  }
+  // The start screen opens a browser unless told not to; a direct run does not.
+  assert.match(USAGE, /--open \/ --no-open {6}Open the editing URL on start \(default: no; the start screen opens\)/)
+})
+
+/*
+ * docs/using.md quotes the usage text, and the two drifted: the docs lost
+ * `--check-update`, `--update` and `--verbose`. Once the docs block is the
+ * `--help` output (it starts "Usage: designlayer"), it has to stay exactly that.
+ * Until then the case says it is waiting rather than failing a lane that does
+ * not own docs/.
+ */
+await check("the usage in docs/using.md is the --help text", () => {
+  const docs = fs.readFileSync(new URL("../docs/using.md", import.meta.url), "utf8")
+  const block = docs.match(/```\n((?:Usage: )?designlayer \[appPort\] \[options\]\n[\s\S]*?)```/)
+  assert.ok(block, "docs/using.md has no usage block")
+  if (!block[1].startsWith("Usage: ")) {
+    console.log("       pending: docs/using.md still has the old usage block")
+    return
+  }
+  assert.equal(block[1], USAGE)
+})
+
 console.log("\nAttaching")
 
 await check("attaches to a port that already answers, and starts nothing", async () => {
@@ -218,6 +260,75 @@ await check("a dev server that comes up on ::1 is found, and reported there", as
     fs.rmSync(fixture, { recursive: true, force: true })
   }
 })
+
+/*
+ * npm runs in its own process group so `stop` can take the whole npm -> server
+ * chain down, which also means the terminal's Ctrl+C and a supervisor's
+ * SIGTERM never reach it. The stop used to be registered only once the port
+ * answered, so a signal during a slow first compile killed this process and
+ * left the dev server running, holding the app's port.
+ */
+for (const signal of ["SIGTERM", "SIGINT"]) {
+  await check(`${signal} during the first compile stops the dev server too`, async () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "designlayer-dev-"))
+    const pidFile = path.join(fixture, "server.pid")
+    // Never binds and never prints: a first compile that has not finished.
+    fs.writeFileSync(
+      path.join(fixture, "server.js"),
+      `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`
+    )
+    fs.writeFileSync(
+      path.join(fixture, "package.json"),
+      JSON.stringify({ name: "fixture", private: true, scripts: { dev: "node server.js" } })
+    )
+    const port = await deadPort()
+    const moduleUrl = new URL("../runtime/dev-server.mjs", import.meta.url).href
+    const parent = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `const { ensureAppRunning } = await import(${JSON.stringify(moduleUrl)})
+        await ensureAppRunning({ projectRoot: ${JSON.stringify(fixture)}, host: "127.0.0.1", port: ${port}, script: "dev", log() {} })`,
+      ],
+      { stdio: "ignore" }
+    )
+    const exited = new Promise((resolve) => parent.once("exit", (code, killedBy) => resolve({ code, killedBy })))
+    let serverPid = null
+    try {
+      for (let waited = 0; serverPid === null && waited < 15_000; waited += 50) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        if (fs.existsSync(pidFile)) serverPid = Number(fs.readFileSync(pidFile, "utf8")) || null
+      }
+      assert.ok(serverPid, "the dev script never started")
+      parent.kill(signal)
+      const { code } = await exited
+      const alive = () => {
+        try {
+          process.kill(serverPid, 0)
+          return true
+        } catch {
+          return false
+        }
+      }
+      for (let waited = 0; alive() && waited < 5000; waited += 50) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      assert.equal(alive(), false, "the dev server outlived the process that started it")
+      assert.equal(code, signal === "SIGTERM" ? 143 : 130, "the exit code names the signal")
+    } finally {
+      parent.kill("SIGKILL")
+      if (serverPid) {
+        try {
+          process.kill(serverPid, "SIGKILL")
+        } catch {
+          // Already gone, which is the point.
+        }
+      }
+      fs.rmSync(fixture, { recursive: true, force: true })
+    }
+  })
+}
 
 console.log("\nAttaching to an app that is throwing")
 

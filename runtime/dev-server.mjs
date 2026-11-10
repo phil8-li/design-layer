@@ -16,10 +16,29 @@
  * and not `127.0.0.1`, so the app comes up perfectly and the caller, probing
  * `127.0.0.1`, never sees it. Which flags a host takes is a property of its
  * framework, which the resolved config already knows; this module appends them.
+ *
+ * `ensureAppRunning`, as a machine:
+ *
+ *   probing  --a loopback address answers-->        attached (started: false; stop does nothing)
+ *   probing  --nothing answers-->                   waiting  (npm spawned in its own group;
+ *                                                             stop registered with exit-hooks)
+ *   waiting  --any output-->                        waiting  (the quiet clock restarts)
+ *   waiting  --npm exits or fails to spawn-->       failed   (throws "… before anything answered")
+ *   waiting  --90 s quiet, or 10 min in all-->      failed   (group stopped, throws)
+ *   waiting  --the port answers-->                  ready    (started: true)
+ *   waiting|ready --stop() or this process exits--> stopped  (SIGTERM to the whole group)
+ *
+ * The stop is registered the moment the group exists, not once the port
+ * answers: npm is spawned `detached`, so neither the terminal's Ctrl+C nor a
+ * supervisor's SIGTERM reaches it, and a first compile can take minutes. A
+ * crash after `ready` is not watched here; the editor's proxy reports a dead
+ * port as a 502, and the group is still stopped on the way out.
  */
 
 import net from "node:net"
 import { spawn } from "node:child_process"
+
+import { onExit } from "./exit-hooks.mjs"
 
 /** How often the port is re-probed while the app boots. */
 const POLL_MS = 250
@@ -197,17 +216,22 @@ export async function ensureAppRunning({
     exited = { code: null, signal: null, message: error.message }
   })
 
+  // Stops the whole group, even after the npm shim itself has exited: the
+  // server it started can outlive it and hold the port. A group that is
+  // already empty answers ESRCH, which is the nothing-to-do case.
   let stopped = false
   const stop = () => {
-    if (stopped || exited) return
+    if (stopped) return
     stopped = true
     try {
       if (child.pid && process.platform !== "win32") process.kill(-child.pid, "SIGTERM")
-      else child.kill("SIGTERM")
+      else if (!exited) child.kill("SIGTERM")
     } catch {
       // Already gone. Nothing to clean up.
     }
   }
+  // Now, while the first compile is still running: see the header.
+  onExit(stop)
 
   // Polled on the asked-for host AND both loopbacks, for the reason the check
   // above probes both: a host with no host flag (`unknown`, CRA) runs a script

@@ -40,8 +40,9 @@
  */
 
 import fs from "node:fs"
-import os from "node:os"
 import path from "node:path"
+
+import { stateRoot, writeFileAtomic } from "./state-dir.mjs"
 
 /**
  * One directory for the whole machine, outside any project.
@@ -52,7 +53,7 @@ import path from "node:path"
  * project root the way the endpoint file does.
  */
 export function registryDir() {
-  return path.join(os.homedir(), ".local", "state", "designlayer", "editors")
+  return path.join(stateRoot(), "editors")
 }
 
 /** One file per editor, named for the port it answers on, which is unique by construction. */
@@ -73,43 +74,43 @@ function alive(pid) {
 }
 
 /**
- * Publishes this editor. Called once the proxy has a port, because the port is
- * both the entry's name and the only useful thing in it.
+ * When each editor this process published first went up, by proxy port.
+ *
+ * An editor publishes twice — when its proxy binds and again when its MCP
+ * endpoint does — and `listEditors` orders by `startedAt`, "the order they were
+ * opened". Stamping each publish with the time moved an editor to the end of
+ * every chooser the moment its MCP endpoint came up.
+ */
+const firstPublished = new Map()
+
+/**
+ * Publishes this editor, or updates its entry. Called once the proxy has a
+ * port, because the port is both the entry's name and the only useful thing in
+ * it.
  *
  * Never throws. A registry that cannot be written costs the chooser some rows;
- * it must not cost the editor its launch, which is the same bargain
- * `writeEndpointFile` already makes next door.
+ * it must not cost the editor its launch, which is the same bargain the
+ * endpoint file makes next door.
  */
 export function publishEditor(entry) {
   if (!entry?.proxyPort) return
+  if (!firstPublished.has(entry.proxyPort)) firstPublished.set(entry.proxyPort, Date.now())
+  const startedAt = firstPublished.get(entry.proxyPort)
   // Written beside the entry and renamed over it. A plain write truncates
   // first, and another editor's `listEditors` reading in that window found a
   // half-written file, swept it as unparseable, and left this editor missing
-  // from every chooser until it next published. A rename is all-or-nothing;
-  // the temp name does not end in `.json`, so no reader ever parses it.
-  const file = entryPath(entry.proxyPort)
-  const temp = `${file}.${process.pid}.tmp`
+  // from every chooser until it next published.
   try {
-    fs.mkdirSync(registryDir(), { recursive: true })
-    fs.writeFileSync(
-      temp,
-      `${JSON.stringify({ ...entry, pid: process.pid, startedAt: Date.now() }, null, 2)}\n`,
-      "utf8"
-    )
-    fs.renameSync(temp, file)
+    writeFileAtomic(entryPath(entry.proxyPort), `${JSON.stringify({ ...entry, pid: process.pid, startedAt }, null, 2)}\n`)
   } catch {
     // See above: a missing row is not a reason to refuse to start.
-    try {
-      fs.rmSync(temp, { force: true })
-    } catch {
-      /* nothing else to try */
-    }
   }
 }
 
 /** Withdraws this editor on the way out, for the exits we are given notice of. */
 export function withdrawEditor(proxyPort) {
   if (!proxyPort) return
+  firstPublished.delete(proxyPort)
   try {
     fs.rmSync(entryPath(proxyPort), { force: true })
   } catch {

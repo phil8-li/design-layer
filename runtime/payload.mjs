@@ -29,7 +29,10 @@ export const PAYLOAD_FILES = [
 
 export const PAYLOAD_DIRS = ["runtime", "server", "src", "desktop/mac"]
 
-export const PAYLOAD_EXCLUDE = new Set(["node_modules", "test", ".DS_Store", ".git", ".local", ".demos", ".check", ".cache", "package.mjs"])
+// By name, at any depth under PAYLOAD_DIRS: a folder called `test` anywhere in
+// them stays out of an install (test/updater-cases.mjs pins that), so a source
+// folder must not take one of these names.
+const PAYLOAD_EXCLUDE = new Set(["node_modules", "test", ".DS_Store", ".git", ".local", ".demos", ".check", ".cache", "package.mjs"])
 
 /**
  * Which commit an installed copy was made from. A git clone knows by itself;

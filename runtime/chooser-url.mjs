@@ -9,13 +9,13 @@
  * handler has any business causing. The alternative was a second copy of the
  * environment read and the loopback check, and two copies is how one of them
  * comes to accept an origin the other refuses.
+ *
+ * It imports nothing, so the loopback rule here can be the Node side's only
+ * one: `server/routes.mjs` and `runtime/start-screen.mjs` each still keep a
+ * copy of `isLoopbackHost`, and both can import it from here instead.
  */
 
-/**
- * Mirrors `isLoopbackHost` in server/routes.mjs. Not imported from there: that
- * module pulls in the agent and the options store, and the launcher loads this
- * before the vendor boots, when neither exists yet.
- */
+/** Whether a full origin or URL names a loopback host. */
 function isLoopbackOrigin(value) {
   if (typeof value !== "string" || value.length === 0) return false
   try {
@@ -47,6 +47,16 @@ export function chooserUrlFromEnv(env = process.env) {
   if (!isLoopbackOrigin(value)) return null
   const url = new URL(value)
   return url.protocol === "http:" ? url.href : null
+}
+
+/**
+ * Whether a `Host` header (`localhost:3000`, no scheme) or an origin names a
+ * loopback host. The same rule as `isLoopbackOrigin`, for the header that
+ * arrives without a scheme.
+ */
+export function isLoopbackHost(value) {
+  if (typeof value !== "string" || value.length === 0) return false
+  return isLoopbackOrigin(value.includes("://") ? value : `http://${value}`)
 }
 
 /**

@@ -25,21 +25,23 @@ import {
 import { resolveIconSetConfig } from "./server/icon-set.mjs"
 import { appName } from "./runtime/app-name.mjs"
 import { findConfigFile } from "./runtime/config-file.mjs"
+import {
+  DEV_SCRIPT_PREFERENCE,
+  NEXT_CONFIG_FILES,
+  TAILWIND_CONFIG_FILES,
+  VITE_CONFIG_FILES,
+  hasRootFile,
+  manifestDependencies,
+  packageNameOf,
+  readManifest,
+} from "./runtime/project-facts.mjs"
 
-export { CONFIG_FILE_NAMES, findConfigFile } from "./runtime/config-file.mjs"
-
-/**
- * Never host-overridable. The agent reads and rewrites files the browser names,
- * and `.env.local` sits in the project root next to the components. An
- * allowlist a host can empty is not a guard, so this list is applied after the
- * host's own extension allowlist and cannot be extended or removed.
+/*
+ * The source-path guard every route that touches a file goes through. It lives
+ * in runtime/source-guard.mjs, apart from config resolution; these two names
+ * stay on this module because the server's writers import them from here.
  */
-export const SOURCE_DENY_PATTERNS = Object.freeze([
-  /(^|[\\/])\.env(\.|$)/i,
-  /(^|[\\/])[^\\/]*\.config\.[cm]?[jt]sx?$/i,
-  /(^|[\\/])node_modules([\\/]|$)/,
-  /(^|[\\/])\.git([\\/]|$)/,
-])
+export { isEditableSourcePath, resolveEditableSource } from "./runtime/source-guard.mjs"
 
 // Tailwind's own palette stems. Always present; a host adds to this, never
 // replaces it.
@@ -70,7 +72,7 @@ export const DEFAULT_CONFIG = {
   // `devScript` is the host's own npm script, run only under `--dev`. Named
   // rather than assumed to be `next dev`, because the script is where a host
   // keeps the env, the flags and the wrapper its app actually needs.
-  app: { port: null, host: "127.0.0.1", open: false, openQuery: "design", devScript: "dev" },
+  app: { port: null, host: "127.0.0.1", open: false, devScript: "dev" },
   // `proxy` and `ws` are `auto` because the vendor abandons its own defaults the
   // moment either is busy, and nothing outside this process has to predict them.
   // `mcp` is the opposite case: its URL is typed into a coding agent's config
@@ -128,7 +130,6 @@ export const DEFAULT_CONFIG = {
   },
   controls: { leva: null },
   tailwind: {
-    version: 3,
     colorWords: [],
     fontSizes: ["xs", "sm", "base", "lg", "xl", "2xl", "3xl", "4xl", "5xl", "6xl"],
     fontFamilies: ["sans", "serif", "mono"],
@@ -292,14 +293,6 @@ const DEV_SERVERS = {
   unknown: { framework: "react", port: 3000, portFlag: null, hostFlag: null },
 }
 
-function readManifest(projectRoot) {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"))
-  } catch {
-    return null
-  }
-}
-
 /**
  * Which of the five the host is, by the dependency that decides it.
  *
@@ -309,16 +302,12 @@ function readManifest(projectRoot) {
  * package behaved before any of this existed.
  */
 export function detectDevServer(projectRoot) {
-  const manifest = readManifest(projectRoot)
-  const deps = { ...manifest?.dependencies, ...manifest?.devDependencies }
-  const has = (name) => fs.existsSync(path.join(projectRoot, name))
+  const deps = manifestDependencies(readManifest(projectRoot))
 
   if (deps["@angular/core"]) return "angular"
-  if (deps.next || has("next.config.js") || has("next.config.ts") || has("next.config.mjs")) {
-    return "next"
-  }
+  if (deps.next || hasRootFile(projectRoot, NEXT_CONFIG_FILES)) return "next"
   if (deps["react-scripts"]) return "cra"
-  if (deps.vite || has("vite.config.js") || has("vite.config.ts")) return "vite"
+  if (deps.vite || hasRootFile(projectRoot, VITE_CONFIG_FILES)) return "vite"
   return "unknown"
 }
 
@@ -336,11 +325,8 @@ export function detectDevServer(projectRoot) {
  * host that resolves the package through a workspace root this cannot see.
  */
 export function detectTailwind(projectRoot) {
-  const manifest = readManifest(projectRoot)
-  const deps = { ...manifest?.dependencies, ...manifest?.devDependencies }
-  if (deps.tailwindcss) return true
-  return ["tailwind.config.js", "tailwind.config.ts", "tailwind.config.mjs", "tailwind.config.cjs"]
-    .some((name) => fs.existsSync(path.join(projectRoot, name)))
+  if (manifestDependencies(readManifest(projectRoot)).tailwindcss) return true
+  return hasRootFile(projectRoot, TAILWIND_CONFIG_FILES)
 }
 
 /**
@@ -372,13 +358,6 @@ function hostSourceExtensions(extensions, framework, overridden) {
   if (framework !== "angular" || overridden) return extensions
   return [...new Set([...extensions, ".html", ".css", ".scss"])]
 }
-
-// The `dev` and `start` families, best first — the same order the start screen
-// offers them in, so the script this resolves to is the one the screen would
-// have preselected. Kept in step with `PREFERRED_DEV_SCRIPTS` in
-// runtime/local-apps.mjs, which cannot be imported here: this module is the one
-// every other module loads, and that one shells out to `lsof`.
-const DEV_SCRIPT_PREFERENCE = ["dev", "develop", "start", "serve"]
 
 /**
  * The npm script `--dev` runs, resolved against the scripts the host actually
@@ -606,8 +585,7 @@ export async function loadConfig({ configPath, cwd = process.cwd(), overrides = 
  * still carries no path: only the last segment travels.
  */
 function hostAppName(projectRoot) {
-  const name = readManifest(projectRoot)?.name
-  return appName({ projectRoot, packageName: typeof name === "string" ? name : null })
+  return appName({ projectRoot, packageName: packageNameOf(projectRoot) })
 }
 
 /**
@@ -616,14 +594,17 @@ function hostAppName(projectRoot) {
  * object and invariant 4 (no `import` in the served bundle) still holds.
  */
 export function browserPrelude(config, runtime = {}) {
+  // Only what the chrome reads (src/core/config.ts, src/options/inventory.ts):
+  // this text is in every overlay body, and a key with no reader is bytes on
+  // every page load and a promise nobody keeps.
   const payload = {
     apiBase: config.apiPrefix,
-    apiPrefix: config.apiPrefix,
-    openQuery: config.app.openQuery,
     chrome: {
-      trustedSelectors: config.chrome.trustedSelectors,
       trustedSelector: config.chrome.trustedSelector,
-      dockedPanel: config.chrome.dockedPanel,
+      dockedPanel: {
+        offsetVar: config.chrome.dockedPanel.offsetVar,
+        widthVar: config.chrome.dockedPanel.widthVar,
+      },
     },
     tailwind: config.tailwind,
     // Which resolver and which write lane the editor bundle uses. The browser
@@ -645,7 +626,6 @@ export function browserPrelude(config, runtime = {}) {
           }
         : null,
     },
-    ports: { proxy: runtime.proxyPort ?? null, ws: runtime.wsPort ?? null },
     // This launcher keeps the served bundle out of canvas view's frames (see
     // runtime/board-frame.mjs). Stated rather than assumed because the chrome
     // bundle is read from dist/ per request: an editor started before the guard
@@ -682,7 +662,9 @@ export function browserPrelude(config, runtime = {}) {
     // a path is a fact about the machine the page is not owed.
     app: {
       url: Number.isFinite(runtime.appPort) ? `http://127.0.0.1:${runtime.appPort}` : null,
-      name: hostAppName(config.projectRoot),
+      // The launcher reads it once into `runtime`; a caller without one
+      // (tests, tools) gets it read from disk.
+      name: runtime.appName !== undefined ? runtime.appName : hostAppName(config.projectRoot),
     },
   }
 
@@ -726,129 +708,14 @@ function onboardingDismissal() {
  * bound, so a host that pins `ports.ws` gets the pre-remap number injected into
  * the page and the overlay opens a socket nobody is listening on.
  *
- * Both globals are pinned to the port actually bound. The vendor's own
+ * The vendor's global is pinned to the port actually bound. Its own
  * `<script>window.__REACT_REWRITE_WS_PORT__ = …</script>` runs after this and
  * would otherwise win, so the pin has to be a no-op setter rather than a value.
  */
 function wsPortPin(wsPort) {
   if (!wsPort) return ""
   return (
-    `window.__DESIGNLAYER_WS_PORT__=${wsPort};` +
     `Object.defineProperty(window,"__REACT_REWRITE_WS_PORT__",` +
     `{get:function(){return ${wsPort}},set:function(){},configurable:true});`
   )
-}
-
-/**
- * A path with its symlinks resolved, or `null` for one that cannot be reached.
- *
- * `realpath` lstats, and lstat is the call a managed Mac refuses for a
- * protected folder while reading and listing it perfectly. Answering "not
- * editable" to that refusal means every source file in such a project is
- * refused and the editor can change nothing at all, which is why a path the
- * machine will not resolve but will still confirm falls back to its lexical
- * form. Only for EPERM: a path that is genuinely absent stays refused, and a
- * lexical path is a weaker containment check — it cannot see a symlink out of
- * the project — so it is the fallback and never the first answer.
- */
-function canonicalPath(target) {
-  try {
-    return fs.realpathSync(target)
-  } catch (error) {
-    if (error?.code !== "EPERM") return null
-    return fs.existsSync(target) ? path.resolve(target) : null
-  }
-}
-
-/**
- * Canonical project and source roots, resolved once per config object.
- *
- * `isEditableSourcePath` is asked about every file a whole-project walk visits,
- * and re-resolving the same two or three roots for each of three thousand files
- * was a real share of what a usage lookup spent outside the parser. The entry
- * remembers the lexical roots it was made from, so a config whose roots are
- * reassigned is re-resolved rather than answered from the old ones, and a root
- * that did not resolve is never remembered — it may simply not exist yet.
- */
-const canonicalRoots = new WeakMap()
-function canonicalRootsOf(config) {
-  const listed = config.source.roots.length === 0 ? [config.projectRoot] : config.source.roots
-  const key = `${config.projectRoot}\0${listed.join("\0")}`
-  const cached = canonicalRoots.get(config)
-  if (cached?.key === key) return cached
-  const entry = { key, projectRoot: canonicalPath(config.projectRoot), sourceRoots: listed.map(canonicalPath) }
-  if (entry.projectRoot !== null && !entry.sourceRoots.includes(null)) canonicalRoots.set(config, entry)
-  return entry
-}
-
-/**
- * A client-supplied source path, made absolute and proven editable, or `null`.
- *
- * The leading-slash case is not a nicety: Vite serves modules as
- * `/src/App.tsx`, and that is the path its sourcemap hands the browser, so on a
- * Vite host EVERY path arrives looking absolute. Read literally it names
- * `/src/App.tsx` at the filesystem root, which is outside the project — the
- * refusal is correct and the file is not the one meant. Every route that takes
- * a path from the browser goes through here, because a route that kept its own
- * copy of this rule could lose the retry, and variants did: it answered 403 to
- * every lookup on a Vite host.
- *
- * The reinterpretation is the vendor's own rule, kept deliberately narrow and
- * in this order. A path resolving inside the project is taken as written. A
- * path that EXISTS outside it is refused outright — `/etc/passwd` is a real
- * file and must never be re-read as `<root>/etc/passwd`. Only a leading slash
- * pointing at nothing is retried against the root, and whatever survives that
- * still has to pass `isEditableSourcePath`, which is the actual gate.
- */
-export function resolveEditableSource(config, requested) {
-  if (typeof requested !== "string" || !requested.trim()) return null
-  const root = config.projectRoot
-  const trimmed = requested.trim()
-  const candidates = []
-  if (path.isAbsolute(trimmed)) {
-    const absolute = path.resolve(trimmed)
-    candidates.push(absolute)
-    if (!fs.existsSync(absolute)) candidates.push(path.resolve(root, trimmed.replace(/^[/\\]+/, "")))
-  } else {
-    candidates.push(path.resolve(root, trimmed))
-  }
-  for (const candidate of candidates) {
-    if (isEditableSourcePath(config, candidate, path.relative(root, candidate))) return candidate
-  }
-  return null
-}
-
-/**
- * True when the agent is allowed to read/write this path.
- *
- * `resolvedPath` is for a caller that already knows where the path resolves —
- * a walk that followed no symlink, whose files are its resolved root plus their
- * relative paths — and spares the `realpath` (an lstat per path component)
- * that a walk of thousands of files otherwise pays once per file.
- */
-export function isEditableSourcePath(config, absolutePath, relativePath, resolvedPath) {
-  const lexicalProbe = relativePath ?? absolutePath
-  if (SOURCE_DENY_PATTERNS.some((pattern) => pattern.test(lexicalProbe))) return false
-  if (!config.source.extensions.includes(path.extname(absolutePath).toLowerCase())) return false
-
-  const target = resolvedPath ?? canonicalPath(absolutePath)
-  const { projectRoot, sourceRoots } = canonicalRootsOf(config)
-  if (target === null || projectRoot === null) return false
-
-  const projectRelative = path.relative(projectRoot, target)
-  if (
-    projectRelative === "" ||
-    projectRelative.startsWith("..") ||
-    path.isAbsolute(projectRelative) ||
-    SOURCE_DENY_PATTERNS.some((pattern) => pattern.test(projectRelative)) ||
-    !config.source.extensions.includes(path.extname(target).toLowerCase())
-  ) {
-    return false
-  }
-
-  return sourceRoots.some((canonicalRoot) => {
-    if (canonicalRoot === null) return false
-    const rel = path.relative(canonicalRoot, target)
-    return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel)
-  })
 }
