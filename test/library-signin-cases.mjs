@@ -1,15 +1,16 @@
 /**
  * The sign-in that opens the SITE'S OWN login rather than asking for a token.
  *
- * What is exercised here is everything around the browser: which provider a
- * wall names, whether a machine has a browser to open at all, the route's
- * contract, and — the part that matters most — that a window which produced no
- * usable session is reported as a sentence rather than stored as a sign-in.
+ * What is exercised here is everything around the browser: whether a machine
+ * has a browser to open at all, the route's contract, the session that keeps
+ * one run per profile, and — the part that matters most — that a window which
+ * produced no usable session is reported as a sentence rather than stored as a
+ * sign-in.
  *
- * The browser itself is not launched. A test that opened a real window would
- * need a human to sign in, which is the one thing a test cannot supply; the
- * launch is covered by injecting a stand-in for it and asserting on what the
- * route does with each outcome.
+ * No real browser is launched. A test that opened a real window would need a
+ * human to sign in, which is the one thing a test cannot supply; the launch is
+ * covered by `fixtures/fake-chrome` (and a wrapper around it, below) and by
+ * asserting on what the flow does with each outcome.
  */
 
 import assert from "node:assert/strict"
@@ -18,7 +19,9 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { browserCandidates, createBrowserSignIn, findBrowser, providerLabel } from "../server/library-signin.mjs"
+import { spawn } from "node:child_process"
+
+import { browserCandidates, completeSignIn, createBrowserSignIn, findBrowser } from "../server/library-signin.mjs"
 import { classifyWall } from "../server/library-auth.mjs"
 
 let passed = 0
@@ -59,31 +62,6 @@ function bounded(work, ms) {
   return Promise.race([work, limit]).finally(() => clearTimeout(timer))
 }
 
-heading("Who the wall handed off to")
-
-await check("a GitHub sign-in redirect is named as GitHub", () => {
-  assert.equal(
-    providerLabel("https://github.com/login/oauth/authorize?client_id=123"),
-    "GitHub"
-  )
-})
-
-await check("a subdomain of a known provider still names it", () => {
-  assert.equal(providerLabel("https://dev-12345.okta.com/oauth2/v1/authorize"), "Okta")
-})
-
-await check("a provider nobody has heard of is not guessed at", () => {
-  assert.equal(providerLabel("https://sso.internal.example.com/login"), "")
-  assert.equal(providerLabel("not a url"), "")
-  assert.equal(providerLabel(""), "")
-})
-
-await check("a lookalike host is not mistaken for the provider", () => {
-  // `endsWith(".okta.com")` would be wrong here and `endsWith("okta.com")`
-  // catastrophically so: this is somebody else's domain.
-  assert.equal(providerLabel("https://acme.okta.com.evil.example/login"), "")
-})
-
 heading("The wall reports the redirect it saw")
 
 await check("a classified OAuth wall carries the location a provider can be read from", () => {
@@ -94,10 +72,9 @@ await check("a classified OAuth wall carries the location a provider can be read
     "https://storybook.example.com/index.json"
   )
   assert.equal(wall.kind, "oauth")
+  // The classifier stays vendor-free and the panel gets the one fact it needs
+  // to put a provider's name on its button.
   assert.equal(wall.location, location)
-  // The pair is the point: the classifier stays vendor-free and the caller gets
-  // the one fact it needs to put a name on a button.
-  assert.equal(providerLabel(wall.location), "Okta")
 })
 
 await check("a relative redirect is resolved before it is reported", () => {
@@ -180,62 +157,194 @@ await check("a URL the editor cannot parse is refused before anything launches",
   assert.match(outcome.reason, /not a URL/i)
 })
 
-await check("a run that may not ask a human says so instead of opening a window", async () => {
-  /*
-   * The silent pass is tried first and, with a browser that cannot launch, it
-   * fails; `interactive: false` then stops the flow rather than escalating to a
-   * window. This is the branch a background refresh would take, and the point
-   * of asserting it is that the escalation is a decision rather than an
-   * accident of control flow.
-   */
-  const signin = createBrowserSignIn({ stateDir: os.tmpdir(), browserPath: "/nope/not-a-browser" })
-  const outcome = await signin.signIn("https://storybook.example.com/index.json", {
-    interactive: false,
+/*
+ * A wrapper around `fixtures/fake-chrome`, written per run, so a case can see
+ * how many browsers a sign-in launched and which of them were headless.
+ *
+ * Every launch appends `{ pid, headless }` to `FAKE_CHROME_LAUNCHES`. Then:
+ *   FAKE_CHROME_EXIT=1        exit at once, the way a second Chrome does when
+ *                             another instance already holds the profile;
+ *   FAKE_CHROME_NO_SESSION=1  behave as the fixture's mode says, but answer
+ *                             every cookie read with no cookies — a landing that
+ *                             leaves nothing to reuse;
+ *   otherwise                 become the fixture, in this same process.
+ */
+const FAKE_CHROME = fileURLToPath(new URL("./fixtures/fake-chrome.mjs", import.meta.url))
+const wrapperDir = await fs.mkdtemp(path.join(os.tmpdir(), "de-signin-wrapper-"))
+const COUNTING_CHROME = path.join(wrapperDir, "counting-chrome.mjs")
+await fs.writeFile(
+  COUNTING_CHROME,
+  `#!/usr/bin/env node\n` +
+    `import fs from "node:fs"\n` +
+    `import { createRequire } from "node:module"\n` +
+    `const log = process.env.FAKE_CHROME_LAUNCHES\n` +
+    `if (log) fs.appendFileSync(log, JSON.stringify({ pid: process.pid, headless: process.argv.includes("--headless=new") }) + "\\n")\n` +
+    `if (process.env.FAKE_CHROME_EXIT === "1") process.exit(0)\n` +
+    `if (process.env.FAKE_CHROME_NO_SESSION === "1") {\n` +
+    `  const WebSocket = createRequire(${JSON.stringify(FAKE_CHROME)})("ws")\n` +
+    `  const send = WebSocket.prototype.send\n` +
+    `  WebSocket.prototype.send = function (data, ...rest) {\n` +
+    `    return send.call(this, String(data).replace(/"cookies":\\[[^\\]]*\\]/, '"cookies":[]'), ...rest)\n` +
+    `  }\n` +
+    `}\n` +
+    `await import(${JSON.stringify(new URL("./fixtures/fake-chrome.mjs", import.meta.url).href)})\n`,
+  { mode: 0o755 }
+)
+
+/** The launches the wrapper recorded, oldest first. */
+async function launchesIn(file) {
+  try {
+    return (await fs.readFile(file, "utf8"))
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+  } catch {
+    return []
+  }
+}
+
+/** Resolves once `file` holds `count` launches, or rejects after `ms`. */
+async function untilLaunches(file, count, ms = 10000) {
+  const until = Date.now() + ms
+  while (Date.now() < until) {
+    const launches = await launchesIn(file)
+    if (launches.length >= count) return launches
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw new Error(`expected ${count} browser launch(es) within ${ms}ms, saw ${(await launchesIn(file)).length}`)
+}
+
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Resolves once `pid` is gone, or rejects after `ms`. */
+async function untilGone(pid, ms = 5000) {
+  const until = Date.now() + ms
+  while (Date.now() < until) {
+    if (!alive(pid)) return
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw new Error(`the browser (pid ${pid}) was still running ${ms}ms later`)
+}
+
+/**
+ * A fresh state directory and launch log, with the fixture's env set for the
+ * length of `run` and put back afterwards, whatever happens.
+ */
+async function withFakeChrome(env, run) {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "de-signin-run-"))
+  const launches = path.join(stateDir, "launches.jsonl")
+  const keys = { FAKE_CHROME_LAUNCHES: launches, ...env }
+  const before = Object.fromEntries(Object.keys(keys).map((key) => [key, process.env[key]]))
+  Object.assign(process.env, keys)
+  try {
+    return await run({ stateDir, launches })
+  } finally {
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    await fs.rm(stateDir, { recursive: true, force: true })
+  }
+}
+
+await check("a URL that is not a web page is refused before anything launches", async () => {
+  // `file:` and `chrome:` URLs parse and have the origin "null"; opened, they
+  // sit in a visible window until the timeout because they can never land.
+  await withFakeChrome({ FAKE_CHROME_EXIT: "1" }, async ({ stateDir, launches }) => {
+    const signin = createBrowserSignIn({ stateDir, browserPath: COUNTING_CHROME, raiseCommand: [] })
+    for (const url of ["file:///etc/passwd", "chrome://settings"]) {
+      const outcome = await signin.signIn(url)
+      assert.equal(outcome.ok, false)
+      assert.equal(outcome.code, "bad-url")
+    }
+    assert.deepEqual(await launchesIn(launches), [], "a non-web URL opened a browser")
   })
-  assert.equal(outcome.ok, false)
-  assert.match(outcome.reason, /not allowed to ask/i)
 })
 
-await check("a browser that cannot launch fails fast rather than waiting out the timeout", async () => {
+await check("a browser that exits at once is reported at once, and not launched twice", async () => {
+  /*
+   * Two defects in one run. The launch waited on the debugging port and never
+   * on the child, so a browser that was gone in ten milliseconds — a second
+   * Chrome relaying to one that holds the profile — was waited on for the full
+   * twenty-second launch timeout (measured: 20,007 ms). And the silent pass
+   * escalated on ANY failure, so the same dead launch was then tried again as
+   * a visible window: forty seconds to say "the browser did not open".
+   */
+  await withFakeChrome({ FAKE_CHROME_EXIT: "1" }, async ({ stateDir, launches }) => {
+    const signin = createBrowserSignIn({ stateDir, browserPath: COUNTING_CHROME, raiseCommand: [] })
+    const started = Date.now()
+    const outcome = await signin.signIn("https://storybook.example.com/index.json")
+    const took = Date.now() - started
+    assert.equal(outcome.ok, false)
+    assert.equal(outcome.code, "launch-failed")
+    assert.match(outcome.reason, /did not open/i)
+    assert.ok(took < 2000, `a browser that exited at once took ${took}ms to report`)
+    assert.equal((await launchesIn(launches)).length, 1, "a launch that failed was tried again as a window")
+  })
+})
+
+await check("a browser path that cannot be spawned fails fast", async () => {
   const signin = createBrowserSignIn({ stateDir: os.tmpdir(), browserPath: "/nope/not-a-browser" })
   const started = Date.now()
-  const outcome = await signin.signIn("https://storybook.example.com/index.json", {
-    interactive: false,
-  })
+  const outcome = await signin.signIn("https://storybook.example.com/index.json")
   const took = Date.now() - started
   assert.equal(outcome.ok, false)
-  // The launch timeout is 20s and the silent pass 12s; a spawn error has to
+  assert.equal(outcome.code, "launch-failed")
+  // The launch timeout is 20s and the silent pass 45s; a spawn error has to
   // short-circuit both or every "no browser" answer takes half a minute.
   assert.ok(took < 8000, `a failed launch took ${took}ms to report`)
 })
 
+await check("a landing that leaves no session does not open a window to find one", async () => {
+  // The window that "appears and vanishes": the visible pass would land in the
+  // same place and find the same nothing.
+  await withFakeChrome(
+    { FAKE_CHROME_MODE: "landing", FAKE_CHROME_NO_SESSION: "1" },
+    async ({ stateDir, launches }) => {
+      const signin = createBrowserSignIn({
+        stateDir,
+        browserPath: COUNTING_CHROME,
+        commandTimeout: 500,
+        raiseCommand: [],
+      })
+      const outcome = await signin.signIn("https://storybook.example.com/tokens.json", { totalTimeoutMs: 6000 })
+      assert.equal(outcome.ok, false)
+      assert.equal(outcome.code, "no-session")
+      assert.deepEqual(
+        (await launchesIn(launches)).map((launch) => launch.headless),
+        [true],
+        "a landing with no session escalated to a visible window"
+      )
+    }
+  )
+})
+
 heading("What the route does with each outcome")
 
-/**
- * The route's logic, lifted out of `routes.mjs` shape-for-shape.
- *
- * `routes.mjs` builds its dependencies inside `createDesignLayerRoutes`, so
- * driving the real handler would mean standing up a server and a store to
- * assert on three branches. This mirror keeps the branches honest: it is the
- * same four decisions in the same order, and if the route grows a fifth this
- * test is where the omission shows up.
+/*
+ * `completeSignIn` is the route's half — verify, then store — run inside the
+ * session, so these drive the real decisions with a sign-in that answers at
+ * once. It used to be a copy of the route's code kept in this file.
  */
-async function routeSignIn({ signin, probe, save }, url) {
-  const outcome = await signin.signIn(url)
-  if (!outcome.ok) return { ok: false, reason: outcome.reason, provider: outcome.provider ?? "" }
-  const credential = { scheme: "cookie", value: outcome.cookie }
-  const result = await probe(url, { credential })
-  if (result.sso || !result.ok) {
-    return { ok: false, provider: outcome.provider ?? "", reason: "still refused" }
-  }
-  return { ok: true, provider: outcome.provider ?? "", ...(await save({ url, ...credential })) }
-}
+const answering = (outcome) => ({
+  async signIn(_url, { confirm, signal } = {}) {
+    if (!outcome.ok || !confirm) return outcome
+    return confirm(outcome.cookie, { signal: signal ?? new AbortController().signal })
+  },
+})
 
 await check("a session that opens the wall is verified and then stored", async () => {
   const saved = []
-  const answer = await routeSignIn(
+  const answer = await completeSignIn(
     {
-      signin: { signIn: async () => ({ ok: true, cookie: "SESSION=abc", provider: "Okta" }) },
+      signin: answering({ ok: true, cookie: "SESSION=abc" }),
       probe: async (_url, options) => {
         assert.equal(options.credential.scheme, "cookie", "the cookie was not the thing verified")
         assert.equal(options.credential.value, "SESSION=abc")
@@ -249,15 +358,15 @@ await check("a session that opens the wall is verified and then stored", async (
     "https://storybook.example.com/index.json"
   )
   assert.equal(answer.ok, true)
-  assert.equal(answer.provider, "Okta")
+  assert.equal(answer.origin, "https://storybook.example.com")
   assert.equal(saved.length, 1, "a verified session was not stored")
 })
 
 await check("a session the site still refuses is NOT stored", async () => {
   const saved = []
-  const answer = await routeSignIn(
+  const answer = await completeSignIn(
     {
-      signin: { signIn: async () => ({ ok: true, cookie: "SESSION=abc", provider: "Okta" }) },
+      signin: answering({ ok: true, cookie: "SESSION=abc" }),
       // The window signed in to the identity provider and the site still said
       // no — which is exactly the state that, stored, makes the panel claim a
       // sign-in whose libraries keep failing.
@@ -270,19 +379,19 @@ await check("a session the site still refuses is NOT stored", async () => {
     "https://storybook.example.com/index.json"
   )
   assert.equal(answer.ok, false)
+  assert.equal(answer.code, "refused")
+  assert.match(answer.reason, /still refuses the editor/)
   assert.equal(saved.length, 0, "an unverified session was written to disk")
 })
 
 await check("a window the person closed is an ordinary answer, not an error", async () => {
-  const answer = await routeSignIn(
+  const answer = await completeSignIn(
     {
-      signin: {
-        signIn: async () => ({
-          ok: false,
-          reason: "The sign-in window was closed before the site let the editor in.",
-          provider: "Okta",
-        }),
-      },
+      signin: answering({
+        ok: false,
+        code: "closed",
+        reason: "The sign-in window was closed before the site let the editor in.",
+      }),
       // Neither of these may run: there is no session to verify and nothing to
       // store, and reaching either would mean the route treated a closed window
       // as a successful sign-in.
@@ -297,7 +406,18 @@ await check("a window the person closed is an ordinary answer, not an error", as
   )
   assert.equal(answer.ok, false)
   assert.match(answer.reason, /closed/i)
-  assert.equal(answer.provider, "Okta")
+})
+
+await check("every answer says how long a sign-in can take, and the status reports the phase", async () => {
+  const signin = createBrowserSignIn({ stateDir: os.tmpdir(), browserPath: "" })
+  const outcome = await signin.signIn("https://storybook.example.com/index.json")
+  // Six minutes of run plus overrun and verification: the panel's own deadline
+  // has to be derived from this, not kept as a second copy of it.
+  assert.ok(outcome.budgetMs >= 345000 + 20000 + 30000, `budgetMs was ${outcome.budgetMs}`)
+  const status = await signin.status()
+  assert.equal(status.available, false)
+  assert.equal(status.budgetMs, outcome.budgetMs)
+  assert.equal(status.phase, "idle")
 })
 
 heading("The remembered profile")
@@ -307,12 +427,6 @@ await check("the profile lives under the editor's state directory, not the user'
   try {
     const signin = createBrowserSignIn({ stateDir, browserPath: "/nope" })
     assert.equal(signin.profileDir, path.join(stateDir, "signin-browser"))
-    // Forgetting is the whole-profile operation, because a provider session is
-    // not per-origin: one sign-in at the identity provider opens every site it
-    // vouches for.
-    await fs.mkdir(signin.profileDir, { recursive: true })
-    await signin.forgetSessions()
-    await assert.rejects(fs.access(signin.profileDir))
   } finally {
     await fs.rm(stateDir, { recursive: true, force: true })
   }
@@ -337,6 +451,18 @@ await check("forgetting one origin does not sign the designer out of everything"
   }
 })
 
+await check("forgetting with no profile on disk launches nothing and creates nothing", async () => {
+  // A pasted token leaves no browser session; launching one to clear it made a
+  // profile appear as a side effect of a forget.
+  await withFakeChrome({ FAKE_CHROME_MODE: "idle" }, async ({ stateDir, launches }) => {
+    const signin = createBrowserSignIn({ stateDir, browserPath: COUNTING_CHROME, raiseCommand: [] })
+    const answer = await signin.forgetOrigin("https://storybook.example.com")
+    assert.equal(answer.cleared, false)
+    assert.deepEqual(await launchesIn(launches), [])
+    await assert.rejects(fs.access(signin.profileDir), "a forget created a profile")
+  })
+})
+
 heading("A browser that stops cooperating")
 
 /*
@@ -351,7 +477,6 @@ heading("A browser that stops cooperating")
  * asked for, and then misbehaves in one specific way. `browserPath` is a
  * supported config option precisely so a caller can supply one.
  */
-const FAKE_CHROME = fileURLToPath(new URL("./fixtures/fake-chrome.mjs", import.meta.url))
 
 await check("a browser that answers nothing ends the run instead of hanging", async () => {
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "de-signin-mute-"))
@@ -363,6 +488,7 @@ await check("a browser that answers nothing ends the run instead of hanging", as
       // The shipped ceiling is fifteen seconds a command. The defect is the
       // same at any value, and a suite nobody waits for is a suite nobody runs.
       commandTimeout: 250,
+      raiseCommand: [],
     })
 
     /*
@@ -379,7 +505,6 @@ await check("a browser that answers nothing ends the run instead of hanging", as
     const started = Date.now()
     const outcome = await bounded(
       signin.signIn("https://storybook.example.com/tokens.json", {
-        interactive: false,
         timeoutMs: 2000,
       }),
       30000
@@ -410,16 +535,19 @@ await check("a JavaScript dialog is dismissed rather than left blocking the page
       stateDir,
       browserPath: FAKE_CHROME,
       commandTimeout: 250,
+      raiseCommand: [],
     })
 
     await signin.signIn("https://storybook.example.com/tokens.json", {
-      interactive: false,
-      // The whole call, not just the window: `timeoutMs` bounds the pass that
-      // asks a person, and this run never gets one, so on its own it left the
-      // silent pass free to poll a browser that will never land for its full
+      // The whole call, not just the window: `timeoutMs` bounds only the pass
+      // that asks a person, so on its own it left the silent pass free to
+      // poll a browser that will never land for its full
       // forty-five-second ceiling — three quarters of a minute of suite time to
-      // observe something that happens in the first exchange.
-      totalTimeoutMs: 1500,
+      // observe something that happens in the first exchange. Three seconds,
+      // because the silent pass times out on a page that never lands and
+      // escalates, and the window's browser (which rewrites the report) needs
+      // time to get as far as its own dialog too.
+      totalTimeoutMs: 3000,
     })
 
     /*
@@ -467,10 +595,14 @@ await check("a beforeunload is accepted, while a confirm is still dismissed", as
     try {
       process.env.FAKE_CHROME_MODE = mode
       process.env.FAKE_CHROME_REPORT = report
-      const signin = createBrowserSignIn({ stateDir, browserPath: FAKE_CHROME, commandTimeout: 250 })
+      const signin = createBrowserSignIn({
+        stateDir,
+        browserPath: FAKE_CHROME,
+        commandTimeout: 250,
+        raiseCommand: [],
+      })
       await signin.signIn("https://storybook.example.com/tokens.json", {
-        interactive: false,
-        totalTimeoutMs: 1500,
+        totalTimeoutMs: 3000,
       })
       return JSON.parse(await fs.readFile(report, "utf8")).dialogs ?? []
     } finally {
@@ -513,11 +645,15 @@ await check("a WebSocket upgrade that never completes is given up on, and the br
   try {
     process.env.FAKE_CHROME_MODE = "no-handshake"
     process.env.FAKE_CHROME_REPORT = report
-    const signin = createBrowserSignIn({ stateDir, browserPath: FAKE_CHROME, commandTimeout: 500 })
+    const signin = createBrowserSignIn({
+      stateDir,
+      browserPath: FAKE_CHROME,
+      commandTimeout: 500,
+      raiseCommand: [],
+    })
 
     const outcome = await bounded(
       signin.signIn("https://storybook.example.com/tokens.json", {
-        interactive: false,
         totalTimeoutMs: 5000,
       }),
       15000
@@ -555,11 +691,17 @@ await check("a debugging endpoint that never answers cannot outlast the run's bu
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "de-signin-hanghttp-"))
   try {
     process.env.FAKE_CHROME_MODE = "hang-http"
-    const signin = createBrowserSignIn({ stateDir, browserPath: FAKE_CHROME, commandTimeout: 500 })
+    const signin = createBrowserSignIn({
+      stateDir,
+      browserPath: FAKE_CHROME,
+      commandTimeout: 500,
+      raiseCommand: [],
+    })
 
     const started = Date.now()
     const outcome = await bounded(
-      // Interactive, so BOTH passes run and the budget has to cover the pair.
+      // A launch that never answers is not tried again as a window, so this is
+      // one pass; the budget still has to bound it.
       signin.signIn("https://storybook.example.com/tokens.json", { totalTimeoutMs: 3000 }),
       20000
     )
@@ -594,10 +736,14 @@ await check("a target list that is not JSON is an outcome, and the browser is st
   try {
     process.env.FAKE_CHROME_MODE = "bad-list"
     process.env.FAKE_CHROME_REPORT = report
-    const signin = createBrowserSignIn({ stateDir, browserPath: FAKE_CHROME, commandTimeout: 500 })
+    const signin = createBrowserSignIn({
+      stateDir,
+      browserPath: FAKE_CHROME,
+      commandTimeout: 500,
+      raiseCommand: [],
+    })
 
     const outcome = await signin.signIn("https://storybook.example.com/tokens.json", {
-      interactive: false,
       totalTimeoutMs: 5000,
     })
     assert.equal(outcome.ok, false)
@@ -648,7 +794,8 @@ await check("a window-raising helper that blocks is killed rather than waited on
     })
 
     const outcome = await bounded(
-      // Interactive: the raise happens on the visible pass and nowhere else.
+      // The silent pass never lands on `idle` and runs out of time, which
+      // escalates: the raise happens on the visible pass and nowhere else.
       signin.signIn("https://storybook.example.com/tokens.json", { totalTimeoutMs: 4000 }),
       25000
     )
@@ -696,37 +843,216 @@ await check("a same-origin login page is not landed on, while a real page still 
    * module exists for; the control run proves the one difference between the
    * two pages — a password input — is what decided it.
    */
-  const outcomeFor = async (mode) => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), `de-signin-${mode}-`))
-    try {
-      process.env.FAKE_CHROME_MODE = mode
-      const signin = createBrowserSignIn({ stateDir, browserPath: FAKE_CHROME, commandTimeout: 500 })
-      return await signin.signIn("https://storybook.example.com/tokens.json", {
-        // Not allowed to open a window, so an escalation is visible in the
-        // answer rather than in a browser nobody can see from here.
-        interactive: false,
+  const outcomeFor = (mode) =>
+    withFakeChrome({ FAKE_CHROME_MODE: mode }, async ({ stateDir, launches }) => {
+      const signin = createBrowserSignIn({
+        stateDir,
+        browserPath: COUNTING_CHROME,
+        commandTimeout: 500,
+        raiseCommand: [],
+      })
+      const outcome = await signin.signIn("https://storybook.example.com/tokens.json", {
         totalTimeoutMs: 6000,
       })
-    } finally {
-      delete process.env.FAKE_CHROME_MODE
-      await fs.rm(stateDir, { recursive: true, force: true })
-    }
-  }
+      // Which passes ran is the escalation, visible from here as launches.
+      return { outcome, passes: (await launchesIn(launches)).map((launch) => (launch.headless ? "silent" : "window")) }
+    })
 
   const login = await outcomeFor("login-page")
-  assert.equal(login.ok, false, "the silent pass reported success from the site's login page")
-  assert.equal(login.cookie, undefined, "a login page's cookies were captured as a session")
-  assert.match(
-    login.reason,
-    /not allowed to ask/i,
-    `a login page has to escalate to a window, not answer with ${JSON.stringify(login.reason)}`
+  assert.equal(login.outcome.ok, false, "the silent pass reported success from the site's login page")
+  assert.equal(login.outcome.cookie, undefined, "a login page's cookies were captured as a session")
+  assert.deepEqual(
+    login.passes,
+    ["silent", "window"],
+    `a login page has to escalate to a window, not answer with ${JSON.stringify(login.outcome.reason)}`
   )
 
   const landed = await outcomeFor("landing")
-  assert.equal(landed.ok, true, `a page that is not a login page stopped landing: ${landed.reason}`)
-  assert.equal(landed.silent, true, "a silent arrival should not have opened a window")
-  assert.match(landed.cookie, /SESSION=granted/)
+  assert.equal(landed.outcome.ok, true, `a page that is not a login page stopped landing: ${landed.outcome.reason}`)
+  assert.deepEqual(landed.passes, ["silent"], "a silent arrival should not have opened a window")
+  assert.match(landed.outcome.cookie, /SESSION=granted/)
 })
+
+heading("One sign-in per profile")
+
+/*
+ * The session the module header draws. Each case here was a defect: Cancel in
+ * the panel stopped only the panel's wait, the window stayed up for its four
+ * minutes, and a second press launched a second Chrome into the profile the
+ * first still held — which relayed, exited, and was waited on for forty seconds
+ * before reading "The browser did not open".
+ */
+
+await check("cancel closes the window and lets go of the profile", async () => {
+  await withFakeChrome({ FAKE_CHROME_MODE: "login-page" }, async ({ stateDir, launches }) => {
+    const signin = createBrowserSignIn({
+      stateDir,
+      browserPath: COUNTING_CHROME,
+      commandTimeout: 500,
+      raiseCommand: [],
+    })
+    const press = new AbortController()
+    const answer = signin.signIn("https://storybook.example.com/tokens.json", {
+      signal: press.signal,
+      totalTimeoutMs: 60000,
+    })
+    // The login page escalates to a window; wait for it, then press Cancel.
+    const [, window] = await untilLaunches(launches, 2)
+    assert.equal(window.headless, false)
+    assert.equal((await signin.status()).phase, "waitingForPerson")
+
+    const pressed = Date.now()
+    press.abort()
+    const outcome = await bounded(answer, 5000)
+    assert.equal(outcome.hung, undefined, "Cancel did not answer")
+    assert.equal(outcome.code, "cancelled")
+    assert.ok(Date.now() - pressed < 1000, `Cancel took ${Date.now() - pressed}ms to answer`)
+    await untilGone(window.pid)
+
+    // And the profile is free again: the next press launches straight away.
+    const until = Date.now() + 5000
+    while ((await signin.status()).phase !== "idle" && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    assert.equal((await signin.status()).phase, "idle", "the cancelled run never let go of the profile")
+    process.env.FAKE_CHROME_EXIT = "1"
+    try {
+      await signin.signIn("https://storybook.example.com/tokens.json")
+    } finally {
+      delete process.env.FAKE_CHROME_EXIT
+    }
+    assert.equal((await launchesIn(launches)).length, 3, "the press after Cancel did not launch")
+  })
+})
+
+await check("a second request during a run joins it, and another origin is refused", async () => {
+  await withFakeChrome({ FAKE_CHROME_MODE: "login-page" }, async ({ stateDir, launches }) => {
+    const options = { stateDir, browserPath: COUNTING_CHROME, commandTimeout: 500, raiseCommand: [] }
+    const signin = createBrowserSignIn(options)
+    const first = new AbortController()
+    const second = new AbortController()
+    const firstAnswer = signin.signIn("https://storybook.example.com/tokens.json", {
+      signal: first.signal,
+      totalTimeoutMs: 60000,
+    })
+    await untilLaunches(launches, 2)
+
+    // Same origin, even through a second store over the same profile: joins.
+    const joined = createBrowserSignIn(options).signIn("https://storybook.example.com/other.json", {
+      signal: second.signal,
+    })
+    // Another origin: a sentence, now, and no browser.
+    const other = await signin.signIn("https://docs.example.org/tokens.json")
+    assert.equal(other.code, "busy")
+    assert.match(other.reason, /already open/)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.equal((await launchesIn(launches)).length, 2, "a request during a run launched another browser")
+
+    // The first caller leaving does not cancel a run somebody else still waits on.
+    first.abort()
+    assert.equal((await firstAnswer).code, "cancelled")
+    assert.equal((await signin.status()).phase, "waitingForPerson")
+    second.abort()
+    assert.equal((await joined).code, "cancelled")
+    await untilGone((await launchesIn(launches))[1].pid)
+  })
+})
+
+await check("a sign-in that completes after Cancel is not stored", async () => {
+  await withFakeChrome({ FAKE_CHROME_MODE: "landing" }, async ({ stateDir }) => {
+    const signin = createBrowserSignIn({
+      stateDir,
+      browserPath: FAKE_CHROME,
+      commandTimeout: 500,
+      raiseCommand: [],
+    })
+    const press = new AbortController()
+    const saved = []
+    let probed
+    const probing = new Promise((resolve) => {
+      probed = resolve
+    })
+    const answer = completeSignIn(
+      {
+        signin,
+        // The verification fetch is in flight when the person presses Cancel,
+        // and the site then says yes.
+        probe: async () => {
+          probed()
+          await new Promise((resolve) => setTimeout(resolve, 200))
+          return { ok: true, sso: false, status: 200 }
+        },
+        save: async (entry) => {
+          saved.push(entry)
+          return { origin: "https://storybook.example.com", scheme: "cookie", addedAt: 1 }
+        },
+      },
+      "https://storybook.example.com/tokens.json",
+      { signal: press.signal }
+    )
+    await probing
+    press.abort()
+    assert.equal((await answer).code, "cancelled")
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    assert.deepEqual(saved, [], "a credential was stored after the person cancelled")
+    assert.equal((await signin.status()).phase, "idle")
+  })
+})
+
+await check("the editor exiting mid-sign-in takes the browser with it", async () => {
+  await withFakeChrome({ FAKE_CHROME_MODE: "idle", FAKE_CHROME_TTL: "30000" }, async ({ stateDir, launches }) => {
+    // A separate editor process: it starts a sign-in, waits for the browser,
+    // and exits — the way a desk restart or Ctrl+C ends an editor.
+    const script = path.join(stateDir, "editor.mjs")
+    await fs.writeFile(
+      script,
+      `import fs from "node:fs"\n` +
+        `import { createBrowserSignIn } from ${JSON.stringify(new URL("../server/library-signin.mjs", import.meta.url).href)}\n` +
+        `const signin = createBrowserSignIn({ stateDir: ${JSON.stringify(stateDir)}, browserPath: ${JSON.stringify(COUNTING_CHROME)}, raiseCommand: [] })\n` +
+        `void signin.signIn("https://storybook.example.com/tokens.json", { totalTimeoutMs: 60000 })\n` +
+        `const wait = setInterval(() => {\n` +
+        `  if (fs.existsSync(${JSON.stringify(launches)})) { clearInterval(wait); setTimeout(() => process.exit(0), 300) }\n` +
+        `}, 20)\n`
+    )
+    const editor = spawn(process.execPath, [script], { stdio: "ignore", env: process.env })
+    await new Promise((resolve) => editor.once("exit", resolve))
+    const [browser] = await launchesIn(launches)
+    assert.ok(browser, "the editor never launched a browser, so nothing was proved")
+    await untilGone(browser.pid, 3000)
+  })
+})
+
+await check("a forget waits for a running sign-in instead of launching into its profile", async () => {
+  await withFakeChrome({ FAKE_CHROME_MODE: "login-page" }, async ({ stateDir, launches }) => {
+    const signin = createBrowserSignIn({
+      stateDir,
+      browserPath: COUNTING_CHROME,
+      commandTimeout: 500,
+      raiseCommand: [],
+    })
+    const press = new AbortController()
+    const answer = signin.signIn("https://storybook.example.com/tokens.json", {
+      signal: press.signal,
+      totalTimeoutMs: 60000,
+    })
+    await untilLaunches(launches, 2)
+    let forgotten = false
+    const forget = signin.forgetOrigin("https://storybook.example.com").then((result) => {
+      forgotten = true
+      return result
+    })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.equal(forgotten, false, "the forget did not wait for the sign-in")
+    assert.equal((await launchesIn(launches)).length, 2, "the forget launched into a profile in use")
+    press.abort()
+    await answer
+    await bounded(forget, 10000)
+    assert.equal(forgotten, true, "the forget never ran after the sign-in ended")
+    assert.equal((await launchesIn(launches)).length, 3, "the forget never opened the profile")
+  })
+})
+
+await fs.rm(wrapperDir, { recursive: true, force: true })
 
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed) process.exit(1)

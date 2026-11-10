@@ -67,6 +67,37 @@
  * centrally managed machine behind an SSO proxy is exactly the case this
  * feature exists for.
  *
+ * ## The session: one run per profile
+ *
+ * Every run uses the same profile directory, and Chrome lets one process own a
+ * profile at a time: a second launch relays its command line to the first and
+ * exits. So the profile has one owner, written down as a state, and every way a
+ * run can end is a transition rather than a comment:
+ *
+ *   idle --signIn--> silent
+ *   silent --landed--> verifying            (done, when the caller verifies itself)
+ *   silent --needs-human | timed-out--> waitingForPerson
+ *   silent --any other outcome--> failed
+ *   waitingForPerson --landed--> verifying  (done, when the caller verifies itself)
+ *   waitingForPerson --closed | timed-out | fault--> failed
+ *   verifying --confirmed--> done
+ *   verifying --refused--> failed
+ *   silent | waitingForPerson | verifying --every caller gone--> cancelled
+ *   done | failed | cancelled --browser stopped--> idle
+ *   idle --forgetOrigin--> forgetting --cookies cleared or not--> idle
+ *
+ * A second `signIn` while a run is live joins it when it is for the same
+ * origin, and is refused with a sentence when it is for another. A `signIn` or
+ * `forgetOrigin` that arrives while the profile is being let go of (a forget,
+ * a run tearing down) waits for `idle`. Nothing launches a second browser on a
+ * profile that already has one.
+ *
+ * A caller passes an `AbortSignal`; when every caller of a run has aborted, the
+ * run is `cancelled`: its window closes, its browser stops, and whatever it
+ * would have produced is discarded. The transition is the guard — a completion
+ * whose run no longer owns the session cannot move it, so a sign-in finished
+ * after a cancel is never verified or stored.
+ *
  * ## What is deliberately not here
  *
  * No token minting, no OAuth client id of our own, no refresh logic. When the
@@ -76,63 +107,24 @@
  * long a session lasts, which is the correct place for that decision to live.
  */
 
-import { spawn } from "node:child_process"
-import { readdirSync } from "node:fs"
 import fs from "node:fs/promises"
-import net from "node:net"
-import os from "node:os"
 import path from "node:path"
-import WebSocket from "ws"
 
-import { classifyWall } from "./library-auth.mjs"
+import {
+  COMMAND_TIMEOUT,
+  EXIT_GRACE,
+  RAISE_BUDGET,
+  browserCandidates,
+  findBrowser,
+  raiseWindow,
+  sleep,
+  timeLeft,
+  withBrowser,
+} from "./cdp-browser.mjs"
+import { classifyWall, originOf } from "./library-auth.mjs"
 
-/**
- * Where a Chromium-family browser lives, per platform, best first.
- *
- * Found by name in the folders each platform installs browsers into, rather
- * than as a list of exact paths, so a copy in ~/Applications or a second
- * Program Files is found too. Chrome before Chromium before Edge: all three
- * speak the same protocol, and the point is to find a browser the person
- * already trusts rather than to have an opinion about which one.
- */
-const BROWSER_NAMES = {
-  // App bundle names; the binary inside is named like the bundle.
-  darwin: [/ Chrome\.app$/, / Chrome .+\.app$/, /^Chromium\.app$/, /^Microsoft Edge\.app$/],
-  linux: [/-chrome$/, /-chrome-stable$/, /^chromium$/, /^chromium-browser$/, /^microsoft-edge$/],
-}
-
-const listDir = (dir) => {
-  try {
-    return readdirSync(dir)
-  } catch {
-    return []
-  }
-}
-
-export function browserCandidates({ platform = process.platform, env = process.env, roots } = {}) {
-  if (platform === "win32") {
-    const bases = roots ?? [env.ProgramFiles ?? "C:\\Program Files", env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)"]
-    const chrome = bases.flatMap((base) =>
-      listDir(base)
-        .filter((vendor) => listDir(path.join(base, vendor)).includes("Chrome"))
-        .map((vendor) => path.join(base, vendor, "Chrome", "Application", "chrome.exe"))
-    )
-    return [...chrome, ...bases.map((base) => path.join(base, "Microsoft", "Edge", "Application", "msedge.exe"))]
-  }
-  const patterns = BROWSER_NAMES[platform]
-  if (!patterns) return []
-  const dirs = roots ?? (platform === "darwin" ? ["/Applications", path.join(os.homedir(), "Applications")] : ["/usr/bin"])
-  const found = []
-  dirs.forEach((dir, order) => {
-    for (const name of listDir(dir)) {
-      const rank = patterns.findIndex((pattern) => pattern.test(name))
-      if (rank === -1) continue
-      const file = platform === "darwin" ? path.join(dir, name, "Contents", "MacOS", name.slice(0, -".app".length)) : path.join(dir, name)
-      found.push({ rank, order, file })
-    }
-  })
-  return found.sort((a, b) => a.rank - b.rank || a.order - b.order).map((entry) => entry.file)
-}
+// Re-exported for the suites that pin how a browser is found.
+export { browserCandidates, findBrowser }
 
 /** How long to wait for a person to finish signing in, in milliseconds. */
 const SIGN_IN_TIMEOUT = 4 * 60 * 1000
@@ -160,86 +152,8 @@ const SILENT_CEILING = 45 * 1000
  * than anybody's patience.
  */
 const PARKED_MS = 2500
-/** How long to wait for the browser to open its debugging port. */
-const LAUNCH_TIMEOUT = 20 * 1000
-/*
- * How long ONE HTTP probe of the debugging endpoint may take.
- *
- * Separate from `LAUNCH_TIMEOUT`, and the distinction is the whole point: the
- * launch budget is only consulted BETWEEN probes, so a single `fetch` that
- * never settles defeats it entirely. `fetch` does not fail fast on a port that
- * accepts a connection and then says nothing — the eventual bound is undici's
- * own header timeout, five minutes, fifteen times the launch budget this code
- * believes it has, and it is paid on both passes.
- *
- * That is not a hypothetical port either. `freePort` binds port zero, reads the
- * number and closes the listener before the browser is asked to take it, and
- * anything on the machine can win that gap: an ssh tunnel, an agent socket, a
- * second editor mid-launch. A squatter that accepts and does not speak HTTP is
- * indistinguishable from a browser that is still starting, until the probe is
- * bounded — after which it is simply one lost second out of twenty.
- */
-const PROBE_TIMEOUT = 1000
-/*
- * Probes do not reuse their connection, and the request header is the only
- * place to say so.
- *
- * `fetch` keeps a pooled socket open after the answer, which is the right
- * default for a host being talked to repeatedly and the wrong one for a browser
- * this process is about to kill: the pool holds a connection to a peer that no
- * longer exists, and the editor's event loop holds the pool, once per sign-in,
- * for as long as the pool feels like it. These are two one-shot requests to a
- * throwaway local server — there is nothing to reuse and nothing to lose.
- */
-const PROBE_HEADERS = { connection: "close" }
 /** How often to look at where the window has got to. */
 const POLL_INTERVAL = 600
-/** How long a browser gets to exit on its own before it is killed outright. */
-const EXIT_GRACE = 2500
-/*
- * How many times to try raising the sign-in window, and how long to leave
- * between tries.
- *
- * A window that is still being created cannot be activated, and this runs in
- * exactly that gap — the browser has answered on its debugging port but macOS
- * may not have finished registering the process. Three tries over about a
- * second covers the cold case without delaying the warm one, which succeeds on
- * the first.
- */
-const RAISE_ATTEMPTS = 3
-const RAISE_RETRY = 400
-/*
- * How long one raise attempt may take, and how long all of them together may.
- *
- * Raising the window is best-effort and ALWAYS optional — the sign-in still
- * works in a window nobody raised, just badly — so it may never be the reason
- * the flow stops. It was, though: the helper resolved only when the child
- * process exited, and the child is an Apple event to another application, which
- * on a machine that has not granted this one automation rights blocks on a
- * consent prompt. That prompt opens BEHIND other windows, which is the very
- * failure being fixed here, so nobody sees it to answer it; the best case is
- * AppleScript's own two-minute event timeout paid three times over, and the
- * worst case — the prompt suppressed by device policy, the target application
- * wedged — is forever, with the sign-in loop not yet started and the panel
- * still saying "waiting".
- *
- * A second and a half is longer than a raise that is going to work ever takes,
- * and the whole-budget cap means three retries cannot multiply into a stall.
- * Anything slower than this is a permission dialog or a hung process, and in
- * both cases the right answer is to give up on the raise and get on with the
- * sign-in.
- */
-const RAISE_ATTEMPT_TIMEOUT = 1500
-const RAISE_BUDGET = 3000
-/*
- * How long any single DevTools command may take before it is treated as a
- * browser that has stopped answering.
- *
- * Far longer than anything here legitimately needs — the slowest is a
- * navigation commit — so a timeout is always a fault and never a slow machine.
- * See `connect().send`, which explains what happened without one.
- */
-const COMMAND_TIMEOUT = 15 * 1000
 /*
  * How many polls in a row may go unanswered before the window counts as gone.
  *
@@ -267,515 +181,69 @@ const UNANSWERED_POLLS = 3
  */
 const OVERHEAD_ALLOWANCE = 60 * 1000
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-/** What is left of an absolute deadline, never negative. */
-const timeLeft = (deadline) => Math.max(0, deadline - Date.now())
-
-/** The first browser on this platform that actually exists. */
-export async function findBrowser(candidates = browserCandidates()) {
-  for (const candidate of candidates) {
-    try {
-      await fs.access(candidate)
-      return candidate
-    } catch {
-      /* try the next one */
-    }
-  }
-  return ""
-}
-
-/**
- * Who is asking for the sign-in, said as a person would name them.
+/*
+ * What the whole answer can take beyond the run's own deadline, so a caller can
+ * know when to stop waiting rather than guess.
  *
- * `classifyWall` refuses to look at hostnames, and it is right to: guessing a
- * vendor from a URL would make it wrong for every stack it had not been taught.
- * Naming the provider HERE is a different job with a different failure mode. It
- * decides one thing — the words on a button — and being wrong costs a generic
- * label rather than a broken flow, which is why the fallback is the host itself
- * and never a guess.
- *
- * Kept to identity providers whose sign-in a designer would recognise by name.
+ * The deadline bounds the run, and the run can pass it by the one bounded
+ * operation in flight when it did — a command and a teardown, under twenty
+ * seconds (see `signIn`). Verification comes after: the route fetches the
+ * library once with the captured session, fifteen seconds, or about thirty when
+ * the fetch helper runs (`library-url.mjs`). `budgetMs` in every answer is the
+ * sum, so the panel can derive its own deadline from it instead of keeping a
+ * number that has to be remembered to stay larger than this one.
  */
-const PROVIDERS = [
-  { host: "login.microsoftonline.com", label: "Microsoft" },
-  { host: "okta.com", label: "Okta" },
-  { host: "onelogin.com", label: "OneLogin" },
-  { host: "auth0.com", label: "Auth0" },
-  { host: "github.com", label: "GitHub" },
-  { host: "gitlab.com", label: "GitLab" },
-]
+const OVERRUN_ALLOWANCE = COMMAND_TIMEOUT + EXIT_GRACE + 2500
+const VERIFY_ALLOWANCE = 30 * 1000
 
-/**
- * The identity provider a wall hands off to, from the redirect it answered
- * with. Empty when the redirect named nobody we can put on a button.
+/** The run's deadline, as a duration: see `signIn` for the arithmetic. */
+const runBudget = (options = {}) =>
+  options.totalTimeoutMs ?? SILENT_CEILING + (options.timeoutMs ?? SIGN_IN_TIMEOUT) + OVERHEAD_ALLOWANCE
+
+/** The longest a sign-in answer can take to arrive. */
+const answerBudget = (options = {}) => runBudget(options) + OVERRUN_ALLOWANCE + VERIFY_ALLOWANCE
+
+/*
+ * The outcomes more than one place returns. `code` is what callers branch on
+ * (escalation, the route, an agent); `reason` is the sentence a person reads.
  */
-export function providerLabel(location = "") {
-  let host = ""
-  try {
-    host = new URL(String(location)).hostname.toLowerCase()
-  } catch {
-    return ""
-  }
-  const match = PROVIDERS.find((entry) => host === entry.host || host.endsWith(`.${entry.host}`))
-  return match ? match.label : ""
-}
+const NEEDS_HUMAN = Object.freeze({
+  ok: false,
+  code: "needs-human",
+  reason: "That site needs a person to sign in",
+})
+const CANCELLED = Object.freeze({ ok: false, code: "cancelled", reason: "The sign-in was cancelled." })
 
-/** A free port for the debugging connection, so two editors never collide. */
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer()
-    server.on("error", reject)
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address()
-      server.close(() => resolve(port))
-    })
-  })
-}
-
-/**
- * One DevTools connection, as promises.
- *
- * Small on purpose: this needs four commands and none of the surface a browser
- * automation library exists to provide.
- */
-function connect(url, commandTimeout = COMMAND_TIMEOUT) {
-  /*
-   * THE HANDSHAKE IS BOUNDED TOO, and this is the same defect as the unbounded
-   * `send` below, one layer earlier: in the one call that has to succeed before
-   * `send` exists at all.
-   *
-   * `ws` arms no handshake timer unless it is given one — `handshakeTimeout` is
-   * undefined by default and the request timeout is only set when it is
-   * present — so a socket that completes its TCP connection and never finishes
-   * the upgrade emits neither `open` nor `error`, forever. The promise below
-   * settles on exactly those two events, so it settled on neither, and the
-   * `await` for it is not inside any poll loop: no deadline was ever consulted
-   * and the browser that was spawned one line earlier was never stopped.
-   *
-   * Reachable from more than a broken browser. A port stolen between
-   * `freePort` closing its probe listener and Chrome binding it (see
-   * `PROBE_TIMEOUT`) can leave a service on the other end that accepts the
-   * connection and says nothing, and a browser suspended mid-launch — a sleeping
-   * laptop, a debugger, a security agent scanning the binary — looks identical.
-   *
-   * Belt and braces on purpose: `handshakeTimeout` is the library's own bound,
-   * and the timer below is ours, so a failure mode inside `ws` that skips the
-   * handshake path cannot quietly reintroduce an await with no end.
-   */
-  const socket = new WebSocket(url, { handshakeTimeout: commandTimeout })
-  const pending = new Map()
-  let nextId = 0
-  let closed = false
-
-  const opened = new Promise((resolve, reject) => {
-    socket.once("open", resolve)
-    socket.once("error", reject)
-  })
-  /*
-   * Two rejections that must not become crashes.
-   *
-   * `opened` is raced by `ready` below, so when the timer wins first the
-   * original rejection arrives at a promise nobody is waiting on any more —
-   * which Node reports as an unhandled rejection and, under the default policy,
-   * exits the process for. Marking it handled here costs nothing: `ready` has
-   * already taken the answer it needs.
-   *
-   * The permanent socket listener is the same argument in the emitter's terms.
-   * `once("error")` above unsubscribes as it fires, and an `EventEmitter` with
-   * no `error` listener THROWS when the next one arrives — so a socket that
-   * failed and then failed again (a reset after a refused upgrade is the
-   * ordinary way to get two) would take the whole editor down over a sign-in.
-   */
-  opened.catch(() => {})
-  socket.on("error", () => {})
-
-  const ready = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error("The sign-in window never finished connecting"))
-    }, commandTimeout)
-    const settle = (fn) => (value) => {
-      clearTimeout(timer)
-      fn(value)
-    }
-    opened.then(settle(resolve), settle(reject))
-  })
-  ready.catch(() => {})
-
-  const listeners = new Map()
-
-  socket.on("message", (raw) => {
-    let message
-    try {
-      message = JSON.parse(String(raw))
-    } catch {
-      return
-    }
-    if (message.method) {
-      listeners.get(message.method)?.(message.params ?? {})
-      return
-    }
-    const waiting = message.id && pending.get(message.id)
-    if (!waiting) return
-    pending.delete(message.id)
-    if (message.error) waiting.reject(new Error(message.error.message))
-    else waiting.resolve(message.result)
-  })
-
-  socket.on("close", () => {
-    closed = true
-    for (const waiting of pending.values()) waiting.reject(new Error("The browser window closed"))
-    pending.clear()
-  })
-
-  return {
-    ready,
-    get closed() {
-      return closed
-    },
-    /** One handler per event, which is all this needs. */
-    on(method, handler) {
-      listeners.set(method, handler)
-    },
-    /**
-     * EVERY COMMAND IS BOUNDED, and the absence of this is what made the flow
-     * hang forever rather than fail.
-     *
-     * A pending entry used to settle on exactly two events: an answer, or the
-     * socket closing. A browser that is alive and simply not answering matches
-     * neither, so the promise stayed unresolved, the poll loop never reached
-     * its next deadline check, the four-minute ceiling was never consulted, and
-     * `stop()` — which lives in the `finally` below it — never ran.
-     *
-     * That is not a hypothetical. The report behind this fix was "it just shows
-     * me Wait, nothing pops up", and the machine still had the evidence on it:
-     * a sign-in browser launched at 12:58 and still running six hours later,
-     * parked on the provider's page, long after a ceiling that should have
-     * killed it at 13:02. The `await` it was sitting in had no way to end.
-     *
-     * A timeout turns that into an ordinary rejection, which the caller already
-     * handles: the poll loop breaks, the run reports that it never landed, and
-     * the browser is stopped. Fifteen seconds is far longer than any command
-     * here legitimately takes — the slowest is a navigation commit — so a
-     * timeout is always a fault rather than a slow machine.
-     */
-    send(method, params = {}) {
-      if (closed) return Promise.reject(new Error("The browser window closed"))
-      return new Promise((resolve, reject) => {
-        const id = ++nextId
-        const timer = setTimeout(() => {
-          pending.delete(id)
-          reject(new Error(`The browser stopped answering (${method})`))
-        }, commandTimeout)
-        const settle = (fn) => (value) => {
-          clearTimeout(timer)
-          fn(value)
-        }
-        pending.set(id, { resolve: settle(resolve), reject: settle(reject) })
-        socket.send(JSON.stringify({ id, method, params }))
-      })
-    },
-    /**
-     * TERMINATE rather than close, because the other end is being killed in the
-     * same breath.
-     *
-     * A polite `close()` sends a close frame and then waits for the peer's
-     * answer before dropping the socket — and every caller here closes the
-     * connection immediately before stopping the browser, so that answer is
-     * never coming and `ws` sits out its own thirty-second close timeout
-     * waiting for it. There is nothing to be polite about: the run is over, the
-     * browser is being killed, and the only thing a graceful close can still do
-     * is keep a dead socket in the editor's event loop.
-     */
-    close() {
-      try {
-        socket.terminate()
-      } catch {
-        /* already gone */
-      }
-    },
-  }
-}
-
-/**
- * The debugging endpoint, once the browser has one.
- *
- * EVERY PROBE IS ABORTABLE, and without that the deadline this takes is
- * decorative: it is read between attempts, so one `fetch` that never settles
- * skips it entirely and the loop simply never comes back round. See
- * `PROBE_TIMEOUT` for what is on the other end of such a socket and how it gets
- * there.
- *
- * The last probe is clamped to what is left of the deadline as well as to
- * `PROBE_TIMEOUT`, so the function cannot return late by up to a second on top
- * of a budget the caller is already sharing with everything after it.
- */
-async function waitForDevTools(port, deadline, failed = () => null) {
-  while (Date.now() < deadline) {
-    // The launch itself died — no port is ever going to open, so stop waiting.
-    if (failed()) return null
-    const budget = Math.min(PROBE_TIMEOUT, timeLeft(deadline))
-    if (!budget) break
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
-        signal: AbortSignal.timeout(budget),
-        headers: PROBE_HEADERS,
-      })
-      if (res.ok) return await res.json()
-    } catch {
-      /* not up yet, or not answering — either way, try again or run out */
-    }
-    await sleep(Math.min(200, timeLeft(deadline)))
-  }
-  return null
-}
-
-/**
- * The page target to drive — the tab the browser opened with.
- *
- * NOTHING HERE MAY THROW, which it comfortably did: `res.json()` rejects on a
- * body that is not JSON and `targets.find` is a `TypeError` when the body is a
- * JSON object rather than an array, and both are ordinary answers from a port
- * that a non-browser has taken (see `PROBE_TIMEOUT`) or from a browser that
- * died between answering `/json/version` and this call. A throw from here
- * escaped the whole run and reached the panel as a 500 where the contract
- * promises a sentence — and, worse, escaped before anything had been written to
- * stop the browser, leaving a Chrome holding the profile's singleton lock so
- * that every LATER sign-in failed too, with a message naming neither the cause
- * nor the cure. `null` is already the "no page to drive" answer the caller
- * handles; every failure in here is that answer.
- *
- * The tab is chosen by URL rather than by position where there is a choice. A
- * browser that opens a second page of its own — a restore prompt, an extension,
- * a profile welcome — would otherwise hand back whichever target sorted first,
- * and the run would then navigate, poll and raise a tab the person is not
- * looking at.
- */
-async function firstPage(port, deadline, target = "") {
-  const budget = Math.min(PROBE_TIMEOUT, timeLeft(deadline))
-  if (!budget) return null
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/json/list`, {
-      signal: AbortSignal.timeout(budget),
-      headers: PROBE_HEADERS,
-    })
-    const targets = await res.json()
-    if (!Array.isArray(targets)) return null
-    const pages = targets.filter((entry) => entry?.type === "page" && entry?.webSocketDebuggerUrl)
-    return pages.find((entry) => String(entry.url ?? "") === target) ?? pages[0] ?? null
-  } catch {
-    return null
-  }
-}
-
-/**
- * Sign-in against one origin, in a window the person can see.
- *
- * Resolves with `{ ok: true, cookie }` when the window came back to the target
- * origin carrying cookies, and with `{ ok: false, reason }` for every way that
- * can fail to happen. It never throws for an ordinary outcome — a person
- * closing the window is a normal thing to do, not an exception.
- *
- * `onProgress` is called with the current URL as the window moves, so a caller
- * can show where the sign-in has got to rather than a spinner with no news.
- */
-/**
- * PUT THE SIGN-IN WINDOW IN FRONT OF THE PERSON, which is the whole feature.
- *
- * A window nobody can see is the same as no window. The panel says "waiting for
- * the sign-in", the designer looks at an unchanged screen, and after a while
- * they conclude the button is broken — which is exactly the report that sent
- * this rewrite: *"when I click Sign in with Okta, it just shows me Wait,
- * nothing pops up."*
- *
- * ## What was measured
- *
- * The window was there the whole time. Asked over the DevTools protocol, the
- * stranded instance answered:
- *
- *   bounds {left: 22, top: 30, width: 520, height: 720}, windowState "normal"
- *   document.visibilityState "visible", document.hidden false
- *   document.hasFocus() FALSE
- *
- * On screen, correct size, correct URL, painting — and behind everything else
- * the person had open.
- *
- * ## Why the old call could not have worked
- *
- * It ran `open -a` on the browser app. That activates an
- * APPLICATION, identified by its bundle — and the designer is already running
- * that same bundle with their own profile. macOS has no idea the caller meant
- * the second instance, so it brings the person's ordinary browser window
- * forward and leaves the sign-in window exactly where it was. On the machines
- * where this feature matters most, that is every time: nobody who needs to sign
- * in to a private Storybook has no browser open.
- *
- * ## What works
- *
- * Activate the PROCESS, by its pid. `System Events` addresses a running process
- * by `unix id`, which is the one handle that distinguishes our Chrome from
- * theirs — verified against the stranded window above, which went to
- * `hasFocus() === true` on the first try.
- *
- * `Page.bringToFront` stays and runs first: it raises the right TAB inside the
- * process, and the activation then raises the process. Neither does the other's
- * job.
- *
- * Retried a few times because a window that is still being created cannot be
- * raised, and the launch-to-paint gap is exactly where this is called.
- *
- * ## Why every attempt is on a stopwatch
- *
- * An earlier version of this comment claimed the activation "needs no
- * Automation permission for a process the same user launched". That is true of
- * the Accessibility API and false of Apple events, which is what this is:
- * addressing another application from an unbundled `node` crosses a privacy
- * boundary and the operating system asks the person's permission first,
- * attributing the request to whichever terminal or launcher owns this process.
- * Until that question is answered the helper simply does not exit — and the
- * question is asked in a dialog that opens behind other windows, which is the
- * exact failure this function exists to correct, so it is never answered.
- *
- * Hence `RAISE_ATTEMPT_TIMEOUT` and a SIGKILL rather than a wait: a child that
- * has not finished raising a window in a second and a half is not raising one,
- * it is holding a question open, and leaving it alive leaks a process per
- * attempt on top of stalling the sign-in that has not started yet. Every step
- * here is best-effort — a failure costs a raised window, never a sign-in — and
- * bounding it is what makes that sentence true rather than aspirational.
- *
- * `command` is the raise helper as a command line, empty on platforms with no
- * such mechanism. A parameter rather than a hardcoded `osascript` because this
- * is the one branch a test cannot otherwise reach: it runs only on the visible
- * pass, and a suite that shipped its own hanging stand-in is the only way to
- * prove the stopwatch above works.
- */
-async function raiseWindow(cdp, pid, command, until) {
-  try {
-    await cdp.send("Page.bringToFront")
-  } catch {
-    // Not fatal — the window is still open and still usable.
-  }
-  if (!command.length || !pid) return
-
-  /*
-   * THE BUDGET IS ENFORCED HERE, and an unenforced one is the whole bug this
-   * guards against.
-   *
-   * Raising the window sends an Apple event to another application. On a machine
-   * that has not granted this process automation rights that opens a consent
-   * dialog — and it opens it BEHIND other windows, which is the exact failure
-   * the raise exists to cure, so nobody ever sees it to answer it. The helper
-   * then never exits, and a promise that settles only on `exit` or `error`
-   * never settles at all: no sign-in window the person can use, no ceiling, no
-   * end. It is the same shape as the DevTools hang, one process further out.
-   *
-   * So the timer is the answer and the kill is the other half of it. Resolving
-   * on the timeout alone would leave the consent dialog and its process behind
-   * on every attempt, three per sign-in, accumulating for the session.
-   * `SIGKILL` because a helper blocked on a modal will not answer a polite
-   * signal, and it is holding nothing that needs flushing.
-   */
-  const activate = (budget) =>
-    new Promise((resolve) => {
-      const script = `tell application "System Events" to set frontmost of (first process whose unix id is ${pid}) to true`
-      const child = spawn(command[0], [...command.slice(1), "-e", script], { stdio: "ignore" })
-      let settled = false
-      const finish = (value) => {
-        if (settled) return
-        settled = true
-        clearTimeout(timer)
-        resolve(value)
-      }
-      const timer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL")
-        } catch {
-          /* already gone */
-        }
-        finish(false)
-      }, budget)
-      child.on("exit", (code) => finish(code === 0))
-      child.on("error", () => finish(false))
-    })
-
-  for (let attempt = 0; attempt < RAISE_ATTEMPTS; attempt += 1) {
-    const budget = Math.min(RAISE_ATTEMPT_TIMEOUT, timeLeft(until))
-    if (!budget) return
-    if (await activate(budget)) return
-    if (timeLeft(until) <= RAISE_RETRY) return
-    await sleep(RAISE_RETRY)
-  }
-}
-
-/**
- * Stop a browser this module launched AND wait for it to let go of the profile.
- *
- * A kill is not a quit: Chrome takes a moment to flush the profile and drop its
- * singleton lock, and a second run that launches into that window finds the
- * directory still held. It does not fail loudly — it falls back — so the
- * symptom is a silent pass that mysteriously stops working whenever it runs
- * straight after another one, which is precisely the case it exists for (press
- * Sign in, get refused, press it again).
- *
- * SIGKILL after a grace period, because a browser that has not exited by then
- * is not going to, and holding the flow open for it helps nobody.
- *
- * A spawn that never produced a process returns at once. Node emits no `exit`
- * for a launch that failed with ENOENT — there was never anything to exit — so
- * waiting for one meant every "there is no browser at that path" answer sat out
- * the full grace period first, twice per sign-in, for nothing.
- */
-function stopBrowser(child) {
-  if (!child || child.pid === undefined) return Promise.resolve()
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve()
-  return new Promise((resolve) => {
-    const done = () => {
-      clearTimeout(timer)
-      resolve()
-    }
-    const timer = setTimeout(() => {
-      try {
-        child.kill("SIGKILL")
-      } catch {
-        /* already gone */
-      }
-      // Give the OS a beat to reap it, then carry on regardless.
-      setTimeout(resolve, 300)
-    }, EXIT_GRACE)
-    child.once("exit", done)
-    try {
-      child.kill()
-    } catch {
-      done()
-    }
-  })
-}
+/** Whether a URL is on `origin` — the origin itself, not a host that starts with it. */
+const sameOrigin = (url, origin) => Boolean(origin) && originOf(url) === origin
 
 /**
  * One browser run: open the URL, follow it until it lands on the target origin
  * or gives up, and hand back whatever session it produced.
  *
- * Shared by both passes of `signIn` so that the silent attempt and the visible
- * one cannot drift apart — the only difference between them is `headless` and
- * how long they are willing to wait.
+ * Shared by both passes of a sign-in so that the silent attempt and the
+ * visible one cannot drift apart — the only difference between them is
+ * `headless` and how long they are willing to wait.
+ *
+ * Resolves with `{ ok: true, code: "landed", cookie }` when the window came back
+ * to the target origin carrying cookies, and with `{ ok: false, code, reason }`
+ * for every way that can fail to happen:
+ *
+ *   needs-human    the silent pass is parked on a login page (escalate)
+ *   timed-out      the pass ran out of time, or the page stopped answering
+ *   closed         the person closed the window
+ *   no-session     it landed, but left no cookie to reuse
+ *   launch-failed | no-page | attach-failed   see `withBrowser`
+ *   fault          the browser broke mid-run
+ *   cancelled      `signal` aborted
+ *
+ * It never throws for an ordinary outcome — a person closing the window is a
+ * normal thing to do, not an exception.
  *
  * `deadline` is an ABSOLUTE timestamp the caller owns, and it outranks
  * `timeoutMs`: the latter is how long this pass would like to wait for a
  * person, the former is when the whole call must be over whatever it is in the
  * middle of. Every phase below clamps to it. See `signIn`, which computes it.
- *
- * ## One owner for the browser, from the first line
- *
- * Everything from `freePort` down is inside a single `try` whose `finally`
- * stops the browser, and that shape is the fix for a defect rather than a
- * tidiness preference. The launch prologue used to sit OUTSIDE any cleanup:
- * five awaits — a port probe, a directory create, the spawn itself, the target
- * list, the attach — each of which can reject, and each of which therefore
- * escaped this function with a Chrome running and nobody holding a reference to
- * it. That is worse than a failed sign-in. The orphan keeps the profile's
- * singleton lock, so the NEXT run's browser relays its command line to the
- * orphan and exits immediately, its debugging port never binds, and the person
- * gets "The browser did not open" from then on — a feature that stays broken
- * until someone finds a stray process in Activity Monitor.
  */
 async function runWindow({
   browserPath,
@@ -784,436 +252,391 @@ async function runWindow({
   origin,
   headless,
   timeoutMs,
-  onProgress,
   commandTimeout,
   raiseCommand = [],
   deadline = Date.now() + timeoutMs + OVERHEAD_ALLOWANCE,
+  signal,
 }) {
-  /** Both `null` until they exist, so the `finally` can clean up either. */
-  let child = null
-  let cdp = null
-  /*
-   * Which sentence an unexpected throw becomes. "The sign-in window stopped
-   * responding" is true once there is a window to respond; before that it would
-   * name the wrong thing, and a person reading it would go looking for a window
-   * that was never opened.
-   */
-  let attached = false
-
+  let outcome
   try {
-    const port = await freePort()
-    await fs.mkdir(profileDir, { recursive: true })
-
-    let launchError = null
-    child = spawn(
-      browserPath,
-      [
-        `--remote-debugging-port=${port}`,
-        `--user-data-dir=${profileDir}`,
-        ...(headless ? ["--headless=new"] : []),
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--no-service-autorun",
-        "--disable-background-networking",
-        "--window-size=520,720",
-        target,
-      ],
-      { stdio: "ignore" }
+    outcome = await withBrowser(
+      { browserPath, profileDir, url: target, headless, deadline, commandTimeout, signal },
+      ({ cdp, child }) =>
+        followToLanding({ cdp, child, target, origin, headless, timeoutMs, raiseCommand, deadline, signal })
     )
-    child.on("error", (error) => {
-      launchError = error
-    })
-
-    const launchBy = Math.min(Date.now() + LAUNCH_TIMEOUT, deadline)
-    const version = await waitForDevTools(port, launchBy, () => launchError)
-    if (!version) {
-      return {
-        ok: false,
-        reason:
-          "The browser did not open. Try signing in to the site in your own browser, then add the " +
-          "library again.",
-      }
-    }
-
-    const page = await firstPage(port, Math.min(Date.now() + LAUNCH_TIMEOUT, deadline), target)
-    if (!page?.webSocketDebuggerUrl) {
-      return { ok: false, reason: "The browser opened without a page the editor could follow" }
-    }
-
-    cdp = connect(page.webSocketDebuggerUrl, commandTimeout)
-    try {
-      await cdp.ready
-    } catch {
-      return { ok: false, reason: "The editor could not attach to the sign-in window" }
-    }
-    attached = true
-
-    /*
-     * ENABLING `Page` MAKES US RESPONSIBLE FOR JAVASCRIPT DIALOGS, and not
-     * knowing that is the likeliest way this flow froze.
-     *
-     * Chrome normally shows an `alert`, `confirm` or `beforeunload` itself and
-     * the renderer waits for the person to dismiss it. With the Page domain
-     * enabled, it stops doing that: the dialog is reported to the client as
-     * `Page.javascriptDialogOpening` and the renderer stays blocked until the
-     * client answers with `Page.handleJavaScriptDialog`. Nothing here ever did,
-     * so one dialog anywhere in a sign-in chain — a `beforeunload` on a partly
-     * filled form, a provider's "are you still there" — stopped the page dead.
-     * `Runtime.evaluate` against a blocked renderer never answers, which is
-     * precisely the shape of hang the timeout above was written for.
-     *
-     * DISMISSED, EXCEPT FOR `beforeunload`, and that exception is a bug fix
-     * rather than an inconsistency.
-     *
-     * Dismissing everything was the first version, on the reasoning that these
-     * dialogs belong to the site and answering "yes" on somebody's behalf is a
-     * decision this editor has no business making. That reasoning is right for
-     * `confirm` and `prompt` — a question with two real answers, where the
-     * conservative one is to decline — and it is exactly backwards for
-     * `beforeunload`, because `beforeunload` is not a question about the page.
-     * It is a confirmation of a NAVIGATION, and dismissing it means "stay here":
-     * it cancels the very thing that was just asked for.
-     *
-     * Both halves of this flow ask for navigations. `Page.navigate` below is
-     * one, and a dismissal silently turns it into nothing — the command still
-     * resolves, no new document ever arrives, and the run burns its whole
-     * ceiling on a page it believes it asked to leave. The person's own clicks
-     * are the other and the worse one: they press the provider's Continue
-     * button, the login page's unload guard fires, this handler answers "stay",
-     * and nothing happens. They press it again. Nothing happens again. They
-     * cannot answer the dialog themselves, because enabling the Page domain took
-     * that away from them, so the window sits live, focused and unusable until
-     * the ceiling kills it.
-     *
-     * `alert` stays on the dismissing side purely because there is nothing to
-     * choose: an alert has one button, and the protocol closes it either way.
-     *
-     * Registered BEFORE `Page.enable`, not after it, and the ordering is a bug
-     * a test caught rather than a preference. Chrome may report a dialog on the
-     * document that is already loading the instant the domain comes up, and a
-     * listener attached one await later misses it — leaving exactly the frozen
-     * renderer this is here to prevent, in the one case hardest to reproduce.
-     * Attaching first costs nothing: an event for a domain that is not enabled
-     * yet is simply never sent.
-     */
-    cdp.on("Page.javascriptDialogOpening", (params) => {
-      const accept = String(params?.type ?? "") === "beforeunload"
-      // Best-effort and unawaited: this runs inside the socket's message
-      // handler, and a rejection here must not take the run down with it.
-      void cdp.send("Page.handleJavaScriptDialog", { accept }).catch(() => {})
-    })
-
-    await cdp.send("Page.enable")
-    await cdp.send("Network.enable")
-
-    /*
-     * LANDED MEANS THE SITE SERVED THE PAGE, not that the address bar is
-     * pointing at it.
-     *
-     * The window is launched ON the target URL, so for the first instant of
-     * every run the address bar already reads as the target origin — before a
-     * single byte has come back, and before the proxy has had its chance to
-     * bounce the request to a sign-in. A check on the URL alone therefore
-     * "lands" immediately, reads the cookies that do not exist yet, and reports
-     * a site that grants no reusable session. Which is exactly what it did:
-     * this is the bug the live test caught, and it was invisible against a slow
-     * remote host and certain against a fast local one.
-     *
-     * The honest signal is the main frame's own document response: a 2xx whose
-     * URL is on the target origin means the site answered with a page rather
-     * than with a redirect to somebody's login. Redirect statuses never satisfy
-     * it, so the whole OAuth dance can run through without ever looking like an
-     * arrival.
-     */
-    let mainFrame = ""
-    let servedUrl = ""
-    let servedStatus = 0
-    let servedAt = 0
-    let servedType = ""
-
-    cdp.on("Page.frameNavigated", (params) => {
-      // The main frame is the one with no parent. Subframes navigate too, and a
-      // tracking pixel inside a login page must not count as an arrival.
-      if (!params?.frame || params.frame.parentId) return
-      mainFrame = params.frame.id
-    })
-    cdp.on("Network.responseReceived", (params) => {
-      if (params?.type !== "Document") return
-      if (mainFrame && params.frameId && params.frameId !== mainFrame) return
-      servedUrl = String(params.response?.url ?? "")
-      servedStatus = Number(params.response?.status ?? 0)
-      servedType = String(params.response?.mimeType ?? "")
-      servedAt = Date.now()
-    })
-
-    /*
-     * A LOGIN PAGE THE SITE SERVED ITSELF IS NOT AN ARRIVAL, and reading it as
-     * one is the closest thing in this file to the reported symptom: press Sign
-     * in, no window ever appears, and the answer is a sentence telling you to go
-     * and find a token.
-     *
-     * The test above is satisfied by a 2xx document on the target origin with
-     * the address bar to match — and a site that renders its own `/login` at 200
-     * satisfies every word of that. Escalation to a visible window, meanwhile,
-     * was triggered only by parking CROSS-ORIGIN. So for the whole family of
-     * sites whose sign-in lives on their own origin — a self-hosted Storybook
-     * behind a form, a dashboard with a JavaScript auth gate, anything that
-     * routes rather than redirects — the silent pass "landed" on the login
-     * screen, scraped whatever the login page had set (a CSRF token is enough to
-     * look like a session), and returned success. No window was ever shown, the
-     * route then probed the wall, found it still there, and told the person the
-     * site "may need a token" — for a site that needed them to type a password.
-     *
-     * So an arrival now has to prove it is not a wall, and the proof is the one
-     * this codebase already owns: `classifyWall` is the module that decides what
-     * a wall looks like, and one of the two shapes it recognises is precisely a
-     * 200 carrying a password input. Importing it rather than sniffing for a
-     * `<input type=password>` here keeps that judgement in ONE place — a second
-     * copy would be the version that never learns about the next shape, and the
-     * two would disagree about the same page, which is the bug above wearing a
-     * different hat.
-     *
-     * The live DOM is what gets classified, not the response body. It costs one
-     * evaluation, it is already the thing being polled, and it sees a login form
-     * that a framework rendered on the client — which a body read cannot.
-     *
-     * Cached against the response and the URL together so a page that sits still
-     * is classified once rather than every poll, and re-classified the moment
-     * either changes — which is what makes this safe on the visible pass, where
-     * the person is expected to be looking at a login page right up until they
-     * are not.
-     */
-    let wallCheckedFor = ""
-    let servedIsWall = false
-    const servedIsLoginPage = async (current) => {
-      const key = `${servedAt}|${current}`
-      if (wallCheckedFor === key) return servedIsWall
-      wallCheckedFor = key
-      let markup = ""
-      try {
-        const { result } = await cdp.send("Runtime.evaluate", {
-          // Capped because a design system's own index page can be large and
-          // none of this needs more than the top of the document to decide.
-          expression: "document.documentElement ? document.documentElement.outerHTML : ''",
-          returnByValue: true,
-        })
-        markup = String(result?.value ?? "").slice(0, 20000)
-      } catch {
-        /*
-         * A renderer that will not answer cannot be classified, and guessing
-         * "wall" here would turn one lost command into a sign-in that can never
-         * complete. The poll loop already has a policy for a browser that has
-         * gone quiet — three strikes — so leave the decision to it and let this
-         * arrival stand or fall on the response alone.
-         */
-        markup = ""
-      }
-      servedIsWall = Boolean(
-        classifyWall(
-          { status: servedStatus, headers: {}, contentType: servedType, text: markup },
-          servedUrl
-        )
-      )
-      return servedIsWall
-    }
-
-    /*
-     * NAVIGATE OURSELVES, after attaching, rather than trusting the URL on the
-     * command line.
-     *
-     * The browser is launched pointing at the target, and on a warm profile it
-     * has often finished the whole redirect chain before this process has
-     * attached — so the document responses that decide "landed" were delivered
-     * to nobody and the flow waited out its ceiling staring at a page that had
-     * already arrived. Measured cold, that gap is over twelve seconds wide.
-     *
-     * Navigating here closes it: every run observes its own navigation from the
-     * start. The command-line URL stays because it is what the person sees
-     * while the window opens, and a repeat GET of the same address costs a
-     * round trip and nothing else.
-     */
-    /*
-     * RAISE THE WINDOW, or the whole flow can fail silently.
-     *
-     * The sign-in opens in a second instance of a browser the designer almost
-     * certainly already has running, and macOS does not bring a new window of
-     * an existing application forward on its own. So the window can be there,
-     * correctly pointed at the provider, and completely invisible behind
-     * whatever the person was looking at — they see a panel that says it is
-     * waiting for a sign-in window, and no sign-in window. Measured exactly
-     * that way: `document.hasFocus()` false on a visible, correctly placed,
-     * correctly navigated window.
-     *
-     * Only for the visible pass: raising a headless window is meaningless, and
-     * the silent pass must never steal focus.
-     */
-    if (!headless) {
-      await raiseWindow(cdp, child.pid, raiseCommand, Math.min(Date.now() + RAISE_BUDGET, deadline))
-    }
-
-    try {
-      await cdp.send("Page.navigate", { url: target })
-    } catch {
-      // A navigation that will not start is reported by the loop below as a
-      // run that never landed, which is the same outcome by a plainer route.
-    }
-
-    /*
-     * The poll's own ceiling, or the call's, whichever comes first.
-     *
-     * `timeoutMs` is how long this pass is willing to wait for a person; the
-     * deadline is when the caller has to have an answer regardless. Taking the
-     * earlier of the two is what stops the second pass promising four fresh
-     * minutes to a call that has already spent its budget getting here.
-     */
-    const until = Math.min(Date.now() + timeoutMs, deadline)
-    let provider = ""
-    let landed = false
-    /*
-     * A command that times out is not on its own a reason to give up on the
-     * person.
-     *
-     * Every `send` is bounded now, which is what stopped this loop hanging
-     * forever — but the bound is a blunt instrument: a renderer busy for
-     * fifteen seconds during a two-factor step would look identical to a dead
-     * one, and abandoning a sign-in somebody is halfway through is a worse
-     * failure than the hang was. So a lost answer costs a poll, not the run,
-     * and only a browser that has gone quiet for three of them in a row is
-     * treated as gone. The socket closing is still immediate: that is the
-     * window actually being shut, which is a decision rather than a symptom.
-     */
-    let silentPolls = 0
-
-    while (Date.now() < until) {
-      if (cdp.closed) break
-      let current = ""
-      try {
-        const { result } = await cdp.send("Runtime.evaluate", {
-          expression: "location.href",
-          returnByValue: true,
-        })
-        current = String(result?.value ?? "")
-        silentPolls = 0
-      } catch {
-        silentPolls += 1
-        if (silentPolls >= UNANSWERED_POLLS) break
-        continue
-      }
-      // The address bar is still the best thing to SAY — it is where the person
-      // is — even though it is not what decides arrival.
-      if (!provider) provider = providerLabel(current)
-      onProgress?.({ url: current, provider })
-
-      if (
-        servedUrl.startsWith(origin) &&
-        servedStatus >= 200 &&
-        servedStatus < 300 &&
-        current.startsWith(origin)
-      ) {
-        if (!(await servedIsLoginPage(current))) {
-          landed = true
-          break
-        }
-        /*
-         * The site's own login page, on the target origin — which is a sign-in
-         * waiting for a person just as much as a cross-origin park is, and the
-         * silent pass should say so in the same words rather than sit here. No
-         * settling period, unlike the parked test below: a password field is
-         * not a redirect in flight, it is the end of one.
-         */
-        if (headless) {
-          return {
-            ok: false,
-            needsHuman: true,
-            provider,
-            reason: "That site needs a person to sign in",
-          }
-        }
-      }
-
-      /*
-       * A silent pass that is parked on somebody else's page is a sign-in
-       * waiting for a human. Give up immediately rather than burning the
-       * ceiling: the caller's next move is to open a real window, and every
-       * second spent here is a second the designer spends looking at nothing.
-       */
-      if (
-        headless &&
-        servedUrl &&
-        !servedUrl.startsWith(origin) &&
-        servedStatus >= 200 &&
-        servedStatus < 300 &&
-        Date.now() - servedAt > PARKED_MS
-      ) {
-        return { ok: false, needsHuman: true, provider, reason: "That site needs a person to sign in" }
-      }
-
-      await sleep(POLL_INTERVAL)
-    }
-
-    if (!landed) {
-      const reason = cdp.closed
-        ? "The sign-in window was closed before the site let the editor in."
-        : "The sign-in did not finish in time. Opening it again will pick up where it left off."
-      return { ok: false, reason, provider }
-    }
-
-    /*
-     * Let the landing settle before reading cookies.
-     *
-     * The window can arrive on the target origin a moment before the identity
-     * provider's last redirect has set its session cookie, and a read that
-     * lands in that gap comes back empty — which would be reported as a failed
-     * sign-in immediately after a successful one.
-     */
-    await sleep(400)
-    const { cookies } = await cdp.send("Network.getCookies", { urls: [target] })
-    const header = (cookies ?? []).map((cookie) => `${cookie.name}=${cookie.value}`).join("; ")
-
-    if (!header) {
-      return {
-        ok: false,
-        provider,
-        reason:
-          "The site let the window in without leaving a session the editor can reuse. A token may " +
-          "be the only way in to this one.",
-      }
-    }
-
-    return { ok: true, cookie: header, origin, provider }
   } catch (error) {
     /*
      * A BROWSER FAULT IS AN OUTCOME, NOT AN EXCEPTION.
      *
      * There was no `catch` here, which was invisible for as long as nothing in
-     * the block could reject: the commands either answered or hung forever.
+     * the run could reject: the commands either answered or hung forever.
      * Bounding them turned the hang into a rejection, and a rejection thrown
-     * out of here escapes `signIn`, escapes the route, and reaches the panel as
-     * a 500 — so the fix for the freeze would have replaced it with a red
+     * out of here escapes the sign-in, escapes the route, and reaches the panel
+     * as a 500 — so the fix for the freeze would have replaced it with a red
      * error where the contract promises a sentence.
      *
      * Every other way this function fails already returns `{ ok: false,
      * reason }`, and the caller is written to expect exactly that; see the
      * route, which turns a refusal into a 200 with the reason attached because
-     * a person closing a window is an ordinary thing to do.
-     *
-     * It now covers the launch as well as the window, because the launch had
-     * the same hole in a worse place: a profile directory that cannot be
-     * created, a browser path that cannot be spawned, a debugging endpoint that
-     * answers something other than JSON. See the note on this function about
-     * what an escape from there used to leave running.
+     * a person closing a window is an ordinary thing to do. A failure before
+     * there was a window is `withBrowser`'s to report, and arrives below as a
+     * code rather than here as a throw.
      */
+    if (signal?.aborted) return CANCELLED
     const detail = error instanceof Error && error.message ? `: ${error.message}` : ""
+    return { ok: false, code: "fault", reason: `The sign-in window stopped responding${detail}` }
+  }
+
+  // Whatever the run found after a cancel, nobody asked for it any more.
+  if (signal?.aborted) return CANCELLED
+  if (outcome.ok || !LAUNCH_REASONS[outcome.code]) return outcome
+  return { ok: false, code: outcome.code, reason: LAUNCH_REASONS[outcome.code](outcome.error) }
+}
+
+/** The sentence for each way `withBrowser` can fail before there is a window. */
+const LAUNCH_REASONS = {
+  "launch-failed": (error) =>
+    error
+      ? `The editor could not start the sign-in browser${error.message ? `: ${error.message}` : ""}`
+      : "The browser did not open. Try signing in to the site in your own browser, then add the " +
+        "library again.",
+  "no-page": () => "The browser opened without a page the editor could follow",
+  "attach-failed": () => "The editor could not attach to the sign-in window",
+  cancelled: () => CANCELLED.reason,
+}
+
+/** The part of a run that happens once there is a page to drive. */
+async function followToLanding({ cdp, child, target, origin, headless, timeoutMs, raiseCommand, deadline, signal }) {
+  /*
+   * ENABLING `Page` MAKES US RESPONSIBLE FOR JAVASCRIPT DIALOGS, and not
+   * knowing that is the likeliest way this flow froze.
+   *
+   * Chrome normally shows an `alert`, `confirm` or `beforeunload` itself and
+   * the renderer waits for the person to dismiss it. With the Page domain
+   * enabled, it stops doing that: the dialog is reported to the client as
+   * `Page.javascriptDialogOpening` and the renderer stays blocked until the
+   * client answers with `Page.handleJavaScriptDialog`. Nothing here ever did,
+   * so one dialog anywhere in a sign-in chain — a `beforeunload` on a partly
+   * filled form, a provider's "are you still there" — stopped the page dead.
+   * `Runtime.evaluate` against a blocked renderer never answers, which is
+   * precisely the shape of hang the command timeout (`cdp-browser.mjs`) was
+   * written for.
+   *
+   * DISMISSED, EXCEPT FOR `beforeunload`, and that exception is a bug fix
+   * rather than an inconsistency.
+   *
+   * Dismissing everything was the first version, on the reasoning that these
+   * dialogs belong to the site and answering "yes" on somebody's behalf is a
+   * decision this editor has no business making. That reasoning is right for
+   * `confirm` and `prompt` — a question with two real answers, where the
+   * conservative one is to decline — and it is exactly backwards for
+   * `beforeunload`, because `beforeunload` is not a question about the page.
+   * It is a confirmation of a NAVIGATION, and dismissing it means "stay here":
+   * it cancels the very thing that was just asked for.
+   *
+   * Both halves of this flow ask for navigations. `Page.navigate` below is
+   * one, and a dismissal silently turns it into nothing — the command still
+   * resolves, no new document ever arrives, and the run burns its whole
+   * ceiling on a page it believes it asked to leave. The person's own clicks
+   * are the other and the worse one: they press the provider's Continue
+   * button, the login page's unload guard fires, this handler answers "stay",
+   * and nothing happens. They press it again. Nothing happens again. They
+   * cannot answer the dialog themselves, because enabling the Page domain took
+   * that away from them, so the window sits live, focused and unusable until
+   * the ceiling kills it.
+   *
+   * `alert` stays on the dismissing side purely because there is nothing to
+   * choose: an alert has one button, and the protocol closes it either way.
+   *
+   * Registered BEFORE `Page.enable`, not after it, and the ordering is a bug
+   * a test caught rather than a preference. Chrome may report a dialog on the
+   * document that is already loading the instant the domain comes up, and a
+   * listener attached one await later misses it — leaving exactly the frozen
+   * renderer this is here to prevent, in the one case hardest to reproduce.
+   * Attaching first costs nothing: an event for a domain that is not enabled
+   * yet is simply never sent.
+   */
+  cdp.on("Page.javascriptDialogOpening", (params) => {
+    const accept = String(params?.type ?? "") === "beforeunload"
+    // Best-effort and unawaited: this runs inside the socket's message
+    // handler, and a rejection here must not take the run down with it.
+    void cdp.send("Page.handleJavaScriptDialog", { accept }).catch(() => {})
+  })
+
+  await cdp.send("Page.enable")
+  await cdp.send("Network.enable")
+
+  /*
+   * LANDED MEANS THE SITE SERVED THE PAGE, not that the address bar is
+   * pointing at it.
+   *
+   * The window is launched ON the target URL, so for the first instant of
+   * every run the address bar already reads as the target origin — before a
+   * single byte has come back, and before the proxy has had its chance to
+   * bounce the request to a sign-in. A check on the URL alone therefore
+   * "lands" immediately, reads the cookies that do not exist yet, and reports
+   * a site that grants no reusable session. Which is exactly what it did:
+   * this is the bug the live test caught, and it was invisible against a slow
+   * remote host and certain against a fast local one.
+   *
+   * The honest signal is the main frame's own document response: a 2xx whose
+   * URL is on the target origin means the site answered with a page rather
+   * than with a redirect to somebody's login. Redirect statuses never satisfy
+   * it, so the whole OAuth dance can run through without ever looking like an
+   * arrival.
+   */
+  let mainFrame = ""
+  let servedUrl = ""
+  let servedStatus = 0
+  let servedAt = 0
+  let servedType = ""
+
+  cdp.on("Page.frameNavigated", (params) => {
+    // The main frame is the one with no parent. Subframes navigate too, and a
+    // tracking pixel inside a login page must not count as an arrival.
+    if (!params?.frame || params.frame.parentId) return
+    mainFrame = params.frame.id
+  })
+  cdp.on("Network.responseReceived", (params) => {
+    if (params?.type !== "Document") return
+    if (mainFrame && params.frameId && params.frameId !== mainFrame) return
+    servedUrl = String(params.response?.url ?? "")
+    servedStatus = Number(params.response?.status ?? 0)
+    servedType = String(params.response?.mimeType ?? "")
+    servedAt = Date.now()
+  })
+
+  /*
+   * A LOGIN PAGE THE SITE SERVED ITSELF IS NOT AN ARRIVAL, and reading it as
+   * one is the closest thing in this file to the reported symptom: press Sign
+   * in, no window ever appears, and the answer is a sentence telling you to go
+   * and find a token.
+   *
+   * The test above is satisfied by a 2xx document on the target origin with
+   * the address bar to match — and a site that renders its own `/login` at 200
+   * satisfies every word of that. Escalation to a visible window, meanwhile,
+   * was triggered only by parking CROSS-ORIGIN. So for the whole family of
+   * sites whose sign-in lives on their own origin — a self-hosted Storybook
+   * behind a form, a dashboard with a JavaScript auth gate, anything that
+   * routes rather than redirects — the silent pass "landed" on the login
+   * screen, scraped whatever the login page had set (a CSRF token is enough to
+   * look like a session), and returned success. No window was ever shown, the
+   * route then probed the wall, found it still there, and told the person the
+   * site "may need a token" — for a site that needed them to type a password.
+   *
+   * So an arrival now has to prove it is not a wall, and the proof is the one
+   * this codebase already owns: `classifyWall` is the module that decides what
+   * a wall looks like, and one of the two shapes it recognises is precisely a
+   * 200 carrying a password input. Importing it rather than sniffing for a
+   * `<input type=password>` here keeps that judgement in ONE place — a second
+   * copy would be the version that never learns about the next shape, and the
+   * two would disagree about the same page, which is the bug above wearing a
+   * different hat.
+   *
+   * The live DOM is what gets classified, not the response body. It costs one
+   * evaluation, it is already the thing being polled, and it sees a login form
+   * that a framework rendered on the client — which a body read cannot.
+   *
+   * Cached against the response and the URL together so a page that sits still
+   * is classified once rather than every poll, and re-classified the moment
+   * either changes — which is what makes this safe on the visible pass, where
+   * the person is expected to be looking at a login page right up until they
+   * are not.
+   */
+  let wallCheckedFor = ""
+  let servedIsWall = false
+  const servedIsLoginPage = async (current) => {
+    const key = `${servedAt}|${current}`
+    if (wallCheckedFor === key) return servedIsWall
+    wallCheckedFor = key
+    let markup = ""
+    try {
+      const { result } = await cdp.send("Runtime.evaluate", {
+        // Capped because a design system's own index page can be large and
+        // none of this needs more than the top of the document to decide.
+        expression: "document.documentElement ? document.documentElement.outerHTML : ''",
+        returnByValue: true,
+      })
+      markup = String(result?.value ?? "").slice(0, 20000)
+    } catch {
+      /*
+       * A renderer that will not answer cannot be classified, and guessing
+       * "wall" here would turn one lost command into a sign-in that can never
+       * complete. The poll loop already has a policy for a browser that has
+       * gone quiet — three strikes — so leave the decision to it and let this
+       * arrival stand or fall on the response alone.
+       */
+      markup = ""
+    }
+    servedIsWall = Boolean(
+      classifyWall(
+        { status: servedStatus, headers: {}, contentType: servedType, text: markup },
+        servedUrl
+      )
+    )
+    return servedIsWall
+  }
+
+  /*
+   * RAISE THE WINDOW, or the whole flow can fail silently.
+   *
+   * The sign-in opens in a second instance of a browser the designer almost
+   * certainly already has running, and macOS does not bring a new window of
+   * an existing application forward on its own. So the window can be there,
+   * correctly pointed at the provider, and completely invisible behind
+   * whatever the person was looking at — they see a panel that says it is
+   * waiting for a sign-in window, and no sign-in window. Measured exactly
+   * that way: `document.hasFocus()` false on a visible, correctly placed,
+   * correctly navigated window.
+   *
+   * Only for the visible pass: raising a headless window is meaningless, and
+   * the silent pass must never steal focus.
+   */
+  if (!headless) {
+    await raiseWindow(cdp, child.pid, raiseCommand, Math.min(Date.now() + RAISE_BUDGET, deadline))
+  }
+
+  /*
+   * NAVIGATE OURSELVES, after attaching, rather than trusting the URL on the
+   * command line.
+   *
+   * The browser is launched pointing at the target, and on a warm profile it
+   * has often finished the whole redirect chain before this process has
+   * attached — so the document responses that decide "landed" were delivered
+   * to nobody and the flow waited out its ceiling staring at a page that had
+   * already arrived. Measured cold, that gap is over twelve seconds wide.
+   *
+   * Navigating here closes it: every run observes its own navigation from the
+   * start. The command-line URL stays because it is what the person sees
+   * while the window opens, and a repeat GET of the same address costs a
+   * round trip and nothing else.
+   */
+  try {
+    await cdp.send("Page.navigate", { url: target })
+  } catch {
+    // A navigation that will not start is reported by the loop below as a
+    // run that never landed, which is the same outcome by a plainer route.
+  }
+
+  /*
+   * The poll's own ceiling, or the call's, whichever comes first.
+   *
+   * `timeoutMs` is how long this pass is willing to wait for a person; the
+   * deadline is when the caller has to have an answer regardless. Taking the
+   * earlier of the two is what stops the second pass promising four fresh
+   * minutes to a call that has already spent its budget getting here.
+   */
+  const until = Math.min(Date.now() + timeoutMs, deadline)
+  let landed = false
+  /*
+   * A command that times out is not on its own a reason to give up on the
+   * person.
+   *
+   * Every `send` is bounded now, which is what stopped this loop hanging
+   * forever — but the bound is a blunt instrument: a renderer busy for
+   * fifteen seconds during a two-factor step would look identical to a dead
+   * one, and abandoning a sign-in somebody is halfway through is a worse
+   * failure than the hang was. So a lost answer costs a poll, not the run,
+   * and only a browser that has gone quiet for three of them in a row is
+   * treated as gone. The socket closing is still immediate: that is the
+   * window actually being shut, which is a decision rather than a symptom.
+   */
+  let silentPolls = 0
+
+  while (Date.now() < until) {
+    if (cdp.closed || signal?.aborted) break
+    let current = ""
+    try {
+      const { result } = await cdp.send("Runtime.evaluate", {
+        expression: "location.href",
+        returnByValue: true,
+      })
+      current = String(result?.value ?? "")
+      silentPolls = 0
+    } catch {
+      silentPolls += 1
+      if (silentPolls >= UNANSWERED_POLLS) break
+      continue
+    }
+    if (
+      sameOrigin(servedUrl, origin) &&
+      servedStatus >= 200 &&
+      servedStatus < 300 &&
+      sameOrigin(current, origin)
+    ) {
+      if (!(await servedIsLoginPage(current))) {
+        landed = true
+        break
+      }
+      /*
+       * The site's own login page, on the target origin — which is a sign-in
+       * waiting for a person just as much as a cross-origin park is, and the
+       * silent pass should say so in the same words rather than sit here. No
+       * settling period, unlike the parked test below: a password field is
+       * not a redirect in flight, it is the end of one.
+       */
+      if (headless) return NEEDS_HUMAN
+    }
+
+    /*
+     * A silent pass that is parked on somebody else's page is a sign-in
+     * waiting for a human. Give up immediately rather than burning the
+     * ceiling: the caller's next move is to open a real window, and every
+     * second spent here is a second the designer spends looking at nothing.
+     */
+    if (
+      headless &&
+      servedUrl &&
+      !sameOrigin(servedUrl, origin) &&
+      servedStatus >= 200 &&
+      servedStatus < 300 &&
+      Date.now() - servedAt > PARKED_MS
+    ) {
+      return NEEDS_HUMAN
+    }
+
+    await sleep(POLL_INTERVAL, signal)
+  }
+
+  if (!landed) {
+    if (signal?.aborted) return CANCELLED
+    return cdp.closed
+      ? {
+          ok: false,
+          code: "closed",
+          reason: "The sign-in window was closed before the site let the editor in.",
+        }
+      : {
+          ok: false,
+          code: "timed-out",
+          reason: "The sign-in did not finish in time. Opening it again will pick up where it left off.",
+        }
+  }
+
+  /*
+   * Let the landing settle before reading cookies.
+   *
+   * The window can arrive on the target origin a moment before the identity
+   * provider's last redirect has set its session cookie, and a read that
+   * lands in that gap comes back empty — which would be reported as a failed
+   * sign-in immediately after a successful one.
+   */
+  await sleep(400, signal)
+  if (signal?.aborted) return CANCELLED
+  const { cookies } = await cdp.send("Network.getCookies", { urls: [target] })
+  const header = (cookies ?? []).map((cookie) => `${cookie.name}=${cookie.value}`).join("; ")
+
+  if (!header) {
     return {
       ok: false,
-      reason: attached
-        ? `The sign-in window stopped responding${detail}`
-        : `The editor could not start the sign-in browser${detail}`,
+      code: "no-session",
+      reason:
+        "The site let the window in without leaving a session the editor can reuse. A token may " +
+        "be the only way in to this one.",
     }
-  } finally {
-    cdp?.close()
-    await stopBrowser(child)
   }
+
+  return { ok: true, code: "landed", cookie: header }
 }
 
 /**
@@ -1230,74 +653,117 @@ async function runWindow({
  *
  * Only this origin's cookies go. The identity provider's own session is shared
  * with every other site behind the same SSO, and signing a designer out of
- * their company because they forgot one Storybook would be its own bug; see
- * `forgetSessions` for the whole-profile version.
+ * their company because they forgot one Storybook would be its own bug.
+ *
+ * No profile, no launch: a credential that was pasted rather than captured
+ * left nothing in a browser to clear, and launching one anyway would create a
+ * profile as a side effect of forgetting.
  */
-async function clearOriginCookies({ browserPath, profileDir, origin }) {
+async function clearOriginCookies({ browserPath, profileDir, origin, commandTimeout }) {
   if (!browserPath || !origin) return { cleared: false }
-  const port = await freePort()
-
-  let launchError = null
-  const child = spawn(
-    browserPath,
-    [
-      `--remote-debugging-port=${port}`,
-      `--user-data-dir=${profileDir}`,
-      "--headless=new",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--no-service-autorun",
-      "--disable-background-networking",
-      "about:blank",
-    ],
-    { stdio: "ignore" }
-  )
-  child.on("error", (error) => {
-    launchError = error
-  })
-  /*
-   * The same stop the sign-in run uses, and sharing it is a fix.
-   *
-   * This one was a plain `child.kill()` that returned immediately, despite
-   * every caller writing `await stop()` — awaiting `undefined` — so it did the
-   * one thing the shared version exists to prevent: hand back control while
-   * Chrome is still flushing the profile and holding its lock, which is how the
-   * NEXT sign-in ends up launching into a directory somebody else still owns.
-   * It never escalated to SIGKILL either, so a browser that ignored the polite
-   * signal simply stayed alive and poisoned the profile for good.
-   */
-  const stop = () => stopBrowser(child)
-
-  const version = await waitForDevTools(port, Date.now() + LAUNCH_TIMEOUT, () => launchError)
-  if (!version) {
-    await stop()
-    return { cleared: false }
-  }
-  const page = await firstPage(port, Date.now() + LAUNCH_TIMEOUT)
-  if (!page?.webSocketDebuggerUrl) {
-    await stop()
-    return { cleared: false }
-  }
-  const cdp = connect(page.webSocketDebuggerUrl)
   try {
-    await cdp.ready
-    await cdp.send("Network.enable")
-    const { cookies } = await cdp.send("Network.getCookies", { urls: [origin] })
-    for (const cookie of cookies ?? []) {
-      // Name plus domain plus path, because a cookie is identified by all three
-      // and deleting by name alone leaves the host-only twin behind.
-      await cdp.send("Network.deleteCookies", {
-        name: cookie.name,
-        domain: cookie.domain,
-        path: cookie.path,
-      })
-    }
-    return { cleared: true, count: (cookies ?? []).length }
+    await fs.access(profileDir)
   } catch {
     return { cleared: false }
-  } finally {
-    cdp.close()
-    await stop()
+  }
+  try {
+    const outcome = await withBrowser(
+      { browserPath, profileDir, url: "about:blank", headless: true, commandTimeout },
+      async ({ cdp }) => {
+        await cdp.send("Network.enable")
+        const { cookies } = await cdp.send("Network.getCookies", { urls: [origin] })
+        for (const cookie of cookies ?? []) {
+          // Name plus domain plus path, because a cookie is identified by all three
+          // and deleting by name alone leaves the host-only twin behind.
+          await cdp.send("Network.deleteCookies", {
+            name: cookie.name,
+            domain: cookie.domain,
+            path: cookie.path,
+          })
+        }
+        return { cleared: true, count: (cookies ?? []).length }
+      }
+    )
+    return outcome.cleared ? outcome : { cleared: false }
+  } catch {
+    return { cleared: false }
+  }
+}
+
+/*
+ * The session of every profile in this process, keyed by profile directory, so
+ * two `createBrowserSignIn` over one state directory still share one owner.
+ * The machine itself is in this module's header.
+ */
+const sessions = new Map()
+
+/** Which phase may follow which; anything else is a stale or illegal move. */
+const MOVES = {
+  idle: ["silent", "forgetting"],
+  silent: ["waitingForPerson", "verifying", "done", "failed", "cancelled"],
+  waitingForPerson: ["verifying", "done", "failed", "cancelled"],
+  verifying: ["done", "failed", "cancelled"],
+  forgetting: ["idle"],
+  done: ["idle"],
+  failed: ["idle"],
+  cancelled: ["idle"],
+}
+/** The phases in which a run holds the session and a caller can still join it. */
+const LIVE = new Set(["silent", "waitingForPerson", "verifying"])
+
+function sessionFor(profileDir) {
+  let session = sessions.get(profileDir)
+  if (!session) {
+    session = createSession()
+    sessions.set(profileDir, session)
+  }
+  return session
+}
+
+function createSession() {
+  /** `{ phase: "idle" }`, or `{ phase, owner }` where `owner` is the run or forget holding it. */
+  let state = { phase: "idle" }
+  let idleWaiters = []
+
+  return {
+    /** The one reader. */
+    get state() {
+      return state
+    },
+
+    /**
+     * The one writer. `owner` is whoever is making the move: from `idle` any
+     * new owner may take the session; after that only the owner holding it can
+     * move it, and only along `MOVES`. Answers whether the move happened, so a
+     * run whose result arrives after it was cancelled learns that it no longer
+     * speaks for anybody.
+     */
+    transition(owner, next) {
+      if (state.phase !== "idle" && state.owner !== owner) return false
+      if (!MOVES[state.phase].includes(next)) return false
+      if (next !== "idle") {
+        state = { phase: next, owner }
+        return true
+      }
+      state = { phase: "idle" }
+      const waiting = idleWaiters
+      idleWaiters = []
+      for (const resolve of waiting) resolve()
+      return true
+    },
+
+    /** Resolves at the next `idle`, or when `signal` aborts, whichever is first. */
+    idle(signal) {
+      if (state.phase === "idle" || signal?.aborted) return Promise.resolve()
+      return new Promise((resolve) => {
+        const done = () => {
+          signal?.removeEventListener("abort", done)
+          resolve()
+        }
+        idleWaiters.push(done)
+        signal?.addEventListener("abort", done, { once: true })
+      })
+    },
   }
 }
 
@@ -1337,6 +803,109 @@ export function createBrowserSignIn(config = {}) {
    */
   const raiseCommand = config.raiseCommand ?? (process.platform === "darwin" ? ["osascript"] : [])
 
+  const session = sessionFor(profileDir)
+
+  /**
+   * Add a caller to a run. Resolves with the run's answer, or with `CANCELLED`
+   * the moment this caller's `signal` aborts — and when that leaves the run
+   * with nobody waiting, the run is cancelled: its window closes, its browser
+   * stops, and the profile is let go of.
+   */
+  function join(run, signal) {
+    return new Promise((resolve, reject) => {
+      const waiter = { resolve, reject, cleanup: () => {} }
+      run.waiters.add(waiter)
+      if (!signal) return
+      const leave = () => {
+        if (!run.waiters.delete(waiter)) return
+        resolve(CANCELLED)
+        if (run.waiters.size === 0 && session.transition(run, "cancelled")) run.abort.abort()
+      }
+      if (signal.aborted) return leave()
+      signal.addEventListener("abort", leave, { once: true })
+      waiter.cleanup = () => signal.removeEventListener("abort", leave)
+    })
+  }
+
+  /** Hand every caller still waiting on `run` the same answer, or the same error. */
+  function settle(run, answer, error) {
+    for (const waiter of run.waiters) {
+      waiter.cleanup()
+      if (error) waiter.reject(error)
+      else waiter.resolve(answer)
+    }
+    run.waiters.clear()
+  }
+
+  /** End the run as `phase` and tell its callers, unless it was cancelled first. */
+  function finish(run, phase, answer, error) {
+    if (session.transition(run, phase)) settle(run, answer, error)
+  }
+
+  /*
+   * The two passes, as transitions. Escalation reads the silent pass's code:
+   * only a pass that found a person is needed, or ran out of time before it
+   * could tell, opens a window. A browser that would not launch, a landing that
+   * left no session, a fault — none of those is helped by a second browser,
+   * and opening one is the window that appears and vanishes the header warns
+   * about.
+   */
+  async function drive(run, { browserPath, visibleMs }) {
+    const pass = {
+      browserPath,
+      profileDir,
+      target: run.target,
+      origin: run.origin,
+      deadline: run.deadline,
+      commandTimeout,
+      signal: run.abort.signal,
+    }
+    try {
+      let outcome = await runWindow({
+        ...pass,
+        headless: true,
+        /*
+         * Never more than half of the whole budget, however generous the
+         * ceiling is. The silent pass exists to save the person a window, not
+         * to spend the time they would have used in one — and on a total the
+         * caller has deliberately shortened, a fixed 45-second ceiling would
+         * eat the visible pass entirely and the window would never open.
+         */
+        timeoutMs: Math.min(SILENT_CEILING, Math.floor(run.budget / 2)),
+      })
+
+      const escalate = outcome.code === "needs-human" || outcome.code === "timed-out"
+      /*
+       * A window with no time left in which to sign in is worse than no window:
+       * it opens, steals focus, and is killed from under the person mid-type.
+       * Report what the silent pass found instead.
+       */
+      if (!outcome.ok && escalate && timeLeft(run.deadline) > 0) {
+        if (!session.transition(run, "waitingForPerson")) return
+        outcome = await runWindow({ ...pass, headless: false, timeoutMs: visibleMs, raiseCommand })
+      }
+
+      if (!outcome.ok) return finish(run, "failed", { ok: false, code: outcome.code, reason: outcome.reason })
+      if (!run.confirm) return finish(run, "done", { ok: true, cookie: outcome.cookie })
+
+      if (!session.transition(run, "verifying")) return
+      const confirmed = await run.confirm(outcome.cookie, { signal: run.abort.signal })
+      finish(run, confirmed?.ok ? "done" : "failed", confirmed)
+    } catch (error) {
+      // Only `confirm` can throw — `runWindow` turns every browser failure into
+      // an outcome — and its throw is the caller's to see, as it was before the
+      // verification moved in here.
+      finish(run, "failed", null, error)
+    } finally {
+      // Every path above ends the run; this is the backstop that keeps a path
+      // added later from leaving the profile owned by a run that has stopped.
+      if (LIVE.has(session.state.phase) && session.state.owner === run) {
+        finish(run, "failed", { ok: false, code: "fault", reason: "The sign-in stopped unexpectedly" })
+      }
+      session.transition(run, "idle")
+    }
+  }
+
   return {
     profileDir,
 
@@ -1345,22 +914,40 @@ export function createBrowserSignIn(config = {}) {
       return Boolean(await browserPathPromise)
     },
 
-    /** Forgets the remembered sign-in profile, for every origin at once. */
-    async forgetSessions() {
-      await fs.rm(profileDir, { recursive: true, force: true })
-      return { cleared: true }
+    /**
+     * What `GET /libraries/auth/signin` can report: whether a browser exists,
+     * how long a sign-in answer can take (`budgetMs`, so a client derives its
+     * deadline rather than keeping a copy), and the session's phase, with the
+     * origin a live run is for.
+     */
+    async status() {
+      const { phase, owner } = session.state
+      return {
+        available: Boolean(await browserPathPromise),
+        budgetMs: answerBudget(),
+        phase,
+        ...(LIVE.has(phase) ? { origin: owner.origin } : {}),
+      }
     },
 
     /**
      * Forgets one origin's session inside that profile, so the next sign-in
-     * actually asks. Best-effort: see `clearOriginCookies`.
+     * actually asks. Best-effort: see `clearOriginCookies`. Waits for the
+     * profile to be free, so it never launches into a sign-in's browser.
      */
     async forgetOrigin(origin) {
       const browserPath = await browserPathPromise
+      const wanted = String(origin ?? "")
+      if (!browserPath || !wanted) return { cleared: false }
+      const forget = { origin: wanted }
+      while (session.state.phase !== "idle") await session.idle()
+      session.transition(forget, "forgetting")
       try {
-        return await clearOriginCookies({ browserPath, profileDir, origin: String(origin ?? "") })
+        return await clearOriginCookies({ browserPath, profileDir, origin: wanted, commandTimeout })
       } catch {
         return { cleared: false }
+      } finally {
+        session.transition(forget, "idle")
       }
     },
 
@@ -1407,78 +994,114 @@ export function createBrowserSignIn(config = {}) {
      * person is given, or whatever the caller asked for instead), and one
      * allowance for everything that is not waiting for a person. A caller that
      * wants a different total says so with `totalTimeoutMs`.
+     *
+     * ## Options
+     *
+     * `signal` cancels: see the header. `confirm(cookie, { signal })` runs in
+     * the `verifying` phase and its answer becomes the answer; without it the
+     * captured cookie is the answer and verifying is the caller's job (see
+     * `completeSignIn`, which is what the route should use). `timeoutMs` and
+     * `totalTimeoutMs` are above. Every answer carries `budgetMs`.
      */
     async signIn(url, options = {}) {
+      const { signal } = options
+      const budgetMs = answerBudget(options)
+      const answer = (outcome) => ({ ...outcome, budgetMs })
+
       const target = String(url ?? "")
-      let origin = ""
+      let parsed = null
       try {
-        origin = new URL(target).origin
+        parsed = new URL(target)
       } catch {
-        return { ok: false, reason: "That is not a URL the editor can open" }
+        /* refused below */
       }
+      // Only a web page: `file:` and `chrome:` URLs parse, have the origin
+      // "null", and would open in a visible window that can never land.
+      if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+        return answer({ ok: false, code: "bad-url", reason: "That is not a URL the editor can open" })
+      }
+      const origin = parsed.origin
 
       const browserPath = await browserPathPromise
       if (!browserPath) {
-        return {
+        return answer({
           ok: false,
+          code: "no-browser",
           reason:
             "No Chrome-compatible browser was found on this machine, so the editor cannot open " +
             "the site's sign-in for you.",
-        }
+        })
       }
 
-      const visibleMs = options.timeoutMs ?? SIGN_IN_TIMEOUT
-      const budget = options.totalTimeoutMs ?? SILENT_CEILING + visibleMs + OVERHEAD_ALLOWANCE
-      const deadline = Date.now() + budget
+      for (;;) {
+        if (signal?.aborted) return answer(CANCELLED)
+        const { phase, owner } = session.state
+        if (phase === "idle") break
+        if (LIVE.has(phase)) {
+          if (owner.origin === origin) return answer(await join(owner, signal))
+          return answer({
+            ok: false,
+            code: "busy",
+            reason:
+              `A sign-in to ${owner.origin} is already open. Finish it in that window, or close ` +
+              "the window, then try again.",
+          })
+        }
+        // A forget, or a cancelled run still letting go of the profile.
+        await session.idle(signal)
+      }
 
-      const silent = await runWindow({
-        browserPath,
-        profileDir,
+      const budget = runBudget(options)
+      const run = {
         target,
         origin,
-        headless: true,
-        /*
-         * Never more than half of the whole budget, however generous the
-         * ceiling is. The silent pass exists to save the person a window, not
-         * to spend the time they would have used in one — and on a total the
-         * caller has deliberately shortened, a fixed 45-second ceiling would
-         * eat the visible pass entirely and the window would never open.
-         */
-        timeoutMs: Math.min(SILENT_CEILING, Math.floor(budget / 2)),
-        deadline,
-        commandTimeout,
-      })
-      if (silent.ok) return { ...silent, silent: true }
-
-      if (options.interactive === false) {
-        return { ok: false, reason: "That site needs a sign-in and this run was not allowed to ask for one" }
+        budget,
+        deadline: Date.now() + budget,
+        confirm: typeof options.confirm === "function" ? options.confirm : null,
+        abort: new AbortController(),
+        waiters: new Set(),
       }
+      session.transition(run, "silent")
+      const answered = join(run, signal)
+      void drive(run, { browserPath, visibleMs: options.timeoutMs ?? SIGN_IN_TIMEOUT })
+      return answer(await answered)
+    },
+  }
+}
 
-      /*
-       * A window with no time left in which to sign in is worse than no window:
-       * it opens, steals focus, and is killed from under the person mid-type.
-       * Report what the silent pass found instead.
-       */
-      if (timeLeft(deadline) <= 0) {
+/**
+ * The route's half of a window sign-in: run it, verify the captured session
+ * against the live URL, and store it only if the wall actually opened.
+ *
+ * VERIFIED BEFORE IT IS STORED, for the reason `library-auth.mjs` gives: a
+ * stored credential has been seen to work, however it was obtained. And NOT
+ * STORED AFTER A CANCEL: the check runs inside the session's `verifying` phase
+ * with the run's own signal, so a person who pressed Cancel while the probe
+ * was in flight is not signed in behind their back.
+ *
+ * `probe` is `fetchLibraryUrl` and `save` is the auth store's `saveCredential`;
+ * passed in so this module imports neither the network reader nor the store,
+ * and so the suite drives the real decisions instead of a copy of them.
+ */
+export function completeSignIn({ signin, probe, save }, url, { signal } = {}) {
+  const target = String(url ?? "")
+  return signin.signIn(target, {
+    signal,
+    confirm: async (cookie, { signal: run }) => {
+      const credential = { scheme: "cookie", value: cookie }
+      const result = await probe(target, { credential })
+      if (run?.aborted) return CANCELLED
+      if (result.sso || !result.ok) {
         return {
           ok: false,
-          provider: silent.provider ?? "",
-          reason: silent.reason ?? "The sign-in did not finish in time.",
+          code: "refused",
+          reason: result.sso
+            ? "The sign-in worked in the window, but the site still refuses the editor. This one " +
+              "may need a token."
+            : `The site answered HTTP ${result.status} after signing in`,
         }
       }
-
-      return runWindow({
-        browserPath,
-        profileDir,
-        target,
-        origin,
-        headless: false,
-        timeoutMs: visibleMs,
-        deadline,
-        onProgress: options.onProgress,
-        commandTimeout,
-        raiseCommand,
-      })
-    }
-  }
+      return { ok: true, ...(await save({ url: target, ...credential })) }
+    },
+  })
 }
