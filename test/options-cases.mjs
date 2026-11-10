@@ -279,7 +279,6 @@ async function inventoryCases() {
 
   check("an object that is not a leva store is refused", () => {
     dom.window.__STORE = { getData: 1 }
-    assert.equal(inventory.levaStore(), null)
     assert.equal(inventory.readInventory().available, false)
   })
 
@@ -1047,7 +1046,7 @@ async function surfaceCases() {
         export { effectsSection } from "./src/panels/inspector/section-effects"
         export { appearanceSection } from "./src/panels/inspector/section-appearance"
         export { unifiedLayoutSection } from "./src/panels/inspector/section-unified-layout"
-        export { controlsTab } from "./src/panels/controls"
+        export { controlsTab, controlRow } from "./src/panels/controls"
         export { getState, setState, subscribe, primarySelection } from "./src/core/store"
       `,
       resolveDir: PACKAGE_DIR,
@@ -1640,6 +1639,409 @@ function controlsPaneCases(surface) {
   globalThis.fetch = originalFetch
 }
 
+/**
+ * The saved-styles load, as the machine `options/store.ts` describes.
+ *
+ * A PUT replaces the whole set for a key on the server, so the failure under
+ * test is the silent one: a GET that failed (or had not answered yet) left the
+ * client with no sets, the next save built its set from nothing, and the PUT
+ * erased every style already persisted for that element. Each case gets its
+ * own module graph, because the store is one per session.
+ */
+async function storeLoadCases() {
+  console.log("\nSaved styles load before anything is sent")
+
+  const { build } = await import("esbuild")
+  const bundled = await build({
+    stdin: {
+      contents: `
+        export { optionsStore, BASELINE_OPTION_ID } from "./src/options/store"
+        export { STYLE_SCOPES } from "./src/options/scopes"
+        export { getState } from "./src/core/store"
+      `,
+      resolveDir: PACKAGE_DIR,
+      loader: "ts",
+    },
+    bundle: true,
+    format: "esm",
+    write: false,
+    logLevel: "silent",
+  })
+  let graph = 0
+  /** A fresh store, so each case starts from `idle`. */
+  const fresh = () =>
+    import(`data:text/javascript;base64,${Buffer.from(`${bundled.outputFiles[0].text}\n// ${++graph}`).toString("base64")}`)
+
+  const originalFetch = globalThis.fetch
+  // A failed load is logged with its stack, which here is a whole bundle long.
+  const originalWarn = console.warn
+  console.warn = () => {}
+  const KEY = "load-cases:card"
+  const kept = { id: "kept", name: "Text style 1", className: "text-lg", style: {}, createdAt: 1, scope: "typography" }
+  const persisted = () => ({ [KEY]: { key: KEY, label: "Card", activeOptionId: null, options: [clone(kept)] } })
+  const clone = (value) => JSON.parse(JSON.stringify(value))
+
+  /** A server whose GET answers what the case says, when the case says. */
+  function serverFor() {
+    const server = { calls: [], get: "fail", gate: null }
+    globalThis.fetch = async (url, init = {}) => {
+      const method = (init.method ?? "GET").toUpperCase()
+      server.calls.push({ url: String(url), method, body: init.body ? JSON.parse(init.body) : null })
+      if (method === "GET") {
+        if (server.gate) await server.gate
+        if (server.get === "fail") throw new Error("Failed to fetch")
+        return { ok: true, json: async () => clone(server.get) }
+      }
+      return { ok: true, json: async () => ({}) }
+    }
+    server.puts = () => server.calls.filter((call) => call.method === "PUT")
+    return server
+  }
+  const element = () => {
+    const node = document.createElement("p")
+    node.className = "text-sm font-bold"
+    node.textContent = "Hello"
+    document.body.append(node)
+    return node
+  }
+  const writer = { applyClasses() {}, applyStyles() {}, applyText() {} }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  await checkAsync("after a failed load, a save does not erase the styles already saved", async () => {
+    const m = await fresh()
+    const server = serverFor()
+    const toasts = []
+    const store = m.optionsStore({ apiBase: "http://127.0.0.1:0/api", toast: (message, kind) => toasts.push({ message, kind }) })
+    await store.ready()
+
+    // Still down: the save shows at once and sends nothing.
+    const selection = { element: element(), key: KEY, componentName: "Card", tagName: "p", source: null }
+    const first = store.saveScoped(selection, writer, "typography")
+    assert.ok(m.getState().optionSets[KEY].options.some((option) => option.id === first.id), "the save did not show")
+    await settle()
+    await settle()
+    assert.equal(server.puts().length, 0, "a set built from nothing was sent over the persisted one")
+    assert.deepEqual(toasts.at(-1), { message: "Could not save this style. Try again.", kind: "error" })
+    assert.equal(store.loadState().kind, "failed")
+    assert.match(store.loadState().reason, /Failed to fetch/)
+
+    // Back up: the next save asks again, and both saves land on top of what the file held.
+    server.get = persisted()
+    const second = store.saveScoped(selection, writer, "fill")
+    await store.ready()
+    await settle()
+    assert.equal(store.loadState().kind, "ready")
+    const puts = server.puts()
+    assert.equal(puts.length, 1, "one PUT for the key, after the load")
+    const ids = puts[0].body.options.map((option) => option.id)
+    assert.ok(ids.includes("kept"), `the persisted style was erased: ${ids.join(", ")}`)
+    assert.ok(ids.includes(first.id) && ids.includes(second.id), "a save made while the load was failing was lost")
+    assert.deepEqual(m.getState().optionSets[KEY].options.map((option) => option.id), ids)
+  })
+
+  await checkAsync("a load that answers after a save keeps the save", async () => {
+    const m = await fresh()
+    const server = serverFor()
+    let release = () => {}
+    server.gate = new Promise((resolve) => (release = resolve))
+    server.get = persisted()
+    const store = m.optionsStore({ apiBase: "http://127.0.0.1:0/api", toast() {} })
+    const loading = store.ready()
+    const selection = { element: element(), key: KEY, componentName: "Card", tagName: "p", source: null }
+    const saved = store.saveScoped(selection, writer, "typography")
+    assert.equal(server.puts().length, 0, "sent before the persisted sets were known")
+    release()
+    await loading
+    await settle()
+    const shown = m.getState().optionSets[KEY].options.map((option) => option.id)
+    assert.ok(shown.includes("kept") && shown.includes(saved.id), `the late load dropped the save: ${shown}`)
+    assert.equal(server.puts().length, 1)
+    assert.equal(store.loadState().kind, "ready")
+  })
+
+  await checkAsync("once loaded, an edit is sent at once and the load is asked for once", async () => {
+    const m = await fresh()
+    const server = serverFor()
+    server.get = persisted()
+    const store = m.optionsStore({ apiBase: "http://127.0.0.1:0/api", toast() {} })
+    await Promise.all([store.ready(), store.ready()])
+    assert.equal(server.calls.filter((call) => call.method === "GET").length, 1)
+    store.rename(KEY, "kept", "Heading")
+    assert.equal(server.puts().length, 1)
+    assert.equal(server.puts()[0].body.options[0].name, "Heading")
+  })
+
+  /*
+   * The scopes a style can carry are listed twice, once per side of the HTTP
+   * boundary: `STYLE_SCOPES` here, and the set the server's normaliser keeps.
+   * The browser half has no product reader of its own any more (the sections
+   * name their scope directly), so the list stays as the one the server must
+   * mirror, and this is what keeps the two from drifting.
+   */
+  await checkAsync("the server keeps exactly the scopes the editor can save", async () => {
+    const m = await fresh()
+    const { normalizeOptionSet } = await import(path.join(PACKAGE_DIR, "server/options-store.mjs"))
+    const options = [...m.STYLE_SCOPES, "sparkle"].map((scope, index) => ({
+      id: `o${index}`, name: scope, className: "", style: {}, createdAt: index, scope,
+    }))
+    const kept = normalizeOptionSet({ label: "Card", activeOptionId: null, options }, "k").options
+    assert.deepEqual(kept.filter((option) => "scope" in option).map((option) => option.scope), [...m.STYLE_SCOPES])
+  })
+
+  globalThis.fetch = originalFetch
+  console.warn = originalWarn
+}
+
+/**
+ * A control's saved default: one of the two writes that still reach a file.
+ *
+ * Driven through `controlRow`, the way a press reaches it, against a server
+ * whose answers the case holds open. Each case uses its own control key: the
+ * status is kept per URL for the whole session, which is half of what is under
+ * test.
+ */
+async function controlDefaultCases(surface) {
+  console.log("\nSaving a control's default to code")
+
+  const { window } = globalThis
+  const originalFetch = globalThis.fetch
+  const toasts = []
+  const editor = { apiBase: "http://127.0.0.1:0/api", toast: (message, kind) => toasts.push({ message, kind }) }
+  let serial = 0
+  const control = () => ({
+    label: "Title",
+    path: `Theme.title${++serial}`,
+    type: "STRING",
+    value: "Hello",
+    valueText: "Hello",
+    disabled: false,
+    visible: true,
+    selectors: [],
+    relationship: null,
+    defaultGroup: "Theme",
+    defaultKey: `title${serial}`,
+    canPersistDefault: true,
+  })
+
+  /** Every request, and a gate per method that holds its answer until released. */
+  const server = { calls: [], answers: {}, gates: {} }
+  const hold = (method) => {
+    let release = () => {}
+    server.gates[method] = new Promise((resolve) => (release = resolve))
+    return () => {
+      delete server.gates[method]
+      release()
+    }
+  }
+  globalThis.fetch = async (url, init = {}) => {
+    const method = (init.method ?? "GET").toUpperCase()
+    server.calls.push({ url: String(url), method, body: init.body ? JSON.parse(init.body) : null })
+    const gate = server.gates[method]
+    if (gate) await gate
+    const answer = server.answers[method] ?? { ok: true, body: {} }
+    if (answer.drop) throw new Error("Failed to fetch")
+    return { ok: answer.ok, status: answer.ok ? 200 : 500, json: async () => answer.body }
+  }
+  const settle = async () => {
+    for (let turn = 0; turn < 4; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  const mount = (made = control()) => {
+    const row = surface.controlRow(made, editor)
+    document.body.append(row)
+    const actions = row.querySelector(".de-opt-actions:last-child")
+    const [tag, apply, remove] = actions.children
+    return {
+      made,
+      row,
+      tag,
+      apply,
+      remove,
+      approach: () => actions.dispatchEvent(new window.MouseEvent("pointerenter")),
+      writes: (method) => server.calls.filter((call) => call.method === method && call.url.includes(made.defaultKey)),
+    }
+  }
+  const press = (node) => node.dispatchEvent(new window.MouseEvent("click", { bubbles: true }))
+  const reset = () => {
+    server.answers = {}
+    server.gates = {}
+    toasts.length = 0
+  }
+
+  await checkAsync("before the row knows, Delete is unavailable and Apply is not", async () => {
+    reset()
+    const ui = mount()
+    assert.equal(ui.tag.textContent, "source-linked")
+    assert.equal(ui.apply.textContent, "Apply to code")
+    assert.equal(ui.apply.disabled, false)
+    assert.equal(ui.remove.disabled, true, "Delete offered to remove a default nobody knows exists")
+    press(ui.remove)
+    await settle()
+    assert.equal(ui.writes("DELETE").length, 0)
+    ui.row.remove()
+  })
+
+  await checkAsync("approaching the row reads the default once, and a saved one turns Delete on", async () => {
+    reset()
+    server.answers.GET = { ok: true, body: { exists: true } }
+    const ui = mount()
+    ui.approach()
+    ui.approach()
+    await settle()
+    assert.equal(ui.writes("GET").length, 1, "each pass of the pointer read the source again")
+    assert.equal(ui.tag.textContent, "saved")
+    assert.equal(ui.apply.textContent, "Update default")
+    assert.equal(ui.remove.disabled, false)
+    ui.row.remove()
+  })
+
+  await checkAsync("a press while the write is out sends nothing more, and both buttons say so", async () => {
+    reset()
+    const ui = mount()
+    const release = hold("PUT")
+    press(ui.apply)
+    await settle()
+    assert.equal(ui.apply.disabled, true, "Apply stayed live with its write in flight")
+    assert.equal(ui.remove.disabled, true)
+    press(ui.apply)
+    press(ui.apply)
+    await settle()
+    assert.equal(ui.writes("PUT").length, 1, "one press wrote the source file more than once")
+    assert.deepEqual(ui.writes("PUT")[0].body, { value: "Hello" })
+    release()
+    await settle()
+    assert.equal(ui.tag.textContent, "saved")
+    assert.equal(ui.apply.disabled, false)
+    assert.equal(ui.remove.disabled, false)
+    assert.equal(toasts.at(-1).message, "Updated source default for Title")
+    ui.row.remove()
+  })
+
+  await checkAsync("a read that answers after a save cannot put 'not saved' back", async () => {
+    reset()
+    server.answers.GET = { ok: true, body: { exists: false } }
+    const ui = mount()
+    const releaseRead = hold("GET")
+    ui.approach()
+    await settle()
+    press(ui.apply)
+    await settle()
+    assert.equal(ui.tag.textContent, "saved")
+    releaseRead()
+    await settle()
+    assert.equal(ui.tag.textContent, "saved", "the older read overwrote the newer write")
+    assert.equal(ui.remove.disabled, false)
+    ui.row.remove()
+  })
+
+  await checkAsync("Delete runs once, and afterwards the row says nothing is saved", async () => {
+    reset()
+    server.answers.GET = { ok: true, body: { exists: true } }
+    const ui = mount()
+    ui.approach()
+    await settle()
+    const release = hold("DELETE")
+    press(ui.remove)
+    await settle()
+    assert.equal(ui.remove.disabled, true)
+    assert.equal(ui.apply.disabled, true)
+    press(ui.remove)
+    await settle()
+    assert.equal(ui.writes("DELETE").length, 1)
+    release()
+    await settle()
+    assert.equal(ui.tag.textContent, "not saved")
+    assert.equal(ui.apply.textContent, "Apply to code")
+    assert.equal(ui.remove.disabled, true)
+    assert.equal(toasts.at(-1).message, "Deleted the saved default for Title")
+    ui.row.remove()
+  })
+
+  await checkAsync("a failed write puts the row back where it was and says so", async () => {
+    reset()
+    server.answers.GET = { ok: true, body: { exists: true } }
+    const ui = mount()
+    ui.approach()
+    await settle()
+    server.answers.PUT = { ok: false, body: {} }
+    press(ui.apply)
+    await settle()
+    assert.equal(ui.tag.textContent, "saved")
+    assert.equal(ui.apply.disabled, false)
+    assert.equal(toasts.at(-1).kind, "error")
+    assert.equal(toasts.at(-1).message.title, "Default not saved")
+    server.answers.DELETE = { drop: true }
+    press(ui.remove)
+    await settle()
+    assert.equal(ui.tag.textContent, "saved", "a failed delete claimed the default was gone")
+    assert.equal(ui.remove.disabled, false)
+    assert.match(toasts.at(-1).message, /Could not delete the saved default for Title/)
+    ui.row.remove()
+  })
+
+  await checkAsync("a read that fails says the source is unavailable", async () => {
+    reset()
+    server.answers.GET = { drop: true }
+    const ui = mount()
+    ui.approach()
+    await settle()
+    assert.equal(ui.tag.textContent, "source unavailable")
+    assert.equal(ui.remove.disabled, true)
+    assert.match(toasts.at(-1).message, /Could not read the saved default for Title/)
+    ui.row.remove()
+  })
+
+  await checkAsync("a rebuilt row starts from what the last one learned", async () => {
+    reset()
+    server.answers.GET = { ok: true, body: { exists: true } }
+    const first = mount()
+    first.approach()
+    await settle()
+    first.row.remove()
+    const again = mount(first.made)
+    assert.equal(again.tag.textContent, "saved")
+    assert.equal(again.remove.disabled, false)
+    again.approach()
+    await settle()
+    assert.equal(again.writes("GET").length, 1, "the rebuilt row read the file again")
+    again.row.remove()
+  })
+
+  globalThis.fetch = originalFetch
+}
+
+/*
+ * A render refused under focus is owed, and paid when focus leaves the rows.
+ * Pressing a chip focuses it and writes the host's store; rows that depend on
+ * that value used to stay as they were until some unrelated write repainted.
+ */
+async function owedRenderCase(surface) {
+  const { window } = globalThis
+  window.__STORE = stubStore(MANY, MANY_VISIBLE)
+  const editor = {
+    apiBase: "http://127.0.0.1:0/api",
+    toast() {},
+    getState: surface.getState,
+    setState: surface.setState,
+    subscribe: surface.subscribe,
+    primarySelection: () => null,
+  }
+  const tab = surface.controlsTab(editor)
+  window.document.body.append(tab.node)
+  tab.update()
+  await checkAsync("a render refused while a row held focus lands when focus leaves", async () => {
+    const input = tab.node.querySelector(".de-opt-input")
+    input.focus()
+    tab.node.querySelector(".de-opt-filter").value = "zzzz"
+    tab.update()
+    assert.equal(tab.node.querySelector(".de-empty"), null, "the pane rebuilt under a focused field")
+    input.blur()
+    for (let turn = 0; turn < 3; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+    assert.ok(tab.node.querySelector(".de-empty"), "the refused render was never paid")
+  })
+  tab.node.remove()
+  delete window.__STORE
+}
+
 const inventory = await inventoryCases()
 prototypeCases(inventory)
 await sourceDefaultCases()
@@ -1648,6 +2050,9 @@ await baselineCases()
 const surface = await surfaceCases()
 savedStylesCases(surface)
 controlsPaneCases(surface)
+await owedRenderCase(surface)
+await controlDefaultCases(surface)
+await storeLoadCases()
 
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed === 0 ? 0 : 1)

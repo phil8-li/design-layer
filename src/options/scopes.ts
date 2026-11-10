@@ -162,7 +162,7 @@ const EXTRAS: Array<[RegExp, string]> = [
 ]
 
 /** The CSS property a class sets, or null when this file cannot tell. */
-export function propertyOfClass(className: string): string | null {
+function propertyOfClass(className: string): string | null {
   const known = propertyForClass(className)
   if (known) return known
   const base = baseUtility(className)

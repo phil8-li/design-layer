@@ -236,7 +236,7 @@ interface DiscoveredInput {
 }
 
 /** What `inventory.ts` reads: leva's store methods over the last scan. */
-export interface DiscoveredStore {
+interface DiscoveredStore {
   readonly discovered: true
   getData(): Record<string, DiscoveredInput>
   getVisiblePaths(): string[]

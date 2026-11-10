@@ -35,7 +35,7 @@ interface LevaStoreLike {
   scope?: unknown
 }
 
-export interface LevaControlBinding {
+interface LevaControlBinding {
   pathPattern: string
   selectors: string[]
   relationship: string
@@ -89,7 +89,7 @@ export interface LevaFolder {
   variantCount: number
 }
 
-export interface LevaTree {
+interface LevaTree {
   sections: LevaFolder[]
   controlCount: number
   variantCount: number
@@ -105,7 +105,7 @@ export interface LevaTree {
  * letting the pane guess from the string keeps that decision with the code that
  * actually knows which state it is in.
  */
-export type LevaInventory =
+type LevaInventory =
   | ({ available: true } & LevaTree)
   | { available: false; title: string; reason: string }
 
@@ -114,7 +114,7 @@ export type LevaInventory =
  * or an array of them (`getData`, `getVisiblePaths`, `setValueAtPath`, and
  * optionally `useStore.subscribe`). The Design options tab lists them all.
  */
-export const DEFAULT_CONTROLS_GLOBAL = "__DESIGNLAYER_CONTROLS__"
+const DEFAULT_CONTROLS_GLOBAL = "__DESIGNLAYER_CONTROLS__"
 
 function levaConfig(): ClientLevaConfig | null {
   const raw = (globalThis as { __DESIGNLAYER_CONFIG__?: unknown }).__DESIGNLAYER_CONFIG__
@@ -149,7 +149,7 @@ function globPattern(pattern: string): RegExp {
 }
 
 /** First explicit binding wins; path names never imply an element relationship. */
-export function bindingForPath(
+function bindingForPath(
   path: string,
   bindings: readonly LevaControlBinding[] = levaConfig()?.bindings ?? []
 ): LevaControlBinding | null {
@@ -384,11 +384,6 @@ function publishedStores(): LevaStoreLike[] {
   if (Array.isArray(conventional)) conventional.forEach(add)
   else add(conventional)
   return stores
-}
-
-/** The first published store, for callers that only ever had one. */
-export function levaStore(): LevaStoreLike | null {
-  return publishedStores()[0] ?? null
 }
 
 /** Which store answered for each path on the last read, so a write goes back to it. */
@@ -639,7 +634,7 @@ export function subscribeToLeva(listener: () => void, isActive: () => boolean = 
   }
 }
 
-export interface ContextualControlTargets {
+interface ContextualControlTargets {
   path: string
   relationship: string
   selectors: string[]

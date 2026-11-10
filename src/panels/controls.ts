@@ -1,5 +1,5 @@
 /**
- * The left panel's third view, "Design options": every tunable the running app
+ * The left panel's second view, "Design options": every tunable the running app
  * exposes, drawn the way a leva panel draws them.
  *
  * ## Why this is a docked pane and not the window it used to be
@@ -59,8 +59,16 @@ import type { LevaControl, LevaFolder } from "../options/inventory"
 import type { LeftPanelTab } from "./left"
 import { tokens } from "../core/tokens"
 import { selectField } from "./inspector/field"
-
-const defaultStateCache = new Map<string, boolean>()
+import {
+  defaultStatus,
+  deleteDefault,
+  knownDefault,
+  readDefault,
+  watchDefault,
+  writeDefault,
+  writing,
+} from "../options/control-defaults"
+import type { DefaultStatus, KnownDefault } from "../options/control-defaults"
 
 /** A list this short is read at a glance; a filter over it is a field to skip. */
 export const FILTER_FROM = 8
@@ -354,7 +362,7 @@ function textControl(control: LevaControl, editor: EditorContext): HTMLElement {
  * A value this pane cannot edit (a vector, an interval, a button), read-only.
  *
  * `valueText` is cut at 61 characters by `formatValue`, and a leva value is in
- * no file the Code tab shows, so the whole of it rides in `title`.
+ * no file the editor shows, so the whole of it rides in `title`.
  */
 function valueText(control: LevaControl): HTMLElement {
   const full = formatValue(control.value, false)
@@ -372,54 +380,50 @@ function defaultUrl(editor: EditorContext, control: LevaControl): string | null 
   return `${editor.apiBase}/control-default?${query}`
 }
 
+/** What the row's tag says for each settled answer; a request in flight keeps the last one. */
+const DEFAULT_TEXT: Record<KnownDefault, string> = {
+  unknown: "source-linked",
+  saved: "saved",
+  absent: "not saved",
+  unavailable: "source unavailable",
+}
+
+/**
+ * The row's saved-default tag and its two writes. Everything they show is
+ * painted from `defaultStatus` (`options/control-defaults.ts`), so a press
+ * while a write is in flight cannot send a second one, and Delete is live only
+ * once the row knows a default exists.
+ */
 function sourceDefaultActions(control: LevaControl, editor: EditorContext): HTMLElement | null {
   const url = defaultUrl(editor, control)
   if (!url || !control.canPersistDefault) return null
 
-  const status = el("span", { class: "de-opt-tag", "aria-live": "polite" }, ["source-linked"])
-  const apply = el("button", { class: "de-button", type: "button" }, ["Apply to code"])
+  const status = el("span", { class: "de-opt-tag", "aria-live": "polite" })
+  const apply = el("button", { class: "de-button", type: "button" }) as HTMLButtonElement
   const remove = el(
     "button",
     { class: "de-button de-button--danger", type: "button" },
     ["Delete saved default"]
-  )
+  ) as HTMLButtonElement
+  const actions = el("div", { class: "de-opt-actions" }, [status, apply, remove])
 
-  const setState = (exists: boolean) => {
-    defaultStateCache.set(url, exists)
-    status.textContent = exists ? "saved" : "not saved"
-    apply.textContent = exists ? "Update default" : "Apply to code"
-    ;(apply as HTMLButtonElement).disabled = control.disabled
-    ;(remove as HTMLButtonElement).disabled = control.disabled || !exists
+  const paint = (now: DefaultStatus): boolean => {
+    const known = knownDefault(now)
+    if (status.textContent !== DEFAULT_TEXT[known]) status.textContent = DEFAULT_TEXT[known]
+    apply.textContent = known === "saved" ? "Update default" : "Apply to code"
+    apply.disabled = control.disabled || writing(now)
+    remove.disabled = control.disabled || writing(now) || known !== "saved"
+    return true
   }
-
-  const refresh = async () => {
-    try {
-      const response = await fetch(url, { headers: { accept: "application/json" } })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const result = (await response.json()) as { exists?: boolean }
-      setState(result.exists === true)
-    } catch {
-      status.textContent = "source unavailable"
-      editor.toast(
-        `Could not read the saved default for ${control.label}. Reload the page, then try again.`,
-        "error"
-      )
-    }
-  }
+  paint(defaultStatus(url))
+  // A rebuilt pane drops this row; the next change for the URL drops its painter.
+  watchDefault(url, (now) => actions.isConnected && paint(now))
 
   apply.addEventListener("click", async () => {
-    const current = controlValueAtPath(control.path)
-    const value = current === undefined ? control.value : current
-    try {
-      const response = await fetch(url, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ value }),
-      })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      setState(true)
-      editor.toast(`Updated source default for ${control.label}`)
-    } catch {
+    const live = controlValueAtPath(control.path)
+    const outcome = await writeDefault(url, live === undefined ? control.value : live)
+    if (outcome === "done") editor.toast(`Updated source default for ${control.label}`)
+    else if (outcome === "failed") {
       // The live value already moved; only the durable copy did not. Saying so
       // is the difference between "try again" and "redo the whole adjustment".
       editor.toast(
@@ -433,12 +437,9 @@ function sourceDefaultActions(control: LevaControl, editor: EditorContext): HTML
   })
 
   remove.addEventListener("click", async () => {
-    try {
-      const response = await fetch(url, { method: "DELETE" })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      setState(false)
-      editor.toast(`Deleted the saved default for ${control.label}`)
-    } catch {
+    const outcome = await deleteDefault(url)
+    if (outcome === "done") editor.toast(`Deleted the saved default for ${control.label}`)
+    else if (outcome === "failed") {
       editor.toast(
         `Could not delete the saved default for ${control.label}. Try again, or delete it in the source file.`,
         "error"
@@ -446,22 +447,25 @@ function sourceDefaultActions(control: LevaControl, editor: EditorContext): HTML
     }
   })
 
-  const actions = el("div", { class: "de-opt-actions" }, [status, apply, remove])
-  const cached = defaultStateCache.get(url)
-  if (cached !== undefined) setState(cached)
-  else {
-    // A large host may expose hundreds of controls. Read this one literal only
-    // when the row is approached rather than parsing the same source file once
-    // per collapsed row on panel open.
-    let requested = false
-    const request = () => {
-      if (requested) return
-      requested = true
-      void refresh()
+  /*
+   * A large host may expose hundreds of controls. This one literal is read
+   * only when the row is approached, rather than parsing the same source file
+   * once per collapsed row on panel open — and once per row: a row that has
+   * asked does not ask again on every pass of the pointer.
+   */
+  let asked = false
+  const approach = async () => {
+    if (asked) return
+    asked = true
+    if ((await readDefault(url)) === "failed") {
+      editor.toast(
+        `Could not read the saved default for ${control.label}. Reload the page, then try again.`,
+        "error"
+      )
     }
-    actions.addEventListener("pointerenter", request, { once: true })
-    actions.addEventListener("focusin", request, { once: true })
   }
+  actions.addEventListener("pointerenter", approach)
+  actions.addEventListener("focusin", approach)
   return actions
 }
 
@@ -659,7 +663,12 @@ function emptyState(title: string | null, text: string, action: HTMLElement | nu
  * themselves — and the scheduler below declines to rebuild while one of those
  * holds focus.
  */
-export function controlsTab(editor: EditorContext): LeftPanelTab {
+/**
+ * `onScreen` is the left panel's rule for "this pane can be seen", handed in
+ * by `left.ts`. A pane mounted on its own, as the suites do, falls back to
+ * asking the document whether any ancestor is hidden.
+ */
+export function controlsTab(editor: EditorContext, onScreen?: () => boolean): LeftPanelTab {
   const filter = el("input", {
     class: "de-opt-filter",
     type: "search",
@@ -742,6 +751,7 @@ export function controlsTab(editor: EditorContext): LeftPanelTab {
   /** Whether this pane is on screen — a hidden tabpanel is not worth painting. */
   function showing(): boolean {
     if (!node.isConnected) return false
+    if (onScreen) return onScreen()
     for (let step: HTMLElement | null = node; step; step = step.parentElement) {
       if (step.hidden) return false
     }
@@ -855,15 +865,28 @@ export function controlsTab(editor: EditorContext): LeftPanelTab {
    * reader typing a query no longer blocks the repaint their own typing asked
    * for; only a row control — a number field mid-edit, a chip mid-press — does.
    */
+  /**
+   * A render refused under focus is owed, and paid when focus leaves the body.
+   * Pressing a chip focuses it and writes the host's store, and other rows may
+   * appear or go with that value (leva's `render` predicates); without the
+   * debt they stayed stale until some unrelated write came along.
+   */
+  let owed = false
   const update = (selectionOnly = false): void => {
     if (body.contains(document.activeElement)) {
+      owed = true
       // A full render refused here is still owed: the next selection must not
       // read the body as current.
       if (!selectionOnly) paintedKey = null
       return
     }
+    owed = false
     render(selectionOnly)
   }
+  body.addEventListener("focusout", (event) => {
+    const next = (event as FocusEvent).relatedTarget
+    if (owed && !(next instanceof Node && body.contains(next))) schedule()
+  })
 
   /*
    * The host's control store fires on every drag frame, so a listener that
