@@ -1007,22 +1007,15 @@ async function baselineCases() {
     assert.equal(client.visibleOptions(null).length, 0)
   })
 
-  check("the baseline can never become the active option", () => {
-    const stored = normalizeOptionSet(
-      { ...set, activeOptionId: client.BASELINE_OPTION_ID },
-      KEY
-    )
-    // The server only keeps an active id that names a real option, and the
-    // client filters the baseline out of every list, so nothing can select it.
-    assert.equal(stored.activeOptionId, client.BASELINE_OPTION_ID)
-    assert.equal(
-      client.visibleOptions(stored).some((option) => option.id === stored.activeOptionId),
-      false
-    )
+  check("an active option a client sends is ignored, and stored as none", () => {
+    // Nothing reads an active option any more; the key stays, as null, for an
+    // older checkout reading the same file.
+    const stored = normalizeOptionSet({ ...set, activeOptionId: "abc" }, KEY)
+    assert.equal(stored.activeOptionId, null)
   })
 
   check("a set with only a baseline reads as having no options", () => {
-    const stored = normalizeOptionSet({ ...set, activeOptionId: null, options: [baseline] }, KEY)
+    const stored = normalizeOptionSet({ ...set, options: [baseline] }, KEY)
     assert.equal(client.visibleOptions(stored).length, 0)
     assert.notEqual(client.baselineOf(stored, KEY), null)
   })
@@ -1115,7 +1108,7 @@ function savedStylesCases(surface) {
     scope,
   })
   const withStyles = (...options) =>
-    surface.setState({ optionSets: options.length ? { [KEY]: { key: KEY, activeOptionId: null, options } } : {} })
+    surface.setState({ optionSets: options.length ? { [KEY]: { key: KEY, options } } : {} })
 
   check("the header toggle is named for its scope and starts shut on a fresh element", () => {
     withStyles()
@@ -1681,7 +1674,7 @@ async function storeLoadCases() {
   console.warn = () => {}
   const KEY = "load-cases:card"
   const kept = { id: "kept", name: "Text style 1", className: "text-lg", style: {}, createdAt: 1, scope: "typography" }
-  const persisted = () => ({ [KEY]: { key: KEY, label: "Card", activeOptionId: null, options: [clone(kept)] } })
+  const persisted = () => ({ [KEY]: { key: KEY, label: "Card", options: [clone(kept)] } })
   const clone = (value) => JSON.parse(JSON.stringify(value))
 
   /** A server whose GET answers what the case says, when the case says. */
@@ -1787,7 +1780,7 @@ async function storeLoadCases() {
     const options = [...m.STYLE_SCOPES, "sparkle"].map((scope, index) => ({
       id: `o${index}`, name: scope, className: "", style: {}, createdAt: index, scope,
     }))
-    const kept = normalizeOptionSet({ label: "Card", activeOptionId: null, options }, "k").options
+    const kept = normalizeOptionSet({ label: "Card", options }, "k").options
     assert.deepEqual(kept.filter((option) => "scope" in option).map((option) => option.scope), [...m.STYLE_SCOPES])
   })
 

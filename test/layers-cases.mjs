@@ -552,7 +552,6 @@ const keyOfRow = (index) => {
 
 const savedSet = (key, names) => ({
   key,
-  activeOptionId: null,
   baseline: null,
   options: names.map((name, i) => ({
     id: `opt-${i}`,

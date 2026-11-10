@@ -166,19 +166,15 @@ export function createAppSwitcher({
         /*
          * No screen to ask about apps that have no editor yet, which is not the
          * same as nothing to switch to: switching between editors needs nothing
-         * but their URLs.
+         * but their URLs. An empty list is a fact about the machine right now,
+         * and the menu writes its own empty state.
          *
-         * `chooser` was `running.length > 0` here, and the browser read the
-         * `false` as "this session has no app chooser" and said so, inside the
-         * app chooser, to everybody running a single editor with no start
-         * screen — which is most people, most of the time. The field never
-         * meant that. It answers whether a supervisor can START something, and
-         * an empty list is a fact about the machine right now rather than a
-         * missing feature. So this reports the truth and lets the menu write
-         * its own empty state, which is where a sentence about what the reader
-         * can do next belongs.
+         * The answer used to carry a `chooser` flag. It once read
+         * `running.length > 0`, and the browser told everybody with a single
+         * editor that the session had no app chooser; it then stood at `true`
+         * on every path with no reader, so it went.
          */
-        return { chooser: true, apps: running }
+        return { apps: running }
       }
 
       let response
@@ -190,8 +186,8 @@ export function createAppSwitcher({
         // The screen being down does not make the editors on this machine go
         // away, so the list is what we know rather than an apology.
         return running.length
-          ? { chooser: true, apps: running }
-          : { chooser: true, apps: [], error: unreachable(chooserUrl, error) }
+          ? { apps: running }
+          : { apps: [], error: unreachable(chooserUrl, error) }
       }
 
       if (!response.ok) {
@@ -200,9 +196,8 @@ export function createAppSwitcher({
         // costs the app rows and nothing else. The key is omitted rather than
         // set to `undefined`, so that `"error" in answer` means the same thing
         // on every path through this function.
-        if (running.length) return { chooser: true, apps: running }
+        if (running.length) return { apps: running }
         return {
-          chooser: true,
           apps: [],
           error: `The start screen answered ${response.status} when asked what is running.`,
         }
@@ -221,11 +216,11 @@ export function createAppSwitcher({
          * same server with different spellings of loopback.
          */
         const taken = new Set(running.map((row) => row.port))
-        return { chooser: true, apps: [...running, ...scanned.filter((row) => !taken.has(row.port))] }
+        return { apps: [...running, ...scanned.filter((row) => !taken.has(row.port))] }
       } catch (error) {
         return running.length
-          ? { chooser: true, apps: running }
-          : { chooser: true, apps: [], error: unreachable(chooserUrl, error) }
+          ? { apps: running }
+          : { apps: [], error: unreachable(chooserUrl, error) }
       }
     },
 

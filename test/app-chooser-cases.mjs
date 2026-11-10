@@ -1852,11 +1852,8 @@ console.log("\nRelaying the question to the start screen")
 await check("one editor and no start screen is an empty list, not a missing chooser", async () => {
   server.reset()
   const apps = createAppSwitcher({ chooserUrl: null, editors: () => [] })
-  // Whatever else the answer carries (a constant `chooser: true` nothing reads
-  // is on its way out of the server), it is an empty list with no error.
   const answer = await apps.list()
-  assert.deepEqual(answer.apps, [])
-  assert.equal(answer.error, undefined)
+  assert.deepEqual(answer, { apps: [] }, "an empty machine is an empty list, with no error and no flag")
   assert.deepEqual(server.calls, [], "it went looking for a screen that does not exist")
   assert.equal(apps.chooserUrl, null)
 })
@@ -1895,13 +1892,12 @@ await check("a listed app is cut down to the keys the contract promises", async 
       ],
     },
   }
-  const { chooser, apps } = await createAppSwitcher({
+  const { apps } = await createAppSwitcher({
     chooserUrl: CHOOSER,
     // No registry in this case: the subject is what a RELAYED row is cut down
     // to, and a machine with editors on it would add rows that are not that.
     editors: () => [],
   }).list()
-  assert.equal(chooser, true)
   assert.equal(apps.length, 1, "a row that is not an object became one")
   assert.deepEqual(Object.keys(apps[0]).sort(), [
     "kind",
