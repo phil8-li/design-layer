@@ -13,8 +13,6 @@
  *
  * Env:
  *   DESIGNLAYER_DESK_PORT        port to bind (default 3454)
- *   DESIGNLAYER_DESK_SUPERVISE   "0" to leave the start screen alone (tests)
- *   DESIGNLAYER_START_SCREEN_PORT start screen port to probe/spawn (default 3455)
  */
 
 import { spawn, execFile, execFileSync } from "node:child_process"
@@ -30,12 +28,21 @@ import { PREFERRED_START_SCREEN_PORT } from "../../runtime/start-screen.mjs"
 import { appName } from "../../runtime/app-name.mjs"
 import { lastPage } from "../../runtime/last-pages.mjs"
 import { currentCommit } from "../../runtime/updater.mjs"
-import { APP_FEATURES, CHROME_BINARY, chromeProfileDir, profileChromeCommand, quitProfileChrome } from "./chrome-pipe.mjs"
-import { offlinePage, shellPage } from "./shell-page.mjs"
+import {
+  APP_FEATURES,
+  CHROME_BINARY,
+  appShim,
+  appWindowArgs,
+  chromeProfileDir,
+  profileChromeCommand,
+  quitProfileChrome,
+  shimInstalled,
+  shimOpenArgs,
+} from "./chrome-pipe.mjs"
+import { TAB_FIELDS, offlinePage, shellPage } from "./shell-page.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-export const REPO_ROOT = path.resolve(HERE, "..", "..")
-export { DEFAULT_DESK_PORT }
+const REPO_ROOT = path.resolve(HERE, "..", "..")
 const LOOPBACK = "127.0.0.1"
 // The host name the window is served on, while the server binds LOOPBACK: the
 // editors it frames are on localhost (runtime/launcher.mjs, BROWSER_HOST), and
@@ -49,7 +56,13 @@ const ICONS = new Map([
   ["/icons/mark.svg", ["mark.svg", "image/svg+xml"]],
 ])
 
-/** Same rule as server/routes.mjs `isLocalRequest`, including refusing Origin "null". */
+/*
+ * The same rule as server/routes.mjs `isLocalRequest`, including refusing
+ * Origin "null". A copy, not an import: routes.mjs brings the whole editor
+ * server (config, libraries, source writers) with it, and the desk is served
+ * by a LaunchAgent from a checkout people edit, so it imports as little as it
+ * can. Keep the two in step until the rule has a module of its own.
+ */
 function isLoopbackHost(value) {
   if (typeof value !== "string" || value.length === 0) return false
   let host
@@ -61,7 +74,7 @@ function isLoopbackHost(value) {
   return host === "localhost" || host === "127.0.0.1" || host === "::1"
 }
 
-export function isLocalRequest(req) {
+function isLocalRequest(req) {
   if (!LOOPBACK_ADDRESSES.has(req.socket?.remoteAddress ?? "")) return false
   if (!isLoopbackHost(req.headers.host)) return false
   const origin = req.headers.origin
@@ -104,7 +117,7 @@ self.addEventListener("fetch", (event) => {
 `
 
 /** Registry entries in the shape the shell uses. The registry already swept dead pids. */
-export function normalizeEditors(entries) {
+function normalizeEditors(entries) {
   return entries.map((entry) => ({
     // The folder first: copies of one template share a package name, and the
     // folder is the name a person gave each copy.
@@ -117,8 +130,6 @@ export function normalizeEditors(entries) {
     // The page that app was last used on, so a tab opened here lands there.
     page: lastPage({ port: entry.appPort, projectRoot: entry.projectRoot ?? null }),
     pid: entry.pid,
-    startedAt: entry.startedAt ?? null,
-    alive: true,
   }))
 }
 
@@ -143,65 +154,99 @@ function getJson(url, timeoutMs = 1500) {
 /**
  * Keeps one start screen answering. Reuses one that is already up (another
  * terminal's `npx designlayer`), and never kills what it did not start.
+ *
+ * One phase, moved only by `transition`. `ready`, `owned`, `pid` and `url` in
+ * /api/health are read off it, so they cannot disagree with `state`:
+ *
+ *   checking  --probe answers-->           external     (someone else's start screen)
+ *   checking  --probe silent-->            starting     (spawns one)
+ *   starting  --probe answers-->           running
+ *   starting  --probe silent-->            starting     (asks again in 700 ms)
+ *   running   --probe silent-->            starting     (alive, not answering)
+ *   external  --probe silent-->            checking     (the next tick spawns)
+ *   starting|running --child exits-->      backoff      (1 s, doubling to 30 s; reset after a minute up)
+ *   backoff   --timer-->                   checking
+ *   any       --stop()-->                  stopped      (kills the child it started)
+ *   disabled  never moves (supervise: false)
+ *
+ * One tick runs at a time. A tick's probe that resolves after the phase moved
+ * on without it (the child exited, or stop() ran) is dropped by its
+ * generation, so it can neither spawn a start screen nobody kills nor start a
+ * second timer chain. Health reads share the probe in flight, and never spawn.
  */
-export function createSupervisor({ repoRoot = REPO_ROOT, port = PREFERRED_START_SCREEN_PORT, logDir, enabled = true, log }) {
-  const state = {
-    state: enabled ? "checking" : "disabled",
-    url: null,
-    ready: false,
-    owned: false,
-    pid: null,
-    restarts: 0,
-    detail: null,
-    editing: null,
-    editors: [],
-    // The start screen's update status (GET /api/update), or null.
-    update: null,
-  }
-  let child = null
-  let spawnedUrl = null
+function createSupervisor({ repoRoot, port, logDir, enabled, log }) {
+  let phase = { kind: enabled ? "checking" : "disabled" }
+  // Bumped by every move the tick did not make itself: an exit, a stop.
+  let generation = 0
+  let restarts = 0
   let backoffMs = 1000
-  let startedAt = 0
   let timer = null
-  let stopped = false
+  let ticking = null
+  let probing = null
+  // Every editor the start screen runs (its /api/status rows), and its update
+  // status (GET /api/update) or null. Both are relayed in /api/health.
+  let editors = []
+  let update = null
 
-  const probeUrl = () => spawnedUrl ?? `http://${LOOPBACK}:${port}`
+  const child = () => (phase.kind === "starting" || phase.kind === "running" ? phase.child : null)
+  const answering = () => phase.kind === "running" || phase.kind === "external"
+  const probeUrl = () => child()?.url ?? `http://${LOOPBACK}:${port}`
+  const logFile = () => path.join(logDir, "start-screen.log")
 
-  async function probe() {
-    const [answer, update] = await Promise.all([getJson(`${probeUrl()}/api/status`), getJson(`${probeUrl()}/api/update`)])
-    state.update = update?.status === 200 && update.body?.state && update.body.state !== "off" ? update.body : null
-    // The start screen's /api/status always carries `ready`; anything else on the port is not it.
-    if (answer?.status === 200 && answer.body && "ready" in answer.body) {
-      state.url = probeUrl()
-      state.ready = true
-      state.editing =
-        answer.body.ready && answer.body.url
-          ? {
-              url: answer.body.url,
-              projectRoot: answer.body.editing?.projectRoot ?? null,
-              packageName: answer.body.editing?.packageName ?? null,
-              name: answer.body.editing?.name ?? null,
-            }
-          : null
-      // Every editor the start screen runs; `editing` above is only the most
-      // recent choice, kept for callers that knew one editor.
-      state.editors = Array.isArray(answer.body.editors) ? answer.body.editors : []
-      return true
-    }
-    state.ready = false
-    state.editing = null
-    state.editors = []
-    return false
+  function transition(next) {
+    phase = next
+  }
+
+  function schedule(ms) {
+    clearTimeout(timer)
+    timer = setTimeout(tick, ms)
+  }
+
+  /** One probe at a time; a caller that comes while one is out shares it. */
+  function probe() {
+    probing ??= (async () => {
+      const url = probeUrl()
+      const [answer, upd] = await Promise.all([getJson(`${url}/api/status`), getJson(`${url}/api/update`)])
+      update = upd?.status === 200 && upd.body?.state && upd.body.state !== "off" ? upd.body : null
+      // The start screen's /api/status always carries `ready`; anything else on the port is not it.
+      const ok = answer?.status === 200 && Boolean(answer.body) && "ready" in answer.body
+      editors = ok && Array.isArray(answer.body.editors) ? answer.body.editors : []
+      return ok
+    })().finally(() => {
+      probing = null
+    })
+    return probing
+  }
+
+  /** What a probe's answer means in the phase it lands in. Backoff waits for its timer. */
+  function observe(ok) {
+    const own = child()
+    if (own) transition({ kind: ok ? "running" : "starting", child: own })
+    else if (phase.kind === "checking" || phase.kind === "external") transition({ kind: ok ? "external" : "checking" })
+  }
+
+  function enterBackoff(reason) {
+    // A start screen that ran a minute was healthy: its crash starts the wait over.
+    if (Date.now() - (child()?.startedAt ?? Date.now()) > 60000) backoffMs = 1000
+    restarts += 1
+    generation += 1
+    transition({
+      kind: "backoff",
+      until: Date.now() + backoffMs,
+      detail: `${reason} Restarting in ${Math.round(backoffMs / 1000)} s — see ${logFile()}.`,
+    })
+    schedule(backoffMs)
+    backoffMs = Math.min(backoffMs * 2, 30000)
   }
 
   function spawnStartScreen() {
     fs.mkdirSync(logDir, { recursive: true })
-    const out = fs.openSync(path.join(logDir, "start-screen.log"), "a")
+    const out = fs.openSync(logFile(), "a")
     const args = [path.join(repoRoot, "cli.mjs"), "--start", "--no-open"]
     if (port !== PREFERRED_START_SCREEN_PORT) args.push("--start-screen-port", String(port))
     // cwd is home, not the repo: the start screen then loads no project config,
     // and each chosen app is started with its own --project-root anyway.
-    child = spawn(process.execPath, args, {
+    const proc = spawn(process.execPath, args, {
       cwd: os.homedir(),
       stdio: ["ignore", "pipe", out],
       // DESIGNLAYER_DESK_CHILD: after an update, the desk's own restart
@@ -209,15 +254,12 @@ export function createSupervisor({ repoRoot = REPO_ROOT, port = PREFERRED_START_
       env: { ...process.env, FORCE_COLOR: "0", DESIGNLAYER_DESK_CHILD: "1" },
     })
     fs.closeSync(out)
-    startedAt = Date.now()
-    state.owned = true
-    state.pid = child.pid
-    state.state = "starting"
-    state.detail = "Starting the start screen…"
-    log(`[desk] started start screen pid ${child.pid}: node ${args.join(" ")}`)
-    const logStream = fs.createWriteStream(path.join(logDir, "start-screen.log"), { flags: "a" })
+    const own = { proc, pid: proc.pid, url: null, startedAt: Date.now() }
+    transition({ kind: "starting", child: own })
+    log(`[desk] started start screen pid ${proc.pid}: node ${args.join(" ")}`)
+    const logStream = fs.createWriteStream(logFile(), { flags: "a" })
     let pending = ""
-    child.stdout.on("data", (chunk) => {
+    proc.stdout.on("data", (chunk) => {
       logStream.write(chunk)
       pending += chunk.toString()
       let nl
@@ -226,54 +268,84 @@ export function createSupervisor({ repoRoot = REPO_ROOT, port = PREFERRED_START_
         pending = pending.slice(nl + 1)
         // cli.mjs prints this once it has bound (on 3455, or wherever the OS put it).
         const match = line.match(/open (http:\/\/[^\s]+) to choose an app/)
-        if (match) spawnedUrl = match[1]
+        if (match) own.url = match[1]
       }
     })
-    child.once("exit", (code, signal) => {
+    // A spawn that fails emits "error" and may never emit "exit".
+    proc.once("error", (error) => {
+      log(`[desk] start screen could not run: ${error.message}`)
+      if (child() === own) enterBackoff(`The start screen could not run (${error.message}).`)
+    })
+    proc.once("exit", (code, signal) => {
       logStream.end()
       log(`[desk] start screen exited (${signal ?? code})`)
-      child = null
-      spawnedUrl = null
-      state.ready = false
-      state.pid = null
-      if (stopped) return
-      if (Date.now() - startedAt > 60000) backoffMs = 1000
-      state.restarts += 1
-      state.state = "backoff"
-      state.detail = `The start screen stopped (${signal ?? `code ${code}`}). Restarting in ${Math.round(backoffMs / 1000)} s — see ~/Library/Logs/DesignLayer/start-screen.log.`
-      clearTimeout(timer)
-      timer = setTimeout(tick, backoffMs)
-      backoffMs = Math.min(backoffMs * 2, 30000)
+      if (child() !== own) return
+      enterBackoff(`The start screen stopped (${signal ?? `code ${code}`}).`)
     })
   }
 
-  async function tick() {
-    if (stopped) return
-    clearTimeout(timer)
-    const up = await probe()
-    if (up) {
-      state.state = child ? "running" : "external"
-      state.owned = Boolean(child)
-      state.detail = null
-    } else if (!child) {
-      spawnStartScreen()
-    }
-    timer = setTimeout(tick, up ? 5000 : 700)
+  function tick() {
+    if (phase.kind === "stopped" || phase.kind === "disabled") return Promise.resolve()
+    ticking ??= (async () => {
+      clearTimeout(timer)
+      if (phase.kind === "backoff") transition({ kind: "checking" })
+      const at = generation
+      const ok = await probe()
+      if (at !== generation) return
+      observe(ok)
+      if (phase.kind === "checking") spawnStartScreen()
+      schedule(answering() ? 5000 : 700)
+    })()
+      .catch((error) => {
+        // A start screen that cannot even be spawned (its log folder cannot be
+        // written) waits like one that crashed, instead of ending the desk.
+        log(`[desk] could not start the start screen: ${error.message}`)
+        if (phase.kind !== "stopped") enterBackoff(`The start screen could not start (${error.message}).`)
+      })
+      .finally(() => {
+        ticking = null
+      })
+    return ticking
   }
 
   return {
-    state,
-    start() {
-      if (enabled) tick()
+    /** The start screen as /api/health reports it. */
+    snapshot() {
+      const own = child()
+      return {
+        state: phase.kind,
+        ready: answering(),
+        url: answering() ? probeUrl() : null,
+        owned: Boolean(own),
+        pid: own?.pid ?? null,
+        restarts,
+        detail: phase.kind === "starting" ? "Starting the start screen…" : phase.kind === "backoff" ? phase.detail : null,
+        editors,
+        update,
+      }
     },
-    /** Health reads call this so the page sees the start screen within one poll. */
+    start() {
+      tick()
+    },
+    /**
+     * Health reads call this so the page sees the start screen within one
+     * poll. It shares the probe in flight and never spawns: a start screen
+     * that went away is the next tick's to start, and a backoff keeps its wait.
+     */
     async refresh() {
-      if (enabled && !stopped) await probe()
+      if (phase.kind === "disabled" || phase.kind === "stopped" || phase.kind === "backoff") return
+      const at = generation
+      const ok = await probe()
+      if (at !== generation) return
+      observe(ok)
+      if (phase.kind === "checking") schedule(0)
     },
     stop() {
-      stopped = true
+      const own = child()
+      generation += 1
+      transition({ kind: "stopped" })
       clearTimeout(timer)
-      if (child) child.kill("SIGTERM")
+      if (own) own.proc.kill("SIGTERM")
     },
   }
 }
@@ -296,7 +368,7 @@ function corsHeaders(req) {
  * loopback, and not the desk itself (the desk inside one of its own tabs is not
  * an editor). Anything else is refused with a sentence the editor can show.
  */
-export function openableUrl(value, deskPort) {
+function openableUrl(value, deskPort) {
   let url
   try {
     url = new URL(String(value ?? ""))
@@ -313,8 +385,6 @@ export function openableUrl(value, deskPort) {
   return { url: url.href }
 }
 
-const SHIM = path.join(os.homedir(), "Applications", "Chrome Apps.localized", "DesignLayer.app")
-const shimInstalled = () => fs.existsSync(path.join(SHIM, "Contents", "MacOS", "app_mode_loader"))
 let lastLaunch = 0
 
 /**
@@ -335,17 +405,13 @@ function activateApp(deskUrl, { listening = 0 } = {}) {
     if (error) console.warn(`${new Date().toISOString()} [desk] could not bring the app forward: ${error.message}`)
   }
   if (shimInstalled()) {
-    execFile("/usr/bin/open", [SHIM, "--args", APP_FEATURES], done)
+    execFile("/usr/bin/open", shimOpenArgs(), done)
     return true
   }
   if (listening > 0 || Date.now() - lastLaunch < 15_000) return false
   lastLaunch = Date.now()
   // The same command line as install.mjs --app-window.
-  const child = spawn(
-    CHROME_BINARY,
-    [`--user-data-dir=${chromeProfileDir()}`, `--app=${deskUrl}/`, "--no-first-run", "--no-default-browser-check", APP_FEATURES],
-    { detached: true, stdio: "ignore" }
-  )
+  const child = spawn(CHROME_BINARY, appWindowArgs([`--app=${deskUrl}/`]), { detached: true, stdio: "ignore" })
   child.on("error", done)
   child.unref()
   return true
@@ -354,7 +420,7 @@ function activateApp(deskUrl, { listening = 0 } = {}) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const shimRunning = () => {
   try {
-    execFileSync("/usr/bin/pgrep", ["-f", path.join(SHIM, "Contents", "MacOS", "app_mode_loader")])
+    execFileSync("/usr/bin/pgrep", ["-f", path.join(appShim(), "Contents", "MacOS", "app_mode_loader")])
     return true
   } catch {
     return false
@@ -372,7 +438,7 @@ const shimRunning = () => {
 async function relaunchApp() {
   if (!(await quitProfileChrome(chromeProfileDir()))) return false
   for (let waited = 0; waited < 5000 && shimRunning(); waited += 250) await sleep(250)
-  execFile("/usr/bin/open", [SHIM, "--args", APP_FEATURES], (error) => {
+  execFile("/usr/bin/open", shimOpenArgs(), (error) => {
     if (error) console.warn(`${new Date().toISOString()} [desk] could not reopen the app: ${error.message}`)
   })
   return true
@@ -390,7 +456,7 @@ async function relaunchApp() {
  * ordinary browser tab, and that tab takes a page only when no app window is
  * up: "Open in Mac app" should land in the app.
  */
-export function createHandoff({ maxAgeMs = 60_000 } = {}) {
+export function createOpenQueue({ maxAgeMs = 60_000 } = {}) {
   const clients = new Map()
   let pending = []
   let nextId = 1
@@ -473,7 +539,7 @@ function pickFolder() {
 }
 
 /** A window's id in its address (`/?window=<id>`): "main" for the one the app opens with. */
-export const WINDOW_ID = /^(main|w[a-z0-9]{1,24})$/
+const WINDOW_ID = /^(main|w[a-z0-9]{1,24})$/
 
 /**
  * The windows' saved tabs, kept by the desk as well as in the page's storage.
@@ -490,12 +556,20 @@ export const WINDOW_ID = /^(main|w[a-z0-9]{1,24})$/
  * before there were several windows holds one window's tabs at its top level:
  * that is the main window's.
  */
-export function createTabStore(file) {
+/** Written whole, then renamed: a desk stopped mid-write leaves the last copy. */
+function writeJsonAtomic(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(value))
+  fs.renameSync(`${file}.tmp`, file)
+}
+
+function createTabStore(file) {
   // Every entry, including the marks left by windows that are gone.
   function readEntries() {
     try {
       const saved = JSON.parse(fs.readFileSync(file, "utf8"))
       if (saved && saved.windows && typeof saved.windows === "object") return saved.windows
+      // The one-window file (before 2026-10-10). Remove this line after 2027-04-10.
       return saved && Array.isArray(saved.tabs) ? { main: saved } : {}
     } catch {
       return {}
@@ -510,12 +584,7 @@ export function createTabStore(file) {
   function readGone() {
     return Object.fromEntries(Object.entries(readEntries()).filter(([, entry]) => entry?.gone).map(([id, entry]) => [id, entry.savedAt]))
   }
-  function writeAll(windows) {
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    // Written whole, then renamed: a desk stopped mid-write leaves the last copy.
-    fs.writeFileSync(`${file}.tmp`, JSON.stringify({ windows }))
-    fs.renameSync(`${file}.tmp`, file)
-  }
+  const writeAll = (windows) => writeJsonAtomic(file, { windows })
   const windowOf = (value) => {
     const id = value ?? "main"
     if (typeof id !== "string" || !WINDOW_ID.test(id)) throw Object.assign(new Error("Unknown window id"), { status: 400 })
@@ -551,7 +620,8 @@ export function createTabStore(file) {
       }
       const tabs = saved.tabs.filter((t) => t && typeof t === "object" && typeof t.id === "string" && (t.kind === "home" || t.kind === "editor"))
       const clean = {
-        tabs: tabs.map(({ id, kind, url, src, name, key, app }) => ({ id, kind, url, src, name, key, app })),
+        // The fields the page saves (shell-page.mjs TAB_FIELDS), and no others.
+        tabs: tabs.map((t) => Object.fromEntries(TAB_FIELDS.map((field) => [field, t[field]]))),
         active: typeof saved.active === "string" ? saved.active : null,
         // When the page saved this copy, so a page whose own storage lost its
         // last write can tell this copy is newer (see the page's restore).
@@ -578,8 +648,8 @@ export function createTabStore(file) {
  * so it lives with the window's tabs and follows the app into any tab and any
  * window that shows it.
  */
-export const TAB_NAME_MAX = 80
-export function createNameStore(file) {
+const TAB_NAME_MAX = 80
+function createNameStore(file) {
   function read() {
     try {
       const saved = JSON.parse(fs.readFileSync(file, "utf8"))
@@ -599,9 +669,7 @@ export function createNameStore(file) {
       if (name) names[app] = name
       else delete names[app]
       if (Object.keys(names).length > 500) throw Object.assign(new Error("Too many tab names"), { status: 400 })
-      fs.mkdirSync(path.dirname(file), { recursive: true })
-      fs.writeFileSync(`${file}.tmp`, JSON.stringify({ names }))
-      fs.renameSync(`${file}.tmp`, file)
+      writeJsonAtomic(file, { names })
       return names
     },
   }
@@ -623,18 +691,14 @@ function openAppWindow(url) {
   if (shimInstalled()) {
     let appId = ""
     try {
-      appId = execFileSync("/usr/bin/plutil", ["-extract", "CrAppModeShortcutID", "raw", path.join(SHIM, "Contents", "Info.plist")], { encoding: "utf8" }).trim()
+      appId = execFileSync("/usr/bin/plutil", ["-extract", "CrAppModeShortcutID", "raw", path.join(appShim(), "Contents", "Info.plist")], { encoding: "utf8" }).trim()
     } catch {}
     if (!/^[a-p]{32}$/.test(appId)) return { ok: false, error: "The app shim names no app" }
     args = [`--app-id=${appId}`, `--app-launch-url-for-shortcuts-menu-item=${url}`]
   } else {
     args = [`--app=${url}`]
   }
-  const child = spawn(
-    CHROME_BINARY,
-    [`--user-data-dir=${chromeProfileDir()}`, ...args, "--no-first-run", "--no-default-browser-check", APP_FEATURES],
-    { detached: true, stdio: "ignore" }
-  )
+  const child = spawn(CHROME_BINARY, appWindowArgs(args), { detached: true, stdio: "ignore" })
   child.on("error", (error) => console.warn(`${new Date().toISOString()} [desk] could not open a window: ${error.message}`))
   child.unref()
   return { ok: true }
@@ -658,7 +722,7 @@ export async function createDeskServer({
   openWindow = openAppWindow,
 } = {}) {
   const supervisor = createSupervisor({ repoRoot, port: startScreenPort, logDir, enabled: supervise, log })
-  const handoff = createHandoff()
+  const openQueue = createOpenQueue()
   const tabStore = createTabStore(path.join(stateDir, "desk-tabs.json"))
   const nameStore = createNameStore(path.join(stateDir, "desk-names.json"))
   const startedAt = Date.now()
@@ -685,24 +749,52 @@ export async function createDeskServer({
    * the Extensions button are back. Its window connecting is the first sign of
    * that, so the desk restarts the app then, with the features.
    *
-   * Once, not twice in a row: an app that comes back without them means this
-   * Chrome no longer passes them on, and trying again would only close and
-   * reopen the window every time it connects.
+   * Once, not twice in a row: an app that comes back from that restart
+   * without them means this Chrome no longer passes them on, and trying again
+   * would only close and reopen the window every time it connects.
+   *
+   *   idle        --app window, no features-->         relaunching  (relaunch())
+   *   relaunching --app window-->                      relaunching  (a window of the launch being restarted)
+   *   relaunching --relaunch() done-->                 verifying
+   *   relaunching --relaunch() failed-->               idle         (nothing restarted: the next window tries again)
+   *   verifying   --app window, features-->            idle
+   *   verifying   --app window, no features, < 2 min--> gaveUp      (for this desk process)
+   *   verifying   --app window, no features, later-->  relaunching  (a new Dock launch)
+   *
+   * Every window of one launch connects within milliseconds: the main window
+   * reopens the others. Only a window that connects after the restart is done
+   * can say whether the restart worked.
    */
-  let relaunchedAt = 0
-  let relaunchGaveUp = false
+  let relaunchPhase = { kind: "idle" }
   function keepAppFeatures() {
-    if (relaunchGaveUp) return
+    if (relaunchPhase.kind === "gaveUp" || relaunchPhase.kind === "relaunching") return
     const command = appChromeCommand()
-    if (!command || command.includes(APP_FEATURES)) return
-    if (Date.now() - relaunchedAt < 120_000) {
-      relaunchGaveUp = true
+    if (!command) return
+    if (command.includes(APP_FEATURES)) {
+      relaunchPhase = { kind: "idle" }
+      return
+    }
+    if (relaunchPhase.kind === "verifying" && Date.now() - relaunchPhase.at < 120_000) {
+      relaunchPhase = { kind: "gaveUp" }
       log(`[desk] the app came back without ${APP_FEATURES}; leaving it as it is`)
       return
     }
-    relaunchedAt = Date.now()
+    const attempt = { kind: "relaunching" }
+    relaunchPhase = attempt
     log(`[desk] the app is running without ${APP_FEATURES} (opened from the Dock): restarting it`)
-    Promise.resolve(relaunch()).catch((error) => log(`[desk] could not restart the app: ${error.message}`))
+    Promise.resolve()
+      .then(() => relaunch())
+      .then(
+        (ok) => {
+          if (relaunchPhase !== attempt) return
+          relaunchPhase = ok === false ? { kind: "idle" } : { kind: "verifying", at: Date.now() }
+          if (ok === false) log("[desk] could not restart the app: its Chrome did not quit")
+        },
+        (error) => {
+          if (relaunchPhase === attempt) relaunchPhase = { kind: "idle" }
+          log(`[desk] could not restart the app: ${error.message}`)
+        }
+      )
   }
 
   const routes = {
@@ -718,7 +810,6 @@ export async function createDeskServer({
       send(res, 200, "text/javascript; charset=utf-8", SERVICE_WORKER, { "service-worker-allowed": "/" }),
     "GET /api/health": async (_req, res) => {
       await supervisor.refresh()
-      const s = supervisor.state
       sendJson(res, 200, {
         ok: true,
         name: "designlayer-desk",
@@ -727,19 +818,10 @@ export async function createDeskServer({
         node: process.execPath,
         repoRoot,
         version,
-        startScreen: {
-          state: s.state,
-          ready: s.ready,
-          url: s.url,
-          owned: s.owned,
-          pid: s.pid,
-          restarts: s.restarts,
-          detail: s.detail,
-          editing: s.editing,
-          editors: s.editors,
-          update: s.update,
-        },
-        app: { installed: shimInstalled(), windows: handoff.listening },
+        // `editors` is every editor the start screen runs; the installer saves
+        // them for resume before it restarts the desk (agent.mjs).
+        startScreen: supervisor.snapshot(),
+        app: { installed: shimInstalled(), windows: openQueue.listening },
       })
     },
     "GET /api/editors": (_req, res) => sendJson(res, 200, { editors: normalizeEditors(listEditors()) }),
@@ -768,7 +850,9 @@ export async function createDeskServer({
       log(`[desk] open window ${id}: ${result?.ok ? "ok" : result?.error ?? "failed"}`)
       sendJson(res, result?.ok ? 200 : 500, result?.ok ? { ok: true } : { ok: false, error: result?.error ?? "Could not open a window" })
     },
-    "POST /api/pick-folder": async (_req, res) => {
+    // A native dialog: only the desk page may raise it, not any loopback page.
+    "POST /api/pick-folder": async (req, res) => {
+      if (!fromDeskPage(req)) return sendJson(res, 403, { error: "Only the desk page opens the folder picker" })
       const result = await picker()
       sendJson(res, result.error ? 500 : 200, result)
     },
@@ -781,10 +865,10 @@ export async function createDeskServer({
       const body = raw && typeof raw === "object" ? raw : {}
       const target = openableUrl(body.url, server.address().port)
       if (target.error) return sendJson(res, 400, { error: target.error }, cors)
-      const { item, delivered } = handoff.request(target.url)
+      const { item, delivered } = openQueue.request(target.url)
       // `activate: false` hands the page over without raising a window, for a
       // caller that is checking the hand-off rather than using it.
-      const launched = body.activate !== false && Boolean(activate(origin(), { listening: handoff.listening }))
+      const launched = body.activate !== false && Boolean(activate(origin(), { listening: openQueue.listening }))
       log(`[desk] open ${item.url}: ${delivered ? `sent to ${delivered} window(s)` : "held for the next window"}${launched ? ", app raised" : ""}`)
       sendJson(res, 200, { ok: true, id: item.id, url: item.url, delivered, launched }, cors)
     },
@@ -798,7 +882,9 @@ export async function createDeskServer({
       })
       res.end()
     },
-    // The desk page's side of the hand-off: one event per page to open.
+    // The desk page's side of "Open in Mac app": one event per page to open.
+    // `?client=app` from an app window, `?client=tab` from a desk page in a
+    // browser tab.
     "GET /api/events": (req, res, url) => {
       res.writeHead(200, {
         "content-type": "text/event-stream; charset=utf-8",
@@ -807,8 +893,10 @@ export async function createDeskServer({
       })
       // EventSource reconnects on its own; two seconds matches the page's poll.
       res.write("retry: 2000\n\n")
-      const app = url.searchParams.get("window") === "app"
-      const unsubscribe = handoff.subscribe(res, { app })
+      // `?window=` is the name before `?client=`, kept for a page served by
+      // the desk before this one. Drop it after 2027-01-31.
+      const app = (url.searchParams.get("client") ?? url.searchParams.get("window")) === "app"
+      const unsubscribe = openQueue.subscribe(res, { app })
       if (app) keepAppFeatures()
       // A comment now and then keeps an idle stream from being taken for dead.
       const beat = setInterval(() => res.write(": keep-alive\n\n"), 25_000)
@@ -874,9 +962,8 @@ function isDirectRun() {
 
 if (isDirectRun()) {
   const port = Number(process.env.DESIGNLAYER_DESK_PORT) || DEFAULT_DESK_PORT
-  const startScreenPort = Number(process.env.DESIGNLAYER_START_SCREEN_PORT) || PREFERRED_START_SCREEN_PORT
   try {
-    const desk = await createDeskServer({ port, startScreenPort, supervise: process.env.DESIGNLAYER_DESK_SUPERVISE !== "0" })
+    const desk = await createDeskServer({ port })
     console.log(`${new Date().toISOString()} [desk] serving ${desk.url} (node ${process.version}, pid ${process.pid})`)
     for (const signal of ["SIGINT", "SIGTERM"]) {
       process.once(signal, async () => {

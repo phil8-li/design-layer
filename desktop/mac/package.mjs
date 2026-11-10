@@ -56,7 +56,10 @@ const outIndex = argv.indexOf("--out")
 if (outIndex !== -1 && !argv[outIndex + 1]) fail("--out needs a directory")
 const OUT_DIR = outIndex === -1 ? path.join(REPO_ROOT, "dist") : path.resolve(argv[outIndex + 1])
 
-const TEMP = path.join(os.tmpdir(), "designlayer-mac-package")
+// A folder of this run's own: two runs at once each stage and delete their own.
+const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), "designlayer-mac-package-"))
+// Removed however the run ends, fail() (process.exit) included.
+process.on("exit", () => fs.rmSync(TEMP, { recursive: true, force: true }))
 const STAGE = path.join(TEMP, "stage")
 const TOP = path.join(STAGE, PRODUCT)
 const PAYLOAD = path.join(TOP, "payload")
@@ -290,7 +293,8 @@ echo "Done. Logs are kept in ~/Library/Logs/DesignLayer/."
 const README = `${PRODUCT} for Mac ${version}
 
 ${PRODUCT} is a visual editor that attaches to your running React or
-Angular app and writes each change back to the component source. This package
+Angular app. It shows each change on the page and writes it down as a note
+that your coding agent puts in your source code. This package
 installs it as a Mac app: a small background service plus a Chrome
 app window you can keep in the Dock.
 

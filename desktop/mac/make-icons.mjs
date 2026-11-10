@@ -15,7 +15,21 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
-const PLAYWRIGHT = "/opt/homebrew/lib/node_modules/@playwright/mcp/node_modules/playwright/index.mjs"
+// Playwright from this checkout, or from the cached node_modules the e2e
+// tools use (DESIGNLAYER_E2E_DEPS), or from a Homebrew-global @playwright/mcp.
+const PLAYWRIGHT_FROM = [
+  "playwright",
+  process.env.DESIGNLAYER_E2E_DEPS && path.join(process.env.DESIGNLAYER_E2E_DEPS, "playwright", "index.mjs"),
+  "/opt/homebrew/lib/node_modules/@playwright/mcp/node_modules/playwright/index.mjs",
+].filter(Boolean)
+async function loadPlaywright() {
+  for (const from of PLAYWRIGHT_FROM) {
+    try {
+      return await import(from)
+    } catch {}
+  }
+  throw new Error(`Playwright not found. Tried: ${PLAYWRIGHT_FROM.join(", ")}`)
+}
 const here = path.dirname(fileURLToPath(import.meta.url))
 const iconsDir = path.join(here, "icons")
 const svg = fs.readFileSync(path.join(iconsDir, "app-icon.svg"), "utf8")
@@ -26,7 +40,7 @@ const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")
 fs.copyFileSync(path.join(here, "..", "..", "runtime", "favicon.svg"), path.join(iconsDir, "mark.svg"))
 console.log("wrote icons/mark.svg (runtime/favicon.svg)")
 
-const { chromium } = await import(PLAYWRIGHT)
+const { chromium } = await loadPlaywright()
 const browser = await chromium.launch()
 try {
   const page = await browser.newPage({ deviceScaleFactor: 1 })
