@@ -4,48 +4,11 @@
  * The whole-project reads (pages, component usage) stat and read every source
  * file under the project, and what that costs on a first read is the thread
  * pool's syscalls, not the bytes: hence the limiter, the known-size read and
- * the per-file cache. The small stores (options, control defaults, the MCP
- * setting) write whole files, and a write cut short must never leave half of
- * one: hence the atomic writers.
+ * the per-file cache. The atomic writer the small stores use lives in
+ * `runtime/state-dir.mjs`, the package's one temp-and-rename.
  */
 
-import { randomBytes } from "node:crypto"
 import fs from "node:fs"
-import path from "node:path"
-
-/** Beside the target, so the rename stays on one file system; unique per write. */
-function temporaryFor(file) {
-  return path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`)
-}
-
-/**
- * Writes `text` to `file` so a reader sees the old file or the new one, never
- * a part. Creates the folder first.
- */
-export async function writeAtomic(file, text) {
-  await fs.promises.mkdir(path.dirname(file), { recursive: true })
-  const temporary = temporaryFor(file)
-  try {
-    await fs.promises.writeFile(temporary, text, "utf8")
-    await fs.promises.rename(temporary, file)
-  } catch (error) {
-    await fs.promises.rm(temporary, { force: true }).catch(() => {})
-    throw error
-  }
-}
-
-/** `writeAtomic` for a caller that cannot wait, such as a setting saved mid-move. */
-export function writeAtomicSync(file, text) {
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  const temporary = temporaryFor(file)
-  try {
-    fs.writeFileSync(temporary, text, "utf8")
-    fs.renameSync(temporary, file)
-  } catch (error) {
-    fs.rmSync(temporary, { force: true })
-    throw error
-  }
-}
 
 /**
  * What one file contributed, kept while its `mtimeMs:size` holds.

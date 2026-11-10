@@ -281,7 +281,7 @@ export interface AnnotationSettings {
 }
 
 /** Which product a note is about. See `AnnotationSettings.scope`. */
-export type AnnotationScope = "app" | "editor"
+type AnnotationScope = "app" | "editor"
 
 export const DEFAULT_SETTINGS: AnnotationSettings = {
   outputDetail: "standard",

@@ -50,16 +50,16 @@ import os from "node:os"
 import path from "node:path"
 
 import { DEFAULT_CONFIG } from "../config.mjs"
-import { writeAtomicSync } from "../server/file-io.mjs"
+import { writeFileAtomic } from "./state-dir.mjs"
 import { createHandoffQueue } from "../server/handoff.mjs"
-import { httpError as refusal } from "../server/http-error.mjs"
+import { httpError as refusal } from "./http-error.mjs"
 import { closeEndpoint, openEndpoint } from "../server/mcp.mjs"
 
 /** Long enough for an editor to let the port go; see `openEndpoint`. */
 const MOVE_RETRY_MS = 1500
 
 /** Beside the editor registry, in the per-user state this package already keeps. */
-export function mcpSettingsFile() {
+function mcpSettingsFile() {
   return path.join(os.homedir(), ".local", "state", "designlayer", "mcp.json")
 }
 
@@ -95,7 +95,7 @@ export function createMcpHub({
 
   function writeSetting(on) {
     try {
-      writeAtomicSync(file, `${JSON.stringify({ stayBetweenApps: on })}\n`)
+      writeFileAtomic(file, `${JSON.stringify({ stayBetweenApps: on })}\n`)
     } catch (error) {
       log(`[designlayer] could not save the MCP setting (${error.message})`)
     }

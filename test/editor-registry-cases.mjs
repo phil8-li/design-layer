@@ -301,9 +301,9 @@ await check("publishing replaces the entry whole and leaves no temp file behind"
     fs.renameSync = realRename
   }
   assert.equal(renamed.length, 1)
-  // Named for this process and this write (runtime/state-dir.mjs), and not
-  // ending in `.json`, so no reader ever parses it.
-  assert.match(renamed[0][0], new RegExp(`^3456\\.json\\.${process.pid}\\.[0-9a-f]{8}\\.tmp$`))
+  // A dotfile named for this process and this write (runtime/state-dir.mjs),
+  // and not ending in `.json`, so no reader ever parses it.
+  assert.match(renamed[0][0], new RegExp(`^\\.3456\\.json\\.${process.pid}\\.[0-9a-f]{8}\\.tmp$`))
   assert.equal(renamed[0][1], "3456.json")
   assert.deepEqual(entries(), ["3456.json"])
   assert.deepEqual(listEditors().map((entry) => entry.proxyPort), [3456])

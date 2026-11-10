@@ -81,7 +81,7 @@ export function setExpanded(key: string, open: boolean): void {
 }
 
 /** A row group the user opens under its trailing toggle: per-side widths, an effect's numbers. */
-export interface Disclosure {
+interface Disclosure {
   readonly open: boolean
   toggle(): void
   /** True on the one render after the user opened it, so the group can play its reveal. */

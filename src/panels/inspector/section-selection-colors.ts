@@ -43,7 +43,7 @@ import { miniButton, section } from "./field"
 import { directText, SIDES } from "./token-row"
 import { tokenField, type TokenChoice } from "./token-picker"
 import type { InspectorSection, SectionContext } from "./index"
-import { selectionFor } from "./multi"
+import { selectionFor } from "../../core/context"
 
 const TITLE = "Selection colors"
 /** Elements read per render. A page section can hold thousands; the panel rebuilds on every commit. */

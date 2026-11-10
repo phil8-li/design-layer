@@ -38,7 +38,7 @@ export interface EditorSlots {
  * cannot be written by accident. Suites that need a raw write import the
  * store's own `setState`.
  */
-export type LaneStatePatch = Partial<Omit<EditorState, "interactive" | "annotating" | "chromeHidden">>
+type LaneStatePatch = Partial<Omit<EditorState, "interactive" | "annotating" | "chromeHidden">>
 
 export interface EditorContext {
   bridge: RewriteBridge
@@ -86,6 +86,26 @@ export interface EditorContext {
   apiBase: string
 }
 
+/**
+ * An element as the writer addresses it: the record a selection holds, built
+ * for any element, selected or not (a layer row, the parent an align writes to,
+ * an icon button's `<svg>`, a child whose colour Selection colors rewrites).
+ * The one builder: the context's own selections use it, and so does every
+ * panel that writes to an element it did not select. The bridge is optional
+ * because the section suites hand over an editor without one.
+ */
+export function selectionFor(editor: Pick<EditorContext, "bridge">, element: LayerElement): Selection {
+  const info = editor.bridge?.elementInfo(element) ?? null
+  const componentName = info?.componentName || element.tagName.toLowerCase()
+  return {
+    element,
+    tagName: element.tagName.toLowerCase(),
+    componentName,
+    source: toSourceRef(info),
+    key: elementKey(element, componentName, info?.lineNumber ?? 0),
+  }
+}
+
 export function createContext(bridge: RewriteBridge, slots: EditorSlots): EditorContext {
   // Per context, so two contexts in one suite do not refresh each other.
   const refreshListeners = new Set<() => void>()
@@ -123,17 +143,7 @@ export function createContext(bridge: RewriteBridge, slots: EditorSlots): Editor
       .catch(() => null)
   }
 
-  const describe = (element: LayerElement): Selection => {
-    const info = bridge.elementInfo(element)
-    const componentName = info?.componentName || element.tagName.toLowerCase()
-    return {
-      element,
-      tagName: element.tagName.toLowerCase(),
-      componentName,
-      source: toSourceRef(info),
-      key: elementKey(element, componentName, info?.lineNumber ?? 0),
-    }
-  }
+  const describe = (element: LayerElement): Selection => selectionFor({ bridge }, element)
 
   const context: EditorContext = {
     bridge,

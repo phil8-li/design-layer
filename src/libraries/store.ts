@@ -57,6 +57,7 @@
  * the older answer landing last and winning.
  */
 
+import { sendJson } from "../core/api"
 import { config, type DesignSystemCatalog, type DesignSystemToken } from "../core/config"
 import type { IconVariant } from "../core/icon-set"
 import type {
@@ -252,16 +253,8 @@ async function failure(response: Response): Promise<Error> {
   return challenge ? new LibraryAuthError(said, challenge) : new Error(said)
 }
 
-async function send<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      accept: "application/json",
-      ...(init.body === undefined ? {} : { "content-type": "application/json" }),
-    },
-  })
-  if (!response.ok) throw await failure(response)
-  return (await response.json()) as T
+function send<T>(url: string, init: RequestInit = {}): Promise<T> {
+  return sendJson<T>(url, init, failure)
 }
 
 /* ---------- the cache ---------- */

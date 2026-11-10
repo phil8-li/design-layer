@@ -38,7 +38,7 @@ export type DefaultStatus =
   | { kind: "deleting"; token: number; from: KnownDefault }
 
 /** What a request ended as, for the row that asked: a toast for `done` and `failed`, nothing for the rest. */
-export type DefaultOutcome = "done" | "failed" | "stale" | "refused"
+type DefaultOutcome = "done" | "failed" | "stale" | "refused"
 
 const statuses = new Map<string, DefaultStatus>()
 const watchers = new Map<string, Set<(status: DefaultStatus) => boolean>>()

@@ -87,7 +87,7 @@ export function isDeepSelect(event: { metaKey: boolean; ctrlKey: boolean }): boo
 }
 
 /** Editing text is editing text: the canvas keeps its hands off those keys. */
-export function isTextEntry(node: EventTarget | null): boolean {
+function isTextEntry(node: EventTarget | null): boolean {
   if (!(node instanceof HTMLElement)) return false
   if (node.isContentEditable) return true
   return node.tagName === "INPUT" || node.tagName === "TEXTAREA" || node.tagName === "SELECT"
@@ -127,7 +127,7 @@ export function isTextEntryEvent(event: Event): boolean {
  * companion declared, while the nodes inside its shadow root are the ones a
  * `closest()` from the outside can never reach.
  */
-export function isChromeEvent(event: Event): boolean {
+function isChromeEvent(event: Event): boolean {
   return event.composedPath().some((node) => isChrome(node))
 }
 
@@ -165,7 +165,7 @@ export function ownsCanvasKeys(event: KeyboardEvent): boolean {
  * `mod` is the platform accelerator — ⌘ on a Mac, Ctrl everywhere else. `ctrl`
  * is literally Control on both, which only Figma's shortcuts-panel key needs.
  */
-export interface Chord {
+interface Chord {
   /** Lowercased `event.key`. For letters and for characters no modifier rewrites. */
   key?: string
   /** `event.code`. For digits, brackets and slashes, which ⌥ and ⇧ rewrite. */
@@ -756,7 +756,8 @@ export function everywhereShortcut(event: KeyboardEvent): Shortcut | null {
  *
  * Kept as a function because the shape "undo" | "redo" | null is what the
  * history lane and its tests speak in; the MATCHING is the table's, so the two
- * cannot drift.
+ * cannot drift. Exported for test/history-cases.mjs, selection-shell-cases and
+ * shortcut-cases; the keymap itself dispatches through the table.
  */
 export function historyAction(event: KeyboardEvent): "undo" | "redo" | null {
   const command = matchShortcut(event)?.command

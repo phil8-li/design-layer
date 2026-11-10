@@ -7,7 +7,6 @@
  * branch is walked only while expanded, and rows are diffed in place.
  */
 
-import { toSourceRef } from "../core/bridge"
 import { LAYER_INDENT } from "../core/css/layers"
 import { el } from "../core/dom"
 import { focusControl } from "../core/focus"
@@ -16,14 +15,13 @@ import { icon, type IconName, type IconSize } from "../core/icons"
 import { isDeepSelect } from "../core/keymap"
 import { getResolver } from "../core/resolve"
 import { scrollerFor } from "../core/scroll"
-import { elementKey } from "../core/store"
 import { elementName } from "../annotations/identify"
 // The tree shows a count of saved styles per row — see `savedKeys`. The layers
 // panel takes a reader and the load from the options subsystem, never a verb:
 // acting on a saved style is the right panel's job.
 import { optionsStore, visibleOptions } from "../options/store"
 import { createWriter } from "../core/writer"
-import type { EditorContext } from "../core/context"
+import { selectionFor, type EditorContext } from "../core/context"
 import type { LayerElement, Selection } from "../core/types"
 import { tokens } from "../core/tokens"
 import { plural } from "../core/format"
@@ -860,21 +858,9 @@ export function installLayersPanel(context: EditorContext): void {
     else emptyNote.replaceChildren(sentence)
   }
 
-  /**
-   * The row as a writable target. `context.describe` is private to the context
-   * module, so this rebuilds the same shape from the two core helpers it uses —
-   * the same thing `section-align` does to write to a selection's parent.
-   */
+  /** The row as a writable target: the record a selection holds, for this row. */
   function describe(element: LayerElement): Selection {
-    const info = context.bridge.elementInfo(element)
-    const componentName = info?.componentName || element.tagName.toLowerCase()
-    return {
-      element,
-      tagName: element.tagName.toLowerCase(),
-      componentName,
-      source: toSourceRef(info),
-      key: elementKey(element, componentName, info?.lineNumber ?? 0),
-    }
+    return selectionFor(context, element)
   }
 
   /**

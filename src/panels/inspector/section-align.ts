@@ -67,7 +67,7 @@
 
 import type { Selection } from "../../core/types"
 import type { SectionContext } from "./index"
-import { selectionFor } from "./multi"
+import { selectionFor } from "../../core/context"
 
 export type Place = "flex-start" | "center" | "flex-end"
 export type Axis = "horizontal" | "vertical"

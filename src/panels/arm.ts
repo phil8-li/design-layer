@@ -13,13 +13,13 @@
  * cost two deliberate presses. The browser's own count is used rather than a
  * timer here, so the interval is the one the person set for their system.
  *
- * Six seconds is the window the notes tab's Clear all uses too; this module
- * is meant to be that tab's helper as well (`panels/inspector/tab-annotations.ts`).
+ * The notes tab's Clear all (`panels/inspector/tab-annotations.ts`) arms
+ * through here too, on the same six-second window.
  */
 
 export const ARMED_MS = 6000
 
-export interface Arm {
+interface Arm {
   /** The target waiting for its second press, or null. */
   target(): Element | null
   /** Whether `event` is the repeat click of a double-click on the armed target. */

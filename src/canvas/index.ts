@@ -19,7 +19,7 @@ import { registerCommand, type CommandId } from "../core/commands"
 import { isCanvasElement, isChrome } from "../core/dom"
 import { canvasAction, isDeepSelect, NUDGE, ownsCanvasKeys, type CanvasAction } from "../core/keymap"
 import { getResolver, isLayerCandidate, toSelectable } from "../core/resolve"
-import { isLocked, selectionOwnsInput } from "../core/store"
+import { activeScope, clearSelection, isLocked, selectionOwnsInput, setScope } from "../core/store"
 import { createWriter } from "../core/writer"
 import type { EditorContext } from "../core/context"
 import type { LayerElement } from "../core/types"
@@ -32,37 +32,6 @@ import { installSpacingHandles } from "./spacing-handles"
 import { installMarquee } from "./marquee"
 import { installLayerMenu } from "./layer-menu"
 import { installTextEditNotes } from "./text-edit"
-
-/**
- * The drilled scope, with one writer and one reader.
- *
- * `scope` and `selection` are two fields of the store, and they used to be
- * cleared together by hand in three places and written in nine, each reader
- * patching a scope the app had since unmounted on its own. `activeScope` is the
- * reader: a detached scope reads as none. `setScope` is the writer, and
- * `clearSelection` the one way to empty both. Local to the canvas for now; the
- * store is the right home once it grows the pair (see the lane report).
- */
-export interface ScopeAccess {
-  activeScope(): Element | null
-  setScope(scope: Element | null): void
-  clearSelection(): void
-}
-
-function scopeAccess(context: EditorContext): ScopeAccess {
-  const setScope = (scope: Element | null) => context.setState({ scope })
-  return {
-    activeScope: () => {
-      const held = context.getState().scope
-      return held?.isConnected ? held : null
-    },
-    setScope,
-    clearSelection: () => {
-      context.select(null)
-      setScope(null)
-    },
-  }
-}
 
 /**
  * The commands behind the canvas rows of the keymap that a nullary call can
@@ -81,7 +50,6 @@ const CANVAS_COMMANDS: Record<Exclude<CanvasAction, "nudge">, CommandId> = {
 export function installCanvas(context: EditorContext): void {
   const writer = createWriter()
   const resolver = getResolver(context.bridge)
-  const scope = scopeAccess(context)
 
   // First, so every gesture listener added after it reads this event's keys.
   installModifiers()
@@ -89,7 +57,7 @@ export function installCanvas(context: EditorContext): void {
   installTransform(context, writer)
   installSnapping(context)
   installSpacingHandles(context, writer)
-  installLayerMenu(context, scope)
+  installLayerMenu(context)
   installTextEditNotes(context, writer)
 
   // `select()` early-returns when the element is already the whole selection,
@@ -143,7 +111,7 @@ export function installCanvas(context: EditorContext): void {
   /** The one answer both the outline and the click use. */
   const targetFor = (hit: Element | null, deep: boolean): LayerElement | null => {
     if (!hit) return null
-    const held = scope.activeScope()
+    const held = activeScope()
     let found: LayerElement | null
     if (memo && memo.hit === hit && memo.deep === deep && memo.scope === held) found = memo.found
     else {
@@ -155,7 +123,7 @@ export function installCanvas(context: EditorContext): void {
     return isLocked(found) ? null : found
   }
 
-  const marquee = installMarquee(context, scope)
+  const marquee = installMarquee(context)
 
   const setHovered = (hovered: Element | null) => {
     if (context.getState().hovered !== hovered) context.setState({ hovered })
@@ -218,12 +186,12 @@ export function installCanvas(context: EditorContext): void {
     // Deep select is a one-shot bypass of the scope rule, so it re-points the
     // scope at the layer it landed in — otherwise the next plain click undoes it.
     if (deep) {
-      scope.setScope(resolver.layerParent(target))
+      setScope(resolver.layerParent(target))
     } else {
-      const held = scope.activeScope()
+      const held = activeScope()
       // A stored scope the app has since unmounted is replaced as well.
       if (context.getState().scope && (!held || !hit || !held.contains(hit))) {
-        scope.setScope(resolver.layerParent(target))
+        setScope(resolver.layerParent(target))
       }
     }
   }
@@ -252,7 +220,7 @@ export function installCanvas(context: EditorContext): void {
     const target = targetFor(hit, deep)
     if (marquee.begin(event, target)) return
     if (!target) {
-      scope.clearSelection()
+      clearSelection()
       return
     }
     const { selection } = context.getState()
@@ -278,13 +246,13 @@ export function installCanvas(context: EditorContext): void {
 
     const state = context.getState()
     const primary = state.selection[0]?.element ?? null
-    const base = primary && primary.contains(hit) ? primary : resolver.resolve(hit, scope.activeScope())
+    const base = primary && primary.contains(hit) ? primary : resolver.resolve(hit, activeScope())
     if (!base) return
     const target = resolver.resolve(hit, base)
     // Drilling into the layer you are already on is not a drill: without this
     // the scope would advance on a press that changed nothing.
     if (!target || target === base) return
-    scope.setScope(base)
+    setScope(base)
     selectOne(target)
     event.preventDefault()
     event.stopPropagation()
@@ -326,7 +294,7 @@ export function installCanvas(context: EditorContext): void {
     const target = toSelectable(element)
     if (!target) return
     selectOne(target)
-    scope.setScope(next)
+    setScope(next)
   }
 
   /**
@@ -343,16 +311,16 @@ export function installCanvas(context: EditorContext): void {
   const deleteSelection = () => {
     const state = context.getState()
     if (!state.selection.length) return
-    const held = scope.activeScope()
+    const held = activeScope()
     writer.applyDelete(state.selection)
     context.select(null)
-    if (held && !scope.activeScope()) scope.setScope(null)
+    if (held && !activeScope()) setScope(null)
     context.bridge.refreshGeometry()
     context.refresh()
   }
 
   // Escape clears. It does not select the parent — that is Shift+Enter.
-  const deselect = () => scope.clearSelection()
+  const deselect = () => clearSelection()
 
   /** The navigation keys, each against the primary; false when nothing is selected. */
   const navigate = (action: "select-child" | "select-parent" | "next-sibling" | "prev-sibling"): boolean => {

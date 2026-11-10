@@ -15,13 +15,11 @@
 import fs from "node:fs"
 import path from "node:path"
 
+import { isPlainObject } from "./library-common.mjs"
+
 /** A guard on a hand-edited config, not a product limit. */
 const MAX_ICONS = 4000
 const ATTRIBUTE_PATTERN = /^[a-z][a-z0-9-]{1,60}$/
-
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
-}
 
 /**
  * Both halves or neither: an attribute with no data names icons the picker

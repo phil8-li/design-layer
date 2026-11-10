@@ -6,7 +6,7 @@
  * only one of them refused a body that was not JSON.
  */
 
-import { httpError } from "./http-error.mjs"
+import { httpError } from "../runtime/http-error.mjs"
 
 export function sendJson(res, statusCode, payload, extraHeaders = {}) {
   const body = Buffer.from(JSON.stringify(payload))
@@ -44,7 +44,7 @@ export function isJsonContentType(req) {
 }
 
 /** Whether a request carries a body at all, by its framing headers. */
-export function hasBody(req) {
+function hasBody(req) {
   if (req.headers["transfer-encoding"] !== undefined) return true
   const length = Number(req.headers["content-length"] ?? 0)
   return Number.isFinite(length) && length > 0

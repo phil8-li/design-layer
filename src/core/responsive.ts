@@ -2,7 +2,7 @@
 
 import { config, type DesignSystemToken } from "./config"
 
-export interface BreakpointStep {
+interface BreakpointStep {
   name: string
   /** Minimum viewport or container width in CSS pixels. */
   px: number

@@ -16,9 +16,10 @@
 
 import fs from "node:fs"
 import path from "node:path"
-import { createRequire } from "node:module"
 
 import { resolveEditableSource } from "../config.mjs"
+import { httpError as refusal } from "../runtime/http-error.mjs"
+import { PLUGINS, bundledParse, hostParse } from "./babel.mjs"
 
 /**
  * The shipped recognizers, and the export a host config should thread through.
@@ -35,12 +36,6 @@ export const DEFAULT_VARIANT_RECOGNIZERS = Object.freeze([
 const MAX_DECLARATIONS = 40
 const MAX_AXES = 24
 const MAX_OPTIONS = 64
-
-function refusal(message, statusCode = 400) {
-  const error = new Error(message)
-  error.statusCode = statusCode
-  return error
-}
 
 function unwrap(node) {
   let current = node
@@ -201,11 +196,11 @@ export function parseVariantDeclarations(source, options = {}) {
   // the parser runs. A `\u` escape is the one way to write an identifier
   // without spelling it, so a file holding one is parsed as before.
   if (!source.includes("\\u") && !recognizers.some((entry) => source.includes(entry.callee))) return []
-  const parse = options.parse ?? defaultParse()
+  const parse = options.parse ?? bundledParse()
 
   let ast
   try {
-    ast = parse(source, { sourceType: "module", plugins: ["typescript", "jsx"], errorRecovery: true })
+    ast = parse(source, { sourceType: "module", plugins: PLUGINS, errorRecovery: true })
   } catch {
     // An unparseable file is a file with no variants we can prove. The panel
     // section it feeds is optional, so this is a shrug, not a failure.
@@ -233,12 +228,6 @@ export function parseVariantDeclarations(source, options = {}) {
   return declarations
 }
 
-let cachedParse = null
-function defaultParse() {
-  if (!cachedParse) ({ parse: cachedParse } = createRequire(import.meta.url)("@babel/parser"))
-  return cachedParse
-}
-
 /**
  * The file reader behind the route.
  *
@@ -248,13 +237,7 @@ function defaultParse() {
 export function createVariantCatalog(config, options = {}) {
   const recognizers = options.recognizers ?? config.variants?.recognizers ?? DEFAULT_VARIANT_RECOGNIZERS
 
-  const hostRequire = createRequire(path.join(config.projectRoot, "package.json"))
-  let parse
-  try {
-    ;({ parse } = hostRequire("@babel/parser"))
-  } catch {
-    parse = defaultParse()
-  }
+  const parse = hostParse(config.projectRoot)
 
   /**
    * Keyed by absolute path; invalidated by mtime and size, because this is a dev

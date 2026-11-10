@@ -844,6 +844,8 @@ ${body}
 
 export type IconName = keyof typeof ICONS
 
+// Exported for test/icon-cases.mjs and tools/icon-sticker-sheet.mjs, as are the
+// three lists below; no editor module reads them.
 export const ICON_NAMES = Object.keys(ICONS) as IconName[]
 
 /** The glyphs that keep their pre-Phosphor drawing. */

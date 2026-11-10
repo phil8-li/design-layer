@@ -52,6 +52,9 @@ import { createHash } from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
 
+import { httpError as badRequest } from "../runtime/http-error.mjs"
+import { writeFileAtomicAsync } from "../runtime/state-dir.mjs"
+
 import { importedStylesheets } from "./design-system-detect.mjs"
 import { looksLikeComponentLibrary, scanComponentLibrary } from "./library-components.mjs"
 import {
@@ -64,6 +67,7 @@ import {
   parseLibrary,
 } from "./library-sources.mjs"
 import { keepUnreadable } from "./library-auth.mjs"
+import { isPlainObject } from "./library-common.mjs"
 import { URL_SOURCE_KIND, isLibraryUrl, libraryNameFromUrl, parseUrlLibrary } from "./library-url.mjs"
 
 /** A ceiling on the panel rather than a product limit: twenty cards is already a scroll. */
@@ -216,16 +220,6 @@ const FRAMEWORK_LABELS = { react: "React", angular: "Angular" }
  */
 const MIN_SYSTEM_TOKENS = 8
 const MIN_SINGLE_AXIS_TOKENS = 24
-
-function badRequest(message, statusCode = 400) {
-  const error = new Error(message)
-  error.statusCode = statusCode
-  return error
-}
-
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
-}
 
 /** A catalog with nothing in it: what a source that cannot be read contributes. */
 function emptyCatalog(name) {
@@ -506,10 +500,7 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
   async function writeEntries(entries) {
     await fs.mkdir(storeDir, { recursive: true })
     await keepUnreadable(librariesFile)
-    const temp = `${librariesFile}.${process.pid}.tmp`
-    const payload = { libraries: entries }
-    await fs.writeFile(temp, `${JSON.stringify(payload, null, 2)}\n`, "utf8")
-    await fs.rename(temp, librariesFile)
+    await writeFileAtomicAsync(librariesFile, `${JSON.stringify({ libraries: entries }, null, 2)}\n`)
   }
 
   /**

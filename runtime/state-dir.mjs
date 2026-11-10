@@ -13,9 +13,10 @@
  * A leaf: it imports nothing of this package, so any store can import it
  * without pulling another store in for a path.
  *
- * `server/file-io.mjs` has a second atomic writer for files inside a project.
- * The two do the same thing for different callers; when one owner takes both,
- * this one is the model (unique temp name per write, temp removed on failure).
+ * The writer is the package's only temp-and-rename: the server's stores (the
+ * options file, a control default's source, the lint ignore list, the library
+ * list and credentials) and the desk's tab file import it from here too, so a
+ * fix to how a reader is protected lands everywhere at once.
  */
 
 import crypto from "node:crypto"
@@ -33,22 +34,33 @@ export function stateRoot() {
   return path.join(os.homedir(), ".local", "state", "designlayer")
 }
 
+/*
+ * Beside the target, so the rename stays on one file system. Unique per write,
+ * not only per process, because one process can write the same file twice
+ * before the first rename lands. A dotfile ending in `.tmp`, so a reader that
+ * lists `*.json` never parses it and a dev server watching a project folder
+ * (a control default rewrites a component's source) does not see a new module.
+ */
+function temporaryFor(file) {
+  return path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`)
+}
+
 /**
  * Writes `text` to `file` so that a reader sees the old file or the new one,
  * never half of either: written beside it under a temp name and renamed over
- * it. The temp name is unique per write, not only per process, because one
- * process can write the same file twice before the first rename lands, and it
- * ends in `.tmp`, so a reader that lists `*.json` never parses it.
+ * it. Creates the folder first. `mode` applies to the temp file at creation,
+ * before it holds any content, which is how a credential file is never
+ * readable by anyone else for even a moment.
  *
  * Throws what the file system threw, after removing the temp file. Every store
- * here treats a failed write as a lost memory rather than a failed launch, so
- * each catches; the endpoint file catches to print why.
+ * in `runtime/` treats a failed write as a lost memory rather than a failed
+ * launch, so each catches; the endpoint file catches to print why.
  */
-export function writeFileAtomic(file, text) {
-  const temp = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`
+export function writeFileAtomic(file, text, { mode } = {}) {
+  const temp = temporaryFor(file)
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(temp, text, "utf8")
+    fs.writeFileSync(temp, text, mode === undefined ? "utf8" : { encoding: "utf8", mode })
     fs.renameSync(temp, file)
   } catch (error) {
     try {
@@ -56,6 +68,19 @@ export function writeFileAtomic(file, text) {
     } catch {
       /* nothing else to try */
     }
+    throw error
+  }
+}
+
+/** `writeFileAtomic` for a caller on the server's request path, which must not block. */
+export async function writeFileAtomicAsync(file, text, { mode } = {}) {
+  const temp = temporaryFor(file)
+  try {
+    await fs.promises.mkdir(path.dirname(file), { recursive: true })
+    await fs.promises.writeFile(temp, text, mode === undefined ? "utf8" : { encoding: "utf8", mode })
+    await fs.promises.rename(temp, file)
+  } catch (error) {
+    await fs.promises.rm(temp, { force: true }).catch(() => {})
     throw error
   }
 }

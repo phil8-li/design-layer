@@ -55,7 +55,7 @@ export const BOARD_HANDOFF_MS = 160
  * the camera tween (`boardEase` in `board/camera`) are built from one source.
  */
 export const BOARD_EASE_POINTS = [0.22, 1, 0.36, 1] as const
-export const BOARD_EASE = `cubic-bezier(${BOARD_EASE_POINTS.join(", ")})`
+const BOARD_EASE = `cubic-bezier(${BOARD_EASE_POINTS.join(", ")})`
 /** How long one frame takes to arrive on an opening board; `ENTERING_MS` in `board/index` adds the stagger. */
 export const BOARD_FRAME_IN_MS = 420
 
@@ -351,7 +351,7 @@ html.de-vt-fade::view-transition-new(root) { animation-duration: ${BOARD_FADE_MS
 }
 `
 
-export interface BoardTransitionGeometry {
+interface BoardTransitionGeometry {
   /** Panel insets: the canvas rect is the viewport less these. */
   left: number
   right: number

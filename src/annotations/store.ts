@@ -18,7 +18,7 @@
  * eventually disagree about one session.
  */
 
-import { adoptUnscoped, appScopedKey, readScoped, writeScoped } from "../core/app-scope"
+import { adoptUnscoped, appScopedKey, readStored, writeStored } from "../core/app-scope"
 import {
   DEFAULT_SETTINGS,
   type AnnotationRecord,
@@ -195,7 +195,7 @@ function loadSettings(): void {
   if (settingsLoaded) return
   settingsLoaded = true
 
-  const rawSettings = readScoped(SETTINGS_KEY)
+  const rawSettings = readStored(SETTINGS_KEY)
   if (rawSettings) {
     try {
       const parsed = JSON.parse(rawSettings) as Partial<AnnotationSettings>
@@ -267,7 +267,7 @@ function notesForPage(): boolean {
   // for reasons written out at its own definition.
   adoptUnscoped(legacyStorageKey(), key)
 
-  const raw = readScoped(key)
+  const raw = readStored(key)
   if (!raw) return moved
   try {
     const parsed: unknown = JSON.parse(raw)
@@ -317,7 +317,7 @@ function persist(): void {
   // choke on: a DOM node in the payload throws a cyclic-structure error, which
   // would take the whole write down and lose the notes that CAN be stored.
   const portable = notes.map(({ element: _element, ...rest }) => rest)
-  writeScoped(notesKey ?? storageKey(), JSON.stringify(portable))
+  writeStored(notesKey ?? storageKey(), JSON.stringify(portable))
 }
 
 /** Every note for this page, oldest first. */
@@ -457,6 +457,7 @@ export function markNotesSent(ids: Iterable<string>, at: string, changeId: strin
   announce()
 }
 
+// Exported for test/annotation-cases.mjs, history-cases, layer-header-cases and toolbar-cases.
 export function clearAnnotations(): void {
   load()
   if (!notes.length) return
@@ -477,7 +478,7 @@ export function updateSettings(patch: Partial<AnnotationSettings>): void {
   // `hideUntilRestart` is written out with the rest and filtered on read, which
   // is cheaper than maintaining a second key and cannot drift out of sync with
   // it. `load()` forces it back to false.
-  writeScoped(SETTINGS_KEY, JSON.stringify(next))
+  writeStored(SETTINGS_KEY, JSON.stringify(next))
   announceSettings()
   // The marker layer reads BOTH — colour and visibility live in settings, and
   // nothing else would tell it to repaint.

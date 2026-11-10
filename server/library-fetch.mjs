@@ -52,7 +52,7 @@ export const DEFAULT_TIMEOUT_MS = 15000
  * however much the server sends. Reading the whole body and slicing it after —
  * which is what this did — bounded nothing, and counted UTF-16 units besides.
  */
-export const MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 const MAX_REDIRECTS = 5
 
 const ACCEPT = "application/json, text/html;q=0.9, */*;q=0.1"

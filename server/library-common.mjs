@@ -1,5 +1,6 @@
 /**
- * The handful of helpers every library reader and the host manifest share.
+ * The handful of helpers every library reader and the host manifest share;
+ * `isPlainObject` also serves the companion, icon-set and app-switch readers.
  *
  * Each of these used to be written again in every module that needed it, and
  * the copies were the kind that drift: a component found over HTTP, one read

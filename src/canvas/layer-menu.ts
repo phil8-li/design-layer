@@ -35,11 +35,10 @@ import { icon } from "../core/icons"
 import { shortcutText } from "../core/keymap"
 import { playExit } from "../core/motion"
 import { getResolver, toSelectable } from "../core/resolve"
-import { editorStandDownChanged, isLocked, selectionOwnsInput } from "../core/store"
+import { activeScope, editorStandDownChanged, isLocked, selectionOwnsInput, setScope } from "../core/store"
 import { tokens } from "../core/tokens"
 import type { EditorContext } from "../core/context"
 import type { LayerElement } from "../core/types"
-import type { ScopeAccess } from "./index"
 import { matchingLayers } from "./matching"
 
 /** Deeper than this the stack is layout wrappers, and the menu is a wall of divs. */
@@ -64,7 +63,7 @@ function hasAutoLayout(element: Element): boolean {
 
 type MenuState = "closed" | "open" | "submenu"
 
-export function installLayerMenu(context: EditorContext, scope: ScopeAccess): void {
+export function installLayerMenu(context: EditorContext): void {
   const resolver = getResolver(context.bridge)
   const submenu = el("div", {
     class: "de-layer-menu de-ctx-submenu",
@@ -181,7 +180,7 @@ export function installLayerMenu(context: EditorContext, scope: ScopeAccess): vo
       context.selectMany([target])
       // Picking out of the stack is an explicit depth choice, so the scope
       // follows it and the next plain click stays at that level.
-      scope.setScope(resolver.layerParent(target))
+      setScope(resolver.layerParent(target))
     })
     return node
   }
@@ -414,7 +413,7 @@ export function installLayerMenu(context: EditorContext, scope: ScopeAccess): vo
     const overSelection =
       onHandle ||
       context.getState().selection.some((entry) => entry.element === hit || entry.element.contains(hit))
-    const target = overSelection ? null : resolver.resolve(hit, scope.activeScope())
+    const target = overSelection ? null : resolver.resolve(hit, activeScope())
     const selecting = Boolean(target && !isLocked(target))
     if (target && selecting) context.selectMany([target])
 

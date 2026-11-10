@@ -21,7 +21,7 @@ import { el } from "../../core/dom"
 import { CODE_VIEWS, codeText, elementCode } from "../../core/element-code"
 import { focusControl } from "../../core/focus"
 import { icon, type IconName } from "../../core/icons"
-import { SHORTCUTS, chordLabel } from "../../core/keymap"
+import { shortcutText } from "../../core/keymap"
 import { getResolver } from "../../core/resolve"
 import { tokens } from "../../core/tokens"
 import type { Selection } from "../../core/types"
@@ -65,11 +65,6 @@ export function layerKind(context: Pick<SectionContext, "editor" | "selection" |
   if (componentName) return { label: componentName, component: true }
   const kind = layerKindOf(element, false, null)
   return { label: kind === "component" ? element.tagName.toLowerCase() : KIND_LABEL[kind], component: false }
-}
-
-function shortcutText(command: string): string {
-  const shortcut = SHORTCUTS.find((entry) => entry.command === command)
-  return shortcut ? chordLabel(shortcut.chord) : ""
 }
 
 function sourcePath(selection: Selection): string | null {

@@ -13,7 +13,7 @@
  * when none of them is, is `null`: mixed, not silently the default.
  */
 
-export interface VariantOption {
+interface VariantOption {
   name: string
   /** The classes this option contributes. Empty for an option that adds none. */
   classes: string[]

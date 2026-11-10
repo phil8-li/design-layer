@@ -281,7 +281,7 @@ function contains(boundary, target) {
  * (`@import "tailwindcss/preflight.css"`) resolves to a path that does not
  * exist beside the entry and falls out at the read.
  */
-export function importedStylesheetFiles(entryAbsolute, text, boundary) {
+function importedStylesheetFiles(entryAbsolute, text, boundary) {
   const directory = path.dirname(entryAbsolute)
   const imported = []
   const seen = new Set()

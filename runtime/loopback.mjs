@@ -1,27 +1,20 @@
 /**
- * The loopback guard every DesignLayer route and the MCP endpoint apply.
+ * The loopback guard every DesignLayer server applies: the editor's routes,
+ * the MCP endpoint, the start screen and the Mac app's desk.
  *
- * A leaf module so the MCP control can default to it without importing the
+ * Three copies of it used to exist (here in `server/`, in
+ * `runtime/start-screen.mjs` and in `desktop/mac/desk-server.mjs`), each
+ * kept because importing `server/routes.mjs` would have built the whole editor
+ * server. It lives in `runtime/` and imports only `chooser-url.mjs`, another
+ * leaf, so the start screen and the desk can take it without pulling in a
+ * server module, and the MCP control can default to it without importing the
  * route table that imports the control. `routes.mjs` re-exports it under the
  * name callers already use.
  */
 
+import { isLoopbackHost } from "./chooser-url.mjs"
+
 const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"])
-
-function hostnameOf(value) {
-  if (typeof value !== "string" || value.length === 0) return ""
-  try {
-    const url = new URL(value.includes("://") ? value : `http://${value}`)
-    return url.hostname.replace(/^\[|\]$/g, "")
-  } catch {
-    return ""
-  }
-}
-
-function isLoopbackHost(value) {
-  const host = hostnameOf(value)
-  return host === "localhost" || host === "127.0.0.1" || host === "::1"
-}
 
 /**
  * `"null"` is NOT an exemption. It is the Origin a sandboxed iframe, a

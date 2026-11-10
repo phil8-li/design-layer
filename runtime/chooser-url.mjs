@@ -10,9 +10,9 @@
  * environment read and the loopback check, and two copies is how one of them
  * comes to accept an origin the other refuses.
  *
- * It imports nothing, so the loopback rule here can be the Node side's only
- * one: `server/routes.mjs` and `runtime/start-screen.mjs` each still keep a
- * copy of `isLoopbackHost`, and both can import it from here instead.
+ * It imports nothing, so the loopback rule here is the Node side's only one:
+ * `runtime/loopback.mjs` (the request guard every server applies), the start
+ * screen and the Mac app's desk all import it from here.
  */
 
 /** Whether a full origin or URL names a loopback host. */

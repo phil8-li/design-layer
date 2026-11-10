@@ -47,11 +47,11 @@
  * changes are about to belong to another process.
  */
 
-export const CHANGE_STATUSES = Object.freeze(["pending", "resolved", "rejected"])
+const CHANGE_STATUSES = Object.freeze(["pending", "resolved", "rejected"])
 export const RESOLUTIONS = Object.freeze(["applied", "rejected"])
 /** What `list_changes` accepts: a status, or "all". */
 export const STATUS_FILTERS = Object.freeze([...CHANGE_STATUSES, "all"])
-export const ENDPOINT_STATES = Object.freeze(["never-bound", "listening", "draining", "stopped"])
+const ENDPOINT_STATES = Object.freeze(["never-bound", "listening", "draining", "stopped"])
 
 const [PENDING, RESOLVED, REJECTED] = CHANGE_STATUSES
 

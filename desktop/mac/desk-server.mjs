@@ -27,6 +27,9 @@ import { DEFAULT_DESK_PORT } from "../../runtime/mac-desk.mjs"
 import { PREFERRED_START_SCREEN_PORT } from "../../runtime/start-screen.mjs"
 import { appName } from "../../runtime/app-name.mjs"
 import { lastPage } from "../../runtime/last-pages.mjs"
+import { isLoopbackHost } from "../../runtime/chooser-url.mjs"
+import { isLocalRequest } from "../../runtime/loopback.mjs"
+import { writeFileAtomic } from "../../runtime/state-dir.mjs"
 import { currentCommit } from "../../runtime/updater.mjs"
 import {
   APP_FEATURES,
@@ -48,39 +51,12 @@ const LOOPBACK = "127.0.0.1"
 // editors it frames are on localhost (runtime/launcher.mjs, BROWSER_HOST), and
 // a frame on another site gets no SameSite=Lax cookie and partitioned storage.
 const DESK_HOST = "localhost"
-const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"])
 const ICONS = new Map([
   ["/icons/icon-192.png", ["icon-192.png", "image/png"]],
   ["/icons/icon-512.png", ["icon-512.png", "image/png"]],
   ["/icons/icon-maskable-512.png", ["icon-maskable-512.png", "image/png"]],
   ["/icons/mark.svg", ["mark.svg", "image/svg+xml"]],
 ])
-
-/*
- * The same rule as server/routes.mjs `isLocalRequest`, including refusing
- * Origin "null". A copy, not an import: routes.mjs brings the whole editor
- * server (config, libraries, source writers) with it, and the desk is served
- * by a LaunchAgent from a checkout people edit, so it imports as little as it
- * can. Keep the two in step until the rule has a module of its own.
- */
-function isLoopbackHost(value) {
-  if (typeof value !== "string" || value.length === 0) return false
-  let host
-  try {
-    host = new URL(value.includes("://") ? value : `http://${value}`).hostname.replace(/^\[|\]$/g, "")
-  } catch {
-    return false
-  }
-  return host === "localhost" || host === "127.0.0.1" || host === "::1"
-}
-
-function isLocalRequest(req) {
-  if (!LOOPBACK_ADDRESSES.has(req.socket?.remoteAddress ?? "")) return false
-  if (!isLoopbackHost(req.headers.host)) return false
-  const origin = req.headers.origin
-  if (origin !== undefined && !isLoopbackHost(origin)) return false
-  return true
-}
 
 export function manifest() {
   return {
@@ -558,9 +534,7 @@ const WINDOW_ID = /^(main|w[a-z0-9]{1,24})$/
  */
 /** Written whole, then renamed: a desk stopped mid-write leaves the last copy. */
 function writeJsonAtomic(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(`${file}.tmp`, JSON.stringify(value))
-  fs.renameSync(`${file}.tmp`, file)
+  writeFileAtomic(file, JSON.stringify(value))
 }
 
 function createTabStore(file) {

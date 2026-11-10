@@ -12,7 +12,7 @@
 import fs from "node:fs"
 import path from "node:path"
 
-export const CONFIG_FILE_NAMES = [
+const CONFIG_FILE_NAMES = [
   "designlayer.config.mjs",
   "designlayer.config.js",
 ]

@@ -78,8 +78,11 @@ export function appScopedKey(prefix: string): string {
  * because a note could not be written down would trade a whole feature for its
  * persistence, so a failed write is work that lives until reload and a failed
  * read is an empty list.
+ *
+ * `readStored`/`writeStored` take a key as given, scoped or not: the chooser
+ * stores an unscoped key through them, and the key, not the call, says which.
  */
-export function readScoped(key: string): string | null {
+export function readStored(key: string): string | null {
   try {
     return window.localStorage.getItem(key)
   } catch {
@@ -87,7 +90,7 @@ export function readScoped(key: string): string | null {
   }
 }
 
-export function writeScoped(key: string, value: string): void {
+export function writeStored(key: string, value: string): void {
   try {
     window.localStorage.setItem(key, value)
   } catch {
@@ -180,7 +183,7 @@ function readMeta(): Record<string, number> {
 
 function writeMeta(meta: Record<string, number>): void {
   const tombstones = Object.keys(meta)
-    .filter((key) => readScoped(key) === null)
+    .filter((key) => readStored(key) === null)
     .sort((a, b) => meta[a] - meta[b])
   for (const key of tombstones.slice(0, Math.max(0, tombstones.length - MAX_TOMBSTONES))) {
     delete meta[key]
@@ -362,7 +365,7 @@ export async function hydrateScoped(wait = HYDRATE_WAIT): Promise<void> {
   const upload: StorageEntry[] = []
 
   for (const key of new Set([...localSyncedKeys(), ...Object.keys(meta).filter(isSyncedKey)])) {
-    const local = readScoped(key)
+    const local = readStored(key)
     const theirs = server.get(key)
     const at = meta[key]
     if (at === undefined) {
@@ -404,7 +407,7 @@ export async function hydrateScoped(wait = HYDRATE_WAIT): Promise<void> {
   if (upload.length > 0) void flushScoped()
 }
 
-// The raw writes hydration uses: writing through `writeScoped` would record a
+// The raw writes hydration uses: writing through `writeStored` would record a
 // server entry as a fresh change and send it straight back.
 function setLocal(key: string, value: string): void {
   try {
@@ -437,9 +440,9 @@ function removeLocal(key: string): void {
  * scope was added to stop.
  */
 export function adoptUnscoped(legacyKey: string, scopedKey: string): void {
-  if (readScoped(scopedKey) !== null) return
-  const legacy = readScoped(legacyKey)
+  if (readStored(scopedKey) !== null) return
+  const legacy = readStored(legacyKey)
   if (legacy === null) return
-  writeScoped(scopedKey, legacy)
+  writeStored(scopedKey, legacy)
   dropScoped(legacyKey)
 }

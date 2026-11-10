@@ -42,7 +42,7 @@ export const MAX_VALUE_LENGTH = 256 * 1024
 // The total kept on disk. Past it, the entries written longest ago go first,
 // which drops the apps nobody has opened in the longest time.
 export const MAX_TOTAL_BYTES = 8 * 1024 * 1024
-export const MAX_STORED_ENTRIES = 2000
+const MAX_STORED_ENTRIES = 2000
 
 export function storageDir() {
   return path.join(stateRoot(), "storage")
