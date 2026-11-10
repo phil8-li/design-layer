@@ -80,6 +80,9 @@ let settingsLoaded = false
  *   null   --first read-------------> key(A)
  *   key(A) --read/write on A---------> key(A)
  *   key(A) --read/write on B (route)-> key(B)   (A's notes stay filed under A)
+ *
+ * An undo step or a send that started on A carries key(A) (`notesPageKey`), and
+ * its later write goes to A's stored list whichever page is on screen by then.
  */
 let notesKey: string | null = null
 
@@ -259,32 +262,34 @@ function notesForPage(): boolean {
   if (key === notesKey) return false
   const moved = notesKey !== null
   notesKey = key
-  notes = []
   // Whatever an older build left under the unscoped key belongs to somebody, and
   // nothing asks for that key any more. Moved here, before the read, so the
   // first load of the new build finds it: `adoptUnscoped` is a move rather than
   // a copy and refuses to run once this app's bucket has anything in it, both
   // for reasons written out at its own definition.
   adoptUnscoped(legacyStorageKey(), key)
+  notes = readNotes(key)
+  return moved
+}
 
+/** The notes stored under `key`, through the shape and retention filters. */
+function readNotes(key: string): AnnotationRecord[] {
   const raw = readStored(key)
-  if (!raw) return moved
+  if (!raw) return []
   try {
     const parsed: unknown = JSON.parse(raw)
-    if (Array.isArray(parsed)) {
-      // Shape first, age second. `withinRetention` reads `createdAt` off a
-      // record this function has not yet established IS a record, and the
-      // painter downstream reads `rect` off it every frame — so the filter that
-      // decides what a note IS has to run before anything reads a field.
-      notes = parsed
-        .filter(isStoredNote)
-        .filter(withinRetention)
-        .map((note) => ({ ...note, element: null }))
-    }
+    if (!Array.isArray(parsed)) return []
+    // Shape first, age second. `withinRetention` reads `createdAt` off a
+    // record this function has not yet established IS a record, and the
+    // painter downstream reads `rect` off it every frame — so the filter that
+    // decides what a note IS has to run before anything reads a field.
+    return parsed
+      .filter(isStoredNote)
+      .filter(withinRetention)
+      .map((note) => ({ ...note, element: null }))
   } catch {
-    notes = []
+    return []
   }
-  return moved
 }
 
 /**
@@ -312,18 +317,62 @@ export function followPage(): void {
   if (notesForPage()) announce()
 }
 
-function persist(): void {
+function writeNotes(key: string, list: AnnotationRecord[]): void {
   // `element` is dropped explicitly rather than left to `JSON.stringify` to
   // choke on: a DOM node in the payload throws a cyclic-structure error, which
   // would take the whole write down and lose the notes that CAN be stored.
-  const portable = notes.map(({ element: _element, ...rest }) => rest)
-  writeStored(notesKey ?? storageKey(), JSON.stringify(portable))
+  const portable = list.map(({ element: _element, ...rest }) => rest)
+  writeStored(key, JSON.stringify(portable))
+}
+
+function persist(): void {
+  writeNotes(notesKey ?? storageKey(), notes)
 }
 
 /** Every note for this page, oldest first. */
 export function annotations(): AnnotationRecord[] {
   load()
   return notes
+}
+
+/**
+ * The key the notes on screen are filed under. An undo step and a send capture
+ * it when they start, because a router's `pushState` can move the document to
+ * another page before they finish: a replay that read the key again then wrote
+ * page A's note into page B's list, and a send stamped and cleared nothing on
+ * the page it carried.
+ */
+export function notesPageKey(): string {
+  load()
+  return notesKey ?? storageKey()
+}
+
+/**
+ * The notes filed under `key`, and how to write them back.
+ *
+ * The page on screen is the live list: written through `persist` and
+ * announced. Any other page is read from storage and written straight back,
+ * unannounced, because nothing on screen shows it; it loads like any page the
+ * next time the document visits it. With no key, the page on screen.
+ */
+function bucket(key?: string): { list: AnnotationRecord[]; save: (next: AnnotationRecord[]) => void } {
+  load()
+  if (key === undefined || key === notesKey) {
+    return {
+      list: notes,
+      save: (next) => {
+        notes = next
+        persist()
+        announce()
+      },
+    }
+  }
+  return { list: readNotes(key), save: (next) => writeNotes(key, next) }
+}
+
+/** The notes filed under `key` (see `notesPageKey`), oldest first. */
+export function annotationsAt(key: string): AnnotationRecord[] {
+  return bucket(key).list
 }
 
 export function onAnnotationsChange(listener: () => void): () => void {
@@ -360,13 +409,11 @@ export function addAnnotation(
   return note
 }
 
-export function updateAnnotation(id: string, patch: Partial<AnnotationRecord>): void {
-  load()
-  const index = notes.findIndex((note) => note.id === id)
-  if (index === -1) return
-  notes = notes.map((note) => (note.id === id ? { ...note, ...patch, id: note.id } : note))
-  persist()
-  announce()
+/** Patch one note. `key` names its page (`notesPageKey`); the page on screen without it. */
+export function updateAnnotation(id: string, patch: Partial<AnnotationRecord>, key?: string): void {
+  const { list, save } = bucket(key)
+  if (!list.some((note) => note.id === id)) return
+  save(list.map((note) => (note.id === id ? { ...note, ...patch, id: note.id } : note)))
 }
 
 /**
@@ -393,14 +440,12 @@ export function updateAnnotation(id: string, patch: Partial<AnnotationRecord>): 
  * reorder a brief the designer is about to hand over: a second edit nobody
  * asked for, made while undoing the first.
  */
-export function removeAnnotation(id: string): { note: AnnotationRecord; index: number } | null {
-  load()
-  const index = notes.findIndex((note) => note.id === id)
+export function removeAnnotation(id: string, key?: string): { note: AnnotationRecord; index: number } | null {
+  const { list, save } = bucket(key)
+  const index = list.findIndex((note) => note.id === id)
   if (index === -1) return null
-  const note = notes[index]
-  notes = [...notes.slice(0, index), ...notes.slice(index + 1)]
-  persist()
-  announce()
+  const note = list[index]
+  save([...list.slice(0, index), ...list.slice(index + 1)])
   return { note, index }
 }
 
@@ -409,14 +454,15 @@ export function removeAnnotation(id: string): { note: AnnotationRecord; index: n
  * Hands back each note with the index it had, oldest first, so restoring them
  * in that order puts every one back where it was.
  */
-export function removeAnnotations(ids: Iterable<string>): Array<{ note: AnnotationRecord; index: number }> {
-  load()
+export function removeAnnotations(
+  ids: Iterable<string>,
+  key?: string
+): Array<{ note: AnnotationRecord; index: number }> {
+  const { list, save } = bucket(key)
   const wanted = new Set(ids)
-  const taken = notes.map((note, index) => ({ note, index })).filter(({ note }) => wanted.has(note.id))
+  const taken = list.map((note, index) => ({ note, index })).filter(({ note }) => wanted.has(note.id))
   if (!taken.length) return taken
-  notes = notes.filter((note) => !wanted.has(note.id))
-  persist()
-  announce()
+  save(list.filter((note) => !wanted.has(note.id)))
   return taken
 }
 
@@ -434,13 +480,11 @@ export function removeAnnotations(ids: Iterable<string>): Array<{ note: Annotati
  * and the whole list can be cleared. A no-op if the id is somehow present
  * again, so that a double-pressed Undo cannot produce two of the same note.
  */
-export function restoreAnnotation(note: AnnotationRecord, index: number): void {
-  load()
-  if (notes.some((existing) => existing.id === note.id)) return
-  const at = Math.max(0, Math.min(index, notes.length))
-  notes = [...notes.slice(0, at), note, ...notes.slice(at)]
-  persist()
-  announce()
+export function restoreAnnotation(note: AnnotationRecord, index: number, key?: string): void {
+  const { list, save } = bucket(key)
+  if (list.some((existing) => existing.id === note.id)) return
+  const at = Math.max(0, Math.min(index, list.length))
+  save([...list.slice(0, at), note, ...list.slice(at)])
 }
 
 /**
@@ -448,13 +492,11 @@ export function restoreAnnotation(note: AnnotationRecord, index: number): void {
  * undo timeline: it records what happened outside the editor, which Cmd+Z
  * cannot take back.
  */
-export function markNotesSent(ids: Iterable<string>, at: string, changeId: string | null): void {
-  load()
+export function markNotesSent(ids: Iterable<string>, at: string, changeId: string | null, key?: string): void {
+  const { list, save } = bucket(key)
   const wanted = new Set(ids)
-  if (!notes.some((note) => wanted.has(note.id))) return
-  notes = notes.map((note) => (wanted.has(note.id) ? { ...note, sentAt: at, sentIn: changeId } : note))
-  persist()
-  announce()
+  if (!list.some((note) => wanted.has(note.id))) return
+  save(list.map((note) => (wanted.has(note.id) ? { ...note, sentAt: at, sentIn: changeId } : note)))
 }
 
 // Exported for test/annotation-cases.mjs, history-cases, layer-header-cases and toolbar-cases.

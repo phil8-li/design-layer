@@ -19,6 +19,11 @@
  * cleared by "Clear on copy" makes the step that pinned it a no-op rather than
  * an error, because `removeAnnotation` answers null for an id it does not hold
  * and `restoreAnnotation` refuses an id already present.
+ *
+ * Every step also carries the page it was taken on (`notesPageKey`). A router's
+ * `pushState` keeps this timeline but moves the notes on screen to another
+ * page, and a replay that asked for "this page" then put /pricing's deleted
+ * note into /settings' list.
  */
 
 import { record, undoStep, type HistoryStep } from "../core/history"
@@ -26,6 +31,7 @@ import {
   addAnnotation,
   annotations,
   removeAnnotation,
+  notesPageKey,
   removeAnnotations,
   restoreAnnotation,
   updateAnnotation,
@@ -35,14 +41,15 @@ import type { AnnotationRecord } from "./types"
 /** Pin a new note. Undo takes it off the page; redo puts back the SAME note. */
 export function pinNote(input: Parameters<typeof addAnnotation>[0]): AnnotationRecord {
   const note = addAnnotation(input)
+  const page = notesPageKey()
   let index = annotations().findIndex((entry) => entry.id === note.id)
   record({
     label: "Pin note",
     undo: () => {
-      const removed = removeAnnotation(note.id)
+      const removed = removeAnnotation(note.id, page)
       if (removed) index = removed.index
     },
-    redo: () => restoreAnnotation(note, index),
+    redo: () => restoreAnnotation(note, index, page),
   })
   return note
 }
@@ -58,11 +65,12 @@ export function rewriteNote(id: string, comment: string): void {
   if (!before || before.comment === comment) return
   const previous = { comment: before.comment, sentAt: before.sentAt, sentIn: before.sentIn }
   const next = { comment, sentAt: undefined, sentIn: undefined }
-  updateAnnotation(id, next)
+  const page = notesPageKey()
+  updateAnnotation(id, next, page)
   record({
     label: "Edit note",
-    undo: () => updateAnnotation(id, previous),
-    redo: () => updateAnnotation(id, next),
+    undo: () => updateAnnotation(id, previous, page),
+    redo: () => updateAnnotation(id, next, page),
   })
 }
 
@@ -76,14 +84,15 @@ export function rewriteNote(id: string, comment: string): void {
 export function deleteNote(
   id: string
 ): { note: AnnotationRecord; index: number; step: HistoryStep } | null {
-  const removed = removeAnnotation(id)
+  const page = notesPageKey()
+  const removed = removeAnnotation(id, page)
   if (!removed) return null
   const { note, index } = removed
   const step = record({
     label: "Delete note",
-    undo: () => restoreAnnotation(note, index),
+    undo: () => restoreAnnotation(note, index, page),
     redo: () => {
-      removeAnnotation(note.id)
+      removeAnnotation(note.id, page)
     },
   })
   return { note, index, step }
@@ -106,18 +115,22 @@ export function clearNotesStep(): { count: number; step: HistoryStep } | null {
 /**
  * Delete the named notes as ONE step, in their order. "Clear on copy or send"
  * comes through here with the ids the brief carried, so a note pinned while the
- * send was in flight stays, and Cmd+Z brings the cleared ones back.
+ * send was in flight stays, and Cmd+Z brings the cleared ones back. `page` is
+ * the page the brief was built on, when the caller captured it before an await.
  */
-export function removeNotesStep(ids: Iterable<string>): { count: number; step: HistoryStep } | null {
-  const taken = removeAnnotations(ids)
+export function removeNotesStep(
+  ids: Iterable<string>,
+  page: string = notesPageKey()
+): { count: number; step: HistoryStep } | null {
+  const taken = removeAnnotations(ids, page)
   if (!taken.length) return null
   const step = record({
     label: taken.length === 1 ? "Delete note" : `Delete ${taken.length} notes`,
     undo: () => {
-      for (const { note, index } of taken) restoreAnnotation(note, index)
+      for (const { note, index } of taken) restoreAnnotation(note, index, page)
     },
     redo: () => {
-      for (const { note } of taken) removeAnnotation(note.id)
+      for (const { note } of taken) removeAnnotation(note.id, page)
     },
   })
   return { count: taken.length, step }

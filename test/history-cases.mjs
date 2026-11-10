@@ -442,6 +442,42 @@ check("a step whose note was cleared by a handover undoes to nothing, not an err
   assert.deepEqual(comments(), ["a"])
 })
 
+/*
+ * A router's `pushState` keeps this timeline but moves the notes on screen to
+ * another page. Every replay used to ask the store for "this page", so Cmd+Z
+ * put /pricing's deleted note into /settings' list, and undoing a pin on
+ * /pricing from /settings did nothing and redo copied the note across.
+ */
+const storedComments = (pathname) =>
+  JSON.parse(window.localStorage.getItem(`designlayer.annotations.app:${pathname}`) ?? "[]").map((n) => n.comment)
+
+check("undo and redo of a note step write to the page it was taken on, after a route change", () => {
+  resetNotes()
+  window.history.pushState({}, "", "/pricing")
+  try {
+    const kept = noteActions.pinNote(noteInput("kept"))
+    const gone = noteActions.pinNote(noteInput("deleted"))
+    noteActions.deleteNote(gone.id)
+    noteActions.rewriteNote(kept.id, "rewritten")
+    window.history.pushState({}, "", "/settings")
+    assert.equal(history.undo(), "Edit note")
+    assert.equal(history.undo(), "Delete note")
+    assert.deepEqual(comments(), [], "/pricing's note landed in /settings' list")
+    assert.deepEqual(storedComments("/settings"), [], "/pricing's note was filed under /settings")
+    assert.deepEqual(storedComments("/pricing"), ["kept", "deleted"], "the undo did not reach /pricing")
+    assert.equal(history.undo(), "Pin note")
+    assert.equal(history.undo(), "Pin note")
+    assert.deepEqual(storedComments("/pricing"), [], "undoing the pins left /pricing's notes")
+    history.redo()
+    assert.deepEqual(storedComments("/pricing"), ["kept"])
+    assert.deepEqual(storedComments("/settings"), [], "redo copied the note onto /settings")
+    window.history.pushState({}, "", "/pricing")
+    assert.deepEqual(comments(), ["kept"], "coming back to /pricing did not find its note")
+  } finally {
+    window.history.pushState({}, "", "/")
+  }
+})
+
 check("the timeline keeps the newest HISTORY_LIMIT steps and drops the oldest", () => {
   history.resetHistory()
   const undone = []
