@@ -23,6 +23,7 @@ import path from "node:path"
 
 import { createMcpHub } from "../runtime/mcp-hub.mjs"
 import { createStartScreen } from "../runtime/start-screen.mjs"
+import { handoffQueue } from "../server/handoff.mjs"
 import { createMcpControl } from "../server/mcp-control.mjs"
 
 let passed = 0
@@ -160,14 +161,14 @@ await check("turning it on ends a parked wait as a timeout, and the session keep
 
 await check("while on, a send lands in the start screen's queue and the panel reads it there", async () => {
   const sent = await control.deliver({ origin: "prompts", prompt: "1 note from DesignLayer", brief: "### a.tsx" })
-  assert.ok(sent.delivered?.id, "the send was not recorded")
-  assert.equal(sent.listening, true)
+  assert.ok(sent.changeId, "the send was not recorded")
+  assert.equal(sent.outcome, "queued", "an endpoint that listens was reported as going nowhere")
   const status = await control.status()
   assert.equal(status.stay, true)
   assert.equal(status.pending, 1)
   assert.equal(status.url, `http://127.0.0.1:${MCP_PORT}/mcp`)
   const listed = await tool(MCP_PORT, session, "list_changes")
-  assert.equal(listed.changes[0].id, sent.delivered.id)
+  assert.equal(listed.changes[0].id, sent.changeId)
 })
 
 await check("turning it off brings the endpoint back with the waiting change, under the same id", async () => {
@@ -299,8 +300,8 @@ await check("a send from each editor reaches the one agent, each naming its proj
   manySession = init.session
   const fromShop = await shop.deliver({ origin: "prompts", prompt: "1 note", projectRoot: "/work/shop", app: "shop" })
   const fromDocs = await docs.deliver({ origin: "prompts", prompt: "1 note", projectRoot: "/work/docs", app: "docs" })
-  assert.ok(fromShop.delivered?.id && fromDocs.delivered?.id, "a send was dropped")
-  assert.equal(fromDocs.listening, true, "the second editor's send was reported as going nowhere")
+  assert.ok(fromShop.changeId && fromDocs.changeId, "a send was dropped")
+  assert.notEqual(fromDocs.outcome, "undelivered", "the second editor's send was reported as going nowhere")
   const listed = await tool(MANY_PORT, manySession, "list_changes")
   assert.deepEqual(
     listed.changes.map((change) => [change.app, change.projectRoot]),
@@ -371,7 +372,8 @@ await check("a supervised editor never binds the port, and reports the start scr
     assert.equal(status.listening, false)
     assert.match(status.reason, /Another program is using port/)
     const sent = await first.deliver({ origin: "prompts", prompt: "1 note" })
-    assert.equal(sent.delivered, null, "a send was promised to an agent nobody serves")
+    assert.equal(sent.outcome, "undelivered", "a send was promised to an agent nobody serves")
+    assert.equal(sent.changeId, null)
   } finally {
     await new Promise((resolve) => squatter.close(resolve))
     await busy.close()
@@ -399,7 +401,7 @@ await check("once the port frees, a status read makes the start screen host and 
     assert.equal((await second.boot()).mode, "hub", "the second editor ended off")
     const fromFirst = await first.deliver({ origin: "prompts", prompt: "1 note", app: "shop" })
     const fromSecond = await second.deliver({ origin: "prompts", prompt: "1 note", app: "docs" })
-    assert.ok(fromFirst.delivered?.id && fromSecond.delivered?.id, "a send was dropped")
+    assert.ok(fromFirst.changeId && fromSecond.changeId, "a send was dropped")
     assert.equal(busy.hub.status().pending, 2)
   } finally {
     if (squatter.listening) await new Promise((resolve) => squatter.close(resolve))
@@ -418,7 +420,7 @@ await check("a send alone is enough to rejoin the start screen", async () => {
     assert.equal((await first.boot()).mode, "off")
     await new Promise((resolve) => squatter.close(resolve))
     const sent = await first.deliver({ origin: "prompts", prompt: "1 note" })
-    assert.ok(sent.delivered?.id, "the send after the port freed went nowhere")
+    assert.ok(sent.changeId, "the send after the port freed went nowhere")
     assert.equal(first.mode, "hub")
     assert.equal(busy.hub.status().pending, 1)
   } finally {
@@ -448,6 +450,168 @@ await check("an editor with no start screen still serves the port itself", async
     assert.equal((await alone.status()).url, `http://127.0.0.1:${alonePort}/mcp`)
   } finally {
     await alone.close()
+  }
+})
+
+/*
+ * The placement is one machine with one writer, and every event waits its
+ * turn on one chain. Before, `setStay` awaited the move in flight once and
+ * then started its own, so a third click ran beside the second; a stale "off"
+ * made the start screen let go while this editor served locally, and the
+ * changes it handed back were dropped.
+ */
+console.log("\nOne move at a time")
+
+/** A start screen that hosts nothing itself and records each /stay it is asked. */
+async function recordingScreen() {
+  const calls = []
+  let inFlight = 0
+  let maxInFlight = 0
+  const listener = http.createServer(async (req, res) => {
+    let text = ""
+    for await (const chunk of req) text += chunk
+    const reply = (payload) => {
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify(payload))
+    }
+    if (req.url === "/api/mcp") return reply({ hosting: false, starting: false, shared: false })
+    const body = JSON.parse(text || "{}")
+    calls.push(body.on)
+    inFlight += 1
+    maxInFlight = Math.max(maxInFlight, inFlight)
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    inFlight -= 1
+    reply(body.on ? { hosting: true } : { handed: [] })
+  })
+  await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve))
+  return {
+    url: `http://127.0.0.1:${listener.address().port}/`,
+    calls,
+    get maxInFlight() {
+      return maxInFlight
+    },
+    close: () => new Promise((resolve) => (listener.closeAllConnections(), listener.close(resolve))),
+  }
+}
+
+await check("three switch clicks from two tabs run one after another", async () => {
+  const fake = await recordingScreen()
+  const movePort = await freePort()
+  const tabs = createMcpControl({ port: movePort, hubUrl: fake.url, token: "t" })
+  try {
+    assert.equal((await tabs.boot()).mode, "local")
+    const results = await Promise.allSettled([tabs.setStay(true), tabs.setStay(false), tabs.setStay(false)])
+    assert.deepEqual(results.map((result) => result.status), ["fulfilled", "fulfilled", "fulfilled"])
+    assert.equal(fake.maxInFlight, 1, "two moves asked the start screen at once")
+    // The third click found the endpoint already here and asked nothing.
+    assert.deepEqual(fake.calls, [true, false])
+    assert.equal(tabs.placement, "local")
+    assert.equal(await portIsOpen(movePort), true)
+  } finally {
+    await tabs.close()
+    await fake.close()
+  }
+})
+
+await check("an off while this editor serves locally does not ask the start screen to let go", async () => {
+  const fake = await recordingScreen()
+  const herePort = await freePort()
+  const here = createMcpControl({ port: herePort, hubUrl: fake.url, token: "t" })
+  try {
+    await here.boot()
+    await here.setStay(false)
+    assert.deepEqual(fake.calls, [], "the start screen was told to let go of a port it did not hold")
+    assert.equal(here.placement, "local")
+  } finally {
+    await here.close()
+    await fake.close()
+  }
+})
+
+await check("a send queued before boot reaches the start screen, under the same id", async () => {
+  const bootPort = await freePort()
+  const early = await hubScreen({ port: bootPort, file: path.join(dir, "early.json") })
+  handoffQueue().clear()
+  try {
+    await early.hub.editorsChanged(1)
+    const late = createMcpControl({ port: bootPort, hubUrl: early.url, token: early.hub.token })
+    // The routes are live before the launcher boots MCP.
+    const sent = await late.deliver({ origin: "prompts", prompt: "1 note", app: "shop" })
+    assert.ok(sent.changeId)
+    assert.equal((await late.boot()).mode, "hub")
+    assert.equal(early.hub.status().pending, 1, "the change sent during boot stayed where no endpoint serves it")
+    const init = await rpc(bootPort, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "agent", version: "1" } },
+    })
+    const listed = await tool(bootPort, init.session, "list_changes")
+    assert.equal(listed.changes[0]?.id, sent.changeId, "the change lost the id the browser was given")
+    assert.equal(handoffQueue().pending().length, 0, "the change was left behind as well as forwarded")
+  } finally {
+    handoffQueue().clear()
+    await early.close()
+  }
+})
+
+await check("closing an editor that serves MCP answers a parked wait before the port closes", async () => {
+  const exitPort = await freePort()
+  const exiting = createMcpControl({ port: exitPort })
+  assert.equal((await exiting.boot()).mode, "local")
+  const parked = tool(exitPort, null, "wait_for_change", { timeoutSeconds: 30 })
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  const start = Date.now()
+  await exiting.close()
+  const answer = await parked
+  assert.ok(Date.now() - start < 2000, "close held the exit for the whole wait")
+  assert.equal(answer.timeout, true, "the parked call was cut instead of answered")
+  assert.equal(answer.reason, "endpoint_closing")
+  assert.equal(await portIsOpen(exitPort), false)
+  assert.equal(exiting.mode, "off")
+})
+
+/*
+ * `letGo` found no server while a bind was in flight, returned, and the bind
+ * then finished: the port stayed served though the setting, the editors and
+ * the screen itself all said off.
+ */
+console.log("\nA bind in flight cannot outlive an off")
+
+await check("closing the start screen during a bind leaves the port closed", async () => {
+  const racePort = await freePort()
+  const closing = await hubScreen({ port: racePort, file: path.join(dir, "closing.json") })
+  const leaving = net.createServer().listen(racePort, "127.0.0.1")
+  await new Promise((resolve) => leaving.once("listening", resolve))
+  const hosting = closing.hub.editorsChanged(1)
+  assert.equal(closing.hub.status().starting, true)
+  await closing.close()
+  await new Promise((resolve) => leaving.close(resolve))
+  await hosting
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  assert.equal(await portIsOpen(racePort), false, "the bind finished after close and served the port")
+  assert.equal(closing.hub.hosting, false)
+})
+
+await check("turning the setting off during a bind leaves the port closed", async () => {
+  const racePort = await freePort()
+  const offFile = path.join(dir, "off.json")
+  const screenOff = await hubScreen({ port: racePort, file: offFile })
+  const leaving = net.createServer().listen(racePort, "127.0.0.1")
+  await new Promise((resolve) => leaving.once("listening", resolve))
+  try {
+    const on = screenOff.hub.stay(true).catch((error) => error)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    await screenOff.hub.stay(false)
+    await new Promise((resolve) => leaving.close(resolve))
+    const outcome = await on
+    assert.ok(outcome instanceof Error, "the switch on reported success after it was turned off")
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.equal(await portIsOpen(racePort), false, "the setting says off and the port is served")
+    assert.equal(JSON.parse(fs.readFileSync(offFile, "utf8")).stayBetweenApps, false)
+  } finally {
+    if (leaving.listening) await new Promise((resolve) => leaving.close(resolve))
+    await screenOff.close()
   }
 })
 

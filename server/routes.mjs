@@ -1,12 +1,18 @@
 /**
- * Design-editor HTTP routes, mounted in front of the Next app by the dev proxy.
+ * Design-editor HTTP routes, mounted in front of the host app by the dev proxy.
  *
  * Everything sits under one configured prefix so the proxy can hand off with a
  * single check, and every route is loopback-only: this process writes project
- * files, so a page on another origin must never be able to reach it.
+ * files, so a page on another origin must never be able to reach it. `handle`
+ * applies both guards before any route runs — the loopback check, and the
+ * JSON content type on anything that changes state (`contentTypeRefusal`) — so
+ * a new branch in `route` inherits them and adds neither.
  *
  * The prefix is the same value the browser reads as `apiBase` from the injected
  * config, so the two halves of the contract cannot drift apart.
+ *
+ * Every dependency a route needs is built once in `createDesignLayerRoutes`
+ * and handed to `route` as one `deps` object; a new one is a new key there.
  */
 
 import { resolveConfig } from "../config.mjs"
@@ -15,22 +21,26 @@ import { createAgent } from "./agent.mjs"
 import { createAngularSource } from "./angular-source.mjs"
 import { createAppSwitcher } from "./apps.mjs"
 import { createComponentUsage } from "./component-usage.mjs"
-import { mcpControl } from "./mcp-control.mjs"
-import { createControlDefaults } from "./control-defaults.mjs"
+import { createControlDefaults, refusingControlDefaults } from "./control-defaults.mjs"
 import { createDesignLint } from "./design-lint.mjs"
+import { httpError } from "./http-error.mjs"
+import { contentTypeRefusal, readBody, sendJson } from "./http-json.mjs"
 import { createIconSet } from "./icon-set.mjs"
 import { createAuthStore } from "./library-auth.mjs"
 import { createBrowserSignIn } from "./library-signin.mjs"
 import { createLibraryStore } from "./libraries.mjs"
 import { fetchLibraryUrl } from "./library-url.mjs"
+import { isLocalRequest } from "./loopback.mjs"
+import { mcpControl } from "./mcp-control.mjs"
 import { createOptionsStore, normalizeOptionSet } from "./options-store.mjs"
 import { createPageCatalog } from "./pages.mjs"
 import { createReactSource } from "./react-source.mjs"
 import { readInsertOperations } from "./source-insert.mjs"
 import { createVariantCatalog } from "./variants.mjs"
 
+export { isLocalRequest }
+
 const MAX_BODY_BYTES = 1024 * 1024
-const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"])
 // Option keys are `Component:line:step/step/…` — `elementKey()` joins up to six
 // DOM steps with `/`, so the separator has to be legal or every real element is
 // refused. The key is only ever an object key in one JSON file, never a path,
@@ -42,69 +52,14 @@ const TRAVERSAL_PATTERN = /(^|\/)\.\.(\/|$)/
 // paths rather than echoing back an id it was handed.
 const LIBRARY_ID_PATTERN = /^[a-z0-9-]{1,200}$/
 
-function badRequest(message, statusCode = 400) {
-  const error = new Error(message)
-  error.statusCode = statusCode
-  return error
-}
+const badRequest = httpError
 
-function hostnameOf(value) {
-  if (typeof value !== "string" || value.length === 0) return ""
-  try {
-    const url = new URL(value.includes("://") ? value : `http://${value}`)
-    return url.hostname.replace(/^\[|\]$/g, "")
-  } catch {
-    return ""
-  }
-}
-
-function isLoopbackHost(value) {
-  const host = hostnameOf(value)
-  return host === "localhost" || host === "127.0.0.1" || host === "::1"
-}
-
-/**
- * `"null"` is NOT an exemption. It is the Origin a sandboxed iframe, a
- * `data:`/`blob:` document, or a redirected cross-origin form sends, and those
- * are precisely the contexts an attacker controls. Treating it as "no origin"
- * let any page reach these routes with a CORS-preflight-free request.
- *
- * A genuinely absent header still passes: curl and the test harness send none,
- * and a non-browser client carries no ambient credentials to abuse.
- *
- * Exported because the MCP endpoint on its own port needs exactly this check —
- * the transport spec requires Origin validation against DNS rebinding, and a
- * second implementation of it is how the two come to disagree about `"null"`.
- */
-export function isLocalRequest(req) {
-  if (!LOOPBACK_ADDRESSES.has(req.socket?.remoteAddress ?? "")) return false
-  if (!isLoopbackHost(req.headers.host)) return false
-  const origin = req.headers.origin
-  if (origin !== undefined && !isLoopbackHost(origin)) return false
-  return true
-}
-
-function sendJson(res, statusCode, payload) {
-  const body = Buffer.from(JSON.stringify(payload))
-  res.writeHead(statusCode, {
-    "content-type": "application/json; charset=utf-8",
-    "content-length": String(body.byteLength),
-    "cache-control": "no-store",
-  })
-  res.end(body)
-}
-
+/** The body as JSON, or null when there is none. */
 async function readJsonBody(req) {
-  const chunks = []
-  let size = 0
-  for await (const chunk of req) {
-    size += chunk.length
-    if (size > MAX_BODY_BYTES) throw badRequest("Request body is too large", 413)
-    chunks.push(chunk)
-  }
-  if (size === 0) return null
+  const text = await readBody(req, MAX_BODY_BYTES)
+  if (text.length === 0) return null
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"))
+    return JSON.parse(text)
   } catch {
     throw badRequest("Request body is not valid JSON")
   }
@@ -159,7 +114,8 @@ function libraryRouteId(segment) {
  * `{ refresh: true }` — this layer checks only that it was handed an object,
  * because every rule about what is IN that object lives one module down.
  */
-function libraryRoutes(libraries, auth, signin, rest, req, res, url, readBody) {
+function libraryRoutes({ libraries, auth, signin }, rest, req, res, url) {
+  const readBody = () => readJsonBody(req)
   if (rest !== "/libraries" && !rest.startsWith("/libraries/")) return null
 
   if (rest === "/libraries" && req.method === "GET") {
@@ -202,7 +158,13 @@ function libraryRoutes(libraries, auth, signin, rest, req, res, url, readBody) {
       const target = String(body?.url ?? "").trim()
       if (!target) throw badRequest("Signing in needs the url that was refused")
 
-      const outcome = await signin.signIn(target)
+      // A panel that gave up (closed, or the person cancelled) closes the
+      // request; the window it opened should not wait four minutes for nobody.
+      const controller = new AbortController()
+      res.on("close", () => {
+        if (!res.writableEnded) controller.abort()
+      })
+      const outcome = await signin.signIn(target, { signal: controller.signal })
       if (!outcome.ok) {
         // Not a 500: a person closing the window, or a provider that grants no
         // reusable session, is an ordinary outcome with a sentence attached.
@@ -353,7 +315,8 @@ function libraryRoutes(libraries, auth, signin, rest, req, res, url, readBody) {
  * store knows what shape of id it minted, and a second opinion about it here
  * would be one more thing to keep in step.
  */
-function lintRoutes(lint, rest, req, res, url, readBody) {
+function lintRoutes({ lint }, rest, req, res, url) {
+  const readBody = () => readJsonBody(req)
   if (rest !== "/lint" && !rest.startsWith("/lint/")) return null
 
   if (rest === "/lint/tools" && req.method === "GET") {
@@ -412,7 +375,8 @@ function controlTarget(searchParams) {
  * which operations landed and which did not, and the vendor's protocol has no
  * verb that answers.
  */
-function angularRoutes(angular, framework, rest, req, res, url, readBody) {
+function angularRoutes({ angular, framework }, rest, req, res, url) {
+  const readBody = () => readJsonBody(req)
   if (!rest.startsWith("/angular/")) return null
   if (framework !== "angular") {
     throw badRequest("This project is not an Angular host", 409)
@@ -498,17 +462,18 @@ async function insertElements(angular, react, framework, body) {
   return angular.apply(operations)
 }
 
-async function route(store, defaults, agent, icons, libraries, auth, signin, lint, variants, pages, usage, apps, angular, react, framework, prefix, mcpPort, req, res, url) {
+async function route(deps, req, res, url) {
+  const { store, defaults, agent, icons, variants, pages, usage, apps, angular, react, framework, prefix, mcpPort } = deps
   const { pathname, searchParams } = url
   const rest = pathname.slice(prefix.length)
 
-  const handled = angularRoutes(angular, framework, rest, req, res, url, () => readJsonBody(req))
+  const handled = angularRoutes(deps, rest, req, res, url)
   if (handled !== null) return handled
 
-  const library = libraryRoutes(libraries, auth, signin, rest, req, res, url, () => readJsonBody(req))
+  const library = libraryRoutes(deps, rest, req, res, url)
   if (library !== null) return library
 
-  const audit = lintRoutes(lint, rest, req, res, url, () => readJsonBody(req))
+  const audit = lintRoutes(deps, rest, req, res, url)
   if (audit !== null) return audit
 
   if (rest === "/source/remove" && req.method === "POST") {
@@ -606,35 +571,27 @@ async function route(store, defaults, agent, icons, libraries, auth, signin, lin
    * refuses a non-JSON content type precisely so a page cannot reach it). So
    * this route relays what the server already knows.
    *
-   * `connected` is latched and `waiting` is not, and the pair is what makes an
-   * honest status line. An agent parked in `wait_for_change` shows as waiting;
-   * an agent that is attached but mid-turn shows as connected-but-not-waiting,
-   * which is a working setup and must not read as a broken one. Reporting only
-   * `waiting` would have the panel flicker to "disconnected" every time the
-   * agent went off to do the work it was just asked for.
+   * The payload is `mcp-control.mjs`'s `status()`, which reports facts that
+   * fail independently, because a designer needs to know which one is missing:
+   * `listening` (the endpoint's port is up; false means nothing can connect
+   * and the address is not worth copying), `agents` (how many MCP clients have
+   * been heard from recently or are parked in a call — not the bound port,
+   * which the panel once read as "connected" and so told every user they were
+   * set up before they were), `waiting` (parked in `wait_for_change` right
+   * now), `pending`, and `stay` / `canStay` / `shared` / `reason` for the "Stay
+   * on between apps" switch. An agent attached but mid-turn counts in `agents`
+   * and not in `waiting`, which is a working setup and must not read as a
+   * broken one.
    *
    * `url` is null when the port never bound — taken, or disabled by config —
    * and the panel says that instead of printing an address nothing answers.
    * The configured port alone is not evidence: a second editor started on the
    * default port logs that it is taken, and printing it anyway pointed the
-   * designer's agent at the FIRST editor's project.
+   * designer's agent at the FIRST editor's project. `mcpPort` is only the
+   * fallback for a process whose launcher never configured the control.
    */
   if (rest === "/mcp/status" && req.method === "GET") {
-    // `mcpPort` is passed in rather than read off a `config` in scope: this
-    // function takes its dependencies as arguments, and the free reference it
-    // replaces threw a ReferenceError on every call — the route answered 500
-    // for its whole life, so the panel could only ever report it unreachable.
-    //
-    // THREE facts, not one, because they fail independently and a designer
-    // needs to know which one is missing. `listening` is the endpoint's port:
-    // false means nothing can ever connect, and the address is not worth
-    // copying. `agents` is how many have actually completed an MCP handshake —
-    // the fact the panel used to get wrong, by reading `listening` and calling
-    // it "connected", which was true from startup and told every user they
-    // were set up when they were not. `waiting` is how many are parked in
-    // `wait_for_change` right now. `stay` says whether the start screen serves
-    // the endpoint, and `canStay` whether this editor has one to ask.
-    sendJson(res, 200, await mcpControl().status(mcpPort ?? null))
+    sendJson(res, 200, await mcpControl().status(mcpPort))
     return
   }
 
@@ -642,7 +599,7 @@ async function route(store, defaults, agent, icons, libraries, auth, signin, lin
   if (rest === "/mcp/stay" && req.method === "POST") {
     const body = (await readJsonBody(req)) ?? {}
     await mcpControl().setStay(body.on === true)
-    sendJson(res, 200, await mcpControl().status(mcpPort ?? null))
+    sendJson(res, 200, await mcpControl().status(mcpPort))
     return
   }
 
@@ -684,18 +641,14 @@ async function route(store, defaults, agent, icons, libraries, auth, signin, lin
   }
 
   // The editor's notes and ledger, kept for the machine rather than for one
-  // browser origin. See runtime/app-storage.mjs. The POST demands a JSON
-  // content type, as the MCP endpoint does, so a page on another origin cannot
-  // send one without a preflight this server never answers.
+  // browser origin. See runtime/app-storage.mjs. Its POST, like every other,
+  // has already passed the JSON content-type rule in `handle`.
   if (rest === "/storage" && req.method === "GET") {
     sendJson(res, 200, { entries: readStorageEntries() })
     return
   }
 
   if (rest === "/storage" && req.method === "POST") {
-    if (!String(req.headers["content-type"] ?? "").toLowerCase().includes("application/json")) {
-      throw badRequest("Content-Type must be application/json", 415)
-    }
     const body = await readJsonBody(req)
     if (!body || !Array.isArray(body.entries)) throw badRequest("Storage POST needs entries")
     sendJson(res, 200, { ok: true, ...mergeStorageEntries(body.entries) })
@@ -710,18 +663,41 @@ async function route(store, defaults, agent, icons, libraries, auth, signin, lin
   throw badRequest(`No designlayer route for ${req.method} ${pathname}`, 404)
 }
 
-/** `config` is the resolved object from `config.mjs`; defaults apply without it. */
-export function createDesignLayerRoutes(config = resolveConfig()) {
+/**
+ * The control-default writer, or one that refuses every request with the
+ * reason it could not be built.
+ *
+ * A `controls.leva.sourceDefaults` path outside the editable roots used to
+ * throw here, and the launcher read the throw as "routes unavailable": one
+ * bad config key took `/agent`, `/mcp/status`, `/storage` and every other
+ * route down with it. It now costs only the route it configures.
+ */
+function controlDefaultsFor(config) {
+  try {
+    return createControlDefaults(config)
+  } catch (error) {
+    const reason = `Source-backed control defaults are off: ${error?.message ?? "the configured file could not be used"}`
+    console.warn(`[designlayer] ${reason}`)
+    return refusingControlDefaults(reason, Number(error?.statusCode) || 500)
+  }
+}
+
+/**
+ * `config` is the resolved object from `config.mjs`; defaults apply without it.
+ * `overrides` replaces a dependency for a suite (today only `signin`, whose
+ * real one opens a browser).
+ */
+export function createDesignLayerRoutes(config = resolveConfig(), overrides = {}) {
   const prefix = config.apiPrefix
   const store = createOptionsStore({ stateDir: config.stateDir })
-  const defaults = createControlDefaults(config)
+  const defaults = controlDefaultsFor(config)
   const agent = createAgent(config)
   const icons = createIconSet(config)
   const auth = createAuthStore(config)
   // The browser that opens a site's own sign-in. Built here beside the store it
   // fills, because the two halves of "signed in to an origin" are the session
   // the provider grants and the credential this editor then reuses.
-  const signin = createBrowserSignIn(config)
+  const signin = overrides.signin ?? createBrowserSignIn(config)
   // The library store looks a credential up per fetch, so a sign-in that
   // happens while the editor is open reaches the very next refresh.
   const libraries = createLibraryStore(
@@ -747,6 +723,25 @@ export function createDesignLayerRoutes(config = resolveConfig()) {
   const angular = createAngularSource(config)
   const react = createReactSource(config)
   const framework = config.host?.framework ?? "react"
+  const deps = {
+    store,
+    defaults,
+    agent,
+    icons,
+    libraries,
+    auth,
+    signin,
+    lint,
+    variants,
+    pages,
+    usage,
+    apps,
+    angular,
+    react,
+    framework,
+    prefix,
+    mcpPort: config.ports?.mcp ?? null,
+  }
 
   return {
     prefix,
@@ -768,10 +763,14 @@ export function createDesignLayerRoutes(config = resolveConfig()) {
         return true
       }
 
-      route(
-        store, defaults, agent, icons, libraries, auth, signin, lint, variants, pages, usage, apps, angular, react,
-        framework, prefix, config.ports?.mcp ?? null, req, res, url
-      ).catch((error) => {
+      // Before any route reads a body. See `contentTypeRefusal`.
+      const refused = contentTypeRefusal(req)
+      if (refused) {
+        sendJson(res, 415, { ok: false, message: refused })
+        return true
+      }
+
+      route(deps, req, res, url).catch((error) => {
         if (res.headersSent) {
           res.end()
           return

@@ -60,20 +60,33 @@ function normalizeIcon(name, raw) {
 
 export function createIconSet(config) {
   const { attribute, data } = config.icons ?? { attribute: "", data: null }
+  /** The parsed set, kept while the data file's `mtimeMs:size` holds. */
   let cache = null
+  let cachedStat = null
 
   return {
     attribute,
     configured: Boolean(data),
 
     /**
-     * Read once. The file is a build input of the host app, so a change to it
-     * restarts the dev server that owns this process anyway.
+     * Read again only when the file changed, by the stat rule the other
+     * server readers use (`createFileCache` in `file-io.mjs`). It used to be
+     * read once on the claim that a change to it restarts this process; the
+     * dev server restarts, and this process (which supervises it) does not,
+     * so an edited set was served stale until the editor restarted.
      */
     read() {
-      if (cache) return cache
       if (!data) {
-        cache = { attribute: "", icons: [] }
+        cache ??= { attribute: "", icons: [] }
+        return cache
+      }
+      let stats = null
+      try {
+        stats = fs.statSync(data)
+      } catch {
+        // Unreadable now: the read below says why.
+      }
+      if (cache && stats && cachedStat && cachedStat.mtimeMs === stats.mtimeMs && cachedStat.size === stats.size) {
         return cache
       }
       let parsed
@@ -92,6 +105,7 @@ export function createIconSet(config) {
       }
       icons.sort((a, b) => a.name.localeCompare(b.name))
       cache = { attribute, icons }
+      cachedStat = stats
       return cache
     },
   }

@@ -197,13 +197,13 @@ function toPosix(value) {
 }
 
 /** Collapses doubled slashes and drops a trailing one, keeping `/` itself. */
-export function normalizeRoutePath(value) {
+function normalizeRoutePath(value) {
   const collapsed = `/${value}`.replace(/\/{2,}/g, "/")
   return collapsed.length > 1 ? collapsed.replace(/\/+$/, "") : collapsed
 }
 
 /** `[id]`, `[...slug]`, `[[...slug]]`, `:id`, and `$id` all name a parameter. */
-export function isDynamicPath(routePath) {
+function isDynamicPath(routePath) {
   return routePath.split("/").some((segment) => /^\[.+\]$/.test(segment) || /^[:$]/.test(segment))
 }
 

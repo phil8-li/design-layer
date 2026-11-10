@@ -22,6 +22,26 @@
  * The setting lives here, in one small file outside any project: it belongs to
  * the machine's start screen, not to an app, and it has to be read before any
  * editor exists.
+ *
+ * ## The machine
+ *
+ * The endpoint is off, binding, hosting, or failed (off with a `reason`).
+ * `host` and `letGo` are its only writers, and each bind carries the
+ * `generation` it started in:
+ *
+ *   off, failed --boot (setting on) | editorsChanged(n > 0)--> binding
+ *   failed      --status() read while editors run-----------> binding
+ *                 (a read with a side effect, on purpose: see `status`)
+ *   binding     --bound, generation still current-----------> hosting
+ *   binding     --bound, a letGo or close came first--------> off (the new server is closed)
+ *   binding     --bind failed-------------------------------> failed(reason)
+ *   hosting     --stay(false), no editors | close-----------> off (pending handed back)
+ *   hosting     --stay(false) with editors------------------> refused, still hosting
+ *   any         --close--------------------------------------> off for good
+ *
+ * Without the generation, a `close` or a stay-off during a bind found no
+ * server to close, and the bind then finished and served a port the setting
+ * and the editors both said was off.
  */
 
 import { randomBytes } from "node:crypto"
@@ -30,7 +50,9 @@ import os from "node:os"
 import path from "node:path"
 
 import { DEFAULT_CONFIG } from "../config.mjs"
+import { writeAtomicSync } from "../server/file-io.mjs"
 import { createHandoffQueue } from "../server/handoff.mjs"
+import { httpError as refusal } from "../server/http-error.mjs"
 import { closeEndpoint, openEndpoint } from "../server/mcp.mjs"
 
 /** Long enough for an editor to let the port go; see `openEndpoint`. */
@@ -39,12 +61,6 @@ const MOVE_RETRY_MS = 1500
 /** Beside the editor registry, in the per-user state this package already keeps. */
 export function mcpSettingsFile() {
   return path.join(os.homedir(), ".local", "state", "designlayer", "mcp.json")
-}
-
-function refusal(message, statusCode) {
-  const error = new Error(message)
-  error.statusCode = statusCode
-  return error
 }
 
 export function createMcpHub({
@@ -56,9 +72,14 @@ export function createMcpHub({
   /** What an editor this start screen spawned shows to use the routes below. */
   const token = randomBytes(24).toString("hex")
   const queue = createHandoffQueue()
+  /** The bound endpoint, or null. Written only by `host` and `letGo`. */
   let server = null
   /** The bind in flight, so two callers never open two servers. */
   let opening = null
+  /** Bumped by every `letGo`; a bind that finishes under an older one closes itself. */
+  let generation = 0
+  /** Set by `close`: this screen is going away, and binds no more. */
+  let closed = false
   /** Live editors (starting or ready), as the start screen last reported. */
   let editors = 0
   /** Why the last bind failed, for an editor to show; null once one succeeds. */
@@ -74,40 +95,55 @@ export function createMcpHub({
 
   function writeSetting(on) {
     try {
-      fs.mkdirSync(path.dirname(file), { recursive: true })
-      fs.writeFileSync(file, `${JSON.stringify({ stayBetweenApps: on })}\n`, "utf8")
+      writeAtomicSync(file, `${JSON.stringify({ stayBetweenApps: on })}\n`)
     } catch (error) {
       log(`[designlayer] could not save the MCP setting (${error.message})`)
     }
   }
 
   async function host(retryMs) {
+    // A bind from before the last `letGo` is finishing only to close itself:
+    // wait it out rather than share its refusal.
+    while (opening && opening.ticket !== generation) await opening.promise.catch(() => {})
     if (server) return
-    if (opening) return opening
-    opening = (async () => {
+    if (closed) throw refusal("The start screen is closing.", 409)
+    if (opening) return opening.promise
+    const ticket = generation
+    const promise = (async () => {
+      let bound
       try {
-        server = await openEndpoint({ queue, isLocalRequest, port, retryMs })
+        bound = await openEndpoint({ queue, isLocalRequest, port, retryMs })
       } catch (error) {
         reason = error?.code === "EADDRINUSE" ? `Another program is using port ${port}.` : error.message
         throw refusal(reason, 409)
       }
+      if (ticket !== generation) {
+        // Turned off, or closed, while the port was being bound.
+        await closeEndpoint(bound, queue)
+        throw refusal("MCP was turned off while it was starting.", 409)
+      }
+      server = bound
       reason = null
       log(`[designlayer] MCP http://127.0.0.1:${port}/mcp — shared by every app you start here`)
     })()
+    opening = { ticket, promise }
     try {
-      await opening
+      await promise
     } finally {
-      opening = null
+      if (opening?.promise === promise) opening = null
     }
   }
 
-  /** Closes the endpoint and hands back the changes still waiting in it. */
+  /** Closes the endpoint, or the bind in flight, and hands back the changes still waiting in it. */
   async function letGo() {
-    const waiting = queue.pending()
-    if (server) await closeEndpoint(server, queue)
+    generation += 1
+    const current = server
     server = null
+    if (current) await closeEndpoint(current, queue)
+    const handed = queue.handOff()
+    // Resolved ones stay with nobody: the agent already finished them.
     queue.clear()
-    return waiting
+    return handed
   }
 
   /**
@@ -121,7 +157,7 @@ export function createMcpHub({
    * for it.
    */
   function status() {
-    if (editors > 0 && !server && !opening) {
+    if (editors > 0 && !server && !opening && !closed) {
       // Not logged: editors read status every few seconds, and `reason` carries it.
       host(0).catch(() => {})
     }
@@ -136,10 +172,7 @@ export function createMcpHub({
       url: server ? `http://127.0.0.1:${port}/mcp` : null,
       port: server ? port : null,
       reason: server ? null : reason,
-      listening: queue.endpointListening,
-      agents: queue.attachedAgents,
-      waiting: queue.waiting,
-      pending: queue.list("pending").length,
+      ...queue.snapshot(),
     }
   }
 
@@ -156,7 +189,7 @@ export function createMcpHub({
       try {
         await host(0)
       } catch (error) {
-        log(`[designlayer] MCP not on between apps (${error.message}) — each editor serves its own`)
+        log(`[designlayer] MCP not on between apps (${error.message}) — the start screen tries again when an app starts`)
       }
     },
 
@@ -182,13 +215,23 @@ export function createMcpHub({
       }
     },
 
-    /** One send from an editor, read and pushed the way `mcp-control` does it locally. */
+    /**
+     * One send from an editor, read and pushed the way `mcp-control` does it
+     * locally. A change that already has an id — one the editor queued before
+     * it knew this screen hosts — keeps it.
+     */
     push(input) {
       if (!server) throw refusal("MCP isn’t on between apps right now.", 409)
       const waiting = queue.waiting
       const listening = queue.endpointListening
-      const entry = queue.push(input)
-      return { id: entry.id, waiting, listening }
+      let id
+      if (typeof input?.id === "string" && input.id && !queue.get(input.id)) {
+        queue.adopt([input])
+        id = input.id
+      } else {
+        id = queue.push(input).id
+      }
+      return { id, waiting, listening }
     },
 
     /**
@@ -216,6 +259,7 @@ export function createMcpHub({
     },
 
     close() {
+      closed = true
       return letGo()
     },
   }

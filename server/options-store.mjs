@@ -13,6 +13,9 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 
+import { writeAtomic } from "./file-io.mjs"
+import { createSerial } from "./serial.mjs"
+
 const MAX_OPTIONS_PER_SET = 40
 const MAX_NAME = 120
 const MAX_VALUE = 2000
@@ -74,16 +77,7 @@ export function normalizeOptionSet(value, key) {
 export function createOptionsStore({ stateDir }) {
   const storeDir = path.resolve(stateDir)
   const optionsFile = path.join(storeDir, "options.json")
-  let queue = Promise.resolve()
-
-  function serial(task) {
-    const run = queue.then(task, task)
-    queue = run.then(
-      () => undefined,
-      () => undefined
-    )
-    return run
-  }
+  const serial = createSerial()
 
   // Null-prototype on EVERY path, including the empty ones: element keys come
   // from the page, and `sets["__proto__"] = value` on a plain object reassigns
@@ -109,11 +103,8 @@ export function createOptionsStore({ stateDir }) {
     return sets
   }
 
-  async function writeFileSets(sets) {
-    await fs.mkdir(storeDir, { recursive: true })
-    const temp = `${optionsFile}.${process.pid}.tmp`
-    await fs.writeFile(temp, `${JSON.stringify(sets, null, 2)}\n`, "utf8")
-    await fs.rename(temp, optionsFile)
+  function writeFileSets(sets) {
+    return writeAtomic(optionsFile, `${JSON.stringify(sets, null, 2)}\n`)
   }
 
   return {
