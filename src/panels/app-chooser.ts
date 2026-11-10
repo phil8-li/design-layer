@@ -861,7 +861,7 @@ export function installAppChooser(
      *
      * The second span is still spelled `--where` after its content stopped
      * being a location, and the rename was skipped on purpose: it is a class
-     * name, it is read by `tools/chrome-demo.mjs` outside this lane's files,
+     * name, it is read by `tools/chrome-demo-scene.js` (via `tools/break.mjs`) outside this lane's files,
      * and a port IS where the app is. The variable says what it holds.
      */
     const nameLine = el("span", { class: "de-app-menu-name" }, [label])

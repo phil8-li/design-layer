@@ -190,7 +190,7 @@ function libraryRoutes({ libraries, auth, signin }, rest, req, res, url) {
 
   /** Whether this machine can open a sign-in window at all, for the panel's offer. */
   if (rest === "/libraries/auth/signin" && req.method === "GET") {
-    return signin.available().then((available) => sendJson(res, 200, { available }))
+    return signin.status().then((status) => sendJson(res, 200, status))
   }
 
   /*
