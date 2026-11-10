@@ -106,26 +106,12 @@ export interface LibraryComponent {
    */
   props?: Array<{ name: string; type?: string; values?: string[]; default?: string }>
   /**
-   * The four fields below are produced by SCANNING a component library on disk,
-   * so a component that arrived from a hand-written manifest carries none of
-   * them. All four are optional for that reason, and a consumer that needs one
-   * has to cope with its absence rather than assume a scanner produced it.
+   * The declaring file, relative to the project root. Produced by SCANNING a
+   * component library on disk (or the story file a catalog names), so a
+   * component from a hand-written manifest has none, and a reader has to cope
+   * with its absence.
    */
-  /** The folder it lives in, title-cased; "" at the library root. */
-  group?: string
-  /** The declaring file, relative to the project root. */
   file?: string
-  /** The identifier to import. "" for a default export, and ALSO "" for a
-   *  component that is declared but never exported — `defaultExport` separates
-   *  the two. */
-  exportName?: string
-  /**
-   * True only for a real default export. The pair `{ exportName: "",
-   * defaultExport: false }` is the third state: declared, never exported, and
-   * therefore not importable — an insertion must write NO import for it rather
-   * than guess a name, which would ship a build error the user cannot see.
-   */
-  defaultExport?: boolean
 }
 
 /**

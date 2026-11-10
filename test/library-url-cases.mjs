@@ -352,7 +352,6 @@ check("a v4 index groups stories by title and keeps the names as variants", () =
   const [avatar, badge] = parsed.components
   assert.equal(avatar.id, "component:primitives-avatar")
   assert.equal(avatar.name, "Avatar")
-  assert.equal(avatar.group, "Primitives")
   assert.equal(avatar.file, "./src/avatar/avatar.stories.ts")
   assert.deepEqual(avatar.props, [
     { name: "Story", type: "variant", values: ["Default", "With image"], default: "Default" },
@@ -503,7 +502,6 @@ check("a component documentation page names one component from its path", () => 
   const component = componentFromPage(DOCS_URL, DOCS_PAGE)
   assert.equal(component.id, "component:split-button")
   assert.equal(component.name, "Split button")
-  assert.equal(component.group, "Components")
   assert.equal(component.description, "Split button: a primary action with a menu of related actions.")
   assert.equal(component.file, DOCS_URL)
 })
@@ -1325,7 +1323,6 @@ await checkAsync("a Ladle meta.json reads as the same catalog a Storybook would"
   const [button, field] = result.catalog.components
   assert.deepEqual(button.props?.[0].values, ["basic", "another"])
   assert.equal(field.name, "text field")
-  assert.equal(field.group, "forms")
   assert.equal(field.file, "src/text-field.stories.tsx")
 })
 

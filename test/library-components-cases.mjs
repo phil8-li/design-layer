@@ -182,8 +182,6 @@ await check("forwardRef, defaultProps and a default export are all understood", 
         card.props.map((prop) => [prop.name, prop.default]),
         [["tone", "quiet"], ["size", "m"]]
       )
-      assert.equal(card.exportName, "Card")
-      assert.equal(card.defaultExport, false)
     }
   )
 })
@@ -197,7 +195,7 @@ await check("two components of one name in two folders keep two ids", async () =
     async (root) => {
       const { components } = await scanComponentLibrary(root)
       assert.deepEqual(components.map((component) => component.id), ["component:card", "component:card-2"])
-      assert.deepEqual(components.map((component) => component.group), ["A", "B"])
+      assert.deepEqual(components.map((component) => component.file), ["a/Card.tsx", "b/Card.tsx"])
     }
   )
 })

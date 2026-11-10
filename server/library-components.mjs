@@ -62,7 +62,6 @@ const MAX_VALUES = 32
 const MAX_TYPE_TEXT = 120
 const MAX_DESCRIPTION = 280
 const MAX_DEFAULT = 120
-const MAX_GROUP = 60
 
 /**
  * How far past a landmark the scanner looks for the thing that should follow
@@ -131,55 +130,16 @@ function truncate(text, limit) {
  * Where a component lives
  * ------------------------------------------------------------------------ */
 
-/** A folder name as a person reads it: `action-bar` becomes `Action Bar`. */
-function titleCase(segment) {
-  return segment
-    .split(/[-_\s]+/)
-    .filter(Boolean)
-    .map((word) => word[0].toUpperCase() + word.slice(1))
-    .join(" ")
-}
-
-/**
- * The group a component is filed under, which is the folder it was found in.
- *
- * This is derived from the directory tree and from nothing else, and the
- * alternative — reading a group out of the component's own name, so that
- * `AvatarStack` files itself under "Avatar" — is the reason the rule is written
- * down rather than left to taste. A name-derived taxonomy disagrees with the
- * folders the author actually made: it invents groups nobody has, splits a
- * folder whose components are named inconsistently, and merges two folders that
- * happen to share a prefix. The folders ARE the library's own answer to "how is
- * this organized", and a browser that shows anything else is showing the user a
- * structure they cannot find again in their editor.
- *
- * Only the folder the file sits in counts, not the whole path to it, because
- * the panel lists one flat level of groups. A file lying directly in the
- * library root has no folder and therefore no group, which the panel reads as
- * "show this library's components without a grouping level at all".
- */
-function groupFor(libraryRoot, file) {
-  const relative = path.relative(libraryRoot, path.dirname(file))
-  if (!relative || relative === "." || relative.startsWith("..")) return ""
-  const segments = relative.split(path.sep).filter((part) => part && part !== ".")
-  if (!segments.length) return ""
-  return truncate(titleCase(segments[segments.length - 1]), MAX_GROUP)
-}
-
 /**
  * The declaring file, spelled the way every other path this server hands out is.
  *
- * Project-relative and POSIX, because this path is not decoration: it is what
- * the insertion writer resolves to find the file an `import` has to point at,
- * and it travels to the browser and back through JSON on the way. An absolute
- * path would leak a machine's directory layout into the client and stop working
- * the moment the project moves; a path relative to the LIBRARY would be
- * meaningless to a writer that only knows where the project starts.
- *
- * A library outside the project root keeps its `..` segments rather than being
- * blanked. Joining that back onto the root still names the right file, which is
- * all the writer needs, and reporting nothing would silently cost the user the
- * import on every component in that library.
+ * Project-relative and POSIX: the inspector shows it under a matched component
+ * and an agent opens it, and it travels to the browser through JSON on the way.
+ * An absolute path would leak a machine's directory layout into the client; a
+ * path relative to the LIBRARY would mean nothing to a reader that only knows
+ * where the project starts. A library outside the project root keeps its `..`
+ * segments rather than being blanked, because joining them back onto the root
+ * still names the right file.
  */
 function projectRelative(projectRoot, file) {
   const relative = path.relative(projectRoot, file)
@@ -720,53 +680,6 @@ function jsDocAbove(comments, code, at) {
 }
 
 /* ------------------------------------------------------------------------ *
- * Exports
- * ------------------------------------------------------------------------ */
-
-/**
- * How a component is spelled at an import, which decides whether inserted
- * markup compiles at all.
- *
- * Every component carries `exportName` and `defaultExport`, and they are a
- * pair: a named export is `("Button", false)`, a default export is `("", true)`
- * and a component that is declared but never exported is `("", false)`. That
- * third state is not a failure to detect anything — it is the honest answer for
- * a class an Angular module declares privately, and the writer has to see it,
- * because the import it would otherwise emit names a symbol the file does not
- * publish and turns a working page into a build error.
- *
- * A file that exports the same component BOTH ways reports the named export.
- * Both imports work, but only one of them keeps working: a default import binds
- * whatever the file happens to default-export today, so it survives a rename
- * silently and starts rendering the wrong component, while a named import fails
- * loudly the moment the name it asks for goes away.
- */
-function isDefaultExport(declaration) {
-  return /\bexport\s+default\b/.test(declaration)
-}
-
-/**
- * Names the file hands out as its default in a statement of their own.
- *
- * `export default Button` at the foot of the file is the other half of the
- * `default` keyword, and the half that is written furthest from the
- * declaration — which is why it is collected for the whole file rather than
- * looked for beside each component.
- */
-function defaultExportNames(code) {
-  const names = new Set()
-  const statements = /(?:^|[\n;}])\s*export\s+default\s+([A-Za-z_$][\w$]*)\s*(?:;|\n|$)/g
-  let match
-  while ((match = statements.exec(code))) names.add(match[1])
-  const lists = /\bexport\s*\{([^}]*)\}/g
-  while ((match = lists.exec(code))) {
-    const alias = /\b([A-Za-z_$][\w$]*)\s+as\s+default\b/.exec(match[1])
-    if (alias) names.add(alias[1])
-  }
-  return names
-}
-
-/* ------------------------------------------------------------------------ *
  * React
  * ------------------------------------------------------------------------ */
 
@@ -932,7 +845,7 @@ function extractReact(code, scratch, comments, types) {
   const found = []
   const named = new Set()
 
-  const build = (name, declStart, headEnd, patternFrom, isDefault) => {
+  const build = (name, declStart, headEnd, patternFrom) => {
     const head = code.slice(declStart, Math.min(code.length, headEnd))
     const propsType = propsTypeFor(name, head, types)
     const props = propsType ? parseProps(types.bodies.get(propsType), types) : []
@@ -956,8 +869,6 @@ function extractReact(code, scratch, comments, types) {
       props,
       description,
       defaults,
-      exportName: isDefault ? "" : name,
-      defaultExport: isDefault,
     })
   }
 
@@ -969,7 +880,7 @@ function extractReact(code, scratch, comments, types) {
     if (named.has(name)) continue
     named.add(name)
     const declStart = match.index + match[0].indexOf("export")
-    build(name, declStart, declStart + FUNCTION_HEAD_WINDOW, match.index + match[0].length - 1, isDefaultExport(match[0]))
+    build(name, declStart, declStart + FUNCTION_HEAD_WINDOW, match.index + match[0].length - 1)
   }
 
   const constants = /(?:^|[\n;}])[ \t]*export\s+(?:default\s+)?(?:const|let|var)\s+([A-Z][\w$]*)\b/g
@@ -980,7 +891,7 @@ function extractReact(code, scratch, comments, types) {
     if (initializer === -1 || !looksLikeComponentInitializer(scratch, initializer)) continue
     named.add(name)
     const declStart = match.index + match[0].indexOf("export")
-    build(name, declStart, initializer + CONST_HEAD_WINDOW, initializer, isDefaultExport(match[0]))
+    build(name, declStart, initializer + CONST_HEAD_WINDOW, initializer)
   }
 
   // A file holding one component and one props type has said everything it
@@ -1228,12 +1139,6 @@ function extractAngular(code, scratch, comments, types) {
     const classMatch = /\bclass\s+([A-Za-z_$][\w$]*)/.exec(code.slice(close, close + CLASS_LOOKAHEAD))
     if (!classMatch) continue
     const classNameEnd = close + classMatch.index + classMatch[0].length
-    // Whatever stands between the decorator and the `class` keyword says how
-    // the class leaves the file. Anchoring at the end tolerates a second
-    // decorator in between without letting that decorator's own words count.
-    const modifiers = code.slice(close + 1, close + classMatch.index)
-    const exported = /\bexport\s+(?:default\s+)?(?:abstract\s+)?$/.test(modifiers)
-    const isDefault = /\bexport\s+default\s+(?:abstract\s+)?$/.test(modifiers)
     const bodyOpen = findBodyBrace(scratch, classNameEnd)
     const bodyClose = bodyOpen === -1 ? -1 : matchBracket(scratch, bodyOpen)
     const classBody = bodyClose === -1 ? "" : code.slice(bodyOpen + 1, bodyClose)
@@ -1248,8 +1153,6 @@ function extractAngular(code, scratch, comments, types) {
       // decorator is what the author writes first.
       description: jsDocAbove(comments, code, match.index),
       snippet: angularSnippet(selector, props),
-      exportName: exported && !isDefault ? classMatch[1] : "",
-      defaultExport: isDefault,
     })
     if (bodyClose !== -1) decorators.lastIndex = Math.max(decorators.lastIndex, bodyClose)
   }
@@ -1264,20 +1167,10 @@ function extractComponents(source) {
   const { code, comments } = maskSource(source)
   const scratch = neutralized(code)
   const types = collectTypeDeclarations(code, scratch)
-  const found = [
+  return [
     ...extractAngular(code, scratch, comments, types),
     ...extractReact(code, scratch, comments, types),
   ]
-
-  // A component the declaration did not show leaving the file may still leave
-  // it from the foot of the file, and only a whole-file look can tell.
-  const defaulted = defaultExportNames(code)
-  for (const entry of found) {
-    if (!entry.exportName && !entry.defaultExport && defaulted.has(entry.name)) {
-      entry.defaultExport = true
-    }
-  }
-  return found
 }
 
 /**
@@ -1370,13 +1263,9 @@ async function collectSourceFiles(root, maxFiles) {
  * therefore wrapped, and an unreadable path resolves to an empty library rather
  * than a failure the caller has to spell an error message for.
  *
- * `projectRoot` is what every reported `file` is measured against, and it is
- * separate from `absDir` because the two answer different questions: the
- * scanned directory is where the library's own structure starts, so it is what
- * a component's GROUP is relative to, while the project is what a path has to
- * be relative to for the client and the insertion writer to resolve it. A
- * caller that does not name a project root gets paths relative to the only root
- * it did name, which is the one honest fallback available — that caller has not
+ * `projectRoot` is what every reported `file` is measured against. A caller
+ * that does not name a project root gets paths relative to the only root it
+ * did name, which is the one honest fallback available — that caller has not
  * told this function a project exists.
  */
 export async function scanComponentLibrary(
@@ -1397,11 +1286,9 @@ export async function scanComponentLibrary(
       : []
   if (stats.isDirectory()) forgetUnseen(absDir, files)
 
-  // A single file is its own library of one, and it has no folder structure
-  // above it to group by — so the root is the directory holding it, which puts
-  // it at that root and leaves its group empty.
-  const libraryRoot = stats.isDirectory() ? absDir : path.dirname(absDir)
-  const root = projectRoot || libraryRoot
+  // A single file is its own library of one, so without a project root its
+  // path is measured from the directory holding it.
+  const root = projectRoot || (stats.isDirectory() ? absDir : path.dirname(absDir))
 
   const components = []
   const ids = new Set()
@@ -1419,7 +1306,6 @@ export async function scanComponentLibrary(
       continue
     }
 
-    const group = groupFor(libraryRoot, file)
     const relative = projectRelative(root, file)
 
     for (const entry of found) {
@@ -1441,15 +1327,7 @@ export async function scanComponentLibrary(
         ...(entry.description ? { description: entry.description } : {}),
         ...(entry.snippet ? { snippet: entry.snippet } : {}),
         ...(entry.props?.length ? { props: entry.props.map(copiedProp) } : {}),
-        // These four are always present, empty string and `false` included. A
-        // browser that groups by a field has to be able to ask every component
-        // for it, and an absent key would make "this component is at the
-        // library root" and "this component was read before groups existed"
-        // the same answer.
-        group,
         file: relative,
-        exportName: entry.exportName ?? "",
-        defaultExport: entry.defaultExport === true,
       })
     }
   }
