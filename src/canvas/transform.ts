@@ -372,8 +372,16 @@ export function installTransform(context: EditorContext, writer: Writer): void {
     // selected descendant can turn the same press into a move gesture.
     if (event.shiftKey) return
     if (!target || isChrome(target)) return
-    if (!current.selection.some((entry) => entry.element.contains(target))) return
-    transition({ kind: "pressed", press: { mode: "move", at: target }, track: trackPointer(event, capture, handlers) })
+    /*
+     * The selected layer, not the node under the pointer, is what the press
+     * holds and captures on. The target is often a child (a label <span>, an
+     * <svg>) that an app replaces on press (an :active icon, a pointerdown
+     * re-render); holding it lost the capture and failed `valid()` for a
+     * layer that never left the page.
+     */
+    const layer = current.selection.find((entry) => entry.element.contains(target))?.element
+    if (!layer) return
+    transition({ kind: "pressed", press: { mode: "move", at: layer }, track: trackPointer(event, layer, handlers) })
   }
 
   const onMove = (event: PointerEvent) => {

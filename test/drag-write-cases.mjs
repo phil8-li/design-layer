@@ -346,6 +346,38 @@ check("DW-20 pressing any member of a multi-selection carries the whole set", ()
   assert.equal(moves().length, 2)
 })
 
+/*
+ * A move press captured `event.target`, often a child (a label <span>, an
+ * <svg>) of the selected layer, and the press counted as valid only while that
+ * child stayed on the page. An app that swaps the child on press (an :active
+ * icon, a pointerdown re-render) then cancelled a drag of a layer that never
+ * left. The press now holds the selected layer itself.
+ */
+check("DW-27 a move press holds the selected layer, so a child the app replaces on press does not cancel the drag", () => {
+  const button = mount('<button class="cta"><span class="label">Buy</span></button>')
+  const label = button.querySelector(".label")
+  reset(selectionFor(button))
+  const proto = window.Element.prototype
+  const had = Object.getOwnPropertyDescriptor(proto, "setPointerCapture")
+  const capturedOn = []
+  proto.setPointerCapture = function capture() {
+    capturedOn.push(this)
+  }
+  try {
+    fire(label, "pointerdown", { clientX: 0, clientY: 0 })
+    assert.deepEqual(capturedOn, [button], "the pointer was captured on the child under it, not the selected layer")
+    // The app re-renders its label on press.
+    label.replaceWith(Object.assign(window.document.createElement("span"), { className: "label", textContent: "Buy" }))
+    fire(button, "pointermove", { clientX: 25, clientY: 0 })
+    fire(button, "pointerup", {})
+    assert.equal(button.style.transform, "translate(25px, 0px)", "the drag was cancelled when the child left")
+    assert.equal(moves().length, 1)
+  } finally {
+    if (had) Object.defineProperty(proto, "setPointerCapture", had)
+    else delete proto.setPointerCapture
+  }
+})
+
 // ── Every way a drag ends early writes nothing ─────────────────────────────
 
 console.log("\nA drag ended early")
