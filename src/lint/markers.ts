@@ -43,43 +43,16 @@
 import { el, isChrome } from "../core/dom"
 import { editorOwnsInput, editorStandDownChanged } from "../core/store"
 import type { EditorContext } from "../core/context"
-import type { LayerElement } from "../core/types"
 import { markerLayer } from "../annotations/store"
 import {
+  LINT_HOVER_EVENT as HOVER_EVENT,
+  LINT_MARKER_HOVER_EVENT as MARKER_HOVER_EVENT,
   lintResolution,
   refreshLintResolution,
+  selectableElement,
   subscribeToLint,
   type LintFinding,
 } from "./store"
-
-/**
- * The seam between the Design system panel and this layer, and it is the SAME
- * seam the notes use.
- *
- * `annotations/canvas.ts` carries the long version of why — two surfaces that
- * are mounted independently, neither owning the other, an import either way
- * making one unusable without the other — and it applies here without a word
- * changed. What differs is only the pair of names, because a lint row and a
- * note row are different objects and one shared event would light a note pin
- * from a finding's id.
- *
- *   `designlayer:lint-hover`         panel -> canvas  `{ id: string | null }`
- *     The pointer is on that finding's row, or has left every row. The badge
- *     carrying that finding takes `MARKER_ACTIVE`.
- *
- *   `designlayer:lint-marker-hover`  canvas -> panel  `{ id, ids }`
- *     The mirror. `id` is the finding the badge speaks for — the worst one on
- *     that element — and `ids` is every finding it covers, because one badge
- *     can stand for several rows and a panel that lit only one of them would be
- *     answering a question nobody asked. A listener written against the
- *     annotation seam's shape still works: `id` alone is the same contract.
- *
- * `null` is a value in the pair rather than a second event, for the reason the
- * annotation seam gives: a listener that only ever hears "now this one" is how
- * a highlight gets stuck on a row nobody is on.
- */
-const HOVER_EVENT = "designlayer:lint-hover"
-const MARKER_HOVER_EVENT = "designlayer:lint-marker-hover"
 
 /** The badge the panel is pointing at. The look belongs to `css/lint-markers`. */
 const MARKER_ACTIVE = "de-lint-marker--active"
@@ -129,13 +102,6 @@ interface Placement {
   top: number
   width: number
   height: number
-}
-
-/** The element a badge's click may select, or `null` for one the editor cannot. */
-function asLayerElement(element: Element): LayerElement | null {
-  if (element instanceof HTMLElement) return element
-  if (element instanceof SVGSVGElement) return element
-  return null
 }
 
 const worst = (finding: LintFinding): number => (finding.severity === "error" ? 1 : 0)
@@ -257,7 +223,7 @@ export function installLintMarkers(context: EditorContext): void {
       event.stopPropagation()
       const mark = drawn[index]
       if (!mark) return
-      const target = asLayerElement(mark.element)
+      const target = selectableElement(mark.element)
       if (target) context.select(target)
     })
     /*

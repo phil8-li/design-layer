@@ -86,8 +86,9 @@ import { icon } from "../core/icons"
 import { tokens } from "../core/tokens"
 import { section, setSectionHint } from "../panels/inspector/field"
 import type { EditorContext } from "../core/context"
-import type { LayerElement } from "../core/types"
 import {
+  LINT_HOVER_EVENT as HOVER_EVENT,
+  LINT_MARKER_HOVER_EVENT as MARKER_HOVER_EVENT,
   elementsForFinding,
   fixFindings,
   ignoreFindings,
@@ -106,6 +107,7 @@ import {
   isOnThisPage,
   markersShown,
   runAudit,
+  selectableElement,
   setMarkersShown,
   subscribeToLint,
   unignoreFindings,
@@ -113,20 +115,6 @@ import {
 } from "./store"
 import { displayLiteral, hintFor, ruleTitle, swatchFor } from "./plain"
 import { formatCount, plural } from "../core/format"
-
-/**
- * The two halves of the row/badge hover pair, named exactly as the marker
- * contract names them.
- *
- * `designlayer:lint-hover`        panel  -> canvas  `{ id: string | null }`
- * `designlayer:lint-marker-hover` canvas -> panel   `{ id: string | null }`
- *
- * `null` is a value in the pair rather than a second event, because the two
- * halves have to be handled by one code path — a listener that only ever hears
- * "now this one" is how a highlight gets stuck on a row nobody is pointing at.
- */
-const HOVER_EVENT = "designlayer:lint-hover"
-const MARKER_HOVER_EVENT = "designlayer:lint-marker-hover"
 
 /** The row the canvas is pointing at. The look belongs to `css/lint.ts`. */
 const ROW_ACTIVE = "de-lint-row--active"
@@ -172,13 +160,6 @@ function basename(finding: LintFinding): string {
 /** Basename and line, as one string — for accessible names and toasts. */
 function where(finding: LintFinding): string {
   return `${basename(finding)}:${finding.line}`
-}
-
-/** Only these two can be selected on the canvas; anything else is listed only. */
-function selectable(element: Element): LayerElement | null {
-  if (element instanceof HTMLElement) return element
-  if (element instanceof SVGSVGElement) return element
-  return null
 }
 
 function announceHover(id: string | null): void {
@@ -387,7 +368,7 @@ export function dsLintSection(editor: EditorContext): { node: HTMLElement; updat
     const element =
       elementsForFinding(finding.id)
         .filter((node) => node.isConnected)
-        .map(selectable)
+        .map(selectableElement)
         .find(Boolean) ?? null
     if (!element) {
       editor.toast(

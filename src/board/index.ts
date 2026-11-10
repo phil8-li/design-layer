@@ -55,6 +55,7 @@ import {
   BOARD_EXIT_MS,
   BOARD_FADE_MS,
   BOARD_FLY_MS,
+  BOARD_FRAME_IN_MS,
   BOARD_HANDOFF_MS,
   boardCss,
   boardEnterCss,
@@ -167,7 +168,7 @@ const STAGGER_MS = 30
 const STAGGER_CAP_MS = 300
 /** On-screen room between rows below which a label keeps only its path line. */
 const COMPACT_LABEL_GAP = 40
-const ENTERING_MS = 420 + STAGGER_CAP_MS
+const ENTERING_MS = BOARD_FRAME_IN_MS + STAGGER_CAP_MS
 /** A server route table this fresh is reused by `open()` instead of asked for again. */
 const PAGES_FRESH_MS = 5000
 /*
@@ -385,12 +386,10 @@ export function installBoard(context: EditorContext): Board {
 
   /* ── geometry ─────────────────────────────────────────────────────────── */
 
+  /** The canvas rect with the panel insets read fresh; `boardSize` uses the last reading. */
   const measureCanvas = (): Size => {
     insets = appInsets()
-    return {
-      width: Math.max(1, window.innerWidth - insets.left - insets.right),
-      height: Math.max(1, window.innerHeight),
-    }
+    return boardSize()
   }
 
   // Custom properties rather than `left`/`right`, because those two are pinned

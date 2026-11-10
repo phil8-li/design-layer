@@ -50,8 +50,14 @@ export const BOARD_FLY_MS = 480
 export const BOARD_FADE_MS = 120
 /** The fade that hands a page over to the live document after a route change. */
 export const BOARD_HANDOFF_MS = 160
-/** The board's curve: fast out, long settle. Matches `boardEase` in `board/camera`. */
-export const BOARD_EASE = "cubic-bezier(0.22, 1, 0.36, 1)"
+/**
+ * The board's curve: fast out, long settle. Four numbers, so the CSS here and
+ * the camera tween (`boardEase` in `board/camera`) are built from one source.
+ */
+export const BOARD_EASE_POINTS = [0.22, 1, 0.36, 1] as const
+export const BOARD_EASE = `cubic-bezier(${BOARD_EASE_POINTS.join(", ")})`
+/** How long one frame takes to arrive on an opening board; `ENTERING_MS` in `board/index` adds the stagger. */
+export const BOARD_FRAME_IN_MS = 420
 
 export const boardCss = `
 /* The box is pinned, not merely set: to every other tool on the page the board
@@ -147,7 +153,7 @@ export const boardCss = `
 .de-board-frame[data-loaded="true"] .de-board-placeholder { visibility: hidden; }
 
 .de-board[data-entering] .de-board-frame:not([data-current="true"]) {
-  animation: de-board-frame-in 420ms ${BOARD_EASE} both;
+  animation: de-board-frame-in ${BOARD_FRAME_IN_MS}ms ${BOARD_EASE} both;
   animation-delay: var(--de-delay, 0ms);
 }
 @keyframes de-board-frame-in {

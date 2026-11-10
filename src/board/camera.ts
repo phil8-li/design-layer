@@ -12,6 +12,8 @@
  * written the other way round.
  */
 
+import { BOARD_EASE_POINTS } from "../core/css/board"
+
 export interface Camera {
   x: number
   y: number
@@ -171,5 +173,5 @@ function cubicBezier(x1: number, y1: number, x2: number, y2: number): (t: number
   }
 }
 
-/** The board's one curve, as CSS and as a function: fast out, long settle. */
-export const boardEase = cubicBezier(0.22, 1, 0.36, 1)
+/** The board's one curve as a function, from the numbers the CSS uses. */
+export const boardEase = cubicBezier(...BOARD_EASE_POINTS)

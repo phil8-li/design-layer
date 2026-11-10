@@ -40,6 +40,7 @@
  */
 
 import { markerLayer, onMarkerLayerChange, setMarkerLayer } from "../annotations/store"
+import type { LayerElement } from "../core/types"
 import { resolveFinding } from "./resolve"
 
 /* ---------- the wire shapes ---------- */
@@ -201,6 +202,45 @@ export function subscribeToLint(fn: () => void): () => void {
  */
 onMarkerLayerChange(notify)
 
+/* ---------- the row/badge hover seam ---------- */
+
+/**
+ * The seam between the Design system panel and the marker layer, and it is the
+ * SAME seam the notes use. Defined here, the module both already import, so
+ * the two ends cannot spell it differently.
+ *
+ * `annotations/canvas.ts` carries the long version of why — two surfaces that
+ * are mounted independently, neither owning the other, an import either way
+ * making one unusable without the other — and it applies here without a word
+ * changed. What differs is only the pair of names, because a lint row and a
+ * note row are different objects and one shared event would light a note pin
+ * from a finding's id.
+ *
+ *   `designlayer:lint-hover`         panel -> canvas  `{ id: string | null }`
+ *     The pointer is on that finding's row, or has left every row. The badge
+ *     carrying that finding takes its active look (`MARKER_ACTIVE` in ./markers).
+ *
+ *   `designlayer:lint-marker-hover`  canvas -> panel  `{ id, ids }`
+ *     The mirror. `id` is the finding the badge speaks for — the worst one on
+ *     that element — and `ids` is every finding it covers, because one badge
+ *     can stand for several rows and a panel that lit only one of them would be
+ *     answering a question nobody asked. A listener written against the
+ *     annotation seam's shape still works: `id` alone is the same contract.
+ *
+ * `null` is a value in the pair rather than a second event, for the reason the
+ * annotation seam gives: a listener that only ever hears "now this one" is how
+ * a highlight gets stuck on a row nobody is on.
+ */
+export const LINT_HOVER_EVENT = "designlayer:lint-hover"
+export const LINT_MARKER_HOVER_EVENT = "designlayer:lint-marker-hover"
+
+/** The element a row or a badge may select on the canvas, or `null` for one that is listed only. */
+export function selectableElement(element: Element): LayerElement | null {
+  if (element instanceof HTMLElement) return element
+  if (element instanceof SVGSVGElement) return element
+  return null
+}
+
 /* ---------- the wire ---------- */
 
 function endpoint(apiBase: string, path = ""): string {
@@ -280,7 +320,7 @@ function buildResolution(): void {
   const resolved: LintPlacement[] = []
   const index = new Map<Element, LintFinding[]>()
   const ids = new Map<string, LintPlacement>()
-  for (const finding of visibleFindings()) {
+  for (const finding of lintFindings()) {
     let elements: Element[] = []
     try {
       elements = resolveFinding(finding)
@@ -408,10 +448,6 @@ function isIgnoredFinding(finding: LintFinding): boolean {
  * simply not what "the findings" means to any surface that paints.
  */
 export function lintFindings(): LintFinding[] {
-  return visibleFindings()
-}
-
-function visibleFindings(): LintFinding[] {
   return findings.filter((finding) => !isIgnoredFinding(finding))
 }
 
@@ -435,7 +471,7 @@ export function lintError(): string | null {
 }
 
 export function lintSummary(): LintSummary {
-  const visible = visibleFindings()
+  const visible = lintFindings()
   return {
     total: visible.length,
     errors: visible.filter((finding) => finding.severity === "error").length,
