@@ -33,6 +33,7 @@ import path from "node:path"
 import { appName } from "./app-name.mjs"
 import { listEditors } from "./editor-registry.mjs"
 import { lastPage } from "./last-pages.mjs"
+import { isLocalRequest } from "./loopback.mjs"
 import { DEFAULT_SCAN_PORTS, describeProject, projectRootForPort, scanLocalApps } from "./local-apps.mjs"
 import {
   badRequest,
@@ -57,7 +58,6 @@ import { startScreenPage } from "./start-screen-page.mjs"
 const http = createRequire(import.meta.url)("node:http")
 
 const LOOPBACK = "127.0.0.1"
-const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"])
 
 /**
  * The port the chooser asks for first.
@@ -81,22 +81,6 @@ const SCAN_REUSE_MS = 3000
 const MAX_ENDED = 50
 /** A moment for the page's next poll to see "updated" before the restart. */
 const RESTART_DELAY_MS = 600
-
-/**
- * Mirrors `isLocalRequest` in server/routes.mjs, including the reason `"null"`
- * is refused: that is the Origin a sandboxed iframe or a `data:`/`blob:`
- * document sends, which are precisely the contexts an attacker controls. A
- * genuinely absent header still passes — curl carries no ambient credentials.
- * Not imported from there: that module builds the options store and the agent,
- * and this server runs before there is a project to build either against.
- */
-function isLocalRequest(req) {
-  if (!LOOPBACK_ADDRESSES.has(req.socket?.remoteAddress ?? "")) return false
-  if (!isLoopbackHost(req.headers.host)) return false
-  const origin = req.headers.origin
-  if (origin !== undefined && !isLoopbackHost(origin)) return false
-  return true
-}
 
 function send(res, statusCode, contentType, payload) {
   const body = Buffer.from(payload)

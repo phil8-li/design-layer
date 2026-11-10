@@ -63,7 +63,7 @@
 
 import { handoffQueue } from "./handoff.mjs"
 import { httpError as refusal } from "../runtime/http-error.mjs"
-import { isLocalRequest as loopbackOnly } from "./loopback.mjs"
+import { isLocalRequest as loopbackOnly } from "../runtime/loopback.mjs"
 import { closeEndpoint, openEndpoint } from "./mcp.mjs"
 import { createSerial } from "./serial.mjs"
 
