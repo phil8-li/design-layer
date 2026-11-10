@@ -1,8 +1,9 @@
 # Contributing to DesignLayer
 
 Thanks for being here. This is a visual editor for a running React or
-Angular dev server: it proxies your app, lets you select an element, and writes
-the change back into the component source. Bug reports, docs fixes, and code are all
+Angular dev server: it proxies your app, lets you select and edit an element,
+and turns the edit into a note your coding agent makes in the component source.
+Bug reports, docs fixes, and code are all
 welcome, and you do not need permission to open an issue or a small PR.
 
 By contributing you agree that your work is licensed under the
@@ -48,17 +49,19 @@ after any change under `src/`:
 npm run build
 ```
 
-`npm run verify` checks that the committed source and the built bundle agree
-and that the CLI's own contract holds. It is the fastest way to find out you
+`npm run verify` checks that the generated files and the built bundle match
+their sources and that the vendor patch still applies. It is the fastest way to find out you
 forgot to rebuild.
 
 ## Running the tests
 
 ```sh
-npm test
+npm test                          # every suite
+node test/run.mjs mcp board       # only suites whose name contains "mcp" or "board"
+node test/delete-cases.mjs        # one suite alone
 ```
 
-A bare clone is green, and this is the part worth reading before you conclude
+[docs/testing.md](docs/testing.md) has the other runner flags. A bare clone is green, and this is the part worth reading before you conclude
 you broke something.
 
 Most suites run against this repository alone. Four of them — `token-cases`,
@@ -85,30 +88,26 @@ Two things follow from that:
   them on asset counts rather than on any contract you broke. That is the
   known trade for having a real host in the net at all.
 
-The suite that needs a throwaway app builds its own:
-
 ```sh
 npm run test:standalone-next
 ```
 
-It packs the package, installs it into a fresh config-free Next app, and
-verifies the proxy and the source-write path in both the App and Pages Routers.
-It is slower and it hits the network, so it is not part of `npm test`.
-
-`test/ui-change-cases.mjs` exercises the live write path against a running
-editor. Its fixtures are throwaway and it restores the one real component it
-touches byte for byte.
+packs the package, installs it into a fresh config-free Next app, and checks
+the proxy and the vendor engine's write protocol in both the App and Pages
+Routers. It reads the Next and React versions from a host app, so it needs one
+(`DESIGNLAYER_HOST` or a sibling `host-app`). It is slower and it hits the
+network, so it is not part of `npm test`.
 
 ## Where things live
 
 [docs/architecture.md](docs/architecture.md#layout) has a `Layout` section that
-names every file and what owns what, and [AGENTS.md](AGENTS.md) has a shorter
+names every file outside `src/` (and `src/` by folder) and what owns what, and [AGENTS.md](AGENTS.md) has a shorter
 map. Read it before adding a file — most changes belong in something that
 already exists. A few load-bearing rules:
 
 - `cli.mjs` owns the argv contract. `config.mjs` owns defaults, discovery, and
   resolution.
-- `runtime/vendor-patch.mjs` holds 31 pinned splices against
+- `runtime/vendor-patch.mjs` holds 31 exact-once splices against
   `react-rewrite-cli@0.1.1`, exactly. If you bump that dependency, the patches
   are the work — the launcher is written to tell the user it could not patch
   rather than to serve a half-patched bundle.
@@ -137,7 +136,7 @@ touched, and not a `feat:`/`fix:` prefix:
 ```
 Open the page you asked for, and never the last app's folder
 Rebuild a bundle that has fallen behind its source, before serving it
-Hand a write that cannot reach source to the Changes tab
+Mark items an earlier send carried, so the agent does not make a move twice
 ```
 
 If there is a body, spend it on why the old behavior was wrong. That is the
@@ -185,9 +184,9 @@ Do not commit `dist/`, `node_modules/`, or anything under `.local/` — the
 
 Open an issue with the version or commit, your OS and Node version, the
 framework (Next.js and which router, Vite, or Angular) and its version, whether Tailwind is v3 or v4, and what
-you expected instead. If the editor showed the change in the Changes tab rather
-than writing it to a file, say so — that is a different failure from silence,
-and it narrows things down fast.
+you expected instead. Say whether the edit showed up as a note in the Changes
+tab: an edit that leaves no note is a different failure, and it narrows things
+down fast.
 
 ## The landing page
 
