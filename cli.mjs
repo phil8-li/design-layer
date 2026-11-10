@@ -478,8 +478,8 @@ async function updateFromTerminal(options) {
  * `transition`:
  *
  *   (none)     --choice arrives-->                     allocating
- *   (none)     --stop arrives before its choice-->     exited   (the choice is dropped when it comes)
- *   allocating --stop, stopAll or killAll-->           exited   (never spawned)
+ *   (none)     --stop arrives before its choice-->     exited   (reported; the choice is dropped when it comes)
+ *   allocating --stop, stopAll or killAll-->           exited   (never spawned; reported to the screen)
  *   allocating --ports found, still wanted-->          running  (the --proxy-port pair is spent here)
  *   running    --stop, replaced, stopAll-->            stopping (ready: IPC {type:"stop"}, SIGTERM after
  *                                                                the ask, SIGKILL after the grace; not
@@ -493,10 +493,11 @@ async function updateFromTerminal(options) {
  * reused, and a record is a few fields.
  *
  * Choices are handled one at a time, so two arriving together cannot be given
- * the same ports before either child has bound them. A choice for an app whose
- * previous editor is still `stopping` (Stop, then Start again before the old
- * process exited) waits for that exit, so the app gets its remembered ports
- * back instead of a second pair while the first is still held.
+ * the same ports before either child has bound them. A choice waits for every
+ * editor still `stopping` on its app port (Stop, then Start again before the
+ * old process exited, from this folder or another), so the app gets its
+ * remembered ports back instead of a second pair while the first is still
+ * held, and two editors never proxy one app port.
  */
 export function runEditors(
   screen,
@@ -524,6 +525,17 @@ export function runEditors(
   }
 
   /*
+   * An editor that ends without ever having a process. The screen still holds
+   * it as `stopping` (a Stop) or `starting`, and only `reportStopped` moves it
+   * to `gone`: without the report it stayed `stopping` for the rest of the
+   * session, and the next choice for its app port named it in `replaces`
+   * instead of the editor that was really still running there.
+   */
+  function drop(record) {
+    if (transition(record, "exited")) screen.reportStopped("", record.id)
+  }
+
+  /*
    * An exit asked for is not news: the screen already holds the reason, or
    * the replacement already took the editor's place.
    *
@@ -533,7 +545,7 @@ export function runEditors(
    * seconds after SIGTERM to close its servers, then SIGKILL.
    */
   function stop(record) {
-    if (record.state === "allocating") transition(record, "exited")
+    if (record.state === "allocating") drop(record)
     if (transition(record, "stopping")) {
       const { child } = record
       const timers = new Set()
@@ -587,17 +599,20 @@ export function runEditors(
   async function start(choice) {
     // A record already there was stopped or replaced while still queued.
     if (editors.has(choice.id) || closing) return
-    const record = { id: choice.id, state: "allocating", app: appKey(choice) }
+    const record = { id: choice.id, state: "allocating", app: appKey(choice), appPort: choice.appPort }
     editors.set(choice.id, record)
 
     const displaced = choice.replaces ? editors.get(choice.replaces) : null
     // Waiting frees the app's old ports and its source writes before the
     // replacement comes up.
     if (displaced) await stop(displaced)
+    // Every editor still stopping on this app port, whatever its folder: the
+    // screen names only one in `replaces`, and two editors must never proxy
+    // one app port at once.
     for (const other of [...editors.values()]) {
-      if (other !== record && other.state === "stopping" && other.app === record.app) await other.gone
+      if (other !== record && other.state === "stopping" && other.appPort === record.appPort) await other.gone
     }
-    if (record.state !== "allocating" || closing) return void transition(record, "exited")
+    if (record.state !== "allocating" || closing) return void drop(record)
 
     const preferred = options.proxyPort
       ? { proxyPort: options.proxyPort, wsPort: options.wsPort ?? options.proxyPort + 1 }
@@ -606,7 +621,7 @@ export function runEditors(
     const ports = await allocatePorts({ projectRoot: choice.projectRoot, appPort: choice.appPort, taken: takenPorts(), preferred, explicit })
     // Stopped from the screen, or the supervisor closing, before it ever had
     // a process.
-    if (record.state !== "allocating" || closing) return void transition(record, "exited")
+    if (record.state !== "allocating" || closing) return void drop(record)
 
     const { child, exited } = startEditor(options, choice, screen, { ports, spawnEditor, log })
     transition(record, "running", { child, ports })
@@ -661,8 +676,11 @@ export function runEditors(
       }
       const record = editors.get(request.id)
       if (record) void stop(record)
-      // Still in the screen's queue: its choice finds this and is dropped.
-      else editors.set(request.id, { id: request.id, state: "exited", app: null })
+      else {
+        // Still in the screen's queue: its choice finds this and is dropped.
+        editors.set(request.id, { id: request.id, state: "exited", app: null, appPort: null })
+        screen.reportStopped("", request.id)
+      }
     }
   }
 
@@ -681,7 +699,7 @@ export function runEditors(
     killAll() {
       closing = true
       for (const record of editors.values()) {
-        if (record.state === "allocating") transition(record, "exited")
+        if (record.state === "allocating") drop(record)
         if (transition(record, "stopping")) record.child.kill("SIGTERM")
       }
     },

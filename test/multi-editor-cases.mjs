@@ -345,6 +345,71 @@ await check("a replaced choice still in the queue is never spawned", async () =>
   }
 })
 
+/*
+ * A stop for an editor that never had a process moved the supervisor's record
+ * to exited and told the screen nothing, so the screen's record stayed
+ * `stopping`. The next choice on that app port then named the dead record in
+ * `replaces`, and the supervisor, which waited only for its own folder's
+ * stopping editor, started a second editor on the port while the first (from
+ * another folder) was still shutting down.
+ */
+await check("a stop before spawn reaches the screen, and a start waits for every editor stopping on its app port", async () => {
+  const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {} })
+  const children = []
+  const asked = []
+  let release
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  const supervisor = runEditors(screen, {
+    log: () => {},
+    stopAskMs: 5000,
+    stopGraceMs: 5000,
+    allocatePorts: async ({ projectRoot, taken }) => {
+      asked.push(projectRoot)
+      if (projectRoot === docs) await gate
+      return { proxyPort: 3456 + taken.length * 2, wsPort: 3457 + taken.length * 2 }
+    },
+    spawnEditor: (argv) => {
+      const child = fakeChild(argv)
+      // The shop editor is slow to go: it exits only when the case says so.
+      if (argv.includes(shop)) child.kill = (signal) => (child.killed = signal)
+      children.push(child)
+      return child
+    },
+  })
+  const press = (url, projectRoot) => post(`${screen.url}/api/start`, { url, projectRoot, devScript: null })
+  const stopEditor = (id) => post(`${screen.url}/api/stop`, { id })
+  try {
+    const first = await press("http://127.0.0.1:4101", shop)
+    await until(() => supervisor.stateOf(first.body.id) === "running", "the shop editor")
+    await press("http://127.0.0.1:4102", docs)
+    await until(() => asked.includes(docs), "the docs choice to hold the queue")
+    await stopEditor(first.body.id)
+    await until(() => supervisor.stateOf(first.body.id) === "stopping", "the shop editor to stop")
+
+    const queued = await press("http://127.0.0.1:4101", shopCopy)
+    await stopEditor(queued.body.id)
+    await until(() => supervisor.stateOf(queued.body.id) === "exited", "the unspawned stop to reach the supervisor")
+
+    const third = await press("http://127.0.0.1:4101", shopCopy)
+    assert.equal(third.body.replaced, first.body.id, "the new choice did not name the editor still stopping on its port")
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.equal(supervisor.stateOf(third.body.id), "allocating", "a second editor started on an app port still held")
+    assert.equal(children.filter((child) => child.argv.includes(shopCopy)).length, 0)
+
+    children[0].emit("exit", null, "SIGTERM")
+    await until(() => supervisor.stateOf(third.body.id) === "running", "the new editor once the old one left")
+  } finally {
+    release()
+    for (const child of children) child.emit("exit", null, "SIGTERM")
+    supervisor.killAll()
+    screen.close()
+    await supervisor.done
+  }
+})
+
 await check("a child that ignores SIGTERM is killed, and the next start goes ahead", async () => {
   const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {} })
   const children = []
@@ -714,6 +779,51 @@ await check("a stop for an editor that already exited cancels nothing", async ()
   await new Promise((resolve) => setTimeout(resolve, 20))
   assert.equal(children.length, 1, "a choice stopped while queued was spawned")
   supervisor.killAll()
+})
+
+await check("a choice from another folder waits for the editor still stopping on its app port", async () => {
+  // `replaces` names one editor at most; the supervisor must not trust it to
+  // name every editor that still holds the app port.
+  const choices = []
+  const stops = []
+  const waiting = { choice: null, stop: null }
+  const queue = (items, key) => () =>
+    items.length ? Promise.resolve(items.shift()) : new Promise((resolve) => (waiting[key] = resolve))
+  const push = (items, key, item) => (waiting[key] ? (waiting[key](item), (waiting[key] = null)) : items.push(item))
+  const screen = {
+    url: "http://127.0.0.1:1",
+    nextChoice: queue(choices, "choice"),
+    nextStop: queue(stops, "stop"),
+    reportReady: () => {},
+    reportStopped: () => {},
+  }
+  const children = []
+  const supervisor = runEditors(screen, {
+    log: () => {},
+    stopAskMs: 5000,
+    stopGraceMs: 5000,
+    allocatePorts: async ({ taken }) => ({ proxyPort: 3456 + taken.length * 2, wsPort: 3457 + taken.length * 2 }),
+    spawnEditor: (argv) => {
+      const child = fakeChild(argv)
+      child.kill = (signal) => (child.killed = signal)
+      children.push(child)
+      return child
+    },
+  })
+  try {
+    push(choices, "choice", { id: "1", appPort: 4101, projectRoot: shop, appUrl: "http://127.0.0.1:4101", replaces: null })
+    await until(() => children.length === 1, "the shop child")
+    push(stops, "stop", { id: "1" })
+    await until(() => supervisor.stateOf("1") === "stopping", "the shop editor to stop")
+    push(choices, "choice", { id: "2", appPort: 4101, projectRoot: docs, appUrl: "http://127.0.0.1:4101", replaces: null })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assert.equal(children.length, 1, "a second editor started on app port 4101 while the first still held it")
+    children[0].emit("exit", null, "SIGTERM")
+    await until(() => children.length === 2, "the docs child once the shop editor left")
+  } finally {
+    for (const child of children) child.emit("exit", null, "SIGTERM")
+    supervisor.killAll()
+  }
 })
 
 await check("an editor that exits through its exit hooks after a signal reads as stopped", async () => {
