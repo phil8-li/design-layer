@@ -40,6 +40,7 @@
  */
 
 import { markerLayer, onMarkerLayerChange, setMarkerLayer } from "../annotations/store"
+import { sendJson } from "../core/api"
 import type { LayerElement } from "../core/types"
 import { resolveFinding } from "./resolve"
 
@@ -279,16 +280,8 @@ async function failure(response: Response): Promise<Error> {
   )
 }
 
-async function send<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      accept: "application/json",
-      ...(init.body === undefined ? {} : { "content-type": "application/json" }),
-    },
-  })
-  if (!response.ok) throw await failure(response)
-  return (await response.json()) as T
+function send<T>(url: string, init: RequestInit = {}): Promise<T> {
+  return sendJson<T>(url, init, failure)
 }
 
 /* ---------- the element index ---------- */
