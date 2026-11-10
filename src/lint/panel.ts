@@ -70,9 +70,10 @@
  *
  * ## What lives where
  *
- * Nothing about the canvas is decided here. The panel writes `markersShown` in
- * the store and the marker layer reads it; the two layers' mutual exclusion is
- * the marker layer's business, driven by that one boolean. Row and badge light
+ * Nothing about the canvas is decided here. The panel's toggle writes the one
+ * `MarkerLayer` value (through `setMarkersShown`) and the marker layer reads
+ * it; the store relays a change from either side, so the toggle's label always
+ * follows the canvas. Row and badge light
  * each other up through `designlayer:lint-hover` and its mirror, the same
  * window-event seam the annotation layer uses, for the same reason: neither
  * surface should have to import the other to exist.
@@ -93,6 +94,7 @@ import {
   ignoredFindings,
   lintError,
   lintFindings,
+  lintFixState,
   lintResolutionEpoch,
   lintRanAt,
   lintRunState,
@@ -306,7 +308,13 @@ export function dsLintSection(editor: EditorContext): { node: HTMLElement; updat
     })
   }
 
-  function fix(ids: string[]): void {
+  /*
+   * A press sends only the findings not already being fixed: their Fix is
+   * disabled and Fix all leaves them out, but a keyboard repeat can land
+   * before the repaint does.
+   */
+  function fix(requested: string[]): void {
+    const ids = requested.filter((id) => lintFixState(id).kind !== "fixing")
     if (!ids.length) return
     void fixFindings(editor.apiBase, ids)
       .then((result) => {
@@ -538,6 +546,9 @@ export function dsLintSection(editor: EditorContext): { node: HTMLElement; updat
               "aria-label": `Fix ${finding.rule} at ${where(finding)}`,
               title: `Replace ${finding.snippet} with ${finding.fix.replacement}`,
               "data-de-lint": "fix",
+              // Disabled while its request is in flight, so one finding is
+              // never in two fixes. See `LintFixState`.
+              disabled: lintFixState(finding.id).kind === "fixing",
               onclick: (event: Event) => {
                 event.stopPropagation()
                 fix([finding.id])
@@ -618,11 +629,14 @@ export function dsLintSection(editor: EditorContext): { node: HTMLElement; updat
   /** The ticked findings that can actually be written, and what to call them. */
   function fixTarget(findings: readonly LintFinding[]): { ids: string[]; label: string } {
     const fixable = findings.filter((finding) => finding.fix !== null)
+    // The label counts what the reader sees; the ids leave out a finding whose
+    // fix is already in flight, so the button greys out when nothing is left.
+    const ready = (finding: LintFinding) => lintFixState(finding.id).kind !== "fixing"
     if (!checked.size) {
-      return { ids: fixable.map((finding) => finding.id), label: `Fix all (${fixable.length})` }
+      return { ids: fixable.filter(ready).map((finding) => finding.id), label: `Fix all (${fixable.length})` }
     }
     return {
-      ids: fixable.filter((finding) => checked.has(finding.id)).map((finding) => finding.id),
+      ids: fixable.filter((finding) => checked.has(finding.id) && ready(finding)).map((finding) => finding.id),
       // The count is what is TICKED, not what is fixable within it: the user
       // ticked three things and the button has to be about those three. Whether
       // all three can be written is the disabled state's job, not the label's.

@@ -40,16 +40,15 @@
  * drawn over an app somebody is still trying to use.
  */
 
-import { el, isCanvasElement } from "../core/dom"
+import { el, isCanvasElement, isChrome } from "../core/dom"
 import { editorOwnsInput, editorStandDownChanged } from "../core/store"
 import type { EditorContext } from "../core/context"
 import type { LayerElement } from "../core/types"
-import { markerLayer, onMarkerLayerChange, setMarkerLayer } from "../annotations/store"
+import { markerLayer } from "../annotations/store"
 import {
   lintResolution,
-  markersShown,
+  refreshLintResolution,
   setLintResolver,
-  setMarkersShown,
   subscribeToLint,
   type LintFinding,
 } from "./store"
@@ -504,10 +503,11 @@ export function installLintMarkers(context: EditorContext): void {
    * never per frame.
    *
    * The expensive half — a `querySelectorAll` per finding — lives in the store's
-   * index and is invalidated by the store, which knows when the findings changed
-   * and when the route did. What this layer keeps is only the grouping, because
-   * the grouping is a drawing decision: one element carrying three findings is
-   * ONE badge, and the store has no reason to know that.
+   * index. The store drops it when the findings change; this layer asks it to
+   * re-read the page when the page changes under it (see `scheduleRefresh`).
+   * What this layer keeps is only the grouping, because the grouping is a
+   * drawing decision: one element carrying three findings is ONE badge, and the
+   * store has no reason to know that.
    */
   let marks: Mark[] = []
 
@@ -577,9 +577,12 @@ export function installLintMarkers(context: EditorContext): void {
 
   /* ---------- the badges ---------- */
 
-  const markFor = (id: string | undefined): Mark | null =>
-    marks.find((mark) => mark.findings[0].id === id) ?? null
-
+  /*
+   * A pooled badge answers for the mark it last DREW, by its slot, never for
+   * the first mark that shares its finding id. A finding on `.card` marks every
+   * card with the same primary id, and a lookup by id sent the click on the
+   * fifth card's badge to the first card.
+   */
   const badgeAt = (index: number): HTMLButtonElement => {
     const pooled = badges[index]
     if (pooled) return pooled
@@ -602,7 +605,7 @@ export function installLintMarkers(context: EditorContext): void {
       // that fell through would navigate the app out from under the finding.
       event.preventDefault()
       event.stopPropagation()
-      const mark = markFor(badge.dataset.finding)
+      const mark = drawn[index]
       if (!mark) return
       const target = asLayerElement(mark.element)
       if (target) context.select(target)
@@ -619,7 +622,7 @@ export function installLintMarkers(context: EditorContext): void {
      */
     let entered: string | null = null
     badge.addEventListener("pointerenter", () => {
-      const mark = markFor(badge.dataset.finding)
+      const mark = drawn[index] ?? null
       entered = mark ? mark.findings[0].id : null
       reportMarkerHover(mark)
     })
@@ -662,7 +665,12 @@ export function installLintMarkers(context: EditorContext): void {
    * have been the thing that was just deleted.
    */
   const placement = (mark: Mark): Placement | null => {
-    if (!mark.element.isConnected) return null
+    if (!mark.element.isConnected) {
+      // The page replaced it (a hot reload, a re-render): re-read the page so
+      // the element that took its place gets the badge.
+      scheduleRefresh()
+      return null
+    }
     const rect = mark.element.getBoundingClientRect()
     if (rect.left < -BLEED || rect.top < -BLEED) return null
     if (rect.left > window.innerWidth + BLEED || rect.top > window.innerHeight + BLEED) return null
@@ -861,38 +869,56 @@ export function installLintMarkers(context: EditorContext): void {
   }
 
   /*
-   * The two ends of the one exclusive value, tied together HERE.
-   *
-   * `MarkerLayer` in `annotations/store` is the state — see its comment for why
-   * the exclusion cannot be two booleans — and the lint store exposes it to the
-   * panel as `markersShown` / `setMarkersShown`, which is the vocabulary a
-   * checkbox in the Design system tab wants. This module owns the relationship
-   * between the two layers, so this is where the two spellings are kept saying
-   * the same thing: whichever side moved, the other is told, and both setters
-   * return early on no change so the pair settles in one hop instead of looping.
-   *
-   * `false` maps back to `"notes"` rather than to a third "nothing" state,
-   * because Hide markers is a statement about the AUDIT: the canvas goes back to
-   * the layer it had before the audit claimed it. Hiding the notes as well is
-   * `hideUntilRestart`, which is the setting that already means that.
-   *
-   * This adapter should not survive. It exists because the lint store keeps its
-   * own boolean; the moment `markersShown` there is `markerLayer() === "audit"`,
-   * both functions below become dead and should be deleted with it.
+   * The layer value itself (`MarkerLayer` in `annotations/store`) is relayed
+   * by the lint store as a lint change, from whichever side moved it, so one
+   * subscription covers findings, ignores, fixes and the layer.
    */
-  const adoptPanelToggle = (): void => setMarkerLayer(markersShown() ? "audit" : "notes")
-  const publishLayer = (): void => setMarkersShown(markerLayer() === "audit")
-
   const onLintChange = (): void => {
-    adoptPanelToggle()
     regroup()
     wake()
   }
 
-  const onLayerChange = (): void => {
-    publishLayer()
-    wake()
+  /*
+   * The page changing under the index.
+   *
+   * A client-side route change, a hot reload and a list that renders more rows
+   * all add or remove host elements without touching the findings, and the
+   * index built at Audit time then misses the new elements (no badge, an "on
+   * this page" count that is short) and keeps the removed ones. Element nodes
+   * only, and never the editor's own: a text update is not a new element, and
+   * the badges this layer moves every frame are chrome. Batched, because a
+   * route change is hundreds of mutations and one re-read covers them all.
+   */
+  let refreshTimer = 0
+  const REFRESH_MS = 150
+  function scheduleRefresh(): void {
+    if (refreshTimer || destroyed) return
+    refreshTimer = setTimeout(() => {
+      refreshTimer = 0
+      if (destroyed) return
+      refreshLintResolution()
+      // The store notifies only when an answer moved, and it cannot see a mark
+      // grouped from an index nobody re-read, so the grouping is redone here.
+      regroup()
+      wake()
+    }, REFRESH_MS) as unknown as number
   }
+  const isPageNode = (node: Node): boolean => node instanceof Element && !isChrome(node)
+  // Read off `window`, so a suite that hands this module a JSDOM window
+  // without copying every DOM global still gets one.
+  const Observer = window.MutationObserver
+  const observer = new Observer((records) => {
+    for (const record of records) {
+      if (isChrome(record.target)) continue
+      if ([...record.addedNodes, ...record.removedNodes].some(isPageNode)) {
+        scheduleRefresh()
+        return
+      }
+    }
+  })
+  observer.observe(document.documentElement, { childList: true, subtree: true })
+  window.addEventListener("popstate", scheduleRefresh)
+  window.addEventListener("hashchange", scheduleRefresh)
 
   window.addEventListener(HOVER_EVENT, onPanelHover)
   // Capture, because `scroll` does not bubble: a finding inside a scrolling
@@ -906,7 +932,6 @@ export function installLintMarkers(context: EditorContext): void {
   // the same elements the canvas is about to draw.
   setLintResolver(resolveFinding)
   const stopLint = subscribeToLint(onLintChange)
-  const stopLayer = onMarkerLayerChange(onLayerChange)
   // Every input of the stand-down gate, `canvasView` included: badges hidden
   // for the board used to stay hidden after it closed, until something scrolled.
   // Painted in this task, not the next frame: see the note pins' twin of this.
@@ -917,8 +942,11 @@ export function installLintMarkers(context: EditorContext): void {
   function teardown(): void {
     unsubscribe()
     stopLint()
-    stopLayer()
     setLintResolver(null)
+    observer.disconnect()
+    window.removeEventListener("popstate", scheduleRefresh)
+    window.removeEventListener("hashchange", scheduleRefresh)
+    if (refreshTimer) clearTimeout(refreshTimer)
     window.removeEventListener(HOVER_EVENT, onPanelHover)
     window.removeEventListener("scroll", wake, true)
     window.removeEventListener("resize", wake)

@@ -46,7 +46,7 @@
  * is the one straight after they pressed something.
  */
 
-import { markerLayer, setMarkerLayer } from "../annotations/store"
+import { markerLayer, onMarkerLayerChange, setMarkerLayer } from "../annotations/store"
 import { isChrome } from "../core/dom"
 
 /* ---------- the wire shapes ---------- */
@@ -124,7 +124,29 @@ export interface LintSummary {
 }
 
 /** Where the last press of Audit got to. */
-export type LintRunState = "idle" | "running" | "done" | "error"
+type LintRunState = "idle" | "running" | "done" | "error"
+
+/**
+ * One finding's fix, from the press to the server's answer.
+ *
+ *   idle    --press Fix-->          fixing{token}
+ *   fixing  --listed in `fixed`-->  fixed{at}     (the row leaves the list)
+ *   fixing  --listed in `failed`--> failed{at, reason}
+ *   fixing  --request rejected-->   failed{at, reason}
+ *   fixed | failed --next Audit lands--> idle
+ *
+ * `fixing` is what disables the row's Fix and takes the id out of Fix all, so
+ * one finding is never in two requests. `fixed` means the server wrote it: the
+ * route answers `fixed` only after the write landed. `token` drops an answer
+ * that a reset overtook, and `at` is the same clock an audit run starts on,
+ * which is how a run that started before a fix landed is kept from bringing
+ * the fixed row back (see `runAudit`).
+ */
+export type LintFixState =
+  | { kind: "idle" }
+  | { kind: "fixing"; token: number }
+  | { kind: "fixed"; at: number }
+  | { kind: "failed"; at: number; reason: string }
 
 /* ---------- state ---------- */
 
@@ -139,28 +161,17 @@ let runState: LintRunState = "idle"
 let runInFlight: Promise<LintFinding[]> | null = null
 let lastError: string | null = null
 
+/** Every finding with a fix pressed or answered. Absent means `idle`. */
+const fixes = new Map<string, Exclude<LintFixState, { kind: "idle" }>>()
 /**
- * Whether the audit owns the canvas, and it starts OFF.
- *
- * This is the single piece of state behind the two layers' mutual exclusion —
- * audit markers and note pins both pin a badge to the top-left of an element,
- * so a page with both stacks two badges on one corner and neither is readable.
- * One boolean, read by both layers, is the only shape of that rule which cannot
- * end up with both on screen; two independent toggles is exactly how it does.
- *
- * It starts on notes rather than on the audit because the editor boots with
- * notes working and nothing audited. Defaulting the other way would hide every
- * note pin at startup on behalf of a marker layer with nothing to paint — a
- * feature nobody has opened yet taking the canvas from one already in use.
- * `runAudit` claims it when a run actually produces something to point at.
- *
- * The value itself lives in `annotations/store`, NOT here, and that is the
- * whole point of this comment. This module used to keep its own boolean beside
- * that one, which is the two-independent-toggles shape the rule above rules
- * out: each side would be right about itself and the pair could disagree, and
- * the way that shows up is both layers painting a badge on the same corner.
- * One owner, read from both ends.
+ * One logical clock for audit runs and fix answers. A run takes a tick when it
+ * starts and a fix takes one when it lands, so "landed after this run started"
+ * is a comparison of two numbers. A reset takes one too, which makes every
+ * answer in flight stale.
  */
+let clock = 0
+/** Bumped by `resetLintForTest`, so a run that a reset overtook writes nothing. */
+let resets = 0
 
 const listeners = new Set<() => void>()
 
@@ -189,6 +200,16 @@ export function subscribeToLint(fn: () => void): () => void {
   listeners.add(fn)
   return () => listeners.delete(fn)
 }
+
+/*
+ * The canvas belongs to ONE marker layer at a time, and that value lives in
+ * `annotations/store` (see `MarkerLayer` there). The notes side moves it too —
+ * entering annotation mode hands the canvas to the pins — and a panel that
+ * repainted only on this store's own writes kept saying "Hide markers" over a
+ * canvas with no markers on it. Listening once here means every change, from
+ * either side, is a lint change to everyone who subscribes.
+ */
+onMarkerLayerChange(notify)
 
 /* ---------- the wire ---------- */
 
@@ -419,6 +440,39 @@ function buildResolution(): void {
   byId = ids
 }
 
+/**
+ * Re-reads the page for the current findings, and tells listeners only when an
+ * answer moved.
+ *
+ * The index is built per audit, but the page keeps changing under it: a
+ * client-side route change, a hot reload that replaces the elements, a list
+ * that renders more rows. The marker layer calls this on each of those, and a
+ * finding whose elements are now different gets its badge and its "on this
+ * page" count back without another Audit. Comparing first is what keeps an app
+ * that re-renders often from rebuilding the panel every time it does.
+ */
+export function refreshLintResolution(): void {
+  if (!findings.length) return
+  const previous = placements
+  placements = null
+  byElement = null
+  byId = null
+  buildResolution()
+  // Nobody had read the last index since it was dropped, so nobody shows it.
+  if (!previous || samePlacements(previous, placements ?? [])) return
+  resolutionEpoch += 1
+  notify()
+}
+
+function samePlacements(left: readonly LintPlacement[], right: readonly LintPlacement[]): boolean {
+  if (left.length !== right.length) return false
+  return left.every((entry, index) => {
+    const other = right[index]
+    if (entry.finding !== other.finding || entry.elements.length !== other.elements.length) return false
+    return entry.elements.every((element, at) => element === other.elements[at])
+  })
+}
+
 /** Every visible finding with the elements it resolved to. Built once per run. */
 export function lintResolution(): readonly LintPlacement[] {
   if (!placements) buildResolution()
@@ -453,8 +507,8 @@ export function isOnThisPage(id: string): boolean {
  *
  * Called on EVERY inspector render — which means on every frame of a number
  * scrub — so it is a map lookup and never a query. The index behind it is built
- * once per audit and thrown away only when the findings change or the page
- * does; this function itself never touches the document.
+ * once per audit and re-read when the findings change or the page does (see
+ * `refreshLintResolution`); this function itself never touches the document.
  */
 export function findingsFor(element: Element | null): LintFinding[] {
   if (!element) return NO_FINDINGS
@@ -535,7 +589,7 @@ export function lintSummary(): LintSummary {
 
 /* ---------- marker visibility ---------- */
 
-/** Whether the audit layer is the one on screen. See `shown` above. */
+/** Whether the audit layer is the one on screen. See `MarkerLayer` in `annotations/store`. */
 export function markersShown(): boolean {
   return markerLayer() === "audit"
 }
@@ -546,13 +600,10 @@ export function markersShown(): boolean {
  * Called from the panel's Hide markers toggle, and callable from the annotation
  * side: turning note pins on is the same decision seen from the other end, and
  * it is spelled `setMarkersShown(false)` rather than as a second flag. The
- * early return is what makes that safe to call from a listener of this store
- * without looping.
+ * layer listener above turns the change into a `notify`, so this one does not.
  */
 export function setMarkersShown(next: boolean): void {
-  if (markersShown() === next) return
   setMarkerLayer(next ? "audit" : "notes")
-  notify()
 }
 
 /* ---------- the calls ---------- */
@@ -582,18 +633,35 @@ export function loadLintTools(apiBase: string): Promise<LintTool[]> {
  * A run can take a minute on a large project, so the button is disabled while
  * one is in flight — but the shared promise is the thing that actually
  * guarantees it, because the panel is not the only surface that can ask.
+ *
+ * The run carries its start tick. A fix can land while it runs (Fix stays
+ * live during an audit), and the server's checkers may have read the file
+ * before that write: the run's late answer would then list the fixed row
+ * again, and a second Fix on it says "no longer reported". So a finding whose
+ * fix landed after this run started is left out of its answer. A reset in
+ * between makes the whole answer stale.
  */
-export function runAudit(apiBase: string, only?: string[]): Promise<LintFinding[]> {
+export function runAudit(apiBase: string): Promise<LintFinding[]> {
   if (runInFlight) return runInFlight
+  const startedAt = ++clock
+  const reset = resets
   runState = "running"
   lastError = null
   notify()
   runInFlight = send<{ findings?: LintFinding[]; ranAt?: string }>(endpoint(apiBase, "/run"), {
     method: "POST",
-    body: JSON.stringify(only?.length ? { tools: only } : {}),
+    body: JSON.stringify({}),
   })
     .then((payload) => {
-      findings = Array.isArray(payload.findings) ? payload.findings : []
+      if (reset !== resets) return findings
+      const fixedSince = (id: string): boolean => {
+        const fix = fixes.get(id)
+        return fix?.kind === "fixed" && fix.at > startedAt
+      }
+      const answered = Array.isArray(payload.findings) ? payload.findings : []
+      findings = answered.filter((finding) => !fixedSince(finding.id))
+      // An answer older than this run is now part of its result.
+      for (const [id, fix] of fixes) if (fix.kind !== "fixing" && fix.at < startedAt) fixes.delete(id)
       // The run's own flags are folded in rather than replacing the set, so an
       // ignore made in this session survives a server that has not persisted it
       // yet, and one persisted before this page loaded is learned here.
@@ -609,6 +677,7 @@ export function runAudit(apiBase: string, only?: string[]): Promise<LintFinding[
       return findings
     })
     .catch((error: unknown) => {
+      if (reset !== resets) throw error
       runState = "error"
       lastError = error instanceof Error ? error.message : String(error)
       runInFlight = null
@@ -618,28 +687,70 @@ export function runAudit(apiBase: string, only?: string[]): Promise<LintFinding[
   return runInFlight
 }
 
+/** Where one finding's fix is. See `LintFixState`. */
+export function lintFixState(id: string): LintFixState {
+  return fixes.get(id) ?? IDLE_FIX
+}
+
+const IDLE_FIX: LintFixState = { kind: "idle" }
+
 /**
  * Applies the fixes the server said it could make, and drops them from the list.
  *
- * Optimistic removal rather than an automatic re-run: a re-audit costs the same
- * minute the first one did, and the server has just told us exactly which ids
- * it wrote. The ones it could NOT write stay in the list, which is the point of
- * returning `failed` — a finding whose snippet had moved under us is reported,
- * never force-written, and the row has to still be there to say so.
+ * Removal on the server's word rather than an automatic re-run: a re-audit
+ * costs the same minute the first one did, and the server has just told us
+ * exactly which ids it wrote. The ones it could NOT write stay in the list,
+ * which is the point of returning `failed` — a finding whose snippet had moved
+ * under us is reported, never force-written, and the row has to still be there
+ * to say so.
+ *
+ * An id already `fixing` is left out of the request, so a second press, or
+ * Fix all over a row that is still being fixed, never sends one finding twice.
+ * The server queues every fix as well, so two requests in one file cannot lose
+ * an edit; this half keeps the screen honest about what is in flight.
  */
 export function fixFindings(apiBase: string, ids: string[]): Promise<LintFixResult> {
+  const sent = ids.filter((id) => fixes.get(id)?.kind !== "fixing")
+  if (!sent.length) return Promise.resolve({ fixed: [], failed: [] })
+  const token = ++clock
+  for (const id of sent) fixes.set(id, { kind: "fixing", token })
+  notify()
+  /** Only the ids this request still owns: a reset or a newer press overtakes it. */
+  const owned = (id: string): boolean => {
+    const fix = fixes.get(id)
+    return fix?.kind === "fixing" && fix.token === token
+  }
   return send<LintFixResult>(endpoint(apiBase, "/fix"), {
     method: "POST",
-    body: JSON.stringify({ ids }),
-  }).then((result) => {
-    const fixed = new Set(result.fixed ?? [])
-    if (fixed.size) {
-      findings = findings.filter((finding) => !fixed.has(finding.id))
-      invalidateResolution()
+    body: JSON.stringify({ ids: sent }),
+  }).then(
+    (result) => {
+      const answer = { fixed: result.fixed ?? [], failed: result.failed ?? [] }
+      const at = ++clock
+      const written = new Set(answer.fixed.filter(owned))
+      for (const id of written) fixes.set(id, { kind: "fixed", at })
+      for (const { id, reason } of answer.failed) {
+        if (owned(id)) fixes.set(id, { kind: "failed", at, reason })
+      }
+      // An id the server named in neither list was not written.
+      for (const id of sent) {
+        if (owned(id)) fixes.set(id, { kind: "failed", at, reason: "The server did not report this fix." })
+      }
+      if (written.size) {
+        findings = findings.filter((finding) => !written.has(finding.id))
+        invalidateResolution()
+      }
+      notify()
+      return answer
+    },
+    (error: unknown) => {
+      const at = ++clock
+      const reason = error instanceof Error ? error.message : String(error)
+      for (const id of sent) if (owned(id)) fixes.set(id, { kind: "failed", at, reason })
+      notify()
+      throw error
     }
-    notify()
-    return { fixed: result.fixed ?? [], failed: result.failed ?? [] }
-  })
+  )
 }
 
 /**
@@ -707,6 +818,8 @@ export function resetLintForTest(): void {
   runState = "idle"
   runInFlight = null
   lastError = null
+  fixes.clear()
+  resets += 1
   setMarkerLayer("notes")
   resolver = defaultResolver
   invalidateResolution()
