@@ -795,6 +795,28 @@ await checkAsync("the credential file is written 0600, and stays 0600", async ()
   }
 })
 
+
+await checkAsync("a credential file that will not parse is kept aside, not overwritten", async () => {
+  // It reads as empty, so the next save used to rewrite it from nothing and
+  // drop every other origin's credential without a word.
+  const context = await project()
+  try {
+    await fs.mkdir(path.dirname(context.auth.authFile), { recursive: true })
+    const torn = '{ "credentials": [ { "origin": "https://other.example.com", "scheme": "bearer", "value": "abc"'
+    await fs.writeFile(context.auth.authFile, torn, { mode: 0o600 })
+    assert.deepEqual(await context.auth.listOrigins(), [])
+
+    await context.auth.saveCredential({ url: CATALOG_URL, scheme: "bearer", value: BEARER })
+    const dir = path.dirname(context.auth.authFile)
+    const kept = (await fs.readdir(dir)).filter((name) => name.startsWith("library-auth.json.corrupt-"))
+    assert.equal(kept.length, 1, "the unreadable file was overwritten rather than kept")
+    assert.equal(await fs.readFile(path.join(dir, kept[0]), "utf8"), torn)
+    assert.equal((await fs.stat(path.join(dir, kept[0]))).mode & 0o777, 0o600)
+    assert.deepEqual((await context.auth.listOrigins()).map((row) => row.origin), [CATALOG_ORIGIN])
+  } finally {
+    await context.cleanup()
+  }
+})
 /*
  * Several refusals, and none of them may write. A store that refuses loudly and
  * persists anyway is worse than one that accepts, because the panel then lists
@@ -826,7 +848,8 @@ await checkAsync("a credential that cannot be one is refused, and nothing is wri
 
     await assert.rejects(
       context.auth.saveCredential({ url: CATALOG_URL, scheme: "api-key", value: BEARER }),
-      /not a credential kind/
+      // All three kinds it accepts, named: the sentence used to leave out basic.
+      /not a credential kind\. Use bearer, basic or cookie\./
     )
     await assert.rejects(
       context.auth.saveCredential({ url: "design-system.example.com", scheme: "bearer", value: BEARER }),
@@ -1102,12 +1125,13 @@ await checkAsync("the same URL installs once the editor is signed in to its orig
 })
 
 /*
- * `addUrl` refuses to create a walled row, so a store written by this version
- * holds none — but one written before the wall was refused does, and so does
- * one whose credential has since expired. A rule that only holds for rows added
- * after the upgrade is not the rule, so `list()` sweeps them: out of the answer,
- * and out of the file, so the next add of the same URL is a clean install
- * rather than a collision with a ghost.
+ * Nothing in this version writes a walled row — `addUrl` refuses one and every
+ * re-fetch keeps the row it had — but a store written before the wall was
+ * refused holds them, and so does one an older refresh rewrote behind an
+ * expired sign-in. A rule that only holds for rows added after the upgrade is
+ * not the rule, so `list()` sweeps them: out of the answer, and out of the
+ * file, so the next add of the same URL is a clean install rather than a
+ * collision with a ghost.
  */
 await checkAsync("a walled row from an older build is swept from the answer and the file", async () => {
   const context = await project({
@@ -1258,6 +1282,101 @@ await checkAsync("a ghost row is repaired by adding the same link again", async 
       },
     ])
     assert.deepEqual((await context.store.list()).libraries, [])
+  } finally {
+    await context.cleanup()
+  }
+})
+
+/*
+ * A REFRESH IS A RE-READ, and it now follows the re-paste's rule.
+ *
+ * It used to overwrite the row with whatever came back. Behind an expired
+ * sign-in that was the walled shape — no catalog, the "Needs sign-in" sentence —
+ * and the next `list()` swept the row out of the file as a ghost: the library,
+ * its name and its switch, gone because a credential expired.
+ */
+await checkAsync("a refresh behind a wall keeps the library and returns the challenge", async () => {
+  const recorded = recordingFetch({
+    "*": walledUnless((headers) => headers.authorization === `Bearer ${BEARER}`),
+  })
+  const context = await project({ fetchImpl: recorded.fetchImpl, runHelper: noHelper })
+  try {
+    await context.auth.saveCredential({ url: CATALOG_URL, scheme: "bearer", value: BEARER })
+    const { library } = await context.store.add({ url: CATALOG_URL })
+    assert.equal(library.counts.components, 2)
+
+    // The session expires at the site; here, the credential goes.
+    await context.auth.forgetCredential(CATALOG_ORIGIN)
+    await assert.rejects(context.store.update(library.id, { refresh: true }), (error) => {
+      assert.equal(error.statusCode, 400)
+      assert.equal(error.auth.url, CATALOG_URL, "the challenge does not say which URL to sign in to")
+      return true
+    })
+
+    const { libraries } = await context.store.list()
+    assert.equal(libraries.length, 1, "the library was deleted by a refresh behind a wall")
+    assert.equal(libraries[0].counts.components, 2, "the refresh threw away the catalog")
+    assert.ok(!libraries[0].error, `the row now carries ${libraries[0].error}`)
+    assert.equal((await storedLibraries(context)).length, 1)
+  } finally {
+    await context.cleanup()
+  }
+})
+
+await checkAsync("a refresh that fails keeps the catalog, and says it failed", async () => {
+  let reachable = true
+  const context = await project({
+    fetchImpl: async (url) => {
+      if (!reachable) throw new Error("getaddrinfo ENOTFOUND storybook")
+      return recordingFetch({ "*": json(INDEX_JSON) }).fetchImpl(url)
+    },
+    runHelper: noHelper,
+  })
+  try {
+    const { library } = await context.store.add({ url: CATALOG_URL })
+    assert.equal(library.counts.components, 2)
+
+    reachable = false
+    const refreshed = await context.store.update(library.id, { refresh: true })
+    assert.equal(refreshed.library.counts.components, 2, "a failed refresh threw away the catalog")
+    assert.match(refreshed.library.error, /could not be reached/, "a failed refresh said nothing")
+
+    // The failure is the refresh's, not the library's: the row is as it was.
+    const { libraries } = await context.store.list()
+    assert.equal(libraries[0].counts.components, 2)
+    assert.ok(!libraries[0].error, `a passing network error was stored: ${libraries[0].error}`)
+  } finally {
+    await context.cleanup()
+  }
+})
+
+await checkAsync("a re-paste that loses a race with Remove installs afresh, not a ghost", async () => {
+  // The re-read is fetched outside the write queue, which is where a Remove
+  // gets in. Handing the removed row back made the panel adopt a card for a
+  // library that was no longer in the file.
+  let removeDuringFetch = null
+  const context = await project({
+    fetchImpl: async (url) => {
+      if (removeDuringFetch) {
+        const id = removeDuringFetch
+        removeDuringFetch = null
+        assert.equal((await context.store.remove(id)).ok, true)
+      }
+      return recordingFetch({ "*": json(INDEX_JSON) }).fetchImpl(url)
+    },
+    runHelper: noHelper,
+  })
+  try {
+    const { library } = await context.store.add({ url: CATALOG_URL })
+    removeDuringFetch = library.id
+    const again = await context.store.add({ url: CATALOG_URL })
+    assert.equal(again.library.id, library.id)
+    const { libraries } = await context.store.list()
+    assert.deepEqual(
+      libraries.map((row) => row.id),
+      [library.id],
+      "the add answered with a row that is not in the file"
+    )
   } finally {
     await context.cleanup()
   }

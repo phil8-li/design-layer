@@ -195,7 +195,20 @@ providerUrl = `http://127.0.0.1:${provider.address().port}`
 siteUrl = `http://127.0.0.1:${site.address().port}`
 
 const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "de-signin-live-"))
-const signin = createBrowserSignIn({ stateDir })
+/*
+ * Which runs opened a window, read off the one step only a window takes.
+ *
+ * The raise helper runs on the visible pass and nowhere else, so a stand-in
+ * that writes a line and exits counts windows without asking the flow to report
+ * on itself. (The real helper would raise the window; this provider signs
+ * itself in, so nobody needs to see it.)
+ */
+const windowsFile = path.join(stateDir, "windows.log")
+const recorder = path.join(stateDir, "record-window.mjs")
+await fs.writeFile(recorder, `import fs from "node:fs"\nfs.appendFileSync(process.argv[2], "window\\n")\n`)
+const windowsOpened = async () =>
+  (await fs.readFile(windowsFile, "utf8").catch(() => "")).split("\n").filter(Boolean).length
+const signin = createBrowserSignIn({ stateDir, raiseCommand: [process.execPath, recorder, windowsFile] })
 
 let captured = ""
 
@@ -254,13 +267,13 @@ try {
     /*
      * The silent pass, which is the payoff of keeping a profile: the provider
      * session is already in it, so this run has to complete with no window and
-     * no human. `silent: true` is the flag the flow sets when it never had to
-     * escalate — if this ever starts coming back false, every repeat sign-in
-     * has begun stealing focus again.
+     * no human. If a window ever opens here, every repeat sign-in has begun
+     * stealing focus again.
      */
+    const windowsBefore = await windowsOpened()
     const outcome = await signin.signIn(`${siteUrl}/index.json`, { timeoutMs: 60_000 })
     assert.equal(outcome.ok, true, `the repeat sign-in failed: ${outcome.reason}`)
-    assert.equal(outcome.silent, true, "a repeat sign-in opened a window it did not need")
+    assert.equal(await windowsOpened(), windowsBefore, "a repeat sign-in opened a window it did not need")
     assert.match(outcome.cookie, /PROXY_SESSION=granted/)
   })
 
@@ -273,9 +286,9 @@ try {
      * And the proof that it meant something: a silent pass now has no session
      * to reuse. The fake provider signs itself in again — a real one would show
      * its login — so what is asserted is that the browser went back through the
-     * provider rather than straight in, which is what `silent: false` means
-     * here... except this provider grants silently, so assert the weaker, true
-     * thing: the cookie is gone from the profile until a run re-earns it.
+     * provider rather than straight in... except this provider grants
+     * silently, so assert the weaker, true thing: the cookie is gone from the
+     * profile until a run re-earns it.
      */
     const signin2 = createBrowserSignIn({ stateDir })
     const outcome = await signin2.signIn(`${siteUrl}/index.json`, { timeoutMs: 60_000 })
