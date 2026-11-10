@@ -1,8 +1,8 @@
 /**
- * The browser half of the chrome demo. Bundled — never run — by
- * `tools/chrome-demo.mjs`, once against the working tree and once against a
- * git worktree at an older revision, so the two bundles are each other's
- * before and after.
+ * The app chooser, stood up for a screenshot. Bundled — never run — by
+ * `tools/break.mjs`, which renders it under worst-case content. (It was
+ * written for a before/after chrome demo that has since been retired; the
+ * file name stayed so `break.mjs` needs no second scene.)
  *
  * Sibling of `tools/panel-harness-scene.js`, and the same argument applies: the
  * surfaces here are stood up by the SHIPPED installers over a context from the
@@ -10,10 +10,10 @@
  * invented parts are the two things the editor takes from outside itself — a
  * bridge, and the loopback routes the chooser asks for.
  *
- * It must compile against BOTH revisions, which is the constraint that shapes
- * it: nothing here may import a module either revision lacks, and every call is
- * guarded so a signature that moved degrades to a labelled empty panel instead
- * of a blank page with an exception in the console.
+ * The retired demo compiled it against two revisions, which is why every call
+ * is guarded and the comments below speak of "the before revision": a
+ * signature that moved degrades to a labelled empty panel instead of a blank
+ * page with an exception in the console. The guards cost nothing, so they stay.
  */
 
 import { createContext } from "../src/core/context"
@@ -21,21 +21,11 @@ import { shellCss } from "../src/core/css"
 import { el } from "../src/core/dom"
 import { installAppChooser } from "../src/panels/app-chooser"
 /*
- * The left panel is reached through its INSTALLER, never through the tab
- * modules, and that is what lets this one file compile against both revisions.
- *
- * The whole subject of the options comparison is that a third tab now exists —
- * so `src/panels/controls.ts` is present in one revision and absent in the
- * other, and a direct import of it would fail the before build outright. The
- * installer's signature has not moved, so asking it to build the panel gets
- * two tabs from one revision and three from the other, which is the difference
- * the panel is there to show.
+ * The panels are reached through their INSTALLERS, never through the tab
+ * modules, so the scene renders what a user gets and does not break when a
+ * tab module is renamed or split.
  */
 import { installLeftPanel } from "../src/panels/left"
-/*
- * Same argument as the left panel: reached through its installer, which exists
- * unchanged in both revisions, so one scene file compiles against each.
- */
 import { installInspector } from "../src/panels/inspector/index"
 
 /** The canned loopback, installed before anything can ask. */
