@@ -87,7 +87,7 @@ const bundled = await build({
   stdin: {
     contents: `
       export { positionSection } from "./src/panels/inspector/section-position"
-      export { forgetSiblings } from "./src/core/arrange"
+      export { forgetSiblings, siblingLines, SIBLINGS_TIMEOUT_MS } from "./src/core/arrange"
     `,
     resolveDir: PACKAGE_DIR,
     loader: "ts",
@@ -445,6 +445,131 @@ check("a disabled move sends nothing when it is clicked anyway", () => {
 })
 
 /* ---------- position ---------- */
+
+console.log("\nSibling questions on the wire")
+
+/*
+ * The vendor server answers `getSiblings` in order with no correlation id, so
+ * these drive `siblingLines` straight against a bare bridge: one reply at a
+ * time, in the order the cases choose. Timers are stubbed so a lost reply can
+ * expire without the suite waiting two seconds.
+ */
+function wire() {
+  inspector.forgetSiblings()
+  const sent = []
+  const listeners = new Set()
+  const bridge = {
+    elementInfo: () => null,
+    send: (message) => sent.push(message),
+    subscribe: (fn) => {
+      listeners.add(fn)
+      return () => listeners.delete(fn)
+    },
+  }
+  return {
+    bridge,
+    sent,
+    reply(lines) {
+      for (const fn of [...listeners]) {
+        fn({ type: "siblingsList", siblings: lines.map((lineNumber) => ({ lineNumber })) })
+      }
+    },
+  }
+}
+
+function withTimers(fn) {
+  const real = { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout }
+  const timers = new Map()
+  let next = 0
+  globalThis.setTimeout = (callback, ms) => {
+    next += 1
+    timers.set(next, { callback, ms })
+    return next
+  }
+  globalThis.clearTimeout = (id) => timers.delete(id)
+  const elapse = () => {
+    for (const [id, timer] of [...timers]) {
+      timers.delete(id)
+      timer.callback()
+    }
+  }
+  try {
+    fn({ timers, elapse })
+  } finally {
+    Object.assign(globalThis, real)
+    inspector.forgetSiblings()
+  }
+}
+
+const REF_A = { filePath: PAGE, fromLine: 12, parentPath: PAGE, parentLine: 5 }
+const REF_B = { filePath: "/app/other.tsx", fromLine: 30, parentPath: "/app/other.tsx", parentLine: 20 }
+
+check("a lost reply clears after the timeout, and the next question is sent and answered", () => {
+  withTimers(({ timers, elapse }) => {
+    const { bridge, sent, reply } = wire()
+    let lostCalled = 0
+    assert.equal(inspector.siblingLines(bridge, REF_A, () => (lostCalled += 1)), null)
+    assert.equal(sent.length, 1)
+    assert.ok(
+      [...timers.values()].some((timer) => timer.ms === (inspector.SIBLINGS_TIMEOUT_MS ?? 2000)),
+      "no timeout was armed for the question"
+    )
+    elapse()
+    assert.equal(lostCalled, 0, "a lost question called its waiter")
+    let ready = 0
+    assert.equal(inspector.siblingLines(bridge, REF_B, () => (ready += 1)), null)
+    assert.equal(sent.length, 2, "the question after a lost reply was never sent")
+    assert.deepEqual(sent[1], { type: "getSiblings", filePath: "/app/other.tsx", parentLine: 20 })
+    reply([28, 30])
+    assert.equal(ready, 1)
+    assert.deepEqual(inspector.siblingLines(bridge, REF_B, () => {}), [28, 30])
+  })
+})
+
+check("a second parent asked during the first's flight is answered after the first reply", () => {
+  const { bridge, sent, reply } = wire()
+  let readyA = 0
+  let readyB = 0
+  inspector.siblingLines(bridge, REF_A, () => (readyA += 1))
+  assert.equal(inspector.siblingLines(bridge, REF_B, () => (readyB += 1)), null)
+  assert.equal(sent.length, 1, "two questions were on the wire at once")
+  reply([10, 12])
+  assert.equal(readyA, 1)
+  assert.deepEqual(inspector.siblingLines(bridge, REF_A, () => {}), [10, 12])
+  assert.equal(sent.length, 2, "the queued question was not sent after the first reply")
+  reply([30, 32])
+  assert.equal(readyB, 1, "the second caller's onReady never fired")
+  assert.deepEqual(inspector.siblingLines(bridge, REF_B, () => {}), [30, 32])
+  inspector.forgetSiblings()
+})
+
+check("a foreign non-empty reply is not cached under the asking parent", () => {
+  const { bridge, reply } = wire()
+  let ready = 0
+  inspector.siblingLines(bridge, REF_A, () => (ready += 1))
+  reply([40, 41]) // the layers panel's answer about some other parent
+  assert.equal(ready, 0)
+  assert.equal(inspector.siblingLines(bridge, REF_A, () => {}), null, "another parent's list was cached")
+  reply([10, 12, 14])
+  assert.equal(ready, 1)
+  assert.deepEqual(inspector.siblingLines(bridge, REF_A, () => {}), [10, 12, 14])
+  inspector.forgetSiblings()
+})
+
+check("two callers on one parent both hear the answer, from one request", () => {
+  const { bridge, sent, reply } = wire()
+  let first = 0
+  let second = 0
+  const shared = () => (first += 1)
+  inspector.siblingLines(bridge, REF_A, shared)
+  inspector.siblingLines(bridge, REF_A, shared) // a re-render with the same callback
+  inspector.siblingLines(bridge, { ...REF_A, fromLine: 14 }, () => (second += 1))
+  assert.equal(sent.length, 1)
+  reply([12, 14])
+  assert.equal(first, 1, "the shared callback ran twice, or not at all")
+  assert.equal(second, 1, "the second caller was dropped")
+  inspector.forgetSiblings()
+})
 
 console.log("\nPosition")
 
