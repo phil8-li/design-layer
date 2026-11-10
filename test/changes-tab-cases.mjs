@@ -802,6 +802,47 @@ await check("the preview goes back to what it was", async () => {
   assert.equal(element.style.opacity, "1", "the page kept a change that was taken back")
 })
 
+/*
+ * `revertPreview` knew only CSS and a few sentinels. An `attribute:<name>` row
+ * was handed to `style.setProperty`, a no-op, so the attribute stayed; and a
+ * deletion's withdrawal cleared `display` outright, taking with it the
+ * `display: none` another row (the layers eye) still previewed.
+ */
+await check("withdrawing an attribute row takes the attribute back", async () => {
+  reset()
+  const element = mount('<button class="btn" data-size="sm">Go</button>')
+  const selection = { element, tagName: "button", componentName: "Fixture", source: null, key: ui.elementKey(element, "Fixture", 0) }
+  const writer = ui.createWriter(bridge)
+  writer.applyAttribute(selection, "variant", "outline")
+  writer.applyAttribute(selection, "data-size", "lg")
+  await settle()
+  const rowFor = (property) => ui.edits().find((edit) => edit.property === property).id
+  ui.withdrawEdit(rowFor("attribute:variant"))
+  assert.equal(element.getAttribute("variant"), null, "an attribute that was absent stayed on the element")
+  ui.withdrawEdit(rowFor("attribute:data-size"))
+  assert.equal(element.getAttribute("data-size"), "sm", "the attribute did not go back to its old value")
+})
+
+await check("withdrawing a deletion keeps the display: none another row still previews", async () => {
+  reset()
+  const element = mount('<button class="btn">Go</button>')
+  const selection = { element, tagName: "button", componentName: "Fixture", source: null, key: ui.elementKey(element, "Fixture", 0) }
+  const writer = ui.createWriter(bridge)
+  writer.applyStyles(selection, [{ property: "display", value: "none" }], "Hide")
+  writer.applyDelete([selection])
+  await settle()
+  ui.withdrawEdit(ui.edits().find((edit) => edit.property === "remove").id)
+  assert.ok(ui.edits().some((edit) => edit.property === "display"), "the hide row left with the deletion")
+  assert.equal(element.style.display, "none", "the element came back although its hide row is still in the outbox")
+
+  // With no other row on it, the element comes back as it was.
+  const other = mount('<button class="btn">Two</button>')
+  writer.applyDelete([{ element: other, tagName: "button", componentName: "Fixture", source: null, key: ui.elementKey(other, "Fixture", 1) }])
+  await settle()
+  ui.withdrawEdit(ui.edits().find((edit) => edit.property === "remove").id)
+  assert.equal(other.style.display, "", "a withdrawn deletion left the element hidden")
+})
+
 await check("ANY row, in ANY order — the middle one goes first", async () => {
   reset()
   const element = mount('<button class="btn">Go</button>')

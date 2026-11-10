@@ -27,23 +27,47 @@
  * a no-op — see the `mutations` design note in `annotations/journal.ts`.
  */
 
-import { editElement, editRecord, removeEdit } from "../annotations/journal"
+import { editElement, editRecord, edits, removeEdit } from "../annotations/journal"
 import { DELETED_ATTRIBUTE } from "./dom"
 import type { LayerElement } from "./types"
 
 /**
+ * The `display` another row still previews on `element`, or null. The layers
+ * eye hides an element as a `display: none` row of its own, and withdrawing a
+ * deletion of that element must leave it hidden.
+ */
+function displayHeldByAnotherRow(element: LayerElement): string | null {
+  const row = edits().find((record) => record.property === "display" && editElement(record.id) === element)
+  return row ? row.to : null
+}
+
+/**
  * Put the element back the way it looked before this row.
  *
- * Only the preview: the inline style the writer set to show the change. A
- * deletion is its own case because it was never a style — the element is still
- * in the page, marked and hidden, so undoing it means taking the mark off
- * rather than restoring a value.
+ * Only the preview: the inline style or attribute the writer set to show the
+ * change. A deletion is its own case because it was never a style — the
+ * element is still in the page, marked and hidden, so undoing it means taking
+ * the mark off rather than restoring a value.
  */
 function revertPreview(element: LayerElement, property: string, from: string): boolean {
   if (property === "remove") {
     if (!element.hasAttribute(DELETED_ATTRIBUTE)) return false
     element.removeAttribute(DELETED_ATTRIBUTE)
-    element.style.removeProperty("display")
+    const held = displayHeldByAnotherRow(element)
+    if (held) element.style.setProperty("display", held)
+    else element.style.removeProperty("display")
+    return true
+  }
+  /*
+   * An attribute row's `from` is the writer's `attributeWord`: "" for an
+   * attribute that was absent, "true" for an empty one. Absent comes back
+   * absent; "true" is written as "true", which a boolean attribute reads the
+   * same as "".
+   */
+  if (property.startsWith("attribute:")) {
+    const name = property.slice("attribute:".length)
+    if (from) element.setAttribute(name, from)
+    else element.removeAttribute(name)
     return true
   }
   // `class`, `icon` and `text` are sentinels, not CSS: there is no inline
