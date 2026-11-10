@@ -60,19 +60,30 @@ Connect to the designlayer MCP server and work its loop until I say stop:
 send, rather than doing the work inside the conversation that is watching the
 queue. The change carries `startNewSession: true` and a `sessionPrompt`: the
 brief behind the prefix `/goal get those done: `, so the new session keeps
-working until every item is done. MCP gives a server no way to open a session
-itself, so the agent opens it with whatever its harness provides; an agent that
-cannot open one does the work in place. The same prompt goes on the clipboard,
-so it can be pasted into a new chat by hand.
+working until every item is done. The prompt ends with the change id and asks
+the new session to call `resolve_change` for that id when the work is done. MCP
+gives a server no way to open a session itself, so the agent opens it with
+whatever its harness provides; an agent that cannot open one does the work in
+place. The same brief goes on the clipboard, so it can be pasted into a new chat
+by hand.
 
 ### Tool reference
 
 | Tool | Input | Returns |
 | --- | --- | --- |
-| `wait_for_change` | `timeoutSeconds` (default and max 55), `batchWindowSeconds` (default 1.5, max 15) | Pending changes with brief, `startNewSession`, `sessionPrompt`, files, and selected element; or `{timeout: true}` |
-| `list_changes` | `status`: `pending` (default), `resolved`, `rejected`, `all` | The changes, without blocking |
+| `wait_for_change` | `timeoutSeconds` (default 45, max 55), `batchWindowSeconds` (default 1.5, max 15) | Pending changes with brief, `startNewSession`, `sessionPrompt`, files and `projectRoot`, plus `next`; or `{timeout: true, reason, waitedSeconds, timeoutSeconds, message}` |
+| `list_changes` | `status`: `pending` (default), `resolved` (or `applied`), `rejected`, `all` | The changes, without blocking |
 | `get_change` | `id` | One full change record |
-| `resolve_change` | `id`, `resolution` (`applied` default, or `rejected`), `summary` | `{ok, id, status, resolution}` |
+| `resolve_change` | `id`, `resolution` (`applied` default, or `rejected`), `summary` | `{ok, id, status, resolution}`, plus `warning` when `resolution` is not a known word |
+
+A timeout's `reason` is `timeout` (nobody clicked yet) or `endpoint_closing`
+(the endpoint closed or moved between DesignLayer processes). Call
+`wait_for_change` again in both cases.
+
+A failed call returns `isError: true` and a JSON body with `error`, `code` and
+`next` (the action to take). `code` is `invalid_argument`, `unknown_change` or
+`unknown_tool`. An unknown id also carries `cause` (`evicted`, `moved` or
+`unknown`) and `knownIds`, the newest ids the endpoint holds.
 
 Rules an agent must follow:
 
@@ -85,12 +96,25 @@ Rules an agent must follow:
 - **One waiter at a time.** Changes are not claimed, so two agents waiting at
   once both receive the same change.
 - **A timeout is not an error.** It means nobody has clicked yet.
+- **Change ids do not survive a restart.** Changes live in the memory of the
+  process that serves MCP. After a restart, the request file (`handoffFile`)
+  still holds the brief.
+- **Check items marked `**Sent before:**`.** A send carries every item still in
+  the Changes tab. An item an earlier send carried has a `**Sent before:**`
+  line, and the brief header lists those changes as `**Earlier changes:**`.
+  Look in the code first, and do not make a move or a delete twice.
 
 ### No MCP client?
 
 **Copy** in the Changes tab puts the same brief on the clipboard; paste it into
 any agent or chat. Every send is also saved as a markdown file under
 `.local/designlayer/requests/` in the project.
+
+**Send to agent** posts to `POST /__designlayer/agent`. The route writes that
+file, queues the change for MCP, and answers `{ok, message, handoffPath,
+changeId, outcome}`. `outcome` is `delivered` (an agent was waiting), `queued`
+(the endpoint is up and nothing is waiting yet) or `undelivered` (nothing serves
+the queue).
 
 ## The Changes tab
 The **Changes** tab holds everything a session produced — the notes you left and
@@ -109,10 +133,9 @@ makes every note in code.
   edit and puts the page back.
 - **One send button.** **Send to agent** hands every note, typed or written by
   the editor, to a coding agent that is already running. It shows once an agent
-  has connected over MCP.
+  has connected over MCP. If no process serves the queue, the send is
+  `undelivered`: nothing is marked sent and the list stays.
 - **One copy.** **Copy** in the tab and the copy shortcut write the same brief.
-  It is not a fallback: the editor cannot see whether an agent is attached, so
-  the paste path has to stay a peer.
 
 The copied or sent brief says more than the row. An edit note carries the
 row's sentence as `**Change:**` (in place of `**Feedback:**`), then an
@@ -122,7 +145,9 @@ Tailwind host), and which component's source to edit. A text edit says to
 change the copy where it is defined, a drag says to move the element through
 the layout instead of a transform, and a delete says to remove what the element
 leaves unused. One line under the header tells the agent that none of the edits
-is in the source yet.
+is in the source yet. If an item went out in an earlier send, that line changes,
+the item carries `**Sent before:**`, and the header adds `**Earlier changes:**`
+with the earlier change ids.
 
 ```md
 ### 9. div #box
@@ -185,7 +210,7 @@ Four tools, which together are a workflow rather than a verb:
 
 | Tool | What it does |
 |---|---|
-| `wait_for_change` | Drains anything already queued, otherwise blocks. Returns the changes with their brief, files and selected element. |
+| `wait_for_change` | Drains anything already queued, otherwise blocks. Returns the changes with their brief and files. |
 | `list_changes` | The same, without blocking. |
 | `get_change` | One change by id. |
 | `resolve_change` | Marks it `applied` or `rejected` with a summary. |
@@ -197,11 +222,12 @@ pressing the button becomes the whole interaction.
 next `wait_for_change` hands back, and an agent that never resolves will re-apply
 its own finished work until you stop it.
 
-## The 55-second ceiling
+## The wait ceiling
 
-`wait_for_change` blocks for at most 55 seconds and then returns
-`{"timeout": true}`. That is not an error; it means nobody has clicked yet, and
-the reply says so, so a model calls again instead of giving up.
+`wait_for_change` blocks for 45 s by default and never more than 55 s, then
+returns `{"timeout": true}` with a `reason` and the measured `waitedSeconds`.
+That is not an error; it means nobody has clicked yet, and the reply says so, so
+a model calls again instead of giving up.
 
 The number is not arbitrary. MCP clients abort a request at 60 seconds by
 default, and the escape hatch — progress notifications with
