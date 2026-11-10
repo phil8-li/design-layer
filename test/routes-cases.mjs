@@ -200,7 +200,12 @@ await check("a control-default file outside the source roots does not stop the r
 
 console.log("\nA sign-in nobody waits for stops")
 
-await check("the sign-in window is told to stop when the panel's request goes away", async () => {
+/*
+ * The route aborts the run when its request closes. Only the caller's Cancel,
+ * the deadline or an unloaded tab closes it: closing the Libraries panel keeps
+ * the request open on purpose (`closeSignIn` in libraries-section.ts).
+ */
+await check("the sign-in window is told to stop when the caller cancels or unloads", async () => {
   let seen = null
   let aborted
   const abortedSeen = new Promise((resolve) => (aborted = resolve))
@@ -228,13 +233,60 @@ await check("the sign-in window is told to stop when the panel's request goes aw
     }).catch(() => null)
     await new Promise((resolve) => setTimeout(resolve, 100))
     assert.ok(seen instanceof AbortSignal, "the route passed no signal to signIn")
-    assert.equal(seen.aborted, false, "the signal fired before the panel gave up")
+    assert.equal(seen.aborted, false, "the signal fired before the caller gave up")
     controller.abort()
     await asked
     const fired = await Promise.race([abortedSeen, new Promise((resolve) => setTimeout(() => resolve(false), 2000))])
-    assert.equal(fired, true, "the window kept waiting after the panel closed the request")
+    assert.equal(fired, true, "the window kept waiting after the caller cancelled the request")
   } finally {
     await withSignin.close()
+  }
+})
+
+/*
+ * The route's own path through `completeSignIn`, with only the browser window
+ * stood in: the session it captures is verified by the real `fetchLibraryUrl`
+ * against a live (loopback) site and stored only because the site opened.
+ */
+await check("a window sign-in is verified against the site and stored only when the site opens", async () => {
+  const site = http.createServer((request, response) => {
+    const open = /session=good/.test(request.headers.cookie ?? "")
+    response.writeHead(open ? 200 : 401, { "content-type": "application/json" })
+    response.end(open ? JSON.stringify({ color: { brand: { value: "#123456" } } }) : "{}")
+  })
+  await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve))
+  const url = `http://127.0.0.1:${site.address().port}/tokens.json`
+  let cookie = "session=good"
+  const signin = {
+    available: async () => true,
+    forgetOrigin: async () => {},
+    status: async () => ({ phase: "idle" }),
+    signIn: async (_url, options = {}) => {
+      const run = new AbortController()
+      return options.confirm(cookie, { signal: run.signal })
+    },
+  }
+  const withSignin = await serve({}, { signin })
+  const ask = () =>
+    fetch(withSignin.at("/libraries/auth/signin"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url }),
+    }).then((response) => response.json())
+  try {
+    const stored = await ask()
+    assert.equal(stored.ok, true, `a session the site accepts was not stored: ${stored.reason}`)
+    const auth = JSON.parse(fs.readFileSync(path.join(withSignin.config.stateDir, "library-auth.json"), "utf8"))
+    assert.deepEqual(auth.credentials.map((entry) => entry.scheme), ["cookie"])
+
+    cookie = "session=bad"
+    const refused = await ask()
+    assert.equal(refused.ok, false)
+    assert.equal(refused.code, "refused")
+    assert.match(refused.reason, /still refuses the editor/)
+  } finally {
+    await withSignin.close()
+    await new Promise((resolve) => site.close(resolve))
   }
 })
 

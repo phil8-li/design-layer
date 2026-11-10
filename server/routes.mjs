@@ -154,8 +154,9 @@ function libraryRoutes({ libraries, auth, signin }, rest, req, res, url) {
       const target = String(body?.url ?? "").trim()
       if (!target) throw badRequest("Signing in needs the url that was refused")
 
-      // A panel that gave up (closed, or the person cancelled) closes the
-      // request; the window it opened should not wait four minutes for nobody.
+      // The caller closes the request when it cancels or unloads (Cancel, the
+      // panel's deadline, a closed tab; closing the Libraries panel keeps it
+      // open), and the window it opened should not wait for nobody.
       const controller = new AbortController()
       res.on("close", () => {
         if (!res.writableEnded) controller.abort()
