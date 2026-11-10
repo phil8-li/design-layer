@@ -102,10 +102,10 @@ await check("an empty POST with no type is refused, so /mcp/stay cannot be switc
 })
 
 await check("a form-encoded POST to a file-writing route is refused", async () => {
-  const response = await fetch(api.at("/source/remove"), {
+  const response = await fetch(api.at("/lint/fix"), {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "operations=[]",
+    body: "ids=[]",
   })
   assert.equal(response.status, 415)
 })

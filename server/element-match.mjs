@@ -1,23 +1,18 @@
 /**
- * Finding the one written element a live DOM node came from, and splicing it.
+ * Finding the one written element a live DOM node came from.
  *
- * Both halves used to live in `angular-source.mjs`, because Angular was the
- * only host whose source this package edited itself — React's edits go through
- * the vendored jscodeshift engine. Deleting an element is the first thing the
- * vendor cannot express, so the React lane now needs the same two answers, and
- * the scoring is not a thing worth having two of: a descriptor means the same
- * in a template and in JSX, and a second copy would drift on the day someone
- * fixed a tie-break in one of them.
- *
- * What is NOT here is the scanning. A template scanner and a JSX walker have
- * nothing in common but their output shape, and that shape is the contract:
+ * `server/angular-source.mjs` scans a template into nodes and asks this which
+ * node a browser-side descriptor names. The scoring lives on its own because it
+ * is a contract, not a scanner: a node is
  *
  *   { tagName, classes[], attributes: Map<name, {value}>, nthOfType,
- *     parentTagName, parentClasses[], start, end, selfClosing, closeEnd }
+ *     parentTagName, parentClasses[] }
+ *
+ * and a descriptor is what `src/core/element-target.ts` reads off the element.
  */
 
 /** Attributes a framework stamps on at runtime, which no source file contains. */
-export const RUNTIME_ATTRIBUTE = /^(?:_ng|ng-reflect-|data-de-)/
+const RUNTIME_ATTRIBUTE = /^(?:_ng|ng-reflect-|data-de-)/
 
 const REQUIRED_TAG_SCORE = 1
 
@@ -33,7 +28,7 @@ const REQUIRED_TAG_SCORE = 1
  * `clsx(...)` and a component's own host classes all add classes at runtime
  * that were never written in the file.
  */
-export function scoreNode(node, descriptor) {
+function scoreNode(node, descriptor) {
   if (node.tagName !== descriptor.tagName) return -1
 
   const live = new Set(descriptor.classes ?? [])
@@ -70,9 +65,8 @@ export function scoreNode(node, descriptor) {
  * The one source node a descriptor names, or null when that is not a fact.
  *
  * `null` on a tie is the whole point. The alternative — taking the first of two
- * equal candidates — writes a style onto an element the user was not looking at,
- * and the user's only clue is that the wrong thing moved. For a deletion it is
- * worse than that: the wrong thing disappears.
+ * equal candidates — points the inspector and the agent at an element the user
+ * was not looking at.
  */
 export function matchNode(nodes, descriptor) {
   let best = null
@@ -90,47 +84,4 @@ export function matchNode(nodes, descriptor) {
     }
   }
   return tied ? null : best
-}
-
-/**
- * A byte range grown to the whole line, when the range had that line to itself.
- *
- * Cutting exactly `<div …>…</div>` out of a file is correct and looks like a
- * bug: the line stays behind holding nothing but its own indentation, and the
- * next person to open the file sees a ragged hole rather than markup with one
- * thing taken out of it. An element sharing its line with a sibling or with
- * text keeps every byte of that line that is not its own.
- */
-export function lineExtendedRange(start, end, text) {
-  let before = start
-  while (before > 0 && (text[before - 1] === " " || text[before - 1] === "\t")) before -= 1
-  const ownsLineStart = before === 0 || text[before - 1] === "\n"
-
-  let after = end
-  while (after < text.length && (text[after] === " " || text[after] === "\t")) after += 1
-  const ownsLineEnd = after >= text.length || text[after] === "\n"
-
-  if (!ownsLineStart || !ownsLineEnd) return { start, end }
-  return {
-    start: before,
-    // The newline goes with the line, not the next one: keeping it would leave
-    // an empty line behind, and taking the one BEFORE the indentation would
-    // pull the previous line's break and join two unrelated lines together.
-    end: after < text.length ? after + 1 : after,
-  }
-}
-
-/** Splices applied back to front, the only order in which earlier offsets stay valid. */
-export function applyEdits(source, edits) {
-  const ordered = [...edits].sort((a, b) => b.start - a.start)
-  let output = source
-  let previousStart = Number.POSITIVE_INFINITY
-  for (const edit of ordered) {
-    // Two operations on one element can produce overlapping splices — merging
-    // them is the caller's job, so an overlap here is a bug worth surfacing.
-    if (edit.end > previousStart) throw new Error("overlapping edits to one file")
-    output = output.slice(0, edit.start) + edit.text + output.slice(edit.end)
-    previousStart = edit.start
-  }
-  return output
 }

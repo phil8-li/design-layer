@@ -34,8 +34,6 @@ import { isLocalRequest } from "./loopback.mjs"
 import { mcpControl } from "./mcp-control.mjs"
 import { createOptionsStore, normalizeOptionSet } from "./options-store.mjs"
 import { createPageCatalog } from "./pages.mjs"
-import { createReactSource } from "./react-source.mjs"
-import { readInsertOperations } from "./source-insert.mjs"
 import { createVariantCatalog } from "./variants.mjs"
 
 export { isLocalRequest }
@@ -356,22 +354,15 @@ function controlTarget(searchParams) {
 }
 
 /**
- * The two Angular verbs, which exist because the vendored engine has no
- * equivalent for either.
+ * The Angular verb, which exists because the vendored engine has no
+ * equivalent for it.
  *
  * `/angular/source` answers "where is this element written". On React that
  * answer comes from a fiber walk in the browser; here the browser can only read
  * a component CLASS NAME off Angular's `ng` global, and turning that into a
  * file means reading the project, which only this side can do.
- *
- * `/angular/apply` is what "Apply to code" calls instead of the vendor's
- * `commitBatch` WebSocket message. It is a plain HTTP route rather than a
- * second socket because it is request/response — the browser needs to be told
- * which operations landed and which did not, and the vendor's protocol has no
- * verb that answers.
  */
 function angularRoutes({ angular, framework }, rest, req, res, url) {
-  const readBody = () => readJsonBody(req)
   if (!rest.startsWith("/angular/")) return null
   if (framework !== "angular") {
     throw badRequest("This project is not an Angular host", 409)
@@ -392,73 +383,11 @@ function angularRoutes({ angular, framework }, rest, req, res, url) {
     return sendJson(res, 200, { source: angular.resolve(componentName, descriptor) })
   }
 
-  if (rest === "/angular/apply" && req.method === "POST") {
-    return readBody().then((body) => {
-      const operations = Array.isArray(body?.operations) ? body.operations : null
-      if (!operations) throw badRequest("Angular apply needs an operations array")
-      if (operations.length > 500) throw badRequest("Too many operations in one apply")
-      sendJson(res, 200, angular.apply(operations))
-    })
-  }
-
   throw badRequest(`No designlayer route for ${req.method} ${url.pathname}`, 404)
 }
 
-/**
- * Deleting an element, the one write both hosts route through this server.
- *
- * Every other source write is host-specific by construction — React's go down
- * the vendored engine's WebSocket, Angular's through `/angular/apply` — and a
- * removal is the first one neither of those can express. So the browser sends
- * one shape and the framework decides what a removal means: a template splice
- * on Angular, a JSX splice on React. Keeping the fork here rather than in the
- * browser is what lets the canvas, the layers panel and the toolbar hold one
- * delete command instead of two that have to be kept in step.
- */
-async function removeElements(angular, react, framework, body) {
-  const operations = Array.isArray(body?.operations) ? body.operations : null
-  if (!operations) throw badRequest("Delete needs an operations array")
-  if (operations.length > 200) throw badRequest("Too many elements in one delete")
-  for (const operation of operations) {
-    if (!operation?.target?.tagName) throw badRequest("Each delete needs a target element")
-  }
-
-  if (framework !== "angular") return react.remove(operations)
-  return angular.apply(
-    operations.map((operation) => ({
-      op: "removeElement",
-      componentName: operation.componentName,
-      target: operation.target,
-    }))
-  )
-}
-
-/**
- * Inserting an element, the sibling of the removal above and the same bargain.
- *
- * The browser sends one shape and the framework decides what placing a
- * component means in the language the project is written in: a template splice
- * plus a standalone `imports` entry on Angular, a JSX splice plus an ES import
- * on React. The fork stays here for the reason the deletion's does — the assets
- * panel, the canvas drop target and the details popover all issue one insert
- * command rather than two that have to be kept in step.
- *
- * It differs from the deletion in one way worth stating. A removal's inputs are
- * a description of something the user is already looking at; an insertion's
- * include `markup`, which this process writes into the user's source verbatim.
- * That makes the request shape a safety boundary rather than a convenience, so
- * it is validated in full — every field, and the markup against an allowlist —
- * before either host is handed anything. `readInsertOperations` throws on a
- * violation, which lands as a 400 here and never reaches a file.
- */
-async function insertElements(angular, react, framework, body) {
-  const operations = readInsertOperations(body)
-  if (framework !== "angular") return react.insert(operations)
-  return angular.apply(operations)
-}
-
 async function route(deps, req, res, url) {
-  const { store, defaults, agent, icons, variants, pages, usage, apps, angular, react, framework, prefix, mcpPort } = deps
+  const { store, defaults, agent, icons, variants, pages, usage, apps, prefix, mcpPort } = deps
   const { pathname, searchParams } = url
   const rest = pathname.slice(prefix.length)
 
@@ -470,16 +399,6 @@ async function route(deps, req, res, url) {
 
   const audit = lintRoutes(deps, rest, req, res, url)
   if (audit !== null) return audit
-
-  if (rest === "/source/remove" && req.method === "POST") {
-    sendJson(res, 200, await removeElements(angular, react, framework, await readJsonBody(req)))
-    return
-  }
-
-  if (rest === "/source/insert" && req.method === "POST") {
-    sendJson(res, 200, await insertElements(angular, react, framework, await readJsonBody(req)))
-    return
-  }
 
   if (rest === "/options" && req.method === "GET") {
     sendJson(res, 200, await store.readOptionSets())
@@ -716,7 +635,6 @@ export function createDesignLayerRoutes(config = resolveConfig(), overrides = {}
   // environment variable this does.
   const apps = createAppSwitcher()
   const angular = createAngularSource(config)
-  const react = createReactSource(config)
   const framework = config.host?.framework ?? "react"
   const deps = {
     store,
@@ -732,7 +650,6 @@ export function createDesignLayerRoutes(config = resolveConfig(), overrides = {}
     usage,
     apps,
     angular,
-    react,
     framework,
     prefix,
     mcpPort: config.ports?.mcp ?? null,

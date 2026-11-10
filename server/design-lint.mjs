@@ -5,7 +5,7 @@
  * A checker already installed in the project is the only kind worth running.
  * This package ships none of its own and resolves every one of them from the
  * PROJECT's `node_modules`, the way `server/variants.mjs` and
- * `server/react-source.mjs` resolve the host's parser: a linter bundled here
+ * `server/component-usage.mjs` resolve the host's parser: a linter bundled here
  * would be checking the designer's stylesheet against a configuration nobody in
  * their repository wrote, and would disagree with the `npm run lint` their CI
  * runs. The audit is a second face on the check the project already has, never
@@ -62,8 +62,6 @@ import fs from "node:fs/promises"
 import { createRequire } from "node:module"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
-
-import { applyEdits } from "./element-match.mjs"
 
 /**
  * The checkers this module knows how to drive, and the names the panel shows.
@@ -872,6 +870,24 @@ function readIds(body) {
     clean.push(id)
   }
   return [...new Set(clean)]
+}
+
+/**
+ * Splices applied back to front, the only order in which earlier offsets stay
+ * valid. The caller drops overlapping fixes first; an overlap that reaches
+ * here is a bug worth surfacing, so it throws rather than writing a corrupt
+ * file.
+ */
+function applyEdits(source, edits) {
+  const ordered = [...edits].sort((a, b) => b.start - a.start)
+  let output = source
+  let previousStart = Number.POSITIVE_INFINITY
+  for (const edit of ordered) {
+    if (edit.end > previousStart) throw new Error("overlapping edits to one file")
+    output = output.slice(0, edit.start) + edit.text + output.slice(edit.end)
+    previousStart = edit.start
+  }
+  return output
 }
 
 /** One audit per project. */
