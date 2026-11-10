@@ -70,7 +70,7 @@ import { isEditableSourcePath, resolveEditableSource } from "../config.mjs"
 import { scanTemplate } from "./angular-source.mjs"
 import { createLimiter } from "./file-io.mjs"
 import { scanJsx } from "./react-source.mjs"
-import { httpError as refusal } from "./http-error.mjs"
+import { httpError as refusal } from "../runtime/http-error.mjs"
 
 /**
  * Guards on a directory nobody vetted, not product limits.

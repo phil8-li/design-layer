@@ -52,7 +52,7 @@ import path from "node:path"
 import { DEFAULT_CONFIG } from "../config.mjs"
 import { writeFileAtomic } from "./state-dir.mjs"
 import { createHandoffQueue } from "../server/handoff.mjs"
-import { httpError as refusal } from "../server/http-error.mjs"
+import { httpError as refusal } from "./http-error.mjs"
 import { closeEndpoint, openEndpoint } from "../server/mcp.mjs"
 
 /** Long enough for an editor to let the port go; see `openEndpoint`. */

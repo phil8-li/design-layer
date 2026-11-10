@@ -63,6 +63,7 @@ import { createRequire } from "node:module"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
+import { httpError as badRequest } from "../runtime/http-error.mjs"
 import { writeFileAtomicAsync } from "../runtime/state-dir.mjs"
 
 /**
@@ -176,12 +177,6 @@ const CHILD_FLAG = "--design-lint-tool"
 const MAX_TAILWIND_PROBES = 300
 /** Enough of a stylesheet to find a directive that only ever appears at the top of one. */
 const TAILWIND_PROBE_BYTES = 64 * 1024
-
-function badRequest(message, statusCode = 400) {
-  const error = new Error(message)
-  error.statusCode = statusCode
-  return error
-}
 
 /** A POSIX, project-relative path, or null for a file outside the project. */
 function projectRelative(projectRoot, absolute) {

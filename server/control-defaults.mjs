@@ -6,7 +6,7 @@ import { createRequire } from "node:module"
 
 import { isEditableSourcePath } from "../config.mjs"
 import { writeFileAtomicAsync } from "../runtime/state-dir.mjs"
-import { httpError as refusal } from "./http-error.mjs"
+import { httpError as refusal } from "../runtime/http-error.mjs"
 import { createSerial } from "./serial.mjs"
 
 function unwrap(node) {

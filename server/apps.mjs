@@ -19,7 +19,7 @@
 import { chooserUrlFromEnv } from "../runtime/chooser-url.mjs"
 import { listEditors } from "../runtime/editor-registry.mjs"
 import { lastPage, portOfUrl, rememberPage } from "../runtime/last-pages.mjs"
-import { httpError as refusal } from "./http-error.mjs"
+import { httpError as refusal } from "../runtime/http-error.mjs"
 
 // The chooser's own scan is the floor: it probes every candidate port
 // concurrently with a 1.5s ceiling and then reads package.json off disk for the

@@ -19,6 +19,7 @@ import path from "node:path"
 import { createRequire } from "node:module"
 
 import { resolveEditableSource } from "../config.mjs"
+import { httpError as refusal } from "../runtime/http-error.mjs"
 
 /**
  * The shipped recognizers, and the export a host config should thread through.
@@ -35,12 +36,6 @@ export const DEFAULT_VARIANT_RECOGNIZERS = Object.freeze([
 const MAX_DECLARATIONS = 40
 const MAX_AXES = 24
 const MAX_OPTIONS = 64
-
-function refusal(message, statusCode = 400) {
-  const error = new Error(message)
-  error.statusCode = statusCode
-  return error
-}
 
 function unwrap(node) {
   let current = node

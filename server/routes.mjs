@@ -16,6 +16,7 @@
  */
 
 import { resolveConfig } from "../config.mjs"
+import { httpError as badRequest } from "../runtime/http-error.mjs"
 import { mergeEntries as mergeStorageEntries, readEntries as readStorageEntries } from "../runtime/app-storage.mjs"
 import { createAgent } from "./agent.mjs"
 import { createAngularSource } from "./angular-source.mjs"
@@ -23,7 +24,6 @@ import { createAppSwitcher } from "./apps.mjs"
 import { createComponentUsage } from "./component-usage.mjs"
 import { createControlDefaults, refusingControlDefaults } from "./control-defaults.mjs"
 import { createDesignLint } from "./design-lint.mjs"
-import { httpError } from "./http-error.mjs"
 import { contentTypeRefusal, readBody, sendJson } from "./http-json.mjs"
 import { createIconSet } from "./icon-set.mjs"
 import { createAuthStore } from "./library-auth.mjs"
@@ -49,8 +49,6 @@ const TRAVERSAL_PATTERN = /(^|\/)\.\.(\/|$)/
 // `library-sources.mjs`), so anything outside `[a-z0-9-]` is a client composing
 // paths rather than echoing back an id it was handed.
 const LIBRARY_ID_PATTERN = /^[a-z0-9-]{1,200}$/
-
-const badRequest = httpError
 
 /** The body as JSON, or null when there is none. */
 async function readJsonBody(req) {

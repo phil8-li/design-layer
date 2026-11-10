@@ -6,7 +6,7 @@
  * only one of them refused a body that was not JSON.
  */
 
-import { httpError } from "./http-error.mjs"
+import { httpError } from "../runtime/http-error.mjs"
 
 export function sendJson(res, statusCode, payload, extraHeaders = {}) {
   const body = Buffer.from(JSON.stringify(payload))

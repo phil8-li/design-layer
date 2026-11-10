@@ -17,6 +17,7 @@ import os from "node:os"
 import path from "node:path"
 
 import { isLoopbackHost } from "./chooser-url.mjs"
+import { httpError as badRequest } from "./http-error.mjs"
 
 import { isDirectory } from "./local-apps.mjs"
 
@@ -24,12 +25,9 @@ import { isDirectory } from "./local-apps.mjs"
 // routes with a private copy of it.
 export { isLoopbackHost }
 
-/** An error the server answers with `statusCode` and the message as the sentence. */
-export function badRequest(message, statusCode = 400) {
-  const error = new Error(message)
-  error.statusCode = statusCode
-  return error
-}
+// The one refusal (an error the server answers with `statusCode` and the
+// message as the sentence), re-exported under the name the start screen uses.
+export { badRequest }
 
 
 /**

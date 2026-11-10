@@ -52,6 +52,7 @@ import { createHash } from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
 
+import { httpError as badRequest } from "../runtime/http-error.mjs"
 import { writeFileAtomicAsync } from "../runtime/state-dir.mjs"
 
 import { importedStylesheets } from "./design-system-detect.mjs"
@@ -218,12 +219,6 @@ const FRAMEWORK_LABELS = { react: "React", angular: "Angular" }
  */
 const MIN_SYSTEM_TOKENS = 8
 const MIN_SINGLE_AXIS_TOKENS = 24
-
-function badRequest(message, statusCode = 400) {
-  const error = new Error(message)
-  error.statusCode = statusCode
-  return error
-}
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
