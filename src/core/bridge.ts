@@ -142,7 +142,6 @@ export interface RewriteBridge {
 declare global {
   interface Window {
     __DESIGNLAYER_BRIDGE__?: RewriteBridge
-    __DESIGNLAYER_WS_PORT__?: number
     /** The patched vendor's deferred boot; see `whenBridgeReady`. */
     __DESIGNLAYER_VENDOR_BOOT__?: () => void
   }

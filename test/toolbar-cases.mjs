@@ -16,7 +16,7 @@ import vm from "node:vm"
 import { JSDOM } from "jsdom"
 
 import { browserPrelude, resolveConfig } from "../config.mjs"
-import { chooserUrlFromEnv } from "../runtime/launcher.mjs"
+import { chooserUrlFromEnv } from "../runtime/chooser-url.mjs"
 import { PACKAGE_DIR } from "./host.mjs"
 
 let passed = 0
