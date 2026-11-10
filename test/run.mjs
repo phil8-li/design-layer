@@ -76,7 +76,7 @@ const EXCLUDED = {
 const PARALLEL_SAFE = new Set([
   "test/angular-cases", "test/annotation-cases", "test/app-chooser-cases",
   "test/app-storage-cases", "test/app-viewport-cases",
-  "test/appearance-typography-cases", "test/apply-ahead-cases",
+  "test/appearance-typography-cases",
   "test/apply-source-cases", "test/apply-token-cases", "test/audit-cases",
   "test/board-cases", "test/board-frame-cases", "test/boot-cases",
   "test/changes-tab-cases", "test/clipboard-cases", "test/code-tab-cases",

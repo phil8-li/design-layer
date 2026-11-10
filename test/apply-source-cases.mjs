@@ -609,9 +609,8 @@ await check("AS-17 a source that lands after the click patches the record, not t
 })
 
 /*
- * The server rehearses an Apply before it is clicked (`runtime/apply-ahead.mjs`)
- * so the click only waits for a write. It can only rehearse what it is shown:
- * the queue's operations, once the edits settle — not one message per edit.
+ * Edits are notes for the agent: the editor sends the server nothing while
+ * they happen, so no commit and no rehearsal of one reaches the vendor.
  */
 await check("AS-18 edits send the server nothing: no commit and no rehearsal of one", async () => {
   resetSourceResolutionCache()

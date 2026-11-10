@@ -4,16 +4,16 @@
  * The vendor's `transform.js` imports jscodeshift at module scope, and its
  * `server.js` imports `transform.js` the same way, so every launch built
  * jscodeshift, recast, ast-types and their parsers before the proxy could bind:
- * ~20ms of a ~100ms launch, measured, spent on an engine that is first needed
- * when a change is written to source — which the editor rehearses while the
- * edits settle (`apply-ahead.mjs`), so the click never waits for it either.
+ * ~20ms of a ~100ms launch, measured, spent on an engine that is only needed
+ * when the vendor writes a change to source, which the editor no longer asks
+ * it to do (edits are notes for the agent).
  *
  * The package stays untouched on disk. While the vendor's modules load, a
  * resolve hook answers `transform.js`'s `import jscodeshift` with a stand-in:
  * a proxy whose every use — `jscodeshift.withParser(…)` is the only one there
  * is, always inside a function — requires the real module and forwards to it.
  * `require` returns the same instance to everyone, so a patch made on the real
- * module (`apply-ahead.mjs` wraps `withParser`) is the module the vendor uses.
+ * module is the module the vendor uses.
  *
  * `module.registerHooks` is Node 22.15/23.5 and later; on an older Node this
  * does nothing and jscodeshift loads with the vendor, as it always did.
