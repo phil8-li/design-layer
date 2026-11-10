@@ -100,6 +100,7 @@ const bundled = await build({
       export { createWriter } from "./src/core/writer"
       export * as history from "./src/core/history"
       export { previewOnlyChanges, clearPreviewOnly } from "./src/core/change-prompt"
+      export * as store from "./src/core/store"
     `,
     resolveDir: PACKAGE_DIR,
     loader: "ts",
@@ -113,7 +114,7 @@ const bundled = await build({
 const editor = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString("base64")}`
 )
-const { history, previewOnlyChanges, clearPreviewOnly } = editor
+const { history, previewOnlyChanges, clearPreviewOnly, store } = editor
 
 const queued = []
 const toasts = []
@@ -180,9 +181,18 @@ const reset = (...selections) => {
   state.selection = selections
 }
 
+// A move carries the button that is down, as a real one does: the gesture reads
+// a move with no button down as a release the window never heard, and cancels.
 const fire = (target, type, init) =>
   target.dispatchEvent(
-    new window.PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, button: 0, ...init })
+    new window.PointerEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 1,
+      button: 0,
+      ...(type === "pointermove" ? { buttons: 1 } : {}),
+      ...init,
+    })
   )
 
 /** A whole gesture: press at the first point, move through the rest, release. */
@@ -311,7 +321,7 @@ check("DW-05 undo puts the element back where the gesture found it", () => {
   assert.equal(element.style.transform, "translate(50px, 50px)")
 })
 
-check("DW-06 a multi-selection drag moves and records every member", () => {
+check("DW-06 a multi-selection drag moves and records every member, as one step", () => {
   const first = mount('<div class="a" style="transform: translate(4px, 0px)">A</div>')
   const second = mount('<div class="b">B</div>')
   reset(selectionFor(first), selectionFor(second))
@@ -330,16 +340,128 @@ check("DW-06 a multi-selection drag moves and records every member", () => {
     ledger.map((change) => change.className).sort(),
     ["a", "b"]
   )
-  // Once per element, so undo walks the set back rather than stranding half of
-  // it at the dragged position.
+  // One step for the whole set, as a multi-delete is: one Cmd+Z takes the
+  // whole drag back rather than a fraction of it.
   history.undo()
-  history.undo()
-  assert.equal(history.canUndo(), false)
+  assert.equal(history.canUndo(), false, "the drag took more than one step")
   assert.equal(first.style.transform, "translate(4px, 0px)")
   // `none` rather than an empty string: the member that had no inline transform
   // is reverted to its computed one, which is what keeps the undone move out of
   // the pending source operation. Visually identical, and expressible.
   assert.equal(second.style.transform, "none", "the second member never had its move recorded")
+})
+
+check("DW-20 pressing any member of a multi-selection carries the whole set", () => {
+  const first = mount('<div class="a">A</div>')
+  const second = mount('<div class="b">B</div>')
+  reset(selectionFor(first), selectionFor(second))
+  // Pressed on the second member, not the primary.
+  drag(second, [
+    [0, 0],
+    [25, 0],
+  ])
+  assert.equal(first.style.transform, "translate(25px, 0px)", "the primary stayed behind")
+  assert.equal(second.style.transform, "translate(25px, 0px)")
+  assert.equal(previewOnlyChanges().length, 2)
+})
+
+// ── Every way a drag ends early writes nothing ─────────────────────────────
+
+console.log("\nA drag ended early")
+
+/** Presses the element and drags it 20px, leaving the button down. */
+function midDrag(element) {
+  fire(element, "pointerdown", { clientX: 0, clientY: 0 })
+  fire(element, "pointermove", { clientX: 20, clientY: 0 })
+  assert.equal(element.style.transform, "translate(30px, 20px)", "the drag never started")
+}
+
+/** Nothing written, the preview back where it was, transitions back on. */
+function untouched(element) {
+  assert.equal(element.style.transform, "translate(10px, 20px)")
+  assert.equal(element.style.transition, "")
+  assert.equal(history.canUndo(), false, "a cancelled drag left an undo step")
+  assert.equal(previewOnlyChanges().length, 0, "a cancelled drag left a note")
+  assert.equal(refreshes.length, 0)
+}
+
+const card = () => mount('<div class="card" style="transform: translate(10px, 20px)">Card</div>')
+
+check("DW-21 Escape mid-drag puts the element back and writes nothing", () => {
+  const element = card()
+  reset(selectionFor(element))
+  midDrag(element)
+  const escape = new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+  window.document.body.dispatchEvent(escape)
+  assert.equal(escape.defaultPrevented, true, "Escape was not spent, so the shell would also collapse")
+  untouched(element)
+  // The release that follows is not a second chance to commit.
+  fire(element, "pointermove", { clientX: 40, clientY: 0 })
+  fire(element, "pointerup", {})
+  untouched(element)
+})
+
+check("DW-22 a deselect mid-drag cancels it instead of committing on release", () => {
+  const element = card()
+  reset(selectionFor(element))
+  midDrag(element)
+  state.selection = []
+  fire(element, "pointermove", { clientX: 40, clientY: 0 })
+  fire(element, "pointerup", {})
+  untouched(element)
+})
+
+check("DW-23 the editor standing down mid-drag cancels it", () => {
+  const element = card()
+  reset(selectionFor(element))
+  midDrag(element)
+  try {
+    store.setMode("interactive")
+    untouched(element)
+    fire(element, "pointerup", {})
+    untouched(element)
+  } finally {
+    store.setMode("inspecting")
+  }
+})
+
+check("DW-24 a move with no button down is a lost release: cancelled, and the next press starts clean", () => {
+  const element = card()
+  const other = mount('<div class="other">Other</div>')
+  reset(selectionFor(element))
+  midDrag(element)
+  fire(element, "pointermove", { clientX: 60, clientY: 0, buttons: 0 })
+  untouched(element)
+  state.selection = [selectionFor(other)]
+  fire(other, "pointerdown", { clientX: 0, clientY: 0 })
+  fire(other, "pointerup", {})
+  untouched(element)
+})
+
+check("DW-25 a target that leaves the page mid-drag is not committed", () => {
+  const element = card()
+  reset(selectionFor(element))
+  midDrag(element)
+  element.remove()
+  fire(window.document.body, "pointermove", { clientX: 40, clientY: 0 })
+  fire(window.document.body, "pointerup", {})
+  assert.equal(history.canUndo(), false)
+  assert.equal(previewOnlyChanges().length, 0, "a ledger row was filed for an element that is gone")
+})
+
+check("DW-26 a lost pointer capture and a lost window focus each cancel", () => {
+  for (const end of [
+    (element) => element.dispatchEvent(new window.PointerEvent("lostpointercapture", { bubbles: true, pointerId: 1 })),
+    () => window.dispatchEvent(new window.Event("blur")),
+  ]) {
+    const element = card()
+    reset(selectionFor(element))
+    midDrag(element)
+    end(element)
+    untouched(element)
+    fire(element, "pointerup", {})
+    untouched(element)
+  }
 })
 
 // ── A resize ───────────────────────────────────────────────────────────────

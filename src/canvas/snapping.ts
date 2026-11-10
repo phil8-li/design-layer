@@ -12,18 +12,11 @@ import { appInsets } from "../shell/shell"
 import type { EditorContext } from "../core/context"
 import type { LayerElement } from "../core/types"
 import { createNodePool, placeBadge } from "./selection"
-import { isAltDown, onDragEnd, onDragStart, onDragUpdate } from "./transform"
+import { boxOf, type Axis, type Box } from "./measure"
+import { isAltDown } from "./modifiers"
+import { onDragEnd, onDragStart, onDragUpdate } from "./transform"
 
 const THRESHOLD = 5
-
-type Axis = "x" | "y"
-
-interface Box {
-  left: number
-  top: number
-  right: number
-  bottom: number
-}
 
 /** A line to snap to: `value` on its own axis, spanning `from`..`to` on the other. */
 interface Guide {
@@ -52,11 +45,6 @@ interface SpacingSnap {
   after: Box
 }
 
-function boxOf(element: Element): Box {
-  const rect = element.getBoundingClientRect()
-  return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
-}
-
 function collect(element: LayerElement): Candidates {
   const x: Guide[] = []
   const y: Guide[] = []
@@ -76,11 +64,11 @@ function collect(element: LayerElement): Candidates {
   }
 
   const parent = element.parentElement
-  if (parent && isCanvasElement(parent)) addBox(boxOf(parent))
+  if (parent && isCanvasElement(parent)) addBox(boxOf(parent.getBoundingClientRect()))
 
   for (const child of parent ? Array.from(parent.children) : []) {
     if (child === element || !isCanvasElement(child)) continue
-    const box = boxOf(child)
+    const box = boxOf(child.getBoundingClientRect())
     if (box.right <= box.left || box.bottom <= box.top) continue
     siblings.push(box)
     addBox(box)
@@ -169,7 +157,7 @@ export function installSnapping(context: EditorContext): void {
    * of both spellings confirmed. Only for this solid line: a dashed gradient
    * would stretch with the scale.
    */
-  const snap = (size: number) => (size > 0 ? Math.max(1, Math.round(size)) : 0)
+  const guideScale = (size: number) => (size > 0 ? Math.max(1, Math.round(size)) : 0)
   const placeLine = (x: number, y: number, width: number, height: number) => {
     const node = lines.take()
     if (node.style.width !== "1px") {
@@ -177,7 +165,7 @@ export function installSnapping(context: EditorContext): void {
       node.style.height = "1px"
       node.style.transformOrigin = "0 0"
     }
-    node.style.transform = `translate(${x}px, ${y}px) scale(${snap(width)}, ${snap(height)})`
+    node.style.transform = `translate(${x}px, ${y}px) scale(${guideScale(width)}, ${guideScale(height)})`
   }
 
   /** One line per snapped axis, spanning every candidate that shares the value:
@@ -257,7 +245,7 @@ export function installSnapping(context: EditorContext): void {
     if (useSpaceX && spaceX) {
       proposed.left += spaceX.delta
     } else if (snapX) {
-      if (moving || snapX.edge === 1) proposed.left += snapX.delta
+      if (moving) proposed.left += snapX.delta
       else if (snapX.edge === 0) {
         proposed.left += snapX.delta
         proposed.width = Math.max(1, proposed.width - snapX.delta)
@@ -267,7 +255,7 @@ export function installSnapping(context: EditorContext): void {
     if (useSpaceY && spaceY) {
       proposed.top += spaceY.delta
     } else if (snapY) {
-      if (moving || snapY.edge === 1) proposed.top += snapY.delta
+      if (moving) proposed.top += snapY.delta
       else if (snapY.edge === 0) {
         proposed.top += snapY.delta
         proposed.height = Math.max(1, proposed.height - snapY.delta)

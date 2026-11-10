@@ -22,7 +22,7 @@ export interface LayerBridge {
   elementInfo(el: Element): RewriteElementInfo | null
 }
 
-export interface LayerMeta {
+interface LayerMeta {
   info: RewriteElementInfo | null
   /** See `layerName`. */
   name: string
@@ -122,11 +122,8 @@ export function toSelectable(element: Element | null): LayerElement | null {
 export interface Resolver {
   bridge: LayerBridge
   meta(element: Element): LayerMeta
-  isLayerRoot(element: Element): boolean
   /** Outermost container. Clicking here, or Escape, returns the scope to it. */
   scopeRoot(): Element
-  /** Candidate DOM children, in document order. */
-  children(element: Element): Element[]
   /** The direct selectable children in the one shared layer graph. */
   layerChildren(container: Element): LayerElement[]
   layerParent(element: Element): LayerElement | null
@@ -177,10 +174,9 @@ function createResolver(bridge: LayerBridge): Resolver {
     return { info, name, tag: element.tagName.toLowerCase(), isRoot }
   }
 
-  const isLayerRoot = (element: Element) => fiber(element).isRoot
-
   const scopeRoot = () => document.body
 
+  /** Candidate DOM children, in document order. */
   const children = (element: Element): Element[] =>
     Array.from(element.children).filter((child): child is Element => isLayerCandidate(child))
 
@@ -360,9 +356,7 @@ function createResolver(bridge: LayerBridge): Resolver {
   return {
     bridge,
     meta,
-    isLayerRoot,
     scopeRoot,
-    children,
     layerChildren,
     layerParent,
     layerSiblings,

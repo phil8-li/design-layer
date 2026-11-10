@@ -145,7 +145,7 @@ function wrapAnimate(): void {
   proto.animate = wrapped
 }
 
-export interface MotionWatch {
+interface MotionWatch {
   /** Start listening for movement; the loop calls this as it rests. */
   arm(): void
   /** Stop; the loop is running and sees movement for itself. */

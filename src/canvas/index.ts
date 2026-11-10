@@ -6,33 +6,90 @@
  * `core/resolve`, never on its own. Direct manipulation (drag, resize,
  * snapping, measurement, marquee) is layered on by the modules this installs,
  * so each concern owns one file.
+ *
+ * The canvas rows of the keymap (`owner: "canvas"` in `core/keymap.ts`) are
+ * registered here as commands, under the same handlers the keys run, so the
+ * layer header's "Select parent" and any other caller of `runCommand` reach
+ * exactly what Shift+Enter does. The keys are still heard here rather than in
+ * `shell/shortcuts.ts`, because Escape has to cancel a running gesture before
+ * it deselects and Tab is claimed only while something is selected.
  */
 
-import { registerCommand } from "../core/commands"
+import { registerCommand, type CommandId } from "../core/commands"
 import { isCanvasElement, isChrome } from "../core/dom"
-import { canvasAction, isDeepSelect, NUDGE, ownsCanvasKeys } from "../core/keymap"
+import { canvasAction, isDeepSelect, NUDGE, ownsCanvasKeys, type CanvasAction } from "../core/keymap"
 import { getResolver, isLayerCandidate, toSelectable } from "../core/resolve"
 import { isLocked, selectionOwnsInput } from "../core/store"
 import { createWriter } from "../core/writer"
 import type { EditorContext } from "../core/context"
 import type { LayerElement } from "../core/types"
+import { cancelGestures } from "./gesture"
+import { installModifiers } from "./modifiers"
 import { dipHoverOutline, installSelectionFrame, releaseHoverDip } from "./selection"
-import { installTransform, translateBy } from "./transform"
+import { installTransform, onDragStart, translateBy } from "./transform"
 import { installSnapping } from "./snapping"
 import { installSpacingHandles } from "./spacing-handles"
 import { installMarquee } from "./marquee"
 import { installLayerMenu } from "./layer-menu"
 import { installTextEditNotes } from "./text-edit"
 
+/**
+ * The drilled scope, with one writer and one reader.
+ *
+ * `scope` and `selection` are two fields of the store, and they used to be
+ * cleared together by hand in three places and written in nine, each reader
+ * patching a scope the app had since unmounted on its own. `activeScope` is the
+ * reader: a detached scope reads as none. `setScope` is the writer, and
+ * `clearSelection` the one way to empty both. Local to the canvas for now; the
+ * store is the right home once it grows the pair (see the lane report).
+ */
+export interface ScopeAccess {
+  activeScope(): Element | null
+  setScope(scope: Element | null): void
+  clearSelection(): void
+}
+
+function scopeAccess(context: EditorContext): ScopeAccess {
+  const setScope = (scope: Element | null) => context.setState({ scope })
+  return {
+    activeScope: () => {
+      const held = context.getState().scope
+      return held?.isConnected ? held : null
+    },
+    setScope,
+    clearSelection: () => {
+      context.select(null)
+      setScope(null)
+    },
+  }
+}
+
+/**
+ * The commands behind the canvas rows of the keymap that a nullary call can
+ * mean. Nudge is not here: a nudge needs a direction and a step, which only a
+ * key press carries.
+ */
+const CANVAS_COMMANDS: Record<Exclude<CanvasAction, "nudge">, CommandId> = {
+  deselect: "select.none",
+  "select-child": "select.child",
+  "select-parent": "select.parent",
+  "next-sibling": "select.next",
+  "prev-sibling": "select.prev",
+  delete: "element.delete",
+}
+
 export function installCanvas(context: EditorContext): void {
   const writer = createWriter(context.bridge)
   const resolver = getResolver(context.bridge)
+  const scope = scopeAccess(context)
 
+  // First, so every gesture listener added after it reads this event's keys.
+  installModifiers()
   installSelectionFrame(context)
   installTransform(context, writer)
   installSnapping(context)
   installSpacingHandles(context, writer)
-  installLayerMenu(context)
+  installLayerMenu(context, scope)
   installTextEditNotes(context, writer)
 
   // `select()` early-returns when the element is already the whole selection,
@@ -86,19 +143,19 @@ export function installCanvas(context: EditorContext): void {
   /** The one answer both the outline and the click use. */
   const targetFor = (hit: Element | null, deep: boolean): LayerElement | null => {
     if (!hit) return null
-    const scope = context.getState().scope
+    const held = scope.activeScope()
     let found: LayerElement | null
-    if (memo && memo.hit === hit && memo.deep === deep && memo.scope === scope) found = memo.found
+    if (memo && memo.hit === hit && memo.deep === deep && memo.scope === held) found = memo.found
     else {
-      found = resolver.resolve(hit, scope, deep)
-      memo = { hit, deep, scope, found }
+      found = resolver.resolve(hit, held, deep)
+      memo = { hit, deep, scope: held, found }
     }
     // A locked layer is invisible to the pointer, hover included. The tree does
     // not ask this question, which is the only way back out of the lock.
     return isLocked(found) ? null : found
   }
 
-  const marquee = installMarquee(context)
+  const marquee = installMarquee(context, scope)
 
   const setHovered = (hovered: Element | null) => {
     if (context.getState().hovered !== hovered) context.setState({ hovered })
@@ -152,7 +209,39 @@ export function installCanvas(context: EditorContext): void {
     setHovered(targetFor(pointerHit, isDeepSelect(event)))
   }
 
+  /** What a press selects, and where it leaves the scope. */
+  const pick = (target: LayerElement, hit: Element | null, deep: boolean, additive: boolean) => {
+    // Shift is a toggle, not an append: clicking a selected element again with
+    // shift held takes it back out of the set.
+    if (additive) context.select(target, { additive: true })
+    else selectOne(target)
+    // Deep select is a one-shot bypass of the scope rule, so it re-points the
+    // scope at the layer it landed in — otherwise the next plain click undoes it.
+    if (deep) {
+      scope.setScope(resolver.layerParent(target))
+    } else {
+      const held = scope.activeScope()
+      // A stored scope the app has since unmounted is replaced as well.
+      if (context.getState().scope && (!held || !hit || !held.contains(hit))) {
+        scope.setScope(resolver.layerParent(target))
+      }
+    }
+  }
+
+  /*
+   * A plain press on one member of a multi-selection keeps the set until the
+   * release, as in Figma: the press may be the start of a drag that carries
+   * every member (`transform.ts`), and collapsing the selection on the way
+   * down left the drag moving elements that were no longer selected. A
+   * release with no drag in between is a click, and selects just that member.
+   */
+  let heldClick: { target: LayerElement; hit: Element | null } | null = null
+  onDragStart(() => {
+    heldClick = null
+  })
+
   const onPointerDown = (event: PointerEvent) => {
+    heldClick = null
     if (isChrome(event.target)) return
     if (!selectionOwnsInput()) return
     // Right-click belongs to the layer-stack menu, which selects for itself.
@@ -163,25 +252,21 @@ export function installCanvas(context: EditorContext): void {
     const target = targetFor(hit, deep)
     if (marquee.begin(event, target)) return
     if (!target) {
-      context.select(null)
-      context.setState({ scope: null })
+      scope.clearSelection()
       return
     }
-
-    // Shift is a toggle, not an append: clicking a selected element again with
-    // shift held takes it back out of the set.
-    if (event.shiftKey) context.select(target, { additive: true })
-    else selectOne(target)
-    // Deep select is a one-shot bypass of the scope rule, so it re-points the
-    // scope at the layer it landed in — otherwise the next plain click undoes it.
-    if (deep) {
-      context.setState({ scope: resolver.layerParent(target) })
-    } else {
-      const held = context.getState().scope
-      if (held && (!held.isConnected || !hit || !held.contains(hit))) {
-        context.setState({ scope: resolver.layerParent(target) })
-      }
+    const { selection } = context.getState()
+    if (!event.shiftKey && !deep && selection.length > 1 && selection.some((entry) => entry.element === target)) {
+      heldClick = { target, hit }
+      return
     }
+    pick(target, hit, deep, event.shiftKey)
+  }
+
+  const onPointerUp = () => {
+    const click = heldClick
+    heldClick = null
+    if (click && selectionOwnsInput()) pick(click.target, click.hit, false, false)
   }
 
   /** Double-click descends exactly one level and takes the scope with it. */
@@ -193,13 +278,13 @@ export function installCanvas(context: EditorContext): void {
 
     const state = context.getState()
     const primary = state.selection[0]?.element ?? null
-    const base = primary && primary.contains(hit) ? primary : resolver.resolve(hit, state.scope)
+    const base = primary && primary.contains(hit) ? primary : resolver.resolve(hit, scope.activeScope())
     if (!base) return
     const target = resolver.resolve(hit, base)
     // Drilling into the layer you are already on is not a drill: without this
     // the scope would advance on a press that changed nothing.
     if (!target || target === base) return
-    context.setState({ scope: base })
+    scope.setScope(base)
     selectOne(target)
     event.preventDefault()
     event.stopPropagation()
@@ -211,10 +296,14 @@ export function installCanvas(context: EditorContext): void {
     if (!delta || state.selection.length === 0) return
     event.preventDefault()
     const step = event.shiftKey ? 10 : 1
-    for (const entry of state.selection) {
-      const value = translateBy(entry.element, delta[0] * step, delta[1] * step)
-      writer.applyStyles(entry, [{ property: "transform", value }], `Nudge ${step}px`)
-    }
+    // One batch, so nudging five cards is one undo step, as dragging them is.
+    writer.applyStylesBatch(
+      state.selection.map((entry) => ({
+        selection: entry,
+        writes: [{ property: "transform", value: translateBy(entry.element, delta[0] * step, delta[1] * step) }],
+      })),
+      `Nudge ${step}px`
+    )
     scheduleRefresh()
   }
 
@@ -233,11 +322,11 @@ export function installCanvas(context: EditorContext): void {
     })
   }
 
-  const selectAt = (element: Element | null, scope: Element | null) => {
+  const selectAt = (element: Element | null, next: Element | null) => {
     const target = toSelectable(element)
     if (!target) return
     selectOne(target)
-    context.setState({ scope })
+    scope.setScope(next)
   }
 
   /**
@@ -254,16 +343,49 @@ export function installCanvas(context: EditorContext): void {
   const deleteSelection = () => {
     const state = context.getState()
     if (!state.selection.length) return
-    const scope = state.scope
+    const held = scope.activeScope()
     writer.applyDelete(state.selection)
     context.select(null)
-    if (scope && !scope.isConnected) context.setState({ scope: null })
+    if (held && !scope.activeScope()) scope.setScope(null)
     context.bridge.refreshGeometry()
     context.refresh()
   }
-  // The keys stay answered below (the row is `owner: "canvas"`); the command
-  // is for the context menu, which has no key event to hand over.
-  registerCommand("element.delete", deleteSelection)
+
+  // Escape clears. It does not select the parent — that is Shift+Enter.
+  const deselect = () => scope.clearSelection()
+
+  /** The navigation keys, each against the primary; false when nothing is selected. */
+  const navigate = (action: "select-child" | "select-parent" | "next-sibling" | "prev-sibling"): boolean => {
+    const state = context.getState()
+    const primary = state.selection[0]?.element ?? null
+    if (!primary) return false
+    if (action === "select-child") {
+      selectAt(resolver.layerChildren(primary)[0] ?? null, primary)
+      return true
+    }
+    if (action === "select-parent") {
+      const parent = resolver.layerParent(primary)
+      selectAt(parent, parent ? resolver.layerParent(parent) : null)
+      return true
+    }
+    const siblings = resolver.layerSiblings(primary)
+    const index = siblings.indexOf(primary)
+    if (index === -1 || siblings.length < 2) return true
+    const step = action === "next-sibling" ? 1 : -1
+    selectAt(siblings[(index + step + siblings.length) % siblings.length], state.scope)
+    return true
+  }
+
+  // The keys stay answered below (the rows are `owner: "canvas"`); the commands
+  // are for callers with no key event to hand over: the context menu, the
+  // layer header's menu, a companion.
+  registerCommand(CANVAS_COMMANDS.delete, deleteSelection)
+  registerCommand(CANVAS_COMMANDS.deselect, deselect)
+  for (const action of ["select-child", "select-parent", "next-sibling", "prev-sibling"] as const) {
+    registerCommand(CANVAS_COMMANDS[action], () => {
+      navigate(action)
+    })
+  }
 
   const onKeyDown = (event: KeyboardEvent) => {
     if (!selectionOwnsInput()) return
@@ -291,42 +413,32 @@ export function installCanvas(context: EditorContext): void {
       return
     }
 
-    const state = context.getState()
-    const primary = state.selection[0]?.element ?? null
-
-    // Escape clears. It does not select the parent — that is Shift+Enter.
     if (action === "deselect") {
-      if (!primary && !state.scope) return
       // Cancelled even though keydown has no default to cancel, because
       // `defaultPrevented` is how the shell's Escape fallback is told the key
       // was spent: it collapses the editor only on a press nothing else took,
       // and a deselect that stayed silent would deselect and collapse at once.
+      //
+      // A held drag, sweep or spacing drag takes Escape first: it is put back
+      // and the selection stays, as in Figma.
+      if (cancelGestures("escape")) {
+        // The press was abandoned, so its release is not a click either.
+        heldClick = null
+        event.preventDefault()
+        return
+      }
+      const state = context.getState()
+      if (!state.selection.length && !state.scope) return
       event.preventDefault()
-      context.select(null)
-      context.setState({ scope: null })
+      deselect()
       return
     }
 
     // Tab only belongs to the canvas while something is selected; otherwise it
     // is still the browser's focus traversal and the panels' way in.
-    if (!primary) return
+    if (!context.getState().selection.length) return
     event.preventDefault()
-
-    if (action === "select-child") {
-      selectAt(resolver.layerChildren(primary)[0] ?? null, primary)
-      return
-    }
-    if (action === "select-parent") {
-      const parent = resolver.layerParent(primary)
-      selectAt(parent, parent ? resolver.layerParent(parent) : null)
-      return
-    }
-
-    const siblings = resolver.layerSiblings(primary)
-    const index = siblings.indexOf(primary)
-    if (index === -1 || siblings.length < 2) return
-    const step = action === "next-sibling" ? 1 : -1
-    selectAt(siblings[(index + step + siblings.length) % siblings.length], state.scope)
+    navigate(action)
   }
 
   /*
@@ -363,6 +475,10 @@ export function installCanvas(context: EditorContext): void {
 
   window.addEventListener("pointermove", onPointerMove, true)
   window.addEventListener("pointerdown", onPointerDown, true)
+  window.addEventListener("pointerup", onPointerUp, true)
+  window.addEventListener("pointercancel", () => {
+    heldClick = null
+  }, true)
   window.addEventListener("dblclick", onDoubleClick, true)
   window.addEventListener("click", onClick, true)
   window.addEventListener("keydown", onKeyDown, true)

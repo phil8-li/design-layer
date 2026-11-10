@@ -58,7 +58,7 @@ export function clampInto(limits: { min: number; max: number }, length: number):
 }
 
 /** A length in the element's own box-sizing, clamped to its `min-*` and `max-*`. */
-export function clampLength(element: Element, axis: Axis, length: number): number {
+function clampLength(element: Element, axis: Axis, length: number): number {
   return clampInto(lengthLimits(element, axis), length)
 }
 

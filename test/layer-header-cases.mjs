@@ -62,6 +62,9 @@ const bundled = await build({
       export { layerHeaderSection, layerKind } from "./src/panels/inspector/section-layer-header"
       export { registerCommand } from "./src/core/commands"
       export { annotations, clearAnnotations } from "./src/annotations/store"
+      export { createContext } from "./src/core/context"
+      export { installCanvas } from "./src/canvas/index"
+      export { getState, setState } from "./src/core/store"
     `,
     resolveDir: PACKAGE_DIR,
     loader: "ts",
@@ -235,8 +238,29 @@ await check("an instance offers its main component's path instead of Create comp
 
 /* ---------- More actions ---------- */
 
+/*
+ * "Select parent" runs the canvas lane's real command, the one Shift+Enter
+ * runs. A fake registered here once hid that nothing registered it at all: the
+ * canvas answered its keys without telling the command registry, so the row
+ * did nothing in the product while this suite passed. The other three belong
+ * to lanes this suite does not mount, so they stay stand-ins.
+ */
+const canvasSlot = () => {
+  const node = window.document.createElement("div")
+  node.setAttribute("data-designlayer", "")
+  return node
+}
+// jsdom lays nothing out; the canvas hit-tests every press it sees, and the
+// outside-press case below presses the page.
+window.document.elementsFromPoint = () => []
+lib.installCanvas(
+  lib.createContext(
+    { elementInfo: () => null, toast() {}, refreshGeometry() {}, store: {} },
+    { overlay: canvasSlot(), toolbar: canvasSlot(), left: canvasSlot(), right: canvasSlot() }
+  )
+)
 const ran = []
-for (const id of ["select.parent", "select.reveal", "select.hide", "select.lock"]) {
+for (const id of ["select.reveal", "select.hide", "select.lock"]) {
   lib.registerCommand(id, () => ran.push(id))
 }
 const menuOf = () => window.document.querySelector('.de-layerhead-menu[role="menu"]')
@@ -264,7 +288,22 @@ await check("menu rows run their commands and close the menu", () => {
     rowNamed(name).click()
     assert.equal(menuOf(), null, `${name} closes the menu`)
   }
-  assert.deepEqual(ran, ["select.parent", "select.reveal", "select.hide", "select.lock"])
+  assert.deepEqual(ran, ["select.reveal", "select.hide", "select.lock"])
+})
+
+await check("Select parent selects the parent layer, as Shift+Enter does", () => {
+  const { context, element } = scene('<section class="group"><div class="child"></div></section>')
+  const child = element.querySelector(".child")
+  lib.setState({ selection: [{ ...context.selection, element: child }], scope: element })
+  const node = header(context)
+  button(node, "More actions").click()
+  rowNamed("Select parent").click()
+  assert.deepEqual(
+    lib.getState().selection.map((entry) => entry.element),
+    [element],
+    "the parent is selected"
+  )
+  lib.setState({ selection: [], scope: null })
 })
 
 await check("Show in layers opens the Layers tab", () => {

@@ -11,9 +11,9 @@
 
 import { el, isCanvasElement } from "../core/dom"
 import { prefersReducedMotion } from "../core/motion"
-import { formatDistance, measureSpacing, type Box, type Measurement } from "./measure"
+import { boxOf, formatDistance, measureSpacing, type Box, type Measurement } from "./measure"
 import { moving, watchForMotion } from "./motion-watch"
-import { isAltDown } from "./transform"
+import { installModifiers, isAltDown } from "./modifiers"
 import { editorStandDownChanged, selectionOwnsInput } from "../core/store"
 import { tokens } from "../core/tokens"
 import type { EditorContext } from "../core/context"
@@ -35,7 +35,7 @@ export type HandleId = (typeof HANDLES)[number][0]
 const HANDLE_SIZE = 7
 const HANDLE_HIT = 13
 
-export interface NodePool {
+interface NodePool {
   /** Returns a visible node; call `flush()` once per pass to hide the rest. */
   take(): HTMLElement
   flush(): void
@@ -253,14 +253,9 @@ function measureTarget(selected: readonly Element[], hovered: Element | null): E
   return null
 }
 
-const boxOf = (rect: DOMRect): Box => ({
-  left: rect.left,
-  top: rect.top,
-  right: rect.right,
-  bottom: rect.bottom,
-})
-
 export function installSelectionFrame(context: EditorContext): void {
+  // Alt's measurement readout reads the shared tracker; first installer wins.
+  installModifiers()
   const layer = context.slots.overlay
   const hoverOutline = el("div", { class: "de-outline de-outline--hover" })
   hoverOutlineNode = hoverOutline

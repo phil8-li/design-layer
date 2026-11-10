@@ -12,6 +12,20 @@
  *
  * Geometry is pure (`spacingZones`, `zoneAt`, `dragValues`) so the rules can be
  * pinned without a browser; the installer owns the DOM reads and drawing.
+ *
+ * The installer is one of four states, moved only by `transition()`:
+ *
+ *   hidden    --pointer over a band of the one selected flex container--> hover(zone)
+ *   hover     --pointer leaves the bands, or the selection changes------> hidden
+ *   hover     --press on the handle--------------------------------------> drag
+ *   drag      --release-----------------------------------------------> hidden   (one write, then hover is re-read)
+ *   drag      --cancel(reason)----------------------------------------> hidden   (the container's style put back)
+ *   *         --a move or resize drag starts (`transform.ts`)----------> suspended
+ *   suspended --that drag ends-----------------------------------------> hidden
+ *
+ * Cancel is every early end `gesture.ts` knows — Escape, blur, a lost capture
+ * or release, `pointercancel`, the editor standing down — plus the container
+ * leaving the page or stopping being the one selected element.
  */
 
 import { el, isChrome } from "../core/dom"
@@ -19,15 +33,16 @@ import { isLocked, selectionOwnsInput, editorStandDownChanged } from "../core/st
 import type { EditorContext } from "../core/context"
 import type { Selection } from "../core/types"
 import type { StyleWrite, Writer } from "../core/writer"
-import { formatDistance, type Box } from "./measure"
+import { trackPointer, type PointerTrack } from "./gesture"
+import { boxOf, formatDistance, type Axis, type Box } from "./measure"
+import { heldModifiers, installModifiers, onModifiersChange, type Modifiers } from "./modifiers"
 import { createNodePool, placeBadge, placeNode } from "./selection"
 import { onDragEnd, onDragStart } from "./transform"
 
 export type Side = "top" | "right" | "bottom" | "left"
 export type Sides = Record<Side, number>
-type Axis = "x" | "y"
 
-export interface SpacingInput {
+interface SpacingInput {
   /** The container's border box. */
   box: Box
   border: Sides
@@ -41,7 +56,7 @@ export interface SpacingInput {
   children: Box[]
 }
 
-export interface SpacingZone {
+interface SpacingZone {
   kind: "padding" | "gap"
   /** The padding side; unset for a gap. */
   side?: Side
@@ -189,25 +204,23 @@ export function zoneAt(zones: SpacingZone[], x: number, y: number): SpacingZone 
 }
 
 /** Whether a point is on a zone's handle hit box. */
-export function overHandle(zone: Pick<SpacingZone, "handle">, x: number, y: number): boolean {
+function overHandle(zone: Pick<SpacingZone, "handle">, x: number, y: number): boolean {
   const across = zone.handle.axis === "x"
   const halfWidth = (across ? BAR_HIT_THICKNESS : BAR_HIT_LENGTH) / 2
   const halfHeight = (across ? BAR_HIT_LENGTH : BAR_HIT_THICKNESS) / 2
   return Math.abs(x - zone.handle.x) <= halfWidth && Math.abs(y - zone.handle.y) <= halfHeight
 }
 
-export interface DragStart {
+interface DragStart {
   padding: Sides
   gap: number
 }
 
-export interface Modifiers {
-  alt: boolean
-  shift: boolean
-}
-
-/** Whole pixels, never below zero. */
-export const snap = (value: number) => Math.max(0, Math.round(value))
+/**
+ * Whole pixels, never below zero. Named for what it does rather than `snap`,
+ * which in this folder means alignment guides (`snapping.ts`).
+ */
+export const wholePixels = (value: number) => Math.max(0, Math.round(value))
 
 const OPPOSITE: Record<Side, Side> = { top: "bottom", bottom: "top", left: "right", right: "left" }
 
@@ -227,12 +240,12 @@ export function dragValues(
 ): Record<string, number> {
   if (zone.kind === "gap") {
     const travel = zone.handle.axis === "x" ? delta.dx : delta.dy
-    return { gap: snap(start.gap + travel) }
+    return { gap: wholePixels(start.gap + travel) }
   }
   const side = zone.side as Side
   const travel =
     side === "left" ? delta.dx : side === "right" ? -delta.dx : side === "top" ? delta.dy : -delta.dy
-  const value = snap(start.padding[side] + travel)
+  const value = wholePixels(start.padding[side] + travel)
   const sides: Side[] =
     modifiers.alt && modifiers.shift ? SIDES : modifiers.alt ? [side, OPPOSITE[side]] : [side]
   return Object.fromEntries(sides.map((each) => [`padding-${each}`, value]))
@@ -260,8 +273,6 @@ function gapOf(style: CSSStyleDeclaration, axis: Axis): number {
   const [row, column = row] = (style.gap ?? "").trim().split(/\s+/)
   return px((axis === "x" ? column : row) ?? "")
 }
-
-const boxOf = (rect: DOMRect): Box => ({ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom })
 
 /**
  * The spacing input for an element, or null when it is not a flex container
@@ -301,10 +312,17 @@ interface Drag {
   /** The style attribute as the drag found it, restored before the write. */
   inline: string | null
   values: Record<string, number>
-  pointerId: number
 }
 
+type SpacingState =
+  | { kind: "hidden" }
+  /** The zone the handle is drawn for, which is what a press on it drags. */
+  | { kind: "hover"; zone: SpacingZone }
+  | { kind: "drag"; drag: Drag; track: PointerTrack }
+  | { kind: "suspended" }
+
 export function installSpacingHandles(context: EditorContext, writer: Writer): void {
+  installModifiers()
   const layer = el("div", { class: "de-space-layer" })
   // First in the overlay, so the resize handles and outlines paint and
   // hit-test above everything here.
@@ -318,12 +336,13 @@ export function installSpacingHandles(context: EditorContext, writer: Writer): v
 
   let pointerX = Number.NaN
   let pointerY = Number.NaN
-  let modifiers: Modifiers = { alt: false, shift: false }
-  let suspended = false
-  let drag: Drag | null = null
+  let state: SpacingState = { kind: "hidden" }
   let frame = 0
-  /** The zone the handle is drawn for, which is what a press on it drags. */
-  let shownZone: SpacingZone | null = null
+
+  /** The one place the machine moves; see the table in the header. */
+  const transition = (next: SpacingState) => {
+    state = next
+  }
 
   /** The one selected element, when the handles apply to it. */
   const target = (): Selection | null => {
@@ -374,15 +393,15 @@ export function installSpacingHandles(context: EditorContext, writer: Writer): v
   const paint = () => {
     frame = 0
     const selection = target()
-    const input = selection && !suspended ? readSpacing(selection.element) : null
+    const input = selection && state.kind !== "suspended" ? readSpacing(selection.element) : null
     if (!selection || !input) {
-      shownZone = null
+      if (state.kind === "hover") transition({ kind: "hidden" })
       hideAll()
       return
     }
     const zones = spacingZones(input)
-    if (drag) {
-      const current = drag
+    if (state.kind === "drag") {
+      const current = state.drag
       for (const zone of zones) {
         const moving = zone.kind === "gap" ? "gap" in current.values : `padding-${zone.side}` in current.values
         if (moving) paintBand(zone)
@@ -395,13 +414,13 @@ export function installSpacingHandles(context: EditorContext, writer: Writer): v
     }
     // The handle straddles the band's inner edge, so its outer half keeps the
     // zone it belongs to.
-    const kept = shownZone && relocate(zones, shownZone)
+    const kept = state.kind === "hover" ? relocate(zones, state.zone) : null
     const hovered = Number.isNaN(pointerX)
       ? null
       : kept && overHandle(kept, pointerX, pointerY)
         ? kept
         : zoneAt(zones, pointerX, pointerY)
-    shownZone = hovered
+    transition(hovered ? { kind: "hover", zone: hovered } : { kind: "hidden" })
     if (!hovered) {
       hideAll()
       return
@@ -443,7 +462,7 @@ export function installSpacingHandles(context: EditorContext, writer: Writer): v
 
   /** Back to the drag's starting style, then the values the pointer asks for now. */
   const update = (current: Drag) => {
-    current.values = dragValues(current.zone, current.start, { dx: pointerX - current.startX, dy: pointerY - current.startY }, modifiers)
+    current.values = dragValues(current.zone, current.start, { dx: pointerX - current.startX, dy: pointerY - current.startY }, heldModifiers())
     restore(current)
     preview(current)
     schedule()
@@ -455,29 +474,20 @@ export function installSpacingHandles(context: EditorContext, writer: Writer): v
     else element.setAttribute("style", current.inline)
   }
 
-  const releaseCapture = (current: Drag) => {
-    try {
-      handle.releasePointerCapture?.(current.pointerId)
-    } catch {
-      // Capture is already gone when the node was hidden.
-    }
-  }
-
   const onHandleDown = (event: PointerEvent) => {
     if (event.button !== 0) return
     const selection = target()
     const input = selection ? readSpacing(selection.element) : null
     if (!selection || !input) return
     // The zone the handle was drawn for, found again in the current layout.
-    const shown = shownZone && relocate(spacingZones(input), shownZone)
+    const shown = state.kind === "hover" ? relocate(spacingZones(input), state.zone) : null
     if (!shown) return
     event.preventDefault()
     event.stopPropagation()
     pointerX = event.clientX
     pointerY = event.clientY
-    modifiers = { alt: event.altKey, shift: event.shiftKey }
     const start: DragStart = { padding: input.padding, gap: input.gap }
-    drag = {
+    const drag: Drag = {
       selection,
       zone: shown,
       start,
@@ -485,25 +495,29 @@ export function installSpacingHandles(context: EditorContext, writer: Writer): v
       startY: event.clientY,
       inline: selection.element.getAttribute("style"),
       values: {},
-      pointerId: event.pointerId,
     }
-    try {
-      handle.setPointerCapture?.(event.pointerId)
-    } catch {
-      // A synthetic pointer has nothing to capture; the window listeners still see it.
-    }
+    const track = trackPointer(event, handle, {
+      move: (move) => {
+        pointerX = move.clientX
+        pointerY = move.clientY
+        move.preventDefault()
+        update(drag)
+      },
+      release: () => finish(true),
+      cancel: () => finish(false),
+      // The drag edits this one container: gone from the page, or no longer
+      // the one selected element, it has nothing left to write to.
+      valid: () => target()?.element === selection.element,
+    })
+    transition({ kind: "drag", drag, track })
     schedule()
   }
 
   const onPointerMove = (event: PointerEvent) => {
     pointerX = event.clientX
     pointerY = event.clientY
-    modifiers = { alt: event.altKey, shift: event.shiftKey }
-    if (drag) {
-      event.preventDefault()
-      update(drag)
-      return
-    }
+    // A drag's moves are its track's (above).
+    if (state.kind === "drag") return
     // Over a panel or a resize handle, those own the pointer; a press held
     // down is someone else's gesture (move, marquee).
     if ((isChrome(event.target) && !layer.contains(event.target as Node)) || event.buttons !== 0) {
@@ -513,11 +527,12 @@ export function installSpacingHandles(context: EditorContext, writer: Writer): v
     schedule()
   }
 
+  /** `drag --release--> hidden` with `commit`, `drag --cancel--> hidden` without. */
   const finish = (commit: boolean) => {
-    const finished = drag
-    if (!finished) return
-    drag = null
-    releaseCapture(finished)
+    if (state.kind !== "drag") return
+    const finished = state.drag
+    state.track.end()
+    transition({ kind: "hidden" })
     const writes = changedWrites(finished.start, finished.values)
     restore(finished)
     if (commit && writes.length > 0) {
@@ -529,24 +544,16 @@ export function installSpacingHandles(context: EditorContext, writer: Writer): v
     schedule()
   }
 
-  const onKey = (event: KeyboardEvent) => {
-    const next = { alt: event.altKey, shift: event.shiftKey }
-    if (next.alt === modifiers.alt && next.shift === modifiers.shift) return
-    modifiers = next
-    // A modifier pressed with the pointer still re-answers which sides move.
-    if (drag) update(drag)
-  }
+  // A modifier pressed with the pointer still re-answers which sides move.
+  onModifiersChange(() => {
+    if (state.kind === "drag") update(state.drag)
+  })
 
   handle.addEventListener("pointerdown", onHandleDown)
   window.addEventListener("pointermove", onPointerMove, true)
-  window.addEventListener("pointerup", () => finish(true), true)
-  window.addEventListener("pointercancel", () => finish(false), true)
-  window.addEventListener("keydown", onKey, true)
-  window.addEventListener("keyup", onKey, true)
-  window.addEventListener("blur", () => finish(false))
   // The pointer left the page: nothing is hovered any more.
   document.addEventListener("pointerout", (event) => {
-    if (event.relatedTarget || drag) return
+    if (event.relatedTarget || state.kind === "drag") return
     pointerX = Number.NaN
     pointerY = Number.NaN
     schedule()
@@ -555,15 +562,15 @@ export function installSpacingHandles(context: EditorContext, writer: Writer): v
   window.addEventListener("resize", schedule, { passive: true })
   context.onRefresh(schedule)
   onDragStart(() => {
-    suspended = true
+    finish(false)
+    transition({ kind: "suspended" })
     schedule()
   })
   onDragEnd(() => {
-    suspended = false
+    if (state.kind === "suspended") transition({ kind: "hidden" })
     schedule()
   })
   context.subscribe((next, previous) => {
-    if (next.selection !== previous.selection && drag) finish(false)
     if (next.selection !== previous.selection || next.tool !== previous.tool || editorStandDownChanged(next, previous)) schedule()
   })
 }

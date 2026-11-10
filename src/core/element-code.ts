@@ -4,7 +4,8 @@
  * There is no file-read route in this editor, so nothing here opens a file.
  * Every view is derived from the live element, which makes this the one
  * description of it that is never stale — and the only one that includes the
- * edits made since the last "Apply to code".
+ * Design-panel edits previewed on the page, which are notes for a coding agent
+ * and are in no source file yet.
  *
  * Output is a TOKEN LIST, not a string. The panel needs the code tinted, and
  * tinting a finished string means re-parsing it with regexes — which is how a
@@ -19,12 +20,13 @@
  */
 
 import { config } from "./config"
+import { isAuthoredAttribute } from "./element-target"
 import type { Selection } from "./types"
 
 /** The five tints `css/code.ts` declares, plus `plain` — indentation and text. */
 export type CodeTokenKind = "tag" | "attribute" | "string" | "number" | "punctuation" | "plain"
 
-export interface CodeToken {
+interface CodeToken {
   kind: CodeTokenKind
   text: string
 }
@@ -275,21 +277,21 @@ function truncate(text: string): string {
 }
 
 /**
- * Attributes the framework stamped on at runtime, which are in the DOM and in
- * no source file.
+ * Every attribute but `style` (see `emitStyle`), less the ones stamped on at
+ * runtime, which are in the DOM and in no source file.
  *
  * Angular writes `_ngcontent-ng-c3539969218=""` onto every element for style
- * encapsulation and `ng-reflect-*` in dev builds. This view claims to show the
- * element as source, so carrying them makes it a view of the rendered DOM
- * wearing source syntax — and the hash changes on every rebuild, so a designer
- * comparing the panel against their template sees a diff that is not there.
+ * encapsulation and `ng-reflect-*` in dev builds, and this editor marks its own
+ * state with `data-de-*`. This view claims to show the element as source, so
+ * carrying them makes it a view of the rendered DOM wearing source syntax — and
+ * the hash changes on every rebuild, so a designer comparing the panel against
+ * their template sees a diff that is not there. `isAuthoredAttribute` is the
+ * one rule, shared with the descriptor the source matcher reads.
  */
-const RUNTIME_ATTRIBUTES = /^(_ng(content|host)-|ng-reflect-|ng-version$)/
-
 function emitAttributes(sink: CodeToken[], view: CodeView, element: Element): void {
   for (const attribute of Array.from(element.attributes)) {
     if (attribute.name === "style") continue
-    if (RUNTIME_ATTRIBUTES.test(attribute.name)) continue
+    if (!isAuthoredAttribute(attribute.name)) continue
     emit(sink, "plain", " ")
     emit(sink, "attribute", attributeName(view, attribute.name))
     if (attribute.value === "" && BOOLEAN_ATTRIBUTES.has(attribute.name)) continue

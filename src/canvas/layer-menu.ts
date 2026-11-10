@@ -14,6 +14,15 @@
  * behavior the keyboard does not have. Copy and Select matching are the two
  * items with no command: copy needs the click's user activation, and no key is
  * bound to either.
+ *
+ * The menu is one of three states, moved only by `setMenu()`:
+ *
+ *   closed  --right-click on the canvas (selection owns input)---------> open
+ *   open    --hover, click or ArrowRight on "Select layer"--------------> submenu
+ *   submenu --hover a sibling item, ArrowLeft or Escape-----------------> open
+ *   open | submenu --Escape, Tab, outside press, scroll, blur, an item
+ *                    click, the editor standing down or hiding----------> closed
+ *   open | submenu --sibling reply, or the selection's commands landing--> same state, rows rebuilt
  */
 
 import { arrangeRef, canArrange, siblingLines, type ArrangeMove } from "../core/arrange"
@@ -23,13 +32,14 @@ import { el, isCanvasElement, isChrome } from "../core/dom"
 import { CODE_VIEWS, codeText, elementCode } from "../core/element-code"
 import { focusControl } from "../core/focus"
 import { icon } from "../core/icons"
-import { chordLabel, SHORTCUTS } from "../core/keymap"
+import { shortcutText } from "../core/keymap"
 import { playExit } from "../core/motion"
 import { getResolver, toSelectable } from "../core/resolve"
-import { isLocked, selectionOwnsInput } from "../core/store"
+import { editorStandDownChanged, isLocked, selectionOwnsInput } from "../core/store"
 import { tokens } from "../core/tokens"
 import type { EditorContext } from "../core/context"
 import type { LayerElement } from "../core/types"
+import type { ScopeAccess } from "./index"
 import { matchingLayers } from "./matching"
 
 /** Deeper than this the stack is layout wrappers, and the menu is a wall of divs. */
@@ -37,12 +47,6 @@ const MAX_ROWS = 12
 const EDGE = 8
 /** The submenu's first row lines up with its trigger: the card's padding plus hairline. */
 const SUBMENU_INSET = 6
-
-/** The key printed beside a command, read off the one keymap. */
-export function shortcutText(command: string): string {
-  const shortcut = SHORTCUTS.find((entry) => entry.command === command)
-  return shortcut ? chordLabel(shortcut.chord) : ""
-}
 
 interface Action {
   label: string
@@ -58,7 +62,9 @@ function hasAutoLayout(element: Element): boolean {
   return display === "flex" || display === "inline-flex" || display === "grid" || display === "inline-grid"
 }
 
-export function installLayerMenu(context: EditorContext): void {
+type MenuState = "closed" | "open" | "submenu"
+
+export function installLayerMenu(context: EditorContext, scope: ScopeAccess): void {
   const resolver = getResolver(context.bridge)
   const submenu = el("div", {
     class: "de-layer-menu de-ctx-submenu",
@@ -80,19 +86,45 @@ export function installLayerMenu(context: EditorContext): void {
   )
   context.slots.overlay.append(menu)
 
-  let open = false
+  let state: MenuState = "closed"
   let returnFocus: HTMLElement | null = null
   let trigger: HTMLButtonElement | null = null
   let stack: LayerElement[] = []
 
-  const submenuOpen = () => submenu.style.display === "block"
+  /**
+   * The one writer. The cards' `display` follows the state rather than being
+   * read back as it, and each edge does its own housekeeping here.
+   */
+  const setMenu = (next: MenuState) => {
+    const previous = state
+    if (next === previous) return
+    state = next
+    if (next === "closed") {
+      /*
+       * Gone at the instant it is dismissed: this card is `pointer-events: auto`
+       * and on the Escape stack, so a card still in the document could take a
+       * click and absorb the next dismissal. The kit's 150ms fade plays on an
+       * inert copy instead (`playExit` in core/motion), taken before the
+       * submenu below empties so the copy fades what was on screen.
+       */
+      playExit(menu)
+      menu.style.display = "none"
+    }
+    if (previous === "submenu") {
+      submenu.style.display = "none"
+      while (submenu.firstChild) submenu.removeChild(submenu.firstChild)
+      trigger?.setAttribute("aria-expanded", "false")
+      context.setState({ hovered: null })
+    }
+    if (next === "submenu") {
+      submenu.style.display = "block"
+      trigger?.setAttribute("aria-expanded", "true")
+    }
+    if (previous === "closed") menu.style.display = "block"
+  }
 
   const closeSubmenu = () => {
-    if (!submenuOpen()) return
-    submenu.style.display = "none"
-    while (submenu.firstChild) submenu.removeChild(submenu.firstChild)
-    trigger?.setAttribute("aria-expanded", "false")
-    context.setState({ hovered: null })
+    if (state === "submenu") setMenu("open")
   }
 
   const clearItems = () => {
@@ -100,17 +132,8 @@ export function installLayerMenu(context: EditorContext): void {
   }
 
   const close = (restoreFocus = false) => {
-    if (!open) return
-    open = false
-    /*
-     * Gone at the instant it is dismissed: this card is `pointer-events: auto`
-     * and on the Escape stack, so a card still in the document could take a
-     * click and absorb the next dismissal. The kit's 150ms fade plays on an
-     * inert copy instead (`playExit` in core/motion).
-     */
-    playExit(menu)
-    menu.style.display = "none"
-    closeSubmenu()
+    if (state === "closed") return
+    setMenu("closed")
     clearItems()
     trigger = null
     stack = []
@@ -158,7 +181,7 @@ export function installLayerMenu(context: EditorContext): void {
       context.selectMany([target])
       // Picking out of the stack is an explicit depth choice, so the scope
       // follows it and the next plain click stays at that level.
-      context.setState({ scope: resolver.layerParent(target) })
+      scope.setScope(resolver.layerParent(target))
     })
     return node
   }
@@ -316,7 +339,7 @@ export function installLayerMenu(context: EditorContext): void {
     trigger = item("Select layer")
     trigger.classList.add("de-ctx-item--submenu")
     trigger.setAttribute("aria-haspopup", "menu")
-    trigger.setAttribute("aria-expanded", String(submenuOpen()))
+    trigger.setAttribute("aria-expanded", String(state === "submenu"))
     trigger.append(
       el("span", { class: "de-ctx-chevron", "aria-hidden": "true" }, [icon("ChevronRight", tokens.icon.marker)])
     )
@@ -324,10 +347,12 @@ export function installLayerMenu(context: EditorContext): void {
     trigger.addEventListener("click", () => openSubmenu(true))
     menu.insertBefore(trigger, submenu)
 
+    // One repaint per build: the reply fills the memo, so the build it causes
+    // reads the lines and arms no new callback. The menu may have closed while
+    // the server answered.
     let repainted = false
     const onArrangeReady = () => {
-      // One repaint per open; the menu may have closed while the server answered.
-      if (!open || repainted) return
+      if (state === "closed" || repainted) return
       repainted = true
       build()
     }
@@ -340,10 +365,10 @@ export function installLayerMenu(context: EditorContext): void {
   }
 
   const openSubmenu = (focusFirst: boolean) => {
-    if (!open || !trigger) return
-    if (!submenuOpen()) {
+    if (state === "closed" || !trigger) return
+    if (state === "open") {
       for (const element of stack) submenu.append(stackRow(element))
-      submenu.style.display = "block"
+      setMenu("submenu")
       submenu.style.left = "0px"
       submenu.style.top = "0px"
       const menuRect = menu.getBoundingClientRect()
@@ -355,7 +380,6 @@ export function installLayerMenu(context: EditorContext): void {
       // Positioned inside the outer card, so the offsets are relative to it.
       submenu.style.left = `${left - menuRect.left}px`
       submenu.style.top = `${top - menuRect.top}px`
-      trigger.setAttribute("aria-expanded", "true")
     }
     if (focusFirst) focusRow(submenuRows(), 0)
   }
@@ -390,19 +414,18 @@ export function installLayerMenu(context: EditorContext): void {
     const overSelection =
       onHandle ||
       context.getState().selection.some((entry) => entry.element === hit || entry.element.contains(hit))
-    const target = overSelection ? null : resolver.resolve(hit, context.getState().scope)
+    const target = overSelection ? null : resolver.resolve(hit, scope.activeScope())
     const selecting = Boolean(target && !isLocked(target))
     if (target && selecting) context.selectMany([target])
 
-    open = true
+    setMenu("open")
     build()
     // The inspector registers the layout commands for the selection it renders,
     // on a microtask queued by the select above. Asked again once it has run,
     // so a fresh selection does not open with auto layout greyed out.
-    if (selecting) queueMicrotask(() => open && build())
+    if (selecting) queueMicrotask(() => state !== "closed" && build())
     // Measured after mount: the item count decides the height, and a menu that
     // opens past the viewport edge is a menu with unreachable entries.
-    menu.style.display = "block"
     menu.style.left = "0px"
     menu.style.top = "0px"
     const rect = menu.getBoundingClientRect()
@@ -439,14 +462,14 @@ export function installLayerMenu(context: EditorContext): void {
   window.addEventListener(
     "pointerdown",
     (event) => {
-      if (open && !menu.contains(event.target as Node)) close()
+      if (state !== "closed" && !menu.contains(event.target as Node)) close()
     },
     true
   )
   window.addEventListener(
     "keydown",
     (event) => {
-      if (!open) return
+      if (state === "closed") return
       const inSubmenu = submenu.contains(document.activeElement)
       const rows = inSubmenu ? submenuRows() : menuItems()
       const index = rows.indexOf(document.activeElement as HTMLButtonElement)
@@ -469,10 +492,11 @@ export function installLayerMenu(context: EditorContext): void {
   )
   window.addEventListener("scroll", () => close(), true)
   window.addEventListener("blur", () => close())
-  // Closed when the editor is hidden. The card is in the overlay layer, which
-  // does not stand down, so ⌘. left it open over the page, its rows still
-  // acting on the app the editor had just handed back.
-  context.subscribe((state, previous) => {
-    if (state.chromeHidden && !previous.chromeHidden) close()
+  // Closed when the editor hides or stands down: interactive mode, Notes,
+  // canvas view. The card is in the overlay layer, which does not stand down,
+  // so ⌘. or H left it open over the page, its rows still acting on the app the
+  // editor had just handed back.
+  context.subscribe((next, previous) => {
+    if (editorStandDownChanged(next, previous) && !selectionOwnsInput()) close()
   })
 }

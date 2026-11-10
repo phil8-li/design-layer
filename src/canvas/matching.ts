@@ -13,8 +13,11 @@ import { isLayerCandidate, isHidden, toSelectable, type Resolver } from "../core
 import { isLocked } from "../core/store"
 import type { LayerElement } from "../core/types"
 
-/** What two elements must share to match, or null for one that matches nothing. */
-export function matchKey(resolver: Resolver, element: Element): string | null {
+/**
+ * What two elements must share to match. Every element has one: a component
+ * root keys on its component, anything else on its tag and sorted class list.
+ */
+function matchKey(resolver: Resolver, element: Element): string {
   const meta = resolver.meta(element)
   if (meta.isRoot && meta.info?.componentName) return `component:${meta.info.componentName}`
   const classes = (element.getAttribute("class") ?? "").split(/\s+/).filter(Boolean).sort()
@@ -30,18 +33,14 @@ export function matchKey(resolver: Resolver, element: Element): string | null {
  */
 export function matchingLayers(resolver: Resolver, elements: readonly LayerElement[]): LayerElement[] {
   const keys = new Set<string>()
-  for (const element of elements) {
-    const key = matchKey(resolver, element)
-    if (key) keys.add(key)
-  }
+  for (const element of elements) keys.add(matchKey(resolver, element))
   const result: LayerElement[] = [...elements]
   if (!keys.size) return result
   const seen = new Set<Element>(elements)
   for (const candidate of Array.from(document.body.querySelectorAll("*"))) {
     if (seen.has(candidate)) continue
     if (!isLayerCandidate(candidate) || toSelectable(candidate) !== candidate) continue
-    const key = matchKey(resolver, candidate)
-    if (!key || !keys.has(key)) continue
+    if (!keys.has(matchKey(resolver, candidate))) continue
     if (isLocked(candidate) || isHidden(candidate)) continue
     seen.add(candidate)
     result.push(candidate as LayerElement)
