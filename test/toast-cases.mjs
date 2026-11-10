@@ -122,9 +122,25 @@ const reactStub = `
 `
 
 const { build } = await import("esbuild")
+/** Sonner and React swapped for the recorders above, in every bundle the suite makes. */
+const stubPlugin = {
+  name: "stub-sonner",
+  setup(b) {
+    b.onResolve({ filter: /^sonner$/ }, () => ({ path: "sonner", namespace: "stub" }))
+    b.onLoad({ filter: /.*/, namespace: "stub" }, () => ({ contents: stub, loader: "js" }))
+    // React is never rendered here, but the module graph still imports it.
+    for (const name of [/^react$/, /^react-dom\/client$/]) {
+      b.onResolve({ filter: name }, (args) => ({ path: args.path, namespace: "react-stub" }))
+    }
+    b.onLoad({ filter: /.*/, namespace: "react-stub" }, () => ({
+      contents: reactStub,
+      loader: "js",
+    }))
+  },
+}
 const bundled = await build({
   stdin: {
-    contents: `export { notify, retract, installToaster, mirrorVendorToasts, classifyVendorToast, splitToast } from "./src/core/toast"
+    contents: `export { notify, retract, installToaster, toasterPhase, mirrorVendorToasts, classifyVendorToast, splitToast } from "./src/core/toast"
       export { toasterCss } from "./src/core/css/toast"`,
     resolveDir: PACKAGE_DIR,
     loader: "ts",
@@ -133,30 +149,14 @@ const bundled = await build({
   format: "esm",
   write: false,
   logLevel: "silent",
-  plugins: [
-    {
-      name: "stub-sonner",
-      setup(b) {
-        b.onResolve({ filter: /^sonner$/ }, () => ({ path: "sonner", namespace: "stub" }))
-        b.onLoad({ filter: /.*/, namespace: "stub" }, () => ({ contents: stub, loader: "js" }))
-        // React is never rendered here, but the module graph still imports it.
-        for (const name of [/^react$/, /^react-dom\/client$/]) {
-          b.onResolve({ filter: name }, (args) => ({ path: args.path, namespace: "react-stub" }))
-        }
-        b.onLoad({ filter: /.*/, namespace: "react-stub" }, () => ({
-          contents: reactStub,
-          loader: "js",
-        }))
-      },
-    },
-  ],
+  plugins: [stubPlugin],
 })
 globalThis.__toastEffects = []
 
 const editor = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString("base64")}`
 )
-const { notify, retract, installToaster, mirrorVendorToasts, classifyVendorToast, splitToast, toasterCss } = editor
+const { notify, retract, installToaster, toasterPhase, mirrorVendorToasts, classifyVendorToast, splitToast, toasterCss } = editor
 
 let passed = 0
 let failed = 0
@@ -615,7 +615,7 @@ await check("a silent vendor message never reaches the corner", async () => {
   dispose()
 })
 
-// Last, because it tears the one mount down to get a fresh queue.
+// After every case that reads the one mount, because it tears it down to get a fresh queue.
 await check("a named card still queued is dropped, and the rest still arrive", async () => {
   const release = installToaster()
   release()
@@ -629,6 +629,166 @@ await check("a named card still queued is dropped, and the rest still arrive", a
   flushEffects()
   assert.deepEqual(emitted().map((c) => c.message), ["Copied JSX"], "a retracted card still came out of the queue")
 })
+
+/* ---------------------------------------------------------------------- */
+console.log("\nThe lifecycle: retry, fallback, durations, stale mounts")
+
+/*
+ * Each case below starts from no toaster at all: `installToaster` returns the
+ * destroy for the current mount (or a fresh one), and calling it drops back
+ * to `idle`.
+ */
+const reset = async () => {
+  installToaster()()
+  await tick()
+  calls.length = 0
+  globalThis.__toastEffects.length = 0
+}
+
+/*
+ * The launcher's path, for real: `window.__DESIGNLAYER_TOASTER__` names a file
+ * URL, the React half is bundled there with the same stubs, and Node's own
+ * `import()` fails while the file is missing. So the cache-busting query is
+ * exercised rather than assumed — the retry asks for `?v=1&retry=1`, a URL the
+ * failed one did not cache.
+ */
+const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs")
+const { tmpdir } = await import("node:os")
+const { join } = await import("node:path")
+const { pathToFileURL } = await import("node:url")
+const viewDir = mkdtempSync(join(tmpdir(), "toast-view-"))
+const viewFile = join(viewDir, "toaster.mjs")
+const viewBundle = (
+  await build({
+    entryPoints: [join(PACKAGE_DIR, "src/core/toaster-view.ts")],
+    bundle: true,
+    format: "esm",
+    write: false,
+    logLevel: "silent",
+    plugins: [stubPlugin],
+  })
+).outputFiles[0].text
+
+/** Runs `fn` with console.warn recorded instead of printed. */
+async function quietly(fn) {
+  const warn = console.warn
+  const warnings = []
+  console.warn = (...args) => warnings.push(args.map(String).join(" "))
+  try {
+    await fn(warnings)
+  } finally {
+    console.warn = warn
+  }
+}
+const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms))
+const fallbackCards = () => {
+  const host = window.document.getElementById("designlayer-toaster")
+  return [...(host?.shadowRoot?.querySelectorAll("[data-de-toast-card]") ?? [])]
+}
+
+await check("a failed import retries under a fresh URL, and the queue drains once it loads", async () => {
+  await reset()
+  rmSync(viewFile, { force: true })
+  window.__DESIGNLAYER_TOASTER__ = `${pathToFileURL(viewFile).href}?v=1`
+  await quietly(async (warnings) => {
+    notify("Could not attach to this page. Reload to try again.", "error")
+    await wait(50)
+    assert.equal(warnings.length, 1, "the failed import was not reported on the console")
+    // The file appears before the first retry (500ms), as after a rebuild.
+    writeFileSync(viewFile, viewBundle)
+    await wait(700)
+  })
+  flushEffects()
+  assert.deepEqual(
+    emitted().map((c) => [c.fn, c.message]),
+    [["error", "Could not attach to this page"]],
+    "the queued error never arrived after the React half loaded on retry"
+  )
+  assert.equal(toasterPhase(), "ready")
+  delete window.__DESIGNLAYER_TOASTER__
+})
+
+await check("when every import fails, an error still shows, as a plain card with no React", async () => {
+  await reset()
+  rmSync(viewFile, { force: true })
+  window.__DESIGNLAYER_TOASTER__ = `${pathToFileURL(viewFile).href}?v=2`
+  let undone = 0
+  await quietly(async (warnings) => {
+    notify("Could not attach to this page. Reload to try again.", "error")
+    // First try, then retries at 500ms and 2000ms after each failure.
+    await wait(2800)
+    assert.equal(warnings.length, 3, `expected one warning per attempt, got ${warnings.length}`)
+  })
+  assert.equal(toasterPhase(), "failed")
+  assert.deepEqual(emitted(), [], "nothing should have reached Sonner, which never loaded")
+  const [card] = fallbackCards()
+  assert.ok(card, "the queued error was dropped: no card in the toaster's shadow root")
+  assert.equal(card.dataset.type, "error")
+  assert.equal(card.querySelector("[data-title]").textContent, "Could not attach to this page")
+  assert.equal(card.querySelector("[data-description]").textContent, "Reload to try again.")
+  assert.ok(card.querySelector("[data-icon] svg"), "an error card has no glyph")
+  // Later messages take the same path, and their buttons work.
+  notify("Deleted 2 notes", "info", { label: "Undo", onClick: () => (undone += 1) })
+  const undo = fallbackCards()[1]
+  assert.ok(!undo.querySelector("[data-icon]"), "news grew a glyph")
+  undo.querySelector("[data-button]").click()
+  assert.equal(undone, 1, "the fallback card's action did not run")
+  assert.equal(fallbackCards().length, 1, "a card stayed up after its action ran")
+  card.querySelector("[data-close-button]").click()
+  assert.equal(fallbackCards().length, 0, "the close button did not remove the card")
+  delete window.__DESIGNLAYER_TOASTER__
+})
+
+await check("an error with an action stays until dismissed; news with one gets eight seconds", async () => {
+  await reset()
+  notify("Starting\u2026")
+  await tick()
+  flushEffects()
+  calls.length = 0
+  const action = { label: "Open", onClick() {} }
+  notify("Could not reach the agent. Open the Changes tab to retry", "error", action)
+  notify("Deleted 2 notes", "info", action)
+  const [error, info] = emitted()
+  assert.equal(error.options.action.label, "Open")
+  assert.equal(error.options.duration, Number.POSITIVE_INFINITY, `an error with an action expires after ${error.options.duration}ms`)
+  assert.equal(info.options.duration, 8000)
+})
+
+await check("a sticky notice stays up until it is taken back", () => {
+  calls.length = 0
+  notify({ title: "Waiting for the app\u2026", id: "boot-wait", sticky: true })
+  notify({ title: "Copied JSX" })
+  const [sticky, plain] = emitted()
+  assert.equal(sticky.options.duration, Number.POSITIVE_INFINITY, `the boot wait expires after ${sticky.options.duration}ms`)
+  assert.equal(plain.options.duration, 4000)
+  assert.deepEqual(splitToast({ title: "Waiting\u2026", sticky: true }), { title: "Waiting\u2026", sticky: true })
+})
+
+/*
+ * The old root unmounts on a deferred timer, so its ReadyGate effect can still
+ * run after a destroy — here, after a destroy and a fresh install. It must not
+ * mark the NEW mount ready: messages emitted before the new Toaster subscribes
+ * have nobody listening and vanish.
+ */
+await check("a ReadyGate from a destroyed mount does not mark the new one ready", async () => {
+  await reset()
+  notify("Starting\u2026") // dropped with the mount it was queued on
+  await tick()
+  const [staleEffect] = globalThis.__toastEffects.splice(0)
+  assert.ok(staleEffect, "the first mount rendered no ReadyGate")
+  installToaster()() // destroy, before its effect ran
+  notify("Copied JSX") // installs a fresh mount and queues
+  await tick()
+  staleEffect()
+  notify("Copied 2 notes")
+  assert.deepEqual(emitted(), [], "a stale ReadyGate let messages out before the new Toaster subscribed")
+  assert.equal(toasterPhase(), "loading")
+  flushEffects()
+  assert.deepEqual(emitted().map((c) => c.message), ["Copied JSX", "Copied 2 notes"])
+  assert.equal(toasterPhase(), "ready")
+})
+
+rmSync(viewDir, { recursive: true, force: true })
 
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

@@ -53,7 +53,13 @@ function ReadyGate({ onReady }: { onReady(): void }): null {
   return null
 }
 
-/** Renders the Toaster into `mountPoint`; returns the unmount. */
+/**
+ * Renders the Toaster into `mountPoint`; returns the unmount.
+ *
+ * `onReady` arrives bound to the mount it was made for (`transition` in
+ * `toast.ts`), so the ReadyGate of a root that is still unmounting after a
+ * destroy reports to a mount that no longer exists, and is ignored there.
+ */
 export function mountToaster(mountPoint: Element, onReady: () => void): () => void {
   const root = createRoot(mountPoint)
   root.render(
