@@ -105,7 +105,7 @@ const config = {
   // `data` is a JSON map of name to { nodes, rootFill, rootStroke }. The set
   // is fetched from `GET {apiPrefix}/icons` on demand rather than shipped in
   // the prelude, so a large library costs nothing until the panel opens. An
-  // icon swap is preview-only — the source writer speaks in classes and text.
+  // icon swap previews on the page and becomes a note for the agent.
   icons: {
     attribute: "", // e.g. "data-app-icon"
     data: null, // e.g. "src/components/icons/icon-data.json"
