@@ -460,6 +460,29 @@ check("two routes never share a list", () => {
   assert.equal(home[0].comment, "A note about the home page")
 })
 
+/*
+ * The case above reloads between routes. A router does not: `pushState` moves
+ * the pathname under a live module, and the store used to keep page A's notes
+ * (a `loaded` flag said "already read") and file them under page B's key on
+ * the next write. The store now tracks the key it read for.
+ */
+check("a client-side route change re-reads the notes for the new page, and files nothing across", () => {
+  reset()
+  note(saveButton, "on page A")
+  window.history.pushState({}, "", "/b")
+  try {
+    assert.deepEqual(editor.annotations().map((n) => n.comment), [], "page A's notes followed a pushState to /b")
+    note(lede, "on page B")
+    const stored = (key) => JSON.parse(window.localStorage.getItem(key) ?? "[]").map((n) => n.comment)
+    assert.deepEqual(stored("designlayer.annotations.app:/b"), ["on page B"], "page A's notes were filed under /b")
+    assert.deepEqual(stored(STORAGE_KEY), ["on page A"], "page A lost its own notes")
+    window.history.pushState({}, "", "/")
+    assert.deepEqual(editor.annotations().map((n) => n.comment), ["on page A"], "coming back to / did not find its notes")
+  } finally {
+    window.history.pushState({}, "", "/")
+  }
+})
+
 check("clearing the list is remembered, so the notes do not come back", () => {
   reset()
   note(saveButton, "One")
@@ -1601,6 +1624,45 @@ await checkAsync("pins stand down for canvas view and come back when it closes",
   editor.setState({ canvasView: false })
   await settle()
   assert.equal(marker().style.display, "block", "the pin did not come back after the board closed")
+})
+
+await checkAsync("a router's pushState moves the pins and tells the listeners, with no event fired", async () => {
+  reset()
+  enterAnnotating(false)
+  note(lede, "Home note")
+  await settle()
+  let heardChange = 0
+  const stop = editor.onAnnotationsChange(() => (heardChange += 1))
+  window.history.pushState({}, "", "/elsewhere")
+  try {
+    // The canvas polls the pathname every quarter second.
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    await settle()
+    assert.ok(heardChange > 0, "nothing told the Changes tab the page moved")
+    const shown = [...layer.querySelectorAll(".de-ann-marker")].filter((m) => m.style.display === "block")
+    assert.equal(shown.length, 0, "the home page's pin stayed painted on /elsewhere")
+  } finally {
+    stop()
+    window.history.pushState({}, "", "/")
+    await new Promise((resolve) => setTimeout(resolve, 300))
+  }
+})
+
+/*
+ * Entering the mode claims the marker layer so the next note shows. With
+ * "Show pins: off" the claim was not enough: the person saved a note and saw
+ * nothing. Entry lifts the hide too.
+ */
+await checkAsync("entering the mode with pins hidden shows the note you pin", async () => {
+  reset()
+  enterAnnotating(false)
+  editor.updateSettings({ hideUntilRestart: true })
+  enterAnnotating(true)
+  assert.equal(editor.annotationSettings().hideUntilRestart, false, "the mode kept the pins hidden")
+  note(lede, "Visible note")
+  await settle()
+  assert.equal(layer.querySelector(".de-ann-marker")?.style.display, "block", "the new note has no pin on the page")
+  enterAnnotating(false)
 })
 
 await checkAsync("re-attaching never binds a note to the editor's own chrome", async () => {

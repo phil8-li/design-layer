@@ -65,7 +65,23 @@ const RETENTION_DAYS = 7
 
 let notes: AnnotationRecord[] = []
 let settings: AnnotationSettings = { ...DEFAULT_SETTINGS }
-let loaded = false
+let settingsLoaded = false
+/**
+ * The key `notes` was read from, or null before the first read.
+ *
+ * A key and not a `loaded` flag, because "loaded" is per PAGE. A router's
+ * `pushState` moves the pathname without reloading this module, and a flag
+ * that said "already loaded" kept page A's notes on screen at /b and then
+ * filed them under /b's key on the next write — the two routes pooled into one
+ * list, the exact failure the per-page key exists to prevent. Every reader and
+ * writer goes through `notesForPage()`, which compares this to the key for the
+ * page the document is on NOW and reloads when they differ:
+ *
+ *   null   --first read-------------> key(A)
+ *   key(A) --read/write on A---------> key(A)
+ *   key(A) --read/write on B (route)-> key(B)   (A's notes stay filed under A)
+ */
+let notesKey: string | null = null
 
 const listeners = new Set<() => void>()
 const settingsListeners = new Set<() => void>()
@@ -174,18 +190,10 @@ function isStoredNote(value: unknown): value is AnnotationRecord {
   return isRect(note.rect)
 }
 
-/**
- * Notes are rehydrated WITHOUT their live element.
- *
- * `element` is a DOM node and cannot be serialized, so a reloaded note paints
- * from its stored page rect alone. That is the honest state: the node it
- * pointed at may not exist any more, and a marker that silently re-attached
- * itself to whatever now sits at that selector would be a note about something
- * nobody wrote.
- */
-function load(): void {
-  if (loaded) return
-  loaded = true
+/** The settings half: read once per document, whatever the page. */
+function loadSettings(): void {
+  if (settingsLoaded) return
+  settingsLoaded = true
 
   const rawSettings = readScoped(SETTINGS_KEY)
   if (rawSettings) {
@@ -232,8 +240,26 @@ function load(): void {
    * reads it.
    */
   settings.scope = "app"
+}
 
+/**
+ * Notes are rehydrated WITHOUT their live element.
+ *
+ * `element` is a DOM node and cannot be serialized, so a reloaded note paints
+ * from its stored page rect alone. That is the honest state: the node it
+ * pointed at may not exist any more, and a marker that silently re-attached
+ * itself to whatever now sits at that selector would be a note about something
+ * nobody wrote.
+ *
+ * Brings `notes` to the page the document is on now. True when it moved, so a
+ * caller can tell the listeners the list they painted belongs to another page.
+ */
+function notesForPage(): boolean {
   const key = storageKey()
+  if (key === notesKey) return false
+  const moved = notesKey !== null
+  notesKey = key
+  notes = []
   // Whatever an older build left under the unscoped key belongs to somebody, and
   // nothing asks for that key any more. Moved here, before the read, so the
   // first load of the new build finds it: `adoptUnscoped` is a move rather than
@@ -242,7 +268,7 @@ function load(): void {
   adoptUnscoped(legacyStorageKey(), key)
 
   const raw = readScoped(key)
-  if (!raw) return
+  if (!raw) return moved
   try {
     const parsed: unknown = JSON.parse(raw)
     if (Array.isArray(parsed)) {
@@ -258,6 +284,32 @@ function load(): void {
   } catch {
     notes = []
   }
+  return moved
+}
+
+/**
+ * The read every function here starts with.
+ *
+ * A route change found by a READ is announced on a microtask rather than
+ * inline: the reader may be a listener or the painter mid-frame, and calling
+ * every listener from inside it would re-enter them. By the microtask the key
+ * matches, so the listeners' own reads change nothing and cannot loop.
+ */
+function load(): void {
+  loadSettings()
+  if (notesForPage()) queueMicrotask(announce)
+}
+
+/**
+ * Re-read the notes if the page moved, and tell the listeners at once.
+ *
+ * For a caller that knows the route may have changed (the canvas watches the
+ * URL, because a router's `pushState` fires no event), so the pins and the
+ * Changes tab follow the page without waiting for the next write.
+ */
+export function followPage(): void {
+  loadSettings()
+  if (notesForPage()) announce()
 }
 
 function persist(): void {
@@ -265,7 +317,7 @@ function persist(): void {
   // choke on: a DOM node in the payload throws a cyclic-structure error, which
   // would take the whole write down and lose the notes that CAN be stored.
   const portable = notes.map(({ element: _element, ...rest }) => rest)
-  writeScoped(storageKey(), JSON.stringify(portable))
+  writeScoped(notesKey ?? storageKey(), JSON.stringify(portable))
 }
 
 /** Every note for this page, oldest first. */
@@ -293,7 +345,7 @@ export function onSettingsChange(listener: () => void): () => void {
 let sequence = 0
 
 export function addAnnotation(
-  input: Omit<AnnotationRecord, "id" | "createdAt" | "status">
+  input: Omit<AnnotationRecord, "id" | "createdAt">
 ): AnnotationRecord {
   load()
   sequence += 1
@@ -507,7 +559,8 @@ export function notePinsVisible(): boolean {
 export function resetAnnotationsForTest(): void {
   notes = []
   settings = { ...DEFAULT_SETTINGS }
-  loaded = false
+  settingsLoaded = false
+  notesKey = null
   sequence = 0
   activeLayer = "notes"
 }
