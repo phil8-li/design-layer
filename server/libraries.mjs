@@ -63,6 +63,7 @@ import {
   libraryId,
   parseLibrary,
 } from "./library-sources.mjs"
+import { keepUnreadable } from "./library-auth.mjs"
 import { URL_SOURCE_KIND, isLibraryUrl, libraryNameFromUrl, parseUrlLibrary } from "./library-url.mjs"
 
 /** A ceiling on the panel rather than a product limit: twenty cards is already a scroll. */
@@ -483,7 +484,9 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
       parsed = JSON.parse(await fs.readFile(librariesFile, "utf8"))
     } catch {
       // Missing or corrupt: the editor keeps working with no libraries, and the
-      // next write heals the file.
+      // next write starts a fresh file — after moving a corrupt one aside
+      // (`keepUnreadable`), so a hand edit gone wrong costs a backup file
+      // rather than every library the project had.
       return []
     }
     const rows = Array.isArray(parsed?.libraries) ? parsed.libraries : []
@@ -502,6 +505,7 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
 
   async function writeEntries(entries) {
     await fs.mkdir(storeDir, { recursive: true })
+    await keepUnreadable(librariesFile)
     const temp = `${librariesFile}.${process.pid}.tmp`
     const payload = { libraries: entries }
     await fs.writeFile(temp, `${JSON.stringify(payload, null, 2)}\n`, "utf8")

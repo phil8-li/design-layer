@@ -795,6 +795,28 @@ await checkAsync("the credential file is written 0600, and stays 0600", async ()
   }
 })
 
+
+await checkAsync("a credential file that will not parse is kept aside, not overwritten", async () => {
+  // It reads as empty, so the next save used to rewrite it from nothing and
+  // drop every other origin's credential without a word.
+  const context = await project()
+  try {
+    await fs.mkdir(path.dirname(context.auth.authFile), { recursive: true })
+    const torn = '{ "credentials": [ { "origin": "https://other.example.com", "scheme": "bearer", "value": "abc"'
+    await fs.writeFile(context.auth.authFile, torn, { mode: 0o600 })
+    assert.deepEqual(await context.auth.listOrigins(), [])
+
+    await context.auth.saveCredential({ url: CATALOG_URL, scheme: "bearer", value: BEARER })
+    const dir = path.dirname(context.auth.authFile)
+    const kept = (await fs.readdir(dir)).filter((name) => name.startsWith("library-auth.json.corrupt-"))
+    assert.equal(kept.length, 1, "the unreadable file was overwritten rather than kept")
+    assert.equal(await fs.readFile(path.join(dir, kept[0]), "utf8"), torn)
+    assert.equal((await fs.stat(path.join(dir, kept[0]))).mode & 0o777, 0o600)
+    assert.deepEqual((await context.auth.listOrigins()).map((row) => row.origin), [CATALOG_ORIGIN])
+  } finally {
+    await context.cleanup()
+  }
+})
 /*
  * Several refusals, and none of them may write. A store that refuses loudly and
  * persists anyway is worse than one that accepts, because the panel then lists

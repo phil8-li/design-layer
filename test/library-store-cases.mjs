@@ -257,6 +257,19 @@ await withProject("a deep path is added once and stays added", async ({ store, w
   assert.equal(JSON.parse(await fs.readFile(stateFile, "utf8")).libraries.length, 1)
 })
 
+await withProject("a libraries file that will not parse is kept aside, not overwritten", async ({ store, stateFile }) => {
+  await fs.mkdir(path.dirname(stateFile), { recursive: true })
+  const torn = '{ "libraries": [ { "id": "brand", "name": "Brand"'
+  await fs.writeFile(stateFile, torn)
+  assert.deepEqual((await store.list()).libraries, [])
+  await store.add({ path: "src/styles/theme.css" })
+  const dir = path.dirname(stateFile)
+  const kept = (await fs.readdir(dir)).filter((name) => name.startsWith("libraries.json.corrupt-"))
+  assert.equal(kept.length, 1, "the unreadable file was overwritten rather than kept")
+  assert.equal(await fs.readFile(path.join(dir, kept[0]), "utf8"), torn)
+  assert.equal((await store.list()).libraries.length, 1)
+})
+
 await withProject("a name is the system's own, or the file's, title-cased", async ({ store }) => {
   // The manifest names itself, and the name it chose wins over the filename.
   assert.equal((await store.add({ path: "design/meridian.json" })).library.name, "Meridian")

@@ -324,6 +324,33 @@ export function credentialHeaders(credential) {
 }
 
 /**
+ * Move a file that is there but does not parse out of the way, before the
+ * next write replaces it.
+ *
+ * A file that will not parse reads as empty — the editor keeps working — and
+ * the next write then rewrote it from that empty reading: one hand edit gone
+ * wrong, or one torn write, and every other origin's credential was silently
+ * dropped by the next sign-in. Renamed rather than deleted, to
+ * `<file>.corrupt-<time>`, so whatever was in it can still be recovered; a
+ * rename keeps the 0600 mode. Shared with `libraries.mjs`.
+ */
+export async function keepUnreadable(file) {
+  let text
+  try {
+    text = await fs.readFile(file, "utf8")
+  } catch {
+    return
+  }
+  try {
+    JSON.parse(text)
+    return
+  } catch {
+    /* unreadable: keep it */
+  }
+  await fs.rename(file, `${file}.corrupt-${Date.now()}`).catch(() => {})
+}
+
+/**
  * The credential store, one per editor process.
  *
  * A stored row has a lifecycle the file does not show, so here it is:
@@ -383,6 +410,7 @@ export function createAuthStore(config = {}) {
 
   async function writeAll(credentials) {
     await fs.mkdir(storeDir, { recursive: true })
+    await keepUnreadable(authFile)
     const temp = `${authFile}.${process.pid}.tmp`
     const payload = { credentials }
     /*
