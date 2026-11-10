@@ -188,13 +188,6 @@ function stubBridge() {
       onCanvasTransformChange: () => () => {},
       viewportToPage: (x, y) => ({ x, y }),
       pageToViewport: (x, y) => ({ x, y }),
-      addPendingPropertyOperation() {},
-      buildBatchOperations: () => [],
-      hasChanges: () => false,
-      addMove: () => null,
-      updateMoveDelta() {},
-      getMoveForElement: () => null,
-      resetCanvas() {},
     },
   }
 }

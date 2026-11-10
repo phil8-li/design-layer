@@ -48,6 +48,7 @@ async function loadEditorHelpers() {
         export { toClassUpdate } from "./src/core/tailwind"
         export { createContext } from "./src/core/context"
         export { installInspector } from "./src/panels/inspector"
+        export { edits, resetJournalForTest } from "./src/annotations/journal"
       `,
       resolveDir: PACKAGE_DIR,
       loader: "ts",
@@ -1573,7 +1574,10 @@ async function withInspector(markup, run) {
     window.document.body.append(node)
     return node
   }
-  const pending = []
+  // Edits are notes: what a write left behind is read off the journal, which
+  // is module state shared by every harness in this file, so it starts empty.
+  helpers.resetJournalForTest()
+  const notes = () => helpers.edits()
   const bridge = {
     elementInfo: () => ({
       tagName: "div", componentName: "Fixture", filePath: "/tmp/fixture.tsx",
@@ -1581,10 +1585,10 @@ async function withInspector(markup, run) {
     }),
     send() {}, subscribe: () => () => {}, toast() {},
     store: {
-      addPendingPropertyOperation: (...args) => pending.push(args),
       getCanvasTransform: () => ({ x: 0, y: 0, scale: 1 }),
       setCanvasTransform() {}, onCanvasTransformChange: () => () => {},
-      onStateChange: () => () => {}, hasChanges: () => false,    },
+      onStateChange: () => () => {},
+    },
   }
   const editor = helpers.createContext(bridge, {
     overlay: slot(), toolbar: slot(), left: slot(), right,
@@ -1606,7 +1610,7 @@ async function withInspector(markup, run) {
       open.click()
       await paint()
     }
-    await run({ window, right, target, pending, paint })
+    await run({ window, right, target, notes, paint })
   } finally {
     globalThis.fetch = originalFetch
     dom.window.close()
@@ -1665,7 +1669,7 @@ const GRID_FIXTURE = `<div id="target" class="grid grid-cols-1 border bg-backgro
 
 await checkAsync("token controls are named and keep focus across their write", async () => {
   await withInspector(GRID_FIXTURE, async (harness) => {
-    const { window, right, target, pending } = harness
+    const { window, right, target, notes } = harness
     for (const label of [
       "Fill color token", "Text color token", "Text style token", "Stroke color token",
       "Corner radius token", "Shadow / effect token", "Container gap token",
@@ -1684,7 +1688,7 @@ await checkAsync("token controls are named and keep focus across their write", a
     assert.equal(window.document.activeElement, after)
     assert.equal(after.textContent, "Radius/sm", "the row does not read back as bound")
     assert.match(target.style.borderRadius, /var\(--radius-sm\)/)
-    assert.ok(pending.length > 0, "token pick did not queue a source operation")
+    assert.ok(notes().length > 0, "the token pick left no note")
   })
 })
 
@@ -1707,7 +1711,7 @@ const PRECISION_LABELS = [
 
 await checkAsync("precision axes stay folded until asked for, then write like any other row", async () => {
   await withInspector(PAINTED_FIXTURE, async (harness) => {
-    const { right, target, pending } = harness
+    const { right, target, notes } = harness
     expectRows(right, {
       present: COMMON_LABELS,
       // Twenty always-visible selects is a worse inspector than nine, so the
@@ -1719,10 +1723,10 @@ await checkAsync("precision axes stay folded until asked for, then write like an
     await harness.paint()
     expectRows(right, { present: [...COMMON_LABELS, ...PRECISION_LABELS] })
 
-    const queued = pending.length
+    const noted = notes().length
     await pick(harness, "margin-top", "spacing:spacing-lg")
     assert.equal(target.style.marginTop, "16px", "the precision row did not paint the preview")
-    assert.ok(pending.length > queued, "the precision row did not queue a source operation")
+    assert.ok(notes().length > noted, "the precision row left no note")
 
     await pick(harness, "ring-color", "color:background-primary")
     assert.equal(
@@ -1730,7 +1734,7 @@ await checkAsync("precision axes stay folded until asked for, then write like an
       "var(--sem-background-primary)",
       "a Tailwind v4 ring recolours through its custom property"
     )
-    assert.ok(pending.length > queued + 1, "the ring row did not queue a source operation")
+    assert.ok(notes().length > noted + 1, "the ring row left no note")
   })
 })
 

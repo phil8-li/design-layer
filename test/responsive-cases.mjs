@@ -75,6 +75,7 @@ async function loadEditorHelpers() {
         export { createContext } from "./src/core/context"
         export { installInspector } from "./src/panels/inspector"
         export { responsiveSection } from "./src/panels/inspector/section-responsive"
+        export { edits, resetJournalForTest } from "./src/annotations/journal"
       `,
       resolveDir: PACKAGE_DIR,
       loader: "ts",
@@ -302,7 +303,10 @@ await checkAsync("breakpoint controls are named and keep the caret across their 
     window.document.body.append(node)
     return node
   }
-  const pending = []
+  // Edits are notes: what a write left behind is read off the journal, which
+  // is module state shared by every harness in this file, so it starts empty.
+  helpers.resetJournalForTest()
+  const notes = () => helpers.edits()
   const bridge = {
     elementInfo: () => ({
       tagName: "div", componentName: "Fixture", filePath: "/tmp/fixture.tsx",
@@ -310,10 +314,10 @@ await checkAsync("breakpoint controls are named and keep the caret across their 
     }),
     send() {}, subscribe: () => () => {}, toast() {},
     store: {
-      addPendingPropertyOperation: (...args) => pending.push(args),
       getCanvasTransform: () => ({ x: 0, y: 0, scale: 1 }),
       setCanvasTransform() {}, onCanvasTransformChange: () => () => {},
-      onStateChange: () => () => {}, hasChanges: () => false,    },
+      onStateChange: () => () => {},
+    },
   }
   const editor = helpers.createContext(bridge, {
     overlay: slot(), toolbar: slot(), left: slot(), right,
@@ -352,7 +356,7 @@ await checkAsync("breakpoint controls are named and keep the caret across their 
     assert.ok(target.classList.contains("dark:md:hover:gap-6"), "nested variant was removed")
     assert.ok(target.classList.contains("md:grid-cols-3"))
     assert.ok(target.classList.contains("md:gap-6"))
-    assert.ok(pending.length > 0, "responsive edit did not queue a source operation")
+    assert.ok(notes().length > 0, "the responsive edit left no note")
   } finally {
     globalThis.fetch = originalFetch
     dom.window.close()

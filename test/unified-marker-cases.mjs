@@ -138,10 +138,6 @@ async function check(name, fn) {
 /** Just enough vendor store for the writer to queue a style and undo it. */
 const bridge = {
   store: {
-    addPendingPropertyOperation() {},
-    removePendingPropertyOperation() {},
-    buildBatchOperations: () => [],
-    hasChanges: () => false,
     setActiveTool() {},
     onStateChange() {},
     getCanvasTransform: () => ({ x: 0, y: 0, scale: 1 }),

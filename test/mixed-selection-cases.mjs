@@ -163,7 +163,7 @@ function scene(layers, { real = false } = {}) {
     send: () => {},
     subscribe: () => () => {},
     toast: () => {},
-    store: { addPendingPropertyOperation: () => {} },
+    store: {},
   }
   const base = real ? surface.createWriter(bridge) : stub
   const host = window.document.createElement("div")

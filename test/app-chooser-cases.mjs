@@ -1291,14 +1291,13 @@ async function warnsOnSwitch(lane, act) {
   target.className = "card"
   target.textContent = "Hello"
   window.document.body.append(target)
-  const bridge = { ...baseBridge, store: { ...baseBridge.store, addPendingPropertyOperation() {} } }
   const selection = {
     element: target,
     key: "k1",
     componentName: "Card",
     source: { filePath: "src/Card.tsx", lineNumber: 3, columnNumber: 1, componentName: "Card" },
   }
-  act(lane.createWriter(bridge), selection)
+  act(lane.createWriter(), selection)
   const row = ui.rows()[1]
   press(row)
   await settle()

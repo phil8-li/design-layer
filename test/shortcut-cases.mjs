@@ -439,13 +439,10 @@ const bridge = {
   subscribe: () => () => {},
   store: {
     setActiveTool() {},
-    hasChanges: () => false,
-    buildBatchOperations: () => [],
     onStateChange() {},
     getCanvasTransform: () => ({ x: 0, y: 0, scale: 1 }),
     viewportToPage: (x, y) => ({ x, y }),
     pageToViewport: (x, y) => ({ x, y }),
-    addPendingPropertyOperation() {},
   },
 }
 

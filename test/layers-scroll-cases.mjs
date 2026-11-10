@@ -89,7 +89,7 @@ function elementInfo(element) {
   const frame = { componentName: "App", filePath: "src/App.tsx", lineNumber: 1, columnNumber: 1 }
   return { tagName: "div", ...frame, stack: [frame] }
 }
-const bridge = { elementInfo, toast() {}, store: { addPendingPropertyOperation() {} } }
+const bridge = { elementInfo, toast() {}, store: {} }
 const slot = () => {
   const node = window.document.createElement("div")
   node.setAttribute("data-designlayer", "")

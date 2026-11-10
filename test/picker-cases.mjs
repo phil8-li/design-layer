@@ -52,6 +52,7 @@ async function loadEditorHelpers() {
         export { baseCss } from "./src/core/css/base"
         export { tokens } from "./src/core/tokens"
         export { toClassUpdate } from "./src/core/tailwind"
+        export { edits, resetJournalForTest } from "./src/annotations/journal"
       `,
       resolveDir: PACKAGE_DIR,
       loader: "ts",
@@ -101,7 +102,10 @@ async function withInspector(markup, run) {
     window.document.body.append(node)
     return node
   }
-  const pending = []
+  // Edits are notes: what a write left behind is read off the journal, which
+  // is module state shared by every harness in this file, so it starts empty.
+  helpers.resetJournalForTest()
+  const notes = () => helpers.edits()
   const bridge = {
     elementInfo: () => ({
       tagName: "div", componentName: "Fixture", filePath: "/tmp/fixture.tsx",
@@ -109,10 +113,10 @@ async function withInspector(markup, run) {
     }),
     send() {}, subscribe: () => () => {}, toast() {},
     store: {
-      addPendingPropertyOperation: (...args) => pending.push(args),
       getCanvasTransform: () => ({ x: 0, y: 0, scale: 1 }),
       setCanvasTransform() {}, onCanvasTransformChange: () => () => {},
-      onStateChange: () => () => {}, hasChanges: () => false,    },
+      onStateChange: () => () => {},
+    },
   }
   const editor = helpers.createContext(bridge, {
     overlay: slot(), toolbar: slot(), left: slot(), right,
@@ -126,7 +130,7 @@ async function withInspector(markup, run) {
     helpers.installInspector(editor)
     editor.select(window.document.getElementById("target"))
     await paint()
-    await run({ window, right, target: window.document.getElementById("target"), pending, paint })
+    await run({ window, right, target: window.document.getElementById("target"), notes, paint })
   } finally {
     globalThis.fetch = originalFetch
     dom.window.close()
@@ -330,7 +334,7 @@ console.log("\nKeyboard and dismissal")
 
 await checkAsync("arrows move the active row and Enter commits it", async () => {
   await withInspector(FIXTURE, async (harness) => {
-    const { window, right, target, pending } = harness
+    const { window, right, target, notes } = harness
     const { popover } = open(harness, "corner-radius")
     const search = popover.querySelector(".de-token-search-input")
 
@@ -348,7 +352,7 @@ await checkAsync("arrows move the active row and Enter commits it", async () => 
 
     assert.equal(window.document.querySelector(".de-token-popover"), null, "the picker stayed open")
     assert.match(target.style.borderRadius, /var\(--radius-2xl\)/)
-    assert.ok(pending.length > 0, "the pick queued no source operation")
+    assert.ok(notes().length > 0, "the pick left no note")
     // The commit rebuilds the panel, so the field the keyboard was on has to be
     // handed back or the next arrow key goes to <body>.
     // The radius binds from inside its number field, so focus returns to the
@@ -480,7 +484,7 @@ const MOTION_FIXTURE = `<div id="target" style="display:flex;gap:16px;transition
 
 await checkAsync("a typed value lands on the element, in source, and hands the field back", async () => {
   await withInspector(PLAIN_FIXTURE, async (harness) => {
-    const { window, right, target, pending } = harness
+    const { window, right, target, notes } = harness
     const { popover } = open(harness, "fill-color")
     const custom = customOf(popover)
     assert.ok(custom, "the picker offers no way out of the list")
@@ -494,10 +498,10 @@ await checkAsync("a typed value lands on the element, in source, and hands the f
 
     assert.equal(window.document.querySelector(".de-token-popover"), null, "the picker stayed open")
     assert.match(target.style.backgroundColor, /^(?:#123456|rgb\(18, 52, 86\))$/)
-    assert.ok(pending.length > 0, "the typed value queued no source operation")
-    // And it reaches source as a class, not as a preview the writer dropped.
-    assert.deepEqual(pending.at(-1)[1].updates[0].value, "#123456")
-    assert.equal(pending.at(-1)[1].updates[0].tailwindPrefix, "bg")
+    assert.ok(notes().length > 0, "the typed value left no note")
+    // And the note names the value the field took, for the agent to write.
+    assert.equal(notes().at(-1).property, "background-color")
+    assert.match(notes().at(-1).to, /^(?:#123456|rgb\(18, 52, 86\))$/)
 
     // Same contract as a picked token: close first, write second, so the panel
     // has a field to hand focus back to instead of dropping it to <body>.
@@ -538,14 +542,14 @@ await checkAsync("Enter in the typed field takes what was typed, not the row the
 
 await checkAsync("an empty field commits nothing and leaves the picker up", async () => {
   await withInspector(FIXTURE, async (harness) => {
-    const { window, target, pending } = harness
+    const { window, target, notes } = harness
     const before = target.style.backgroundColor
     const { popover } = open(harness, "fill-color")
     key(window, customOf(popover), "Enter")
     await harness.paint()
     assert.ok(window.document.querySelector(".de-token-popover"), "an empty Enter closed the picker")
     assert.equal(target.style.backgroundColor, before)
-    assert.equal(pending.length, 0)
+    assert.equal(notes().length, 0)
   })
 })
 

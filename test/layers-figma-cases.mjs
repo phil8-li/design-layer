@@ -90,7 +90,7 @@ const { createContext, installLayersPanel, setState, layersCss, layerName, getRe
   export { layerName, getResolver } from "./src/core/resolve"
 `)
 
-const bridge = { elementInfo, toast() {}, store: { addPendingPropertyOperation() {} } }
+const bridge = { elementInfo, toast() {}, store: {} }
 const slot = () => {
   const node = window.document.createElement("div")
   node.setAttribute("data-designlayer", "")

@@ -130,10 +130,9 @@ async function withInspector(helpers, markup, run) {
     }),
     send() {}, subscribe: () => () => {}, toast() {},
     store: {
-      addPendingPropertyOperation() {},
       getCanvasTransform: () => ({ x: 0, y: 0, scale: 1 }),
       setCanvasTransform() {}, onCanvasTransformChange: () => () => {},
-      onStateChange: () => () => {}, hasChanges: () => false,
+      onStateChange: () => () => {},
     },
   }
   const editor = helpers.createContext(bridge, {
