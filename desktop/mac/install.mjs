@@ -5,7 +5,7 @@
  *
  *   node desktop/mac/install.mjs                 install (LaunchAgent + Chrome app) and open it
  *   node desktop/mac/install.mjs --dry-run       print the plan, change nothing
- *   node desktop/mac/install.mjs --start         (re)start the desk server
+ *   node desktop/mac/install.mjs --start         (re)start the desk server, reopening its editors
  *   node desktop/mac/install.mjs --stop          stop the desk server until next login/--start
  *   node desktop/mac/install.mjs --status        LaunchAgent, health, start screen, app
  *   node desktop/mac/install.mjs --app-window    fallback: open a Chrome --app window instead of the shim
@@ -18,7 +18,7 @@
  * Chrome writes for an installed web app.
  */
 
-import { execFileSync, spawn } from "node:child_process"
+import { spawn } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
 import os from "node:os"
@@ -26,18 +26,33 @@ import path from "node:path"
 import readline from "node:readline"
 import { fileURLToPath } from "node:url"
 
-import { APP_FEATURES, CHROME_BINARY, chromeProfileDir, openChrome, profileInUse, quitProfileChrome } from "./chrome-pipe.mjs"
+import { DEFAULT_DESK_PORT } from "../../runtime/mac-desk.mjs"
+import { deskAgent, deskHealth, runCommand as run } from "./agent.mjs"
+import {
+  APP_FEATURES,
+  CHROME_BINARY,
+  appShim,
+  appWindowArgs,
+  chromeProfileDir,
+  openChrome,
+  profileInUse,
+  quitProfileChrome,
+  shimOpenArgs,
+} from "./chrome-pipe.mjs"
 import { LABEL, buildPlist, logDir, plistPath } from "./launch-agent.mjs"
 import { TABS_KEY, isDeskTitle } from "./shell-page.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(HERE, "..", "..")
 const SERVER = path.join(HERE, "desk-server.mjs")
-const PORT = Number(process.env.DESIGNLAYER_DESK_PORT) || 3454
+const PORT = Number(process.env.DESIGNLAYER_DESK_PORT) || DEFAULT_DESK_PORT
 // The app is installed from localhost, the site of the editors it frames
 // (runtime/mac-desk.mjs). Its manifest id is this URL, so an app installed
 // from 127.0.0.1 is another app to Chrome, and is removed on install.
 const DESK_URL = `http://localhost:${PORT}/`
+// The address the app had before 2026-10-10: carryTabs, the old app's removal
+// and its uninstall exist for Macs that installed then. Remove them after
+// 2027-04-10.
 const OLD_DESK_URL = `http://127.0.0.1:${PORT}/`
 // What this script itself asks the desk: the address it binds, whichever way
 // node resolves localhost.
@@ -45,11 +60,12 @@ const DESK_API = OLD_DESK_URL
 const HOME = os.homedir()
 const UID = process.getuid()
 const DOMAIN = `gui/${UID}`
-const SHIM = path.join(HOME, "Applications", "Chrome Apps.localized", "DesignLayer.app")
+const SHIM = appShim(HOME)
 const SHIM_LOADER = path.join(SHIM, "Contents", "MacOS", "app_mode_loader")
 const PROFILE = chromeProfileDir(HOME)
 const MARKER = path.join(path.dirname(PROFILE), ".installed-by-designlayer")
 const LOG_FILE = path.join(logDir(HOME), "desk.log")
+const agent = deskAgent({ domain: DOMAIN, label: LABEL, plistFile: plistPath(HOME), deskApi: DESK_API, log: (line) => say(line) })
 
 const args = new Set(process.argv.slice(2))
 const DRY = args.has("--dry-run")
@@ -58,15 +74,6 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const say = (line = "") => console.log(line)
 const step = (n, total, line) => say(`\n[${n}/${total}] ${line}`)
 const warn = (line) => say(`  !! ${line}`)
-
-function run(cmd, argv, { allowFail = false } = {}) {
-  try {
-    return { ok: true, out: execFileSync(cmd, argv, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) }
-  } catch (error) {
-    if (!allowFail) throw error
-    return { ok: false, out: `${error.stdout ?? ""}${error.stderr ?? ""}`, code: error.status }
-  }
-}
 
 /**
  * The node launchd should run. Homebrew's `process.execPath` is the versioned
@@ -86,23 +93,7 @@ function stableNodePath() {
   return process.execPath
 }
 
-function health(timeoutMs = 1500) {
-  return new Promise((resolve) => {
-    const req = http.get(`${DESK_API}api/health`, { timeout: timeoutMs }, (res) => {
-      let body = ""
-      res.on("data", (c) => (body += c))
-      res.on("end", () => {
-        try {
-          resolve(JSON.parse(body))
-        } catch {
-          resolve(null)
-        }
-      })
-    })
-    req.on("timeout", () => req.destroy())
-    req.on("error", () => resolve(null))
-  })
-}
+const health = () => deskHealth(DESK_API)
 
 function putTabs(body) {
   return new Promise((resolve) => {
@@ -150,17 +141,6 @@ async function waitFor(fn, ms, every = 500) {
   }
 }
 
-function agentState() {
-  const result = run("/bin/launchctl", ["print", `${DOMAIN}/${LABEL}`], { allowFail: true })
-  if (!result.ok) return { loaded: false }
-  return {
-    loaded: true,
-    state: result.out.match(/^\s*state = (.+)$/m)?.[1] ?? "unknown",
-    pid: result.out.match(/^\s*pid = (\d+)$/m)?.[1] ?? null,
-    lastExit: result.out.match(/last exit code = (.+)$/m)?.[1] ?? null,
-  }
-}
-
 function plan() {
   const nodePath = stableNodePath()
   const plist = buildPlist({
@@ -169,7 +149,7 @@ function plan() {
     repoRoot: REPO_ROOT,
     env: { PATH: process.env.PATH, HOME, LANG: process.env.LANG ?? "en_US.UTF-8" },
     logFile: LOG_FILE,
-    port: PORT === 3454 ? undefined : PORT,
+    port: PORT === DEFAULT_DESK_PORT ? undefined : PORT,
   })
   return { nodePath, plist }
 }
@@ -181,19 +161,12 @@ function preflight() {
   if (!chrome) throw new Error("Chrome is required: the app window is a Chrome-installed web app.")
 }
 
-function writeAgent({ plist }) {
+async function writeAgent({ plist }) {
   fs.mkdirSync(logDir(HOME), { recursive: true })
   fs.mkdirSync(path.dirname(plistPath(HOME)), { recursive: true })
   fs.writeFileSync(plistPath(HOME), plist)
   run("/usr/bin/plutil", ["-lint", plistPath(HOME)])
-  run("/bin/launchctl", ["bootout", `${DOMAIN}/${LABEL}`], { allowFail: true })
-  // bootout is asynchronous; bootstrap fails with "Input/output error" if it races.
-  for (let i = 0; i < 10; i += 1) {
-    const result = run("/bin/launchctl", ["bootstrap", DOMAIN, plistPath(HOME)], { allowFail: true })
-    if (result.ok) return
-    if (i === 9) throw new Error(`launchctl bootstrap failed: ${result.out.trim()}`)
-    execFileSync("/bin/sleep", ["0.5"])
-  }
+  await agent.restartAgent({ action: "reload", save: true })
 }
 
 async function installPwa() {
@@ -245,21 +218,12 @@ function checkShim() {
 }
 
 function openAppWindow() {
-  const child = spawn(
-    CHROME_BINARY,
-    [`--user-data-dir=${PROFILE}`, `--app=${DESK_URL}`, "--no-first-run", "--no-default-browser-check", APP_FEATURES],
-    { detached: true, stdio: "ignore" }
-  )
+  const child = spawn(CHROME_BINARY, appWindowArgs([`--app=${DESK_URL}`], HOME), { detached: true, stdio: "ignore" })
   child.unref()
 }
 
-/**
- * Opens the app the way its Dock icon does, plus APP_FEATURES. The shim passes
- * `--enable-features` on to the Chrome it starts, and `open` hands arguments
- * only to an app it is launching, so this has its effect when the app is not
- * already running.
- */
-const openShim = (options) => run("/usr/bin/open", [SHIM, "--args", APP_FEATURES], options)
+/** Opens the app the way its Dock icon does, plus APP_FEATURES (chrome-pipe.mjs shimOpenArgs). */
+const openShim = (options) => run("/usr/bin/open", shimOpenArgs(HOME), options)
 
 async function install() {
   const total = 5
@@ -272,10 +236,10 @@ async function install() {
   say(`  runs:  ${p.nodePath} ${SERVER}`)
   say(`  logs:  ${LOG_FILE}`)
   if (DRY) {
-    say("  (dry run) would write this plist, then launchctl bootout + bootstrap " + DOMAIN)
+    say("  (dry run) would save the open editors for resume, write this plist, then launchctl bootout + bootstrap " + DOMAIN)
     say(p.plist.split("\n").map((l) => `    ${l}`).join("\n"))
   } else {
-    writeAgent(p)
+    await writeAgent(p)
     const up = await waitFor(() => health(), 20000)
     if (!up) throw new Error(`The desk did not answer on ${DESK_API}api/health. See ${LOG_FILE}.`)
     say(`  health: ok (pid ${up.pid})`)
@@ -319,29 +283,31 @@ async function start() {
     process.exitCode = 1
     return
   }
-  if (DRY) return say(`(dry run) would bootstrap or kickstart ${DOMAIN}/${LABEL}`)
-  if (agentState().loaded) run("/bin/launchctl", ["kickstart", "-k", `${DOMAIN}/${LABEL}`])
-  else run("/bin/launchctl", ["bootstrap", DOMAIN, plistPath(HOME)])
+  if (DRY) return say(`(dry run) would save the open editors for resume, then bootstrap or kickstart ${DOMAIN}/${LABEL}`)
+  await agent.restartAgent({ action: "restart", save: true })
   const up = await waitFor(() => health(), 20000)
   say(up ? `Desk running on ${DESK_URL} (pid ${up.pid}).` : `The desk did not answer. See ${LOG_FILE}.`)
   if (!up) process.exitCode = 1
 }
 
-function stop() {
-  if (DRY) return say(`(dry run) would launchctl bootout ${DOMAIN}/${LABEL}`)
-  const result = run("/bin/launchctl", ["bootout", `${DOMAIN}/${LABEL}`], { allowFail: true })
-  say(result.ok ? "Desk stopped. It starts again at login, or with --start." : "Desk was not loaded.")
+async function stop() {
+  if (DRY) return say(`(dry run) would save the open editors for resume, then launchctl bootout ${DOMAIN}/${LABEL}`)
+  const stopped = await agent.restartAgent({ action: "stop", save: true })
+  say(stopped ? "Desk stopped. It starts again at login, or with --start." : "Desk was not loaded.")
 }
 
 async function status() {
-  const agent = agentState()
-  say(`LaunchAgent ${LABEL}: ${agent.loaded ? `${agent.state}${agent.pid ? `, pid ${agent.pid}` : ""}${agent.lastExit ? `, last exit ${agent.lastExit}` : ""}` : "not loaded"}`)
+  const state = agent.state()
+  say(`LaunchAgent ${LABEL}: ${state.loaded ? `${state.state}${state.pid ? `, pid ${state.pid}` : ""}${state.lastExit ? `, last exit ${state.lastExit}` : ""}` : "not loaded"}`)
   say(`  plist: ${fs.existsSync(plistPath(HOME)) ? plistPath(HOME) : "missing"}`)
   const h = await health()
   say(`Desk ${DESK_URL}: ${h ? `ok (pid ${h.pid}, up ${Math.round(h.uptimeMs / 1000)} s)` : "not answering"}`)
   if (h) {
     const s = h.startScreen
     say(`Start screen: ${s.ready ? `${s.url} (${s.owned ? `owned by desk, pid ${s.pid}` : "external, reused"})` : s.state}${s.restarts ? `, ${s.restarts} restarts` : ""}`)
+    // Why it is not answering, and where its log is: the desk keeps it here.
+    if (s.detail) say(`  ${s.detail}`)
+    if (s.editors?.length) say(`  editors: ${s.editors.map((e) => `${e.name ?? e.appUrl} (${e.state})`).join(", ")}`)
   }
   const shim = checkShim()
   say(`App shim: ${shim.exists ? SHIM : "not installed"}`)
@@ -444,7 +410,8 @@ async function uninstall() {
   }
 
   const agentWasOwned = fs.existsSync(plistPath(HOME))
-  run("/bin/launchctl", ["bootout", `${DOMAIN}/${LABEL}`], { allowFail: true })
+  // Nothing starts the editors again after an uninstall, so none are saved.
+  await agent.restartAgent({ action: "stop", save: false })
   if (agentWasOwned) fs.rmSync(plistPath(HOME), { force: true })
   say("  LaunchAgent removed")
 
@@ -486,7 +453,7 @@ try {
   else if (args.has("--uninstall")) await uninstall()
   else if (args.has("--status")) await status()
   else if (args.has("--start")) await start()
-  else if (args.has("--stop")) stop()
+  else if (args.has("--stop")) await stop()
   else if (args.has("--verify-window")) await verifyWindow()
   else if (args.has("--app-window")) {
     if (!(await health())) await start()
