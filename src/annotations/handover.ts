@@ -61,7 +61,7 @@ export function sessionPrompt(brief: string): string {
 }
 
 /** "3 notes and 2 edits", with whichever half is zero left out. */
-export function outboxSummary(items: OutboxItem[]): string {
+function outboxSummary(items: OutboxItem[]): string {
   const notes = items.filter((item) => item.type === "note").length
   const edits = items.length - notes
   return [
@@ -136,7 +136,7 @@ export function needsAgent(items: OutboxItem[] = outboxItems()): boolean {
 }
 
 /** Has a send that reached the queue already carried this item? */
-export function wasSent(item: OutboxItem): boolean {
+function wasSent(item: OutboxItem): boolean {
   return Boolean(item.type === "note" ? item.note.sentAt : item.edit.sentAt)
 }
 
@@ -155,7 +155,7 @@ function itemWords(item: OutboxItem): string {
 
 /* ---------- the send machine (transition table in the header) ---------- */
 
-export type SendState =
+type SendState =
   | { kind: "idle" }
   | { kind: "sending"; token: number; itemIds: string[] }
   | { kind: "sent"; at: string; outcome: AgentOutcome; changeId: string | null }
@@ -191,7 +191,7 @@ export function resetSendForTest(): void {
 }
 
 /** What one press of "Send to agent" came to. */
-export interface HandoverResult {
+interface HandoverResult {
   /** The brief went to the agent route. False when nothing was sent. */
   sent: boolean
   ok: boolean

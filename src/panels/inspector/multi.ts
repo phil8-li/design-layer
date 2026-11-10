@@ -133,7 +133,7 @@ export function fanOutWriter(writer: Writer, selections: Selection[]): Writer {
 }
 
 /** A section's writes: what reaches the notes, and what only draws during a scrub. */
-export interface SectionWriters {
+interface SectionWriters {
   /** One edit on the selection (every layer, through `fanOutWriter`). The panel repaints when `follow.ts` sees it. */
   apply(writes: StyleWrite[], summary: string): void
   /** `apply`, then repaint the panel now: for a control whose own look depends on the value. */

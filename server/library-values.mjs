@@ -32,7 +32,7 @@
 export const MAX_ALIAS_DEPTH = 8
 
 /** The px a unitless `rem`/`em` is worth. The root default, and not worth guessing at. */
-export const ROOT_FONT_SIZE = 16
+const ROOT_FONT_SIZE = 16
 
 /**
  * Above this, a unitless line-height is read as pixels; at or below it, as a

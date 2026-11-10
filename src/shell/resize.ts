@@ -91,7 +91,7 @@ import { readJsonPref, writeJsonPref } from "../core/prefs"
 import { tokens } from "../core/tokens"
 import { prefersReducedMotion } from "../core/motion"
 
-export type PanelSide = "left" | "right"
+type PanelSide = "left" | "right"
 
 const SIDES: readonly PanelSide[] = ["left", "right"]
 
@@ -110,7 +110,7 @@ export interface PanelResize {
   destroy(): void
 }
 
-export interface PanelResizeOptions {
+interface PanelResizeOptions {
   left: HTMLElement
   right: HTMLElement
   /** A width the insets depend on has moved. */

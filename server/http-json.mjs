@@ -44,7 +44,7 @@ export function isJsonContentType(req) {
 }
 
 /** Whether a request carries a body at all, by its framing headers. */
-export function hasBody(req) {
+function hasBody(req) {
   if (req.headers["transfer-encoding"] !== undefined) return true
   const length = Number(req.headers["content-length"] ?? 0)
   return Number.isFinite(length) && length > 0

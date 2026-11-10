@@ -42,7 +42,7 @@ export interface OptionSnapshot {
 }
 
 /** Where the persisted sets are, as far as this tab knows. */
-export type OptionsLoad =
+type OptionsLoad =
   | { kind: "idle" }
   | { kind: "loading"; promise: Promise<void> }
   | { kind: "ready" }

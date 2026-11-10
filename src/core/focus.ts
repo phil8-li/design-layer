@@ -53,7 +53,7 @@ const FOCUS_ATTR = "data-de-focus"
 
 let keyboard = false
 
-/** True when the last thing the user did was a key, not a pointer. */
+/** True when the last thing the user did was a key, not a pointer. Exported for test/focus-modality-cases.mjs. */
 export function usingKeyboard(): boolean {
   return keyboard
 }

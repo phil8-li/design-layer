@@ -56,7 +56,7 @@ export function writeBuildStamp(root, inputs, outputs) {
 }
 
 /** True only when every file the last passing build recorded is exactly as it was. */
-export function buildStampIsCurrent(root) {
+function buildStampIsCurrent(root) {
   let stamp
   try {
     stamp = JSON.parse(fs.readFileSync(path.join(root, STAMP), "utf8"))

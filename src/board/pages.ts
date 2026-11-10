@@ -289,7 +289,7 @@ export async function loadPages(options: PageSources & { fetch?: typeof fetch })
   return buildPages({ ...options, routes: await fetchRoutes(options.apiBase, options.fetch) })
 }
 
-export interface PageSources {
+interface PageSources {
   apiBase: string
   doc?: Document
   location?: { origin: string; pathname: string; hash?: string }

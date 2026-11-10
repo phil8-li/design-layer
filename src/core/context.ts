@@ -38,7 +38,7 @@ export interface EditorSlots {
  * cannot be written by accident. Suites that need a raw write import the
  * store's own `setState`.
  */
-export type LaneStatePatch = Partial<Omit<EditorState, "interactive" | "annotating" | "chromeHidden">>
+type LaneStatePatch = Partial<Omit<EditorState, "interactive" | "annotating" | "chromeHidden">>
 
 export interface EditorContext {
   bridge: RewriteBridge

@@ -59,7 +59,7 @@ import { closeEndpoint, openEndpoint } from "../server/mcp.mjs"
 const MOVE_RETRY_MS = 1500
 
 /** Beside the editor registry, in the per-user state this package already keeps. */
-export function mcpSettingsFile() {
+function mcpSettingsFile() {
   return path.join(os.homedir(), ".local", "state", "designlayer", "mcp.json")
 }
 

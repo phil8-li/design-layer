@@ -72,7 +72,7 @@ export function browserCandidates({ platform = process.platform, env = process.e
 }
 
 /** How long to wait for the browser to open its debugging port. */
-export const LAUNCH_TIMEOUT = 20 * 1000
+const LAUNCH_TIMEOUT = 20 * 1000
 /*
  * How long ONE HTTP probe of the debugging endpoint may take.
  *
@@ -641,7 +641,7 @@ function stopOwnedOnExit() {
 }
 
 /** `spawn`, with the child registered for the exit hook above until it exits. */
-export function spawnOwned(command, args, options = {}) {
+function spawnOwned(command, args, options = {}) {
   const child = spawn(command, args, { stdio: "ignore", ...options })
   if (child.pid === undefined) return child
   owned.add(child)

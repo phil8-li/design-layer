@@ -19,7 +19,7 @@
 
 export const ARMED_MS = 6000
 
-export interface Arm {
+interface Arm {
   /** The target waiting for its second press, or null. */
   target(): Element | null
   /** Whether `event` is the repeat click of a double-click on the armed target. */

@@ -50,7 +50,7 @@ export interface TravellingSurface {
 }
 
 interface TravellingSurfaceOptions {
-  /** Class for the moving node — `de-tab-pill`, `de-segment-thumb`. */
+  /** Class for the moving node — `de-tab-pill`, `de-iseg-thumb`. */
   className: string
   /** Attribute the stylesheet reads to know a measurement exists. */
   flag: string
@@ -195,7 +195,7 @@ export function installTabPill(strip: HTMLElement): TravellingSurface {
 /**
  * The icon segmented control's chip.
  *
- * Its own installer rather than a parameter on the one below, because the two
+ * Its own installer rather than a parameter on the one above, because the two
  * differ in the class they move and the items they measure — and `field.ts`
  * should be able to say which control it is building without also restating
  * four selectors.
@@ -207,16 +207,5 @@ export function installIconSegmentThumb(track: HTMLElement): TravellingSurface {
     xProperty: "--de-thumb-x",
     widthProperty: "--de-thumb-w",
     itemSelector: ".de-tool",
-  })
-}
-
-/** The segmented control's chip. `fast`, because it crosses a whole segment. */
-export function installSegmentThumb(track: HTMLElement): TravellingSurface {
-  return installTravellingSurface(track, {
-    className: "de-segment-thumb",
-    flag: "data-de-thumb",
-    xProperty: "--de-thumb-x",
-    widthProperty: "--de-thumb-w",
-    itemSelector: ".de-segment",
   })
 }

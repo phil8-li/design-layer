@@ -39,7 +39,7 @@ const FILL = "100%"
 const STEM: Record<Axis, string> = { width: "w", height: "h" }
 
 /** A panel flag, not a disclosure: the lock survives the rebuild each write causes and opens nothing. */
-export const ASPECT_LOCK = "layout.aspect-lock"
+const ASPECT_LOCK = "layout.aspect-lock"
 
 const MODE_WORD: Record<Mode, string> = { fixed: "Fixed", hug: "Hug", fill: "Fill" }
 

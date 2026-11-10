@@ -33,7 +33,7 @@ import type { IconNode } from "../core/icons"
  */
 export type LibrarySourceKind = "manifest" | "css" | "tokens" | "icons" | "components" | "url"
 
-export interface LibrarySource {
+interface LibrarySource {
   kind: LibrarySourceKind
   /**
    * POSIX, project-relative, e.g. "src/styles/tokens.css". Never absolute.

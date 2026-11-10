@@ -24,14 +24,14 @@ import { isAuthoredAttribute } from "./element-target"
 import type { Selection } from "./types"
 
 /** Five kinds of source text, plus `plain` — indentation and text. */
-export type CodeTokenKind = "tag" | "attribute" | "string" | "number" | "punctuation" | "plain"
+type CodeTokenKind = "tag" | "attribute" | "string" | "number" | "punctuation" | "plain"
 
 interface CodeToken {
   kind: CodeTokenKind
   text: string
 }
 
-export type CodeView = "jsx" | "html" | "classes"
+type CodeView = "jsx" | "html" | "classes"
 
 /**
  * The three views that are actually derivable here.

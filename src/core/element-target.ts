@@ -16,7 +16,7 @@
  */
 
 /** Enough of an element's identity for a server to find the one node that wrote it. */
-export interface ElementTarget {
+interface ElementTarget {
   tagName: string
   classes: string[]
   id: string | null

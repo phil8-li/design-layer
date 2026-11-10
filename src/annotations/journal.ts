@@ -343,6 +343,7 @@ export function markEditsSent(ids: Iterable<string>, at: string, changeId: strin
   if (changed) announce()
 }
 
+// Exported for test/annotation-cases.mjs, outbox-rows-cases and app-chooser-cases.
 export function clearEdits(): void {
   if (!entries.length && !mutations.length) return
   entries.length = 0

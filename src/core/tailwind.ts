@@ -9,7 +9,7 @@
 
 import { config } from "./config"
 
-export interface ClassUpdate {
+interface ClassUpdate {
   tailwindPrefix: string
   tailwindToken: string | null
   value: string

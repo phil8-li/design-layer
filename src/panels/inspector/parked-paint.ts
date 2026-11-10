@@ -23,13 +23,13 @@
 
 import type { Selection } from "../../core/types"
 
-export type PaintKind = "fill" | "text" | "stroke" | "effects"
+type PaintKind = "fill" | "text" | "stroke" | "effects"
 
 const parked = new Map<string, unknown>()
 
 const slot = (kind: PaintKind, layer: string): string => `${kind}\u0000${layer}`
 
-export interface ParkedPaints<T> {
+interface ParkedPaints<T> {
   get(layer: Pick<Selection, "key">): T | undefined
   set(layer: Pick<Selection, "key">, value: T): void
   /** Drops the entry for every layer given: a paint written to all of them is live on all of them. */

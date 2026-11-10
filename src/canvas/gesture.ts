@@ -42,7 +42,7 @@ import { selectionOwnsInput, subscribe } from "../core/store"
  */
 export const DRAG_THRESHOLD = 3
 
-export type CancelReason =
+type CancelReason =
   | "escape"
   | "pointercancel"
   | "lost-capture"
@@ -51,7 +51,7 @@ export type CancelReason =
   | "stand-down"
   | "invalid"
 
-export interface TrackHandlers {
+interface TrackHandlers {
   /** Each pointer move while the track lives, after the guards passed. */
   move(event: PointerEvent): void
   /** The release, after the guards passed. The track has already ended. */

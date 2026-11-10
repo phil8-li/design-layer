@@ -173,7 +173,7 @@ const DURATION = {
  */
 export type ToastMessage = string | { title: string; description?: string; id?: string; sticky?: boolean }
 
-export interface ToastContent {
+interface ToastContent {
   title: string
   description?: string
   id?: string
@@ -253,7 +253,7 @@ type Toaster =
   | { phase: "ready"; mount: Mount; view: View; unmount: () => void }
   | { phase: "failed"; mount: Mount; attempts: number; error: unknown; list: HTMLElement }
 
-export type ToasterPhase = Toaster["phase"]
+type ToasterPhase = Toaster["phase"]
 
 type ToasterEvent =
   | { type: "install" }

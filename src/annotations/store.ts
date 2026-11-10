@@ -457,6 +457,7 @@ export function markNotesSent(ids: Iterable<string>, at: string, changeId: strin
   announce()
 }
 
+// Exported for test/annotation-cases.mjs, history-cases, layer-header-cases and toolbar-cases.
 export function clearAnnotations(): void {
   load()
   if (!notes.length) return

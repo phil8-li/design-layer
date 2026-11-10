@@ -103,7 +103,7 @@ export interface InspectorTab {
  * string, so this panel is where an id is checked: an id that names no tab
  * reads as Design (`activeTab()`), never as a strip with every pane hidden.
  */
-export type InspectorTabId = "design" | "annotations" | "system"
+type InspectorTabId = "design" | "annotations" | "system"
 
 export interface SectionContext {
   editor: EditorContext
