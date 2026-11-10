@@ -24,7 +24,8 @@ const config = {
   // "auto" lets the tool take the first free port near the vendor's defaults.
   // Pin these when something else needs to know where the editor lives; a
   // pinned port that is busy stops the launch instead of moving silently.
-  ports: { proxy: "auto", ws: "auto" },
+  // `mcp` is the fixed MCP endpoint port; null turns the endpoint off.
+  ports: { proxy: "auto", ws: "auto", mcp: 5747 },
 
   // Where the editor keeps saved option sets, agent handoffs, and the
   // endpoint file. Add it to .gitignore.
@@ -104,7 +105,7 @@ const config = {
   // `data` is a JSON map of name to { nodes, rootFill, rootStroke }. The set
   // is fetched from `GET {apiPrefix}/icons` on demand rather than shipped in
   // the prelude, so a large library costs nothing until the panel opens. An
-  // icon swap is preview-only — the source writer speaks in classes and text.
+  // icon swap previews on the page and becomes a note for the agent.
   icons: {
     attribute: "", // e.g. "data-app-icon"
     data: null, // e.g. "src/components/icons/icon-data.json"
@@ -189,7 +190,7 @@ const config = {
   tailwind: {
     // "v3-default" is Tailwind 3's discrete spacing table. Tailwind 4 resolves
     // every multiple of `spacingBase`, so set "v4-linear" there to stop the
-    // editor writing arbitrary values for tokens that now exist.
+    // brief suggesting arbitrary values for tokens that now exist.
     spacingScale: "v3-default",
     spacingBase: 4,
     breakpoints: { sm: 640, md: 768, lg: 1024, xl: 1280, "2xl": 1536 },
@@ -207,8 +208,8 @@ const config = {
     themeNamespaces: ["color", "radius", "text", "shadow"],
 
     // Your own colour stems, ADDED to Tailwind's palette and the shadcn
-    // semantic tokens. A stem listed here is written as `bg-brand-500`; a
-    // stem omitted is written as an arbitrary value, which is safe but ugly.
+    // semantic tokens. A stem listed here is suggested as `bg-brand-500`; a
+    // stem omitted is suggested as an arbitrary value, which is safe but ugly.
     colorWords: [],
 
     fontSizes: ["xs", "sm", "base", "lg", "xl", "2xl", "3xl", "4xl", "5xl", "6xl"],
@@ -216,8 +217,8 @@ const config = {
   },
 
   source: {
-    // Directories the agent may edit. An empty array means the whole project
-    // root, minus the extension allowlist and a denylist you cannot widen
+    // Directories DesignLayer may read and write for the browser (lint fixes,
+    // saved control defaults). An empty array means the whole project root, minus the extension allowlist and a denylist you cannot widen
     // (.env*, *.config.*, node_modules, .git). Narrow this if the tool is
     // pointed at a repo holding anything you would not paste into a prompt.
     roots: ["src", "app", "components"],

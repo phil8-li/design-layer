@@ -14,6 +14,15 @@ release announcement.
 
 ### Changed
 
+- The 2026-11-09 cleanup. `npm test` runs `node test/run.mjs`: every suite runs
+  to the end, each prints `ok`, `FAIL` or `skipped`, and substring filters,
+  `--skip`, `--from`, `--list` and `--jobs` pick what runs. A new suite needs no
+  `package.json` edit. MCP replies say more: a `wait_for_change` timeout carries
+  `reason` and the measured `waitedSeconds`, a failed call carries `code` and
+  `next`, `sessionPrompt` ends with the change id, and `list_changes` accepts
+  `applied`. **Send to agent** marks what it carried, so the next brief labels
+  those items **Sent before:**, and a send that reached no agent keeps the list.
+
 - A direct edit in the Design panel, text retyped on the page, a layer reorder
   and a delete each become a note in the Changes tab, in plain words, and
   DesignLayer no longer writes them to source. **Send to agent** hands every
@@ -28,7 +37,18 @@ release announcement.
   this repository checks out the tool alone. The old address redirects there,
   and the Mac download keeps its address.
 
+### Removed
+
+- The Code tab (Copy as code stays in the layer header), the component insert
+  from the Libraries section, the routes `/source/insert`, `/source/remove` and
+  `/angular/apply`, the `tailwind.version` and `app.openQuery` config keys, and
+  twelve one-off review tools under `tools/`.
+
 ### Fixed
+
+- A page on another localhost port can no longer queue agent work or write
+  files with a plain form POST. Two quick lint fixes in one file both land.
+  Stopping an editor answers a waiting agent instead of cutting its connection.
 
 - Cloning the repository works on a Mac whose `~/.gitconfig` requires Git LFS
   but whose Terminal has no `git-lfs`. The clone stopped at the first launch

@@ -8,9 +8,9 @@
   yourself first). Which one it is is detected from the host's `package.json` —
   see [Angular hosts](angular.md).
 - App Router and Pages Router are both supported, and neither requires a
-  `next.config` file. The overlay can inspect any Next app; durable layout and
-  appearance edits currently write Tailwind utilities, so full visual editing
-  requires Tailwind. Text edits do not.
+  `next.config` file. The overlay can inspect and edit any Next app. Every edit
+  becomes a note; on a Tailwind host the brief also names the Tailwind class to
+  write.
 - A project under a folder macOS guards — Documents, Desktop, iCloud Drive — is
   supported. Such a folder can read perfectly and still refuse `stat`,
   `realpath`, `mkdir` and `write` to this process, which is enough to break a
@@ -19,7 +19,7 @@
   than read back from the OS, and the containment guard and control defaults
   degrade instead of refusing.
 - The package installs `react-rewrite-cli@0.1.1` exactly. The runtime patches
-  that build's minified bundle at serve time against 31 pinned anchors; a
+  that build's minified bundle at serve time with 31 exact-once splices; a
   different version will not patch, and the launcher tells you so instead.
 
 ## Install
@@ -80,8 +80,8 @@ start screen opens, then every six hours. When it finds some, the start screen
 shows **Update available** with what changed, and the Mac app shows the same
 in its title bar. **Update and restart** brings this copy up to date, rebuilds
 it, and restarts it. Editors that were open start again on the same ports, so
-a tab that showed one only needs a reload. Unapplied edits in an open editor
-are lost, so apply or send them first.
+a tab that showed one only needs a reload. Notes are kept. Unsent edits in an
+open editor are lost, so send them first.
 
 From a terminal:
 
@@ -268,15 +268,17 @@ still stored per browser origin: the first app gets 3456 (socket 3457), the next
 `~/.local/state/designlayer/ports.json`. Passing `--proxy-port`/`--ws-port` to
 the supervisor moves the first pair; the rest follow from there. When those ports
 are free, the first editor takes them even if its app remembers another pair.
+A pair still held by a running editor of the same app stays that app's; the run
+borrows another.
 
-Notes, their settings and preview-only changes are kept on this machine, in
+Notes and their settings are kept on this machine, in
 `~/.local/state/designlayer/storage/`, as well as in the browser. They follow an
 app across ports, host names and the Mac app. Notes saved before this version
 live only in the browser at the address they were made on; open that address
 (for example http://127.0.0.1:3456) once and they are brought over.
 
 From inside the editor, the **Choose app** pill in the toolbar is the way back.
-Unapplied changes and uncopied prompts live only in that tab, so the first click
+Edits you have not sent live only in that tab, so the first click
 arms the control rather than leaving — it asks, and reverts on its own if you
 walk away. An editor started any other way has no such pill, because there is no
 chooser behind it to return to.
@@ -300,26 +302,31 @@ prefixed `[designlayer]`; the vendored CLI prints a banner just above it that
 reports the ports it asked for rather than the ones it bound.
 
 ```
-designlayer [appPort] [options]
+Usage: designlayer [appPort] [options]
 
   (no arguments)          Open the start screen: pick a running app and its folder
-  appPort                 Dev server port (default: app.port, else framework detection)
+  appPort                 Dev server port (default: config app.port, else framework detection)
   --start / --no-start    Force or skip the start screen (default: when no port is known)
   --dev                   Start the app's dev server too, and attach when it is up
-  --dev-script <name>     npm script --dev runs (default: app.devScript, "dev")
-  --config <path>         Config file (default: nearest one above cwd)
+  --dev-script <name>     npm script --dev runs (default: config app.devScript, "dev")
+  --config <path>         Config file (default: nearest designlayer.config.mjs above cwd)
   --project-root <path>   Project the config loads against (default: the current folder)
   --start-screen-port <n> Port for the start screen (default: 3455, else any free port)
   --proxy-port <n>        Port for the editing proxy the browser loads
   --ws-port <n>           Port for the source-edit WebSocket
   --host <host>           Dev server host (default: 127.0.0.1)
-  --open / --no-open      Open the editing URL on start (default: no)
+  --open / --no-open      Open the editing URL on start (default: no; the start screen opens)
+  --verbose               Pass the vendored CLI's verbose logging through
   --verify                Check the vendor patch still applies, then exit
+  --check-update          Say whether a newer DesignLayer is on GitHub, then exit
+  --update                Update this copy of DesignLayer to the latest, then exit
   --print-config          Print the resolved config as JSON, then exit
+  --help
 ```
 
-`--dev` runs your own npm script with `PORT` set, so whatever that script
-already does — env files, wrappers, extra flags — keeps happening. The start
+`--dev` runs your own npm script with `PORT` set, plus `--port`/`--host`
+(`--hostname` on Next) where the framework ignores `PORT` or binds IPv6 by
+default, so whatever that script already does — env files, wrappers, extra flags — keeps happening. The start
 screen takes the same path: the script it names in the hint is the one it runs.
 
 Because the folder you choose is the project root, the config file is discovered
@@ -412,5 +419,4 @@ it would for a note you typed. See
 
 The tab repaints as edits land, so an edit made while it is open appears in it.
 Only while it is the tab being looked at — a hidden pane is read when you
-switch to it, which is what keeps both it and the Code view off the hot path of
-a drag.
+switch to it, which keeps it off the hot path of a drag.

@@ -55,11 +55,10 @@ the host sets that list itself, in which case it gets exactly what it asked for.
 
 **The right panel is the same panel.** Every section a React host draws, an
 Angular host draws, with one exception and it is not about Angular: the
-Responsive section writes Tailwind breakpoint variants, so it appears only where
+Responsive section edits Tailwind breakpoint variants, so it appears only where
 Tailwind is compiled — hidden on a React app without it, shown on an Angular app
-with it. The Code tab drops its JSX view for an Angular element, because
-`className=` describes a file that does not exist, and the class list stops
-calling itself "Tailwind classes" in a project that has none. The handoff record
+with it. **Copy as code** copies HTML, not JSX, for an Angular element, because
+`className=` describes a file that does not exist. The handoff record
 follows the same rule: on an Angular host it reports the element's `class`, not
 its `className`, because a brief that names a JSX attribute sends an agent
 looking through `.html` templates for something that was never there.
