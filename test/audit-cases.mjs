@@ -1012,6 +1012,54 @@ await withProject(
   }
 )
 
+/*
+ * Two Fix presses in one file, the second sent before the first answered.
+ *
+ * Each fix re-audits, reads the file, splices and writes. Run side by side,
+ * both read the original text and the second write put the first fix back
+ * while both answered "fixed". The route now queues every fix, so the second
+ * one audits the file the first one wrote.
+ */
+await withProject(
+  "two overlapping fixes in one file both land",
+  {},
+  async ({ lint, read }) => {
+    const before = await read("src/styles/panel.css")
+    const fixable = findingList(await lint.run(STYLELINT_ONLY)).filter((finding) => finding.fix)
+    assert.equal(fixable.length, 2)
+
+    // Each write is held back a moment, so the second fix has read the file
+    // before the first one wrote it whenever the two are not queued. Without
+    // it the race depends on how fast two checker processes finish.
+    const writeFile = fs.writeFile
+    fs.writeFile = async (...args) => {
+      if (String(args[0]).endsWith("panel.css")) await new Promise((resolve) => setTimeout(resolve, 400))
+      return writeFile.apply(fs, args)
+    }
+    let answers
+    try {
+      answers = await Promise.all(fixable.map((finding) => lint.fix({ ids: [finding.id] })))
+    } finally {
+      fs.writeFile = writeFile
+    }
+    for (const answer of answers) {
+      assert.deepEqual(answer.failed, [], `an overlapping fix was refused: ${JSON.stringify(answer.failed)}`)
+    }
+    assert.deepEqual(answers.flatMap((answer) => answer.fixed).sort(), ids(fixable).sort())
+    const expected = before
+      .replace("rgba(24, 28, 33, 0.06)", "var(--ink-surface-hover)")
+      .replace("var(--corner-tiny)", "var(--corner-small)")
+    assert.equal(await read("src/styles/panel.css"), expected, "one of two reported fixes is not in the file")
+  }
+)
+
+await withProject("two Audit presses during one run share it", {}, async ({ lint }) => {
+  const [first, second] = await Promise.all([lint.run(STYLELINT_ONLY), lint.run(STYLELINT_ONLY)])
+  assert.equal(first, second, "a second press started a second set of checker processes")
+  const third = await lint.run(STYLELINT_ONLY)
+  assert.notEqual(third, first, "a press after the run finished got the old answer")
+})
+
 // ── Ignores ────────────────────────────────────────────────────────────────
 
 console.log("\nDismissing a finding, and taking it back")
@@ -1058,6 +1106,24 @@ await withProject("an ignored finding still comes back, flagged", {}, async ({ l
     false,
     "everything came back flagged as ignored"
   )
+})
+
+/*
+ * At the cap, Ignore drops the oldest dismissal, never the new one. It kept the
+ * first 5000 and answered 200 without the new id, so the row came back.
+ */
+await withProject("an ignore at the cap keeps the new id and drops the oldest", {}, async ({ lint, ignoreFile }) => {
+  const target = findingList(await lint.run(STYLELINT_ONLY))[0]
+  const filler = Array.from({ length: 5000 }, (_, index) => index.toString(16).padStart(16, "0"))
+  await fs.mkdir(path.dirname(ignoreFile), { recursive: true })
+  await fs.writeFile(ignoreFile, JSON.stringify({ ids: filler }))
+
+  const kept = idList(await lint.ignore({ ids: [target.id] }))
+  assert.equal(kept.length, 5000, `the store holds ${kept.length} ids`)
+  assert.ok(kept.includes(target.id), "the dismissal just made was dropped at the cap")
+  assert.equal(kept.includes(filler[0]), false, "the oldest dismissal survived the cap")
+  const stored = JSON.parse(await fs.readFile(ignoreFile, "utf8"))
+  assert.equal(stored.ids.at(-1), target.id, "the new id is not the newest entry on disk")
 })
 
 await withProject("unignoring puts it back", {}, async ({ lint, ignoreFile }) => {
