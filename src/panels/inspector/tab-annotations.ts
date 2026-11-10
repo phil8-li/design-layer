@@ -58,6 +58,7 @@ import {
   type OutputDetail,
 } from "../../annotations/types"
 import type { EditorContext } from "../../core/context"
+import { createArm } from "../arm"
 import { section, selectField } from "./field"
 import type { InspectorTab } from "./index"
 import { tokens } from "../../core/tokens"
@@ -158,11 +159,10 @@ function noteWord(count: number): string {
  * The two things the clear-all button can say, and how long it stays asking.
  *
  * The second string is the same control saying what pressing it now means, and
- * it reverts on its own: an armed button that stayed armed would let a click
- * ten minutes later empty the list without a word.
+ * it reverts on its own (`panels/arm.ts`, `ARMED_MS`): an armed button that
+ * stayed armed would let a click ten minutes later empty the list without a word.
  */
 const CLEAR = {
-  armedMs: 6000,
   label: (count: number) =>
     count ? `Delete all ${noteWord(count)} (keeps edits)` : "Delete all notes",
   // The armed state names the outcome of the NEXT click rather than asking a
@@ -397,17 +397,20 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
    * the queue, which is a different act with its own button on each row; one
    * button doing both would cause that every time somebody meant to clear notes.
    */
-  let armed = 0
+  const arm = createArm()
   let noteCount = 0
 
   const clearAll = el("button", {
     class: "de-mini de-mini--danger",
     type: "button",
-    onclick: () => {
+    onclick: (event: Event) => {
       // `disabled` stops a pointer, not a dispatched event.
       if (!noteCount) return
-      if (armed !== 0) {
-        disarm()
+      if (arm.target() === clearAll) {
+        // The second click of a double-click is the arming gesture, not the
+        // confirmation; it used to pass the confirm and empty the list.
+        if (arm.repeats(clearAll, event)) return
+        arm.disarm()
         const cleared = clearNotesStep()
         if (!cleared) return
         editor.toast(`Deleted ${noteWord(cleared.count)}`, "info", {
@@ -416,7 +419,7 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
         })
         return
       }
-      armed = window.setTimeout(disarm, CLEAR.armedMs)
+      arm.arm(clearAll, paintClear)
       // Painted here rather than through `render()`: arming changes no store,
       // and a full repaint would rebuild the rows the reader is looking at.
       paintClear()
@@ -427,24 +430,18 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
     },
   })
 
-  function disarm(): void {
-    if (armed === 0) return
-    window.clearTimeout(armed)
-    armed = 0
-    paintClear()
-  }
-
   function paintClear(): void {
+    const armed = arm.target() === clearAll
     clearAll.disabled = noteCount === 0
     // Armed changes the drawing as well as the fill. Colour alone is the one
     // channel nothing in this tab is allowed to carry a state on — and a danger
     // tint on a button that already goes danger on hover says nothing anyway.
     setGlyph(
       clearAll,
-      armed === 0 ? "Trash" : "Check",
-      armed === 0 ? CLEAR.label(noteCount) : CLEAR.prompt(noteCount)
+      armed ? "Check" : "Trash",
+      armed ? CLEAR.prompt(noteCount) : CLEAR.label(noteCount)
     )
-    clearAll.classList.toggle("de-ann-clear--armed", armed !== 0)
+    clearAll.classList.toggle("de-ann-clear--armed", armed)
   }
 
   /* ---------- the format strip ---------- */
@@ -1388,7 +1385,7 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
     noteCount = items.reduce((total, item) => total + (item.type === "note" ? 1 : 0), 0)
     // An armed bin over a list whose last note just went would sit waiting to
     // delete nothing. The arm goes with the notes it was counting.
-    if (!noteCount) disarm()
+    if (!noteCount) arm.disarm()
     paintClear()
 
     syncSettings()

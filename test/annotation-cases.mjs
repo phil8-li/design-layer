@@ -2283,6 +2283,21 @@ check("deleting the last note by its own row disarms the clear-all above it", ()
   assert.equal(clear.dataset.glyph, "Trash", "the arm outlived the notes it was counting")
 })
 
+check("a double-click on clear-all only arms it", () => {
+  seedTab()
+  note(saveButton, "One")
+  note(lede, "Two")
+  const clear = clearButton()
+  // A double-click is one gesture: its second click carries detail 2
+  // (panels/arm.ts). Read as the confirmation, it emptied the list.
+  clear.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }))
+  clear.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true, detail: 2 }))
+  assert.equal(editor.annotations().length, 2, "a double-click deleted every note")
+  assert.equal(clear.dataset.glyph, "Check", "the double-click left the control unarmed")
+  press(clear)
+  assert.deepEqual(editor.annotations(), [], "a deliberate second click did not clear the list")
+})
+
 check("the stylesheet gives the two list actions a group of their own", () => {
   // The row under the box holds four controls at 260px. The pair that acts on
   // the list in place has to stay a pair, and nothing in it may wrap — a
