@@ -29,7 +29,7 @@ import { tokens } from "../core/tokens"
 import { plural } from "../core/format"
 // A function import only, so the cycle with `left.ts` (which mounts this tree)
 // is resolved long before either calls it.
-import { leftPaneOnScreen } from "./left"
+import { leftPaneOnScreen } from "./pane"
 
 const INDENT = LAYER_INDENT, INSET = tokens.space["2xs"], MAX_DEPTH = 40
 /** Filtering is the only full-tree walk; bound it so typing can never lock up. */

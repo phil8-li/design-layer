@@ -99,23 +99,11 @@ import { controlsTab } from "./controls"
 import { installAppChooser } from "./app-chooser"
 import { installPageReporter } from "./page-reporter"
 import { installLayersPanel } from "./layers"
+import { leftPaneOnScreen, leftPanelShown } from "./pane"
+
+export { leftPaneOnScreen }
 import { macAppBanner } from "./mac-app"
 import type { EditorContext } from "../core/context"
-import type { EditorState } from "../core/store"
-
-/**
- * Whether one of this panel's panes is on screen: the panel open, the chrome
- * shown, and that tab chosen. The one rule for it: the tree reads it, and the
- * controls pane is handed it, rather than each writing their own.
- */
-export function leftPaneOnScreen(state: Readonly<EditorState>, id: string): boolean {
-  return leftPanelShown(state) && state.leftTab === id
-}
-
-/** The panel itself is on screen, whichever tab it shows. */
-function leftPanelShown(state: Readonly<EditorState>): boolean {
-  return state.layersOpen && !state.chromeHidden
-}
 
 /**
  * What a pane hands back, and it is the inspector's `InspectorTab` shape by
