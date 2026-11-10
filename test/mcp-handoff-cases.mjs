@@ -1253,18 +1253,24 @@ await check("it sends the brief, the files and the origin", async () => {
   assert.match(body.prompt, /1 note and 1 edit/)
 })
 
-await check("what it sends is byte-for-byte what Copy writes", () => {
+await check("what it sends is byte-for-byte what Copy writes", async () => {
+  // A fresh item, because a send stamps what it carried and the next brief
+  // marks it "Sent before": the claim is about one outbox read both ways, so
+  // Copy goes first and Send follows on the same, unsent, outbox.
+  emptyOutbox()
+  note("Same bytes", { filePath: "/app/src/s.tsx", componentName: "S", lineNumber: 2 })
   copied = null
   copyButton().dispatchEvent(new window.MouseEvent("click", { bubbles: true }))
   assert.ok(copied, "Copy wrote nothing in the click task, where the clipboard activation still exists")
+  const brief = copied
+  posted.length = 0
+  sendButton().dispatchEvent(new window.MouseEvent("click", { bubbles: true }))
+  await settle()
   assert.equal(
     posted[0].body.brief,
-    copied,
+    brief,
     "the two are only trustworthy if they are the same bytes — a designer pastes one and the agent gets the other"
   )
-  // Same claim from the other side: the outbox has one brief, not a sent one
-  // and a copied one that drifted.
-  assert.equal(posted[0].body.brief, ui.buildAnnotationBrief())
 })
 
 await check("Send to agent asks for a new session that opens with /goal and the brief", async () => {
@@ -1350,6 +1356,10 @@ await check("the route's own message is what the designer is told", async () => 
 })
 
 await check("a failing route is reported, and the button comes back", async () => {
+  // Something unsent, or the button already reads "Nothing new to send".
+  emptyOutbox()
+  note("Try again", { filePath: "/app/src/t.tsx", componentName: "T", lineNumber: 5 })
+  await settle()
   toasts.length = 0
   reply = { ok: false, message: "Could not reach the agent route." }
   sendButton().dispatchEvent(new window.MouseEvent("click", { bubbles: true }))
