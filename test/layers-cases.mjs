@@ -148,22 +148,17 @@ const {
   layersCss,
   LAYER_INDENT,
   tokens,
+  edits,
+  resetJournalForTest,
 } = await load(`
     export { createContext } from "./src/core/context"
     export { installLayersPanel } from "./src/panels/layers"
     export { getState, setState, isLocked } from "./src/core/store"
     export { layersCss, LAYER_INDENT } from "./src/core/css/layers"
     export { tokens } from "./src/core/tokens"
+    export { edits, resetJournalForTest } from "./src/annotations/journal"
   `)
 
-/**
- * Everything the writer queued for source, newest last.
- *
- * This is the only honest way to tell an edit that will reach the user's JSX
- * from one that merely painted the preview: both leave an inline style behind,
- * and only the first arrives here.
- */
-const queued = []
 /** The bridge's listeners, so a drag's siblings subscription can be counted. */
 const listeners = new Set()
 const sent = []
@@ -177,11 +172,7 @@ const bridge = {
   send(message) {
     sent.push(message)
   },
-  store: {
-    addPendingPropertyOperation(key, operation, propertyKeys) {
-      queued.push({ key, operation, propertyKeys })
-    },
-  },
+  store: {},
 }
 
 const slot = () => {
@@ -450,19 +441,14 @@ check("pressing an action never reaches the row, so the selection holds", () => 
 })
 
 check("the eye goes through the writer, not straight onto the element", () => {
-  queued.length = 0
+  resetJournalForTest()
   press(action(4, "eye"))
-  assert.equal(queued.length, 1, "hiding queued exactly one source operation")
-  const [hide] = queued
-  assert.equal(hide.operation.op, "updateClass")
-  assert.equal(hide.operation.file, "src/Card.tsx")
-  assert.deepEqual(hide.propertyKeys, ["display"])
-  // `display: none` is a utility the source writer can express, so it must
-  // arrive as `hidden` rather than as a preview-only style the Apply drops.
-  assert.deepEqual(
-    hide.operation.updates.map((update) => update.tailwindToken),
-    ["hidden"]
-  )
+  // Through the writer means a note for the agent and an undo step, not only
+  // an inline style on the page.
+  const [hide] = edits()
+  assert.ok(hide, "hiding left no note for the agent")
+  assert.equal(hide.property, "display")
+  assert.equal(hide.to, "none")
   assert.equal(window.getComputedStyle($("photo")).display, "none")
   const eye = action(4, "eye")
   assert.equal(eye.getAttribute("aria-pressed"), "true")
@@ -470,10 +456,10 @@ check("the eye goes through the writer, not straight onto the element", () => {
   assert.ok(rows()[4].classList.contains("de-layer--hidden"))
 
   press(action(4, "eye"))
-  assert.equal(queued.length, 2, "showing is a second write, not an unset")
-  // Showing has to name a display, and it names the one the element had —
-  // never a blanket `block`, which would restack a flex row's children.
-  assert.notEqual(queued[1].operation.updates[0].tailwindToken, "hidden")
+  // Showing names the display the element had — never a blanket `block`,
+  // which would restack a flex row's children — so the row lands back on its
+  // `from` and the note leaves: hide-then-show is no edit.
+  assert.deepEqual(edits(), [], "showing again left a note for an edit that ended where it began")
   assert.notEqual(window.getComputedStyle($("photo")).display, "none")
   assert.equal(action(4, "eye").getAttribute("aria-label"), "Hide photo")
 })
@@ -512,10 +498,10 @@ check("re-publishing the same elements is not a repaint", () => {
 
 check("the lock is session state: no source write, still selectable", () => {
   setState({ selection: [] })
-  queued.length = 0
+  resetJournalForTest()
   press(action(5, "lock"))
   assert.ok(isLocked($("box")), "the canvas can now ask the store to skip it")
-  assert.deepEqual(queued, [], "a lock is not a fact about the user's app")
+  assert.deepEqual(edits(), [], "a lock is not a fact about the user's app")
   assert.equal(action(5, "lock").getAttribute("aria-pressed"), "true")
   assert.equal(action(5, "lock").getAttribute("aria-label"), "Unlock box")
   assert.equal(action(5, "lock").dataset.glyph, "Lock")

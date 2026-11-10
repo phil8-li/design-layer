@@ -18,12 +18,9 @@
  * an older build is missing keys rather than wrong ones, so it merges over the
  * defaults instead of blanking them.
  *
- * THE JOURNAL. Three facts an agent acts on. A drag across three hundred frames
+ * THE JOURNAL. Two facts an agent acts on. A drag across three hundred frames
  * is ONE edit that started where the element started — a journal that kept the
- * last frame's `from` hands over a diff from a value to itself. `written` is the
- * field that says whether re-applying would conflict, so promoting a
- * preview-only edit to written is how an agent skips the only work still owed to
- * source. And an edit the designer took back with Cmd+Z must leave: an outbox
+ * last frame's `from` hands over a diff from a value to itself. And an edit the designer took back with Cmd+Z must leave: an outbox
  * that asks for a change the designer explicitly reversed is the single worst
  * thing this feature can do, because it is wrong in the direction that destroys
  * trust in both halves of the panel at once.
@@ -197,7 +194,6 @@ const bundled = await build({
         clearEdits,
         onEditsChange,
         dropLastEdit,
-        markEditsWritten,
         resetJournalForTest,
       } from "./src/annotations/journal"
       export {
@@ -781,7 +777,6 @@ const drag = (element, frames) => {
       from: `translate(${i}px, 0px)`,
       to: `translate(${i + 1}px, 0px)`,
       element,
-      written: false,
     })
   }
 }
@@ -800,8 +795,8 @@ check("a drag across three hundred frames is one edit, from where it started", (
 
 check("two buttons that share a class are two edits, not one", () => {
   reset()
-  editor.recordEdit({ property: "color", from: "red", to: "blue", element: saveButton, written: true })
-  editor.recordEdit({ property: "color", from: "red", to: "green", element: cancelButton, written: true })
+  editor.recordEdit({ property: "color", from: "red", to: "blue", element: saveButton })
+  editor.recordEdit({ property: "color", from: "red", to: "green", element: cancelButton })
   // A string key built from the component, the tag and the class list collapses
   // these two, and one of the designer's edits vanishes from the handover.
   assert.equal(editor.editCount(), 2, "an edit to Cancel folded onto the edit to Save")
@@ -810,43 +805,18 @@ check("two buttons that share a class are two edits, not one", () => {
 check("a write that lands back on its starting value is not an edit", () => {
   reset()
   assert.equal(
-    editor.recordEdit({ property: "color", from: "red", to: "red", element: saveButton, written: true }),
+    editor.recordEdit({ property: "color", from: "red", to: "red", element: saveButton }),
     null,
     "a no-op write queued a row an agent has to read past"
   )
   assert.equal(editor.editCount(), 0)
 })
 
-check("written and unwritten stay distinguishable, which is what an agent acts on", () => {
-  reset()
-  editor.recordEdit({ property: "padding", from: "16px", to: "24px", element: lede, written: true })
-  editor.recordEdit({ property: "icon", from: "Star", to: "Heart", element: saveButton, written: false })
-
-  assert.deepEqual(
-    editor.edits().map((edit) => [edit.property, edit.written]),
-    [
-      ["padding", true],
-      ["icon", false],
-    ]
-  )
-
-  editor.markEditsWritten()
-  // The tempting one-liner sets every row written. It would also promote the
-  // icon swap, which is in the outbox precisely BECAUSE Apply wrote nothing for
-  // it — and an agent told it is already in the file skips the only change
-  // still owed to source.
-  assert.equal(
-    editor.edits().find((edit) => edit.property === "icon").written,
-    false,
-    "Apply promoted a change it never wrote"
-  )
-})
-
 console.log("\nUndo")
 
 check("an edit the designer took back leaves the outbox", () => {
   reset()
-  editor.recordEdit({ property: "gap", from: "8px", to: "16px", element: lede, written: false })
+  editor.recordEdit({ property: "gap", from: "8px", to: "16px", element: lede })
   assert.equal(editor.editCount(), 1)
   editor.dropLastEdit()
   // The worst thing this feature can do: hand an agent an instruction to put
@@ -867,11 +837,11 @@ check("one undo is one nudge, not the whole collapsed row", () => {
 
 check("nudging back to the start empties the row, and undo puts it back in place", () => {
   reset()
-  editor.recordEdit({ property: "color", from: "red", to: "blue", element: saveButton, written: false })
-  editor.recordEdit({ property: "top", from: "0px", to: "4px", element: lede, written: false })
+  editor.recordEdit({ property: "color", from: "red", to: "blue", element: saveButton })
+  editor.recordEdit({ property: "top", from: "0px", to: "4px", element: lede })
   // Out and straight back: the same non-event arrived at in two steps, so the
   // entry leaves rather than reporting `red` -> `red`.
-  editor.recordEdit({ property: "top", from: "4px", to: "0px", element: lede, written: false })
+  editor.recordEdit({ property: "top", from: "4px", to: "0px", element: lede })
   assert.deepEqual(
     editor.edits().map((edit) => edit.property),
     ["color"]
@@ -894,9 +864,8 @@ check("a row the designer dismissed is never resurrected by a later undo", () =>
     from: "red",
     to: "blue",
     element: saveButton,
-    written: false,
   })
-  editor.recordEdit({ property: "top", from: "0px", to: "4px", element: lede, written: false })
+  editor.recordEdit({ property: "top", from: "0px", to: "4px", element: lede })
   editor.removeEdit(dropped.id)
 
   editor.dropLastEdit()
@@ -945,7 +914,7 @@ check("notes and edits come back as one list, in the order they happened", () =>
   reset()
   note(saveButton, "First thought")
   tick()
-  editor.recordEdit({ property: "padding", from: "16px", to: "24px", element: lede, written: true })
+  editor.recordEdit({ property: "padding", from: "16px", to: "24px", element: lede })
   tick()
   note(lede, "Second thought")
 
@@ -967,17 +936,15 @@ check("notes and edits come back as one list, in the order they happened", () =>
 
 console.log("\nThe brief")
 
-/** One note, one written change and one that is still only pixels. */
+/** One note and two edits: a padding change and an icon swap. */
 function seedBrief() {
   reset()
   selectWithSource(saveButton, "/Users/someone/app/src/components/card.tsx", 42)
   note(saveButton, "This button is doing too much")
   tick()
-  editor.recordEdit({ property: "padding", from: "16px", to: "24px", element: lede, written: true })
-  // Apply ran: the padding is in the file, not merely queued for it.
-  editor.markEditsWritten()
+  editor.recordEdit({ property: "padding", from: "16px", to: "24px", element: lede })
   tick()
-  editor.recordEdit({ property: "icon", from: "Star", to: "Heart", element: saveButton, written: false })
+  editor.recordEdit({ property: "icon", from: "Star", to: "Heart", element: saveButton })
 }
 
 /** The block of one `### N.` item, up to the next item or the end. */
@@ -1015,7 +982,7 @@ check("the brief numbers notes and edits as one list, in the order they happened
   editor.updateSettings({ outputDetail: "standard" })
   note(saveButton, "First thought")
   tick()
-  editor.recordEdit({ property: "padding", from: "16px", to: "24px", element: lede, written: false })
+  editor.recordEdit({ property: "padding", from: "16px", to: "24px", element: lede })
   tick()
   note(lede, "Second thought")
   const brief = editor.buildAnnotationBrief()
@@ -1027,11 +994,10 @@ check("the brief numbers notes and edits as one list, in the order they happened
   assert.ok(!brief.includes("Do not apply them again"), "a warning about re-applying work")
 })
 
-check("an edit the writer could spell reads the same as one it could not", () => {
+check("an edit reads as a request, never as already written", () => {
   reset()
   editor.updateSettings({ outputDetail: "compact" })
-  editor.recordEdit({ property: "padding", from: "16px", to: "24px", element: lede, written: true })
-  editor.markEditsWritten()
+  editor.recordEdit({ property: "padding", from: "16px", to: "24px", element: lede })
   // Compact keeps one line: the sentence, then the exact declaration.
   assert.match(editor.buildAnnotationBrief(), /^1\. .*: Change the padding to 24px \(was 16px\) — `padding: 24px` \(was `16px`\)$/m)
   assert.ok(!/already written|queued/i.test(editor.buildAnnotationBrief()))
@@ -2105,7 +2071,7 @@ check("a note deletes without touching its neighbours", () => {
   tick()
   note(saveButton, "Third")
   tick()
-  editor.recordEdit({ property: "padding", from: "16px", to: "24px", element: lede, written: true })
+  editor.recordEdit({ property: "padding", from: "16px", to: "24px", element: lede })
 
   const deletes = noteRows().map((row) => row.querySelector(".de-mini--danger"))
   assert.equal(deletes.length, 3)
@@ -2179,7 +2145,7 @@ check("clear-all is disabled with nothing to clear, edits included", () => {
   // assertion this case used to make.
   assert.equal(clearButton(), undefined, "an empty session drew the button row anyway")
 
-  editor.recordEdit({ property: "gap", from: "8px", to: "16px", element: lede, written: false })
+  editor.recordEdit({ property: "gap", from: "8px", to: "16px", element: lede })
   // It clears notes only, so a list of edits is still nothing it can take.
   // Offering it would be the panel promising something the click does not do.
   assert.equal(clearButton().disabled, true, "clear-all armed itself over a list of edits")
@@ -2194,7 +2160,7 @@ check("clear-all needs two clicks, and says what the second one costs", () => {
   seedTab()
   note(saveButton, "One")
   note(lede, "Two")
-  editor.recordEdit({ property: "gap", from: "8px", to: "16px", element: lede, written: false })
+  editor.recordEdit({ property: "gap", from: "8px", to: "16px", element: lede })
   const clear = clearButton()
   assert.equal(clear.dataset.glyph, "Trash")
   // Icon-only and destructive, so it owes both a name and a tip.
@@ -2242,8 +2208,8 @@ check("clearing the notes leaves the edits standing", () => {
   seedTab()
   note(saveButton, "A note")
   tick()
-  editor.recordEdit({ property: "padding", from: "16px", to: "24px", element: lede, written: true })
-  editor.recordEdit({ property: "icon", from: "Star", to: "Heart", element: saveButton, written: false })
+  editor.recordEdit({ property: "padding", from: "16px", to: "24px", element: lede })
+  editor.recordEdit({ property: "icon", from: "Star", to: "Heart", element: saveButton })
 
   press(clearButton())
   press(clearButton())
@@ -2666,7 +2632,6 @@ check("an edit row names itself too, so the previous pin does not stay lit", () 
     from: "16px",
     to: "24px",
     element: lede,
-    written: true,
   })
 
   assert.deepEqual(
@@ -2729,7 +2694,7 @@ check("edit asks the canvas to reopen the note, and only a note offers it", () =
   seedTab()
   const pinned = note(saveButton, "Wrong word")
   tick()
-  editor.recordEdit({ property: "gap", from: "8px", to: "16px", element: lede, written: false })
+  editor.recordEdit({ property: "gap", from: "8px", to: "16px", element: lede })
 
   // First of two now, not second of three: the resolve tick that used to lead
   // the row is gone, so edit is the row's opening action.

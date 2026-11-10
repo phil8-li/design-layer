@@ -282,23 +282,6 @@ check("responsive bindings are ordered by breakpoint without losing source order
   )
 })
 
-check("replacing one breakpoint preserves base, siblings, and nested variants", () => {
-  const classes = ["grid", "grid-cols-1", "md:grid-cols-2", "dark:md:hover:gap-6", "xl:grid-cols-4"]
-  const binding = helpers.parseResponsiveClassName(
-    "dark:md:hover:gap-6",
-    workspace.tailwind.breakpoints
-  )
-  const edit = helpers.replaceResponsiveClass(binding, "gap-8")
-  assert.deepEqual(edit, {
-    remove: ["dark:md:hover:gap-6"],
-    add: ["dark:md:hover:gap-8"],
-  })
-  const after = classes.filter((name) => !edit.remove.includes(name)).concat(edit.add)
-  assert.ok(after.includes("grid-cols-1"))
-  assert.ok(after.includes("md:grid-cols-2"))
-  assert.ok(after.includes("xl:grid-cols-4"))
-})
-
 console.log("\nResponsive controls")
 
 await checkAsync("breakpoint controls are named and keep the caret across their write", async () => {

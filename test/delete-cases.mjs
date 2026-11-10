@@ -101,7 +101,7 @@ for (const key of [
   Object.defineProperty(globalThis, key, { value: window[key], configurable: true, writable: true })
 }
 
-/** One bundle: the queue and the timeline are module state every lane shares. */
+/** One bundle: the journal and the timeline are module state every lane shares. */
 const { build } = await import("esbuild")
 const bundled = await build({
   stdin: {
@@ -109,8 +109,7 @@ const bundled = await build({
       export { createWriter } from "./src/core/writer"
       export { canvasAction } from "./src/core/keymap"
       export * as history from "./src/core/history"
-      export * as removal from "./src/core/removal"
-      export * as prompt from "./src/core/change-prompt"
+      export { edits, resetJournalForTest } from "./src/annotations/journal"
       export * as store from "./src/core/store"
       export { isLayerCandidate } from "./src/core/resolve"
       export { DELETED_ATTRIBUTE } from "./src/core/dom"
@@ -126,7 +125,10 @@ const bundled = await build({
 const editor = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString("base64")}`
 )
-const { history, removal, prompt, store, isLayerCandidate, DELETED_ATTRIBUTE } = editor
+const { history, store, isLayerCandidate, DELETED_ATTRIBUTE } = editor
+
+/** The deletions the agent is told to make, one note per element. */
+const removals = () => editor.edits().filter((edit) => edit.property === "remove")
 
 /** What every surface means by "gone": not a layer, and not painted. */
 const isGone = (element) =>
@@ -141,12 +143,7 @@ const bridge = {
   toast: (message, kind) => toasts.push({ message, kind }),
   subscribe: () => () => {},
   refreshGeometry() {},
-  store: {
-    hasChanges: () => false,
-    buildBatchOperations: () => [],
-    onStateChange() {},
-    addPendingPropertyOperation() {},
-  },
+  store: {},
 }
 const writer = editor.createWriter(bridge)
 
@@ -162,8 +159,7 @@ const describe = (element) => ({
 const card = () => document.getElementById("card")
 const reset = () => {
   history.resetHistory()
-  removal.clearRemovalQueue()
-  prompt.clearPreviewOnly()
+  editor.resetJournalForTest()
   toasts.length = 0
   document.getElementById("app").innerHTML =
     '\n<section class="card" id="card">\n' +
@@ -196,29 +192,27 @@ check("the keys that were already spoken for still answer as themselves", () => 
 /* ---------------------------------------------------------------------- */
 console.log("\nThe command")
 
-check("the element goes, and one removal is owed to source", () => {
+check("the element goes, and one deletion is a note for the agent", () => {
   reset()
   const title = document.querySelector(".card__title")
   writer.applyDelete([describe(title)])
 
   assert.ok(isGone(title), "the element is still a visible layer")
-  assert.equal(removal.removalQueueSize(), 1)
-  const [operation] = removal.buildRemovalOperations()
-  assert.equal(operation.op, "removeElement")
-  assert.equal(operation.target.tagName, "h2")
-  assert.deepEqual(operation.target.classes, ["card__title"])
-  assert.equal(operation.target.parentTagName, "section")
+  assert.equal(removals().length, 1)
+  const [note] = removals()
+  assert.equal(note.target.tagName, "h2")
+  assert.equal(note.target.className, "card__title")
+  assert.equal(note.target.selector, "#card > h2.card__title")
 })
 
 check("the descriptor names the element's real place among its siblings", () => {
   reset()
-  // The descriptor is what the server matches a source node against, so a
-  // sibling index read off the wrong element deletes the wrong line.
+  // The selector is how the agent finds the node, so a sibling index read off
+  // the wrong element points it at the wrong line.
   const second = document.querySelectorAll(".card__body")[1]
   writer.applyDelete([describe(second)])
-  const [operation] = removal.buildRemovalOperations()
-  assert.equal(operation.target.nthOfType, 1, "the sibling index was read too late")
-  assert.deepEqual(operation.target.parentClasses, ["card"])
+  const [note] = removals()
+  assert.equal(note.target.selector, "#card > p.card__body:nth-of-type(2)", "the sibling index was read too late")
 })
 
 check("the node itself never moves — the framework still owns it", () => {
@@ -237,7 +231,7 @@ check("the node itself never moves — the framework still owns it", () => {
   assert.ok(isGone(middle))
 })
 
-check("undo brings it back as a layer, and takes the write back with it", () => {
+check("undo brings it back as a layer, and takes the note back with it", () => {
   reset()
   const middle = document.querySelectorAll(".card__body")[0]
   writer.applyDelete([describe(middle)])
@@ -245,17 +239,17 @@ check("undo brings it back as a layer, and takes the write back with it", () => 
   history.undo()
   assert.ok(isLayerCandidate(middle), "the element is still not a layer")
   assert.equal(middle.style.getPropertyValue("display"), "", "an inline display was left behind")
-  assert.equal(removal.removalQueueSize(), 0, "undo left the deletion owed to source")
+  assert.deepEqual(removals(), [], "undo left the deletion in the notes")
 })
 
-check("redo takes it away again, and owes it again", () => {
+check("redo takes it away again, and notes it again", () => {
   reset()
   const middle = document.querySelectorAll(".card__body")[0]
   writer.applyDelete([describe(middle)])
   history.undo()
   assert.equal(history.redo(), "Delete p.card__body")
   assert.ok(isGone(middle))
-  assert.equal(removal.removalQueueSize(), 1)
+  assert.equal(removals().length, 1)
 })
 
 check("an element hidden by the eye comes back hidden, not shown", () => {
@@ -276,8 +270,8 @@ check("deleting a parent and its child is one removal, not two", () => {
   writer.applyDelete([describe(child), describe(parent)])
 
   assert.ok(isGone(parent))
-  assert.equal(removal.removalQueueSize(), 1, "the child was queued inside a range already queued")
-  assert.equal(removal.buildRemovalOperations()[0].target.tagName, "section")
+  assert.equal(removals().length, 1, "the child got a note inside a deletion already noted")
+  assert.equal(removals()[0].target.tagName, "section")
 })
 
 check("two siblings both go, and both come back", () => {
@@ -285,11 +279,11 @@ check("two siblings both go, and both come back", () => {
   const [first, second] = document.querySelectorAll(".card__body")
   writer.applyDelete([describe(first), describe(second)])
   assert.ok(isGone(first) && isGone(second))
-  assert.equal(removal.removalQueueSize(), 2)
+  assert.equal(removals().length, 2)
 
   history.undo()
   assert.ok(isLayerCandidate(first) && isLayerCandidate(second))
-  assert.equal(removal.removalQueueSize(), 0)
+  assert.deepEqual(removals(), [])
 })
 
 check("a multi-element delete is one step, and says nothing", () => {
@@ -307,7 +301,7 @@ check("deleting nothing is not a step", () => {
   reset()
   writer.applyDelete([])
   assert.equal(history.canUndo(), false)
-  assert.equal(removal.removalQueueSize(), 0)
+  assert.deepEqual(removals(), [])
 })
 
 check("an element the app has already dropped is not deleted again", () => {
@@ -318,7 +312,7 @@ check("an element the app has already dropped is not deleted again", () => {
   // A row in the layers tree can outlive the element it describes by one frame.
   writer.applyDelete([selection])
   assert.equal(history.canUndo(), false)
-  assert.equal(removal.removalQueueSize(), 0)
+  assert.deepEqual(removals(), [])
 })
 
 check("a locked layer survives Delete, from the tree as well as the canvas", () => {
@@ -329,26 +323,8 @@ check("a locked layer survives Delete, from the tree as well as the canvas", () 
   store.setState({ locked: new Set() })
 
   assert.ok(document.querySelector(".card__title"), "the lock did not hold")
-  assert.equal(removal.removalQueueSize(), 0)
+  assert.deepEqual(removals(), [])
   assert.equal(history.canUndo(), false, "a refused delete recorded a step")
-})
-
-check("a deletion with no file behind it lands in the Prompts tab", () => {
-  reset()
-  const title = document.querySelector(".card__title")
-  writer.applyDelete([{ ...describe(title), source: null }])
-  // React host, no resolver on this bridge: the file never arrives, so the
-  // change is on screen with nothing owed to source — the one place left for it
-  // is the ledger the Prompts tab reads.
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      const entries = prompt.previewOnlyChanges()
-      assert.equal(entries.length, 1, "the deletion was dropped in silence")
-      assert.equal(entries[0].property, "remove")
-      assert.match(prompt.buildChangePrompt(), /delete this element/)
-      resolve()
-    }, 0)
-  })
 })
 
 /* -------------------------------------------------------------------------

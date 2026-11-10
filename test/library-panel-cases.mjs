@@ -389,7 +389,7 @@ const bundled = await build({
       export { instanceSection } from "./src/panels/inspector/section-instance"
       export { loadVariants } from "./src/core/variants"
       export { createWriter } from "./src/core/writer"
-      export { previewOnlyChanges, resetPreviewOnlyForTest } from "./src/core/change-prompt"
+      export { edits, resetJournalForTest } from "./src/annotations/journal"
       export {
         authoredTokenMatches, computedTokenMatches, landedValue, textStyleSignature, tokenStyleWrites,
         tokenSwatchCss, tokensForProperty,
@@ -1013,7 +1013,7 @@ await check("a documented prop the element does not carry is stated, never offer
 await check("a documented union the element wears becomes a dropdown, and the write is a preview", async () => {
   await loadBoth()
   await editor.setLibraryEnabled(API, MERIDIAN.id, true)
-  editor.resetPreviewOnlyForTest()
+  editor.resetJournalForTest()
 
   const context = sectionContext("Button", { attributes: { variant: "primary" } })
   const node = editor.instanceSection(context)
@@ -1030,12 +1030,11 @@ await check("a documented union the element wears becomes a dropdown, and the wr
   select.dispatchEvent(new window.Event("change"))
 
   assert.equal(context.selection.element.getAttribute("variant"), "ghost")
-  const [change] = editor.previewOnlyChanges()
+  const [change] = editor.edits()
   assert.ok(change, "the attribute write reached the page and nothing else")
   assert.equal(change.property, "attribute:variant")
   assert.equal(change.from, "primary")
   assert.equal(change.to, "ghost")
-  assert.equal(change.componentName, "Button")
 })
 
 /*
@@ -1056,7 +1055,7 @@ await check("a documented union the element wears becomes a dropdown, and the wr
 await check("a prop on the component's host is found from a selection inside it", async () => {
   await loadBoth()
   await editor.setLibraryEnabled(API, MERIDIAN.id, true)
-  editor.resetPreviewOnlyForTest()
+  editor.resetJournalForTest()
 
   const context = sectionContext("Button", {
     host: { tagName: "app-button", attributes: { variant: "ghost" } },
@@ -1075,11 +1074,11 @@ await check("a prop on the component's host is found from a selection inside it"
   assert.equal(host.getAttribute("variant"), "primary", "the write missed the host")
   assert.equal(inner.getAttribute("variant"), null, "the write landed on the selected child")
 
-  // The ledger describes the element an agent has to go and edit, which is the
+  // The note describes the element an agent has to go and edit, which is the
   // host — not the node that happened to be under the pointer.
-  const [change] = editor.previewOnlyChanges()
+  const [change] = editor.edits()
   assert.equal(change.property, "attribute:variant")
-  assert.equal(change.tagName, "app-button")
+  assert.equal(change.target.tagName, "app-button")
 
   // And the note names it, so the designer is not left wondering which element
   // in the tree just moved.
@@ -1125,7 +1124,7 @@ await check("an attribute holding a value the library never declared reads as Mi
 await check("a boolean the DOM reflects natively is writable with no attribute in the markup", async () => {
   await loadBoth()
   await editor.setLibraryEnabled(API, MERIDIAN.id, true)
-  editor.resetPreviewOnlyForTest()
+  editor.resetJournalForTest()
 
   const context = sectionContext("Button")
   const node = editor.instanceSection(context)
@@ -1140,7 +1139,13 @@ await check("a boolean the DOM reflects natively is writable with no attribute i
   // is still disabled, and a switch that said otherwise would be lying.
   assert.equal(context.selection.element.getAttribute("disabled"), "")
   assert.equal(context.selection.element.disabled, true)
-  assert.equal(editor.previewOnlyChanges()[0].property, "attribute:disabled")
+  // And it is a note. A boolean switched on goes from absent to "", and the
+  // journal used to read that as no edit and drop it.
+  const [change] = editor.edits()
+  assert.ok(change, "switching a native boolean on left no note for the agent")
+  assert.equal(change.property, "attribute:disabled")
+  assert.equal(change.from, "")
+  assert.equal(change.to, "true")
 })
 
 await check("a boolean nothing reflects is inert until the element carries it", async () => {

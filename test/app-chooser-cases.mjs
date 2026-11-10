@@ -447,7 +447,7 @@ const baseBridge = {
  * was installed first.
  */
 function pendEdit(lane) {
-  lane.recordEdit({ property: "padding-left", from: "16px", to: "24px", element: null, written: false })
+  lane.recordEdit({ property: "padding-left", from: "16px", to: "24px", element: null })
 }
 
 function mount(lane, { pending = false } = {}) {

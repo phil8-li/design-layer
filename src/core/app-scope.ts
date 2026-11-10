@@ -22,12 +22,11 @@
  *
  * That used to end "which is what makes an app chooser safe to use without
  * being asked to confirm anything", and it is no longer true — not because this
- * scoping stopped working, but because it was never the whole story. Notes and
- * the preview-only ledger are filed per app and do survive a switch. The
- * removal queue, the Angular queue and the vendor store are in memory and die
- * with the document, and a switch SIGTERMs the editor. So the chooser arms
- * before it goes when any of those three is non-empty, and stays one click when
- * they are not — see the note on the click handler in \`panels/app-chooser.ts\`.
+ * scoping stopped working, but because it was never the whole story. Notes are
+ * filed per app and do survive a switch. The edit journal is in memory and
+ * dies with the document. So the chooser arms before it goes when the journal
+ * holds an edit no send has carried, and stays one click when it does not — see
+ * the note on the click handler in \`panels/app-chooser.ts\`.
  *
  * ## Why the URL and not the name
  *
@@ -128,14 +127,13 @@ export function dropScoped(key: string): void {
  * is documented, not handled. `post` also treats any HTTP reply as accepted,
  * so a value the server refuses as too large is resent every boot.
  *
- * Only what is the designer's work is copied: notes, their settings and the
- * preview-only ledger. The running-apps cache is a guess about this moment and
+ * Only what is the designer's work is copied: notes and their settings. The
+ * running-apps cache is a guess about this moment and
  * is rewritten on every menu open; copying it would be traffic with no reader.
  */
 const SYNCED_PREFIXES = [
   "designlayer.annotations.",
   "designlayer.annotation-settings",
-  "designlayer.preview-only.",
 ]
 
 /**

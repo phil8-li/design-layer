@@ -8,28 +8,8 @@
  */
 
 import { isAngularHost, owningComponentName, resolveAngularSource } from "./angular"
-import type { ClassUpdate } from "./tailwind"
 import { notify, type ToastAction, type ToastKind, type ToastMessage } from "./toast"
 import type { SourceRef } from "./types"
-
-/**
- * The only source-write shape the engine's batch transformer understands for
- * style changes. Everything beyond `updates` is resolution context: the more of
- * it we supply, the more reliably the AST walker finds the right JSX node.
- */
-export interface UpdateClassOperation {
-  op: "updateClass"
-  file: string
-  line: number
-  col: number
-  componentName?: string
-  tagName?: string
-  className?: string
-  parentTagName?: string
-  parentClassName?: string
-  nthOfType?: number
-  updates: ClassUpdate[]
-}
 
 export interface RewriteStack {
   componentName: string
@@ -47,62 +27,18 @@ export interface RewriteElementInfo {
   stack: RewriteStack[]
 }
 
-/** Subset of the vendor store we rely on. */
+/**
+ * Subset of the vendor store we rely on: the editor mirrors its own tool into
+ * the vendor's once, at install. The patched store carries more (the pending
+ * operations a commit would send, and the members `runtime/vendor-patch.mjs`
+ * adds), but nothing in the editor writes source any more, so none of it is
+ * typed here.
+ */
 export interface RewriteStore {
-  getActiveTool(): string
   setActiveTool(tool: string): void
-  onToolChange(fn: (tool: string, previous: string) => void): () => void
-  onStateChange(fn: () => void): () => void
-  getCanvasTransform(): { x: number; y: number; scale: number }
-  setCanvasTransform(t: { x: number; y: number; scale: number }): void
-  onCanvasTransformChange(fn: (t: { x: number; y: number; scale: number }) => void): () => void
-  viewportToPage(x: number, y: number): { x: number; y: number }
-  pageToViewport(x: number, y: number): { x: number; y: number }
-  /**
-   * `mergeKey` identifies the element so repeated edits accumulate into one
-   * operation; `propertyKeys` runs parallel to `operation.updates` so a second
-   * edit to the same property replaces the first instead of appending a class.
-   */
-  addPendingPropertyOperation(
-    mergeKey: string,
-    operation: UpdateClassOperation,
-    propertyKeys: string[]
-  ): void
-  /**
-   * The inverse: take named properties back out of a merged operation.
-   *
-   * The Changes tab's delete button has to mean "this will not be written".
-   * Without this it could only ever mean "this row is now hidden" — the
-   * operation stayed queued, and Apply wrote it anyway, minutes after the
-   * designer watched the row disappear.
-   *
-   * OPTIONAL, because it is reached by patching the vendor bundle
-   * (`runtime/vendor-patch.mjs` exposes the engine's own `su`), and a prebuilt
-   * `dist/` served against an unpatched bundle still has to run. A caller that
-   * finds it missing must say so rather than report a withdrawal that did not
-   * happen; `core/withdraw.ts` is the single place that decides what to do
-   * about that.
-   *
-   * Dropping every property of an element removes the pending entry outright,
-   * which is what lets `hasChanges()` go quiet again on the last withdrawal.
-   */
-  removePendingPropertyOperation?(mergeKey: string, propertyKeys: string[]): void
-  buildBatchOperations(): unknown[]
-  hasChanges(): boolean
-  addMove(move: unknown): unknown
-  updateMoveDelta(id: string, delta: { x: number; y: number }): void
-  getMoveForElement(el: Element): unknown
-  resetCanvas(): void
 }
 
 export interface RewriteBridge {
-  version: number
-  tokens: {
-    colors: Record<string, string>
-    shadows: Record<string, string>
-    radii: Record<string, string>
-    font: string
-  }
   send(message: unknown): void
   subscribe(fn: (message: Record<string, unknown>) => void): () => void
   discoverFile(componentName: string): Promise<string | null>
@@ -120,9 +56,6 @@ export interface RewriteBridge {
    * Optional because an older patched bundle will not have it.
    */
   elementSourceAsync?(el: Element): Promise<RewriteElementInfo | null>
-  resolveSourceAt(x: number, y: number): Promise<RewriteElementInfo | null>
-  hitTest(x: number, y: number): HTMLElement | null
-  selectedElement(): HTMLElement | null
   refreshGeometry(): void
   /**
    * The vendor's method, replaced by ours — see `withEditorToast`.
@@ -135,7 +68,6 @@ export interface RewriteBridge {
    * what the wrapper exists to prevent.
    */
   toast(message: ToastMessage, kind?: ToastKind, action?: ToastAction): void
-  root(): HTMLElement | null
   store: RewriteStore
 }
 

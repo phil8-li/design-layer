@@ -72,6 +72,7 @@ const bundled = await build({
     contents: `
       export * from "./src/canvas/spacing-handles"
       export { createWriter } from "./src/core/writer"
+      export { edits, resetJournalForTest } from "./src/annotations/journal"
       export * as history from "./src/core/history"
       export * as store from "./src/core/store"
     `,
@@ -283,18 +284,8 @@ await check("SH-18 only changed properties are written, as px", () => {
 
 console.log("\nThe installed handles")
 
-const queued = []
-const bridge = {
-  elementInfo: () => null,
-  send() {},
-  toast() {},
-  subscribe: () => () => {},
-  store: {
-    hasChanges: () => queued.length > 0,
-    buildBatchOperations: () => queued.map((entry) => entry.operation),
-    addPendingPropertyOperation: (mergeKey, operation, keys) => queued.push({ mergeKey, operation, keys }),
-  },
-}
+/** The properties a release left notes for, sorted: what the agent is told. */
+const noted = () => lib.edits().map((edit) => edit.property).sort()
 const overlay = window.document.getElementById("overlay")
 overlay.setAttribute("data-designlayer", "")
 let refreshes = 0
@@ -307,7 +298,7 @@ const context = {
   },
   onRefresh: () => () => {},
 }
-lib.installSpacingHandles(context, lib.createWriter(bridge))
+lib.installSpacingHandles(context, lib.createWriter())
 
 const frame = () => new Promise((resolve) => window.requestAnimationFrame(() => setTimeout(resolve, 0)))
 const fire = (target, type, init = {}) =>
@@ -331,7 +322,7 @@ function selectCard() {
     key: `card-${keys}`,
   }
   history.resetHistory()
-  queued.length = 0
+  lib.resetJournalForTest()
   refreshes = 0
   lib.store.setState({ selection: [selection], tool: "move", hovered: null })
   return element
@@ -389,12 +380,11 @@ await check("SH-22 a drag previews live and commits one write on release", async
   assert.equal(element.style.paddingLeft, "28px", "the drag did not preview")
   fire(handle(), "pointermove", { clientX: 36, clientY: 50, buttons: 1 })
   assert.equal(element.style.paddingLeft, "36px")
-  assert.equal(queued.length, 0, "a preview frame reached source")
+  assert.deepEqual(noted(), [], "a preview frame left a note")
   fire(handle(), "pointerup", { clientX: 36, clientY: 50 })
 
-  assert.equal(queued.length, 1)
-  assert.deepEqual(queued[0].keys, ["padding-left"])
-  assert.match(JSON.stringify(queued[0].operation), /"tailwindPrefix":"pl","tailwindToken":"9"/)
+  assert.deepEqual(noted(), ["padding-left"])
+  assert.equal(lib.edits()[0].to, "36px")
   assert.equal(element.style.paddingLeft, "36px")
   assert.equal(refreshes, 1)
   assert.equal(history.undo(), "Padding")
@@ -409,8 +399,7 @@ await check("SH-23 Alt+drag writes both sides in one step; Alt+Shift writes all 
   fire(handle(), "pointerdown", { clientX: 20, clientY: 50, altKey: true })
   fire(handle(), "pointermove", { clientX: 24, clientY: 50, buttons: 1, altKey: true })
   fire(handle(), "pointerup", { clientX: 24, clientY: 50 })
-  assert.equal(queued.length, 1)
-  assert.deepEqual(queued[0].keys.sort(), ["padding-left", "padding-right"])
+  assert.deepEqual(noted(), ["padding-left", "padding-right"])
   assert.equal(element.style.paddingRight, "24px")
   assert.equal(history.undo(), "Padding")
   assert.equal(history.canUndo(), false)
@@ -421,7 +410,7 @@ await check("SH-23 Alt+drag writes both sides in one step; Alt+Shift writes all 
   fire(handle(), "pointerdown", { clientX: 20, clientY: 50, altKey: true, shiftKey: true })
   fire(handle(), "pointermove", { clientX: 24, clientY: 50, buttons: 1, altKey: true, shiftKey: true })
   fire(handle(), "pointerup", { clientX: 24, clientY: 50 })
-  assert.deepEqual(queued[0].keys.sort(), ["padding-bottom", "padding-left", "padding-right", "padding-top"])
+  assert.deepEqual(noted(), ["padding-bottom", "padding-left", "padding-right", "padding-top"])
 })
 
 await check("SH-24 letting go of Alt mid-drag puts the other side back", async () => {
@@ -434,7 +423,7 @@ await check("SH-24 letting go of Alt mid-drag puts the other side back", async (
   fire(handle(), "pointermove", { clientX: 26, clientY: 50, buttons: 1, altKey: false })
   assert.equal(element.style.paddingRight, "20px")
   fire(handle(), "pointerup", { clientX: 26, clientY: 50 })
-  assert.deepEqual(queued[0].keys, ["padding-left"])
+  assert.deepEqual(noted(), ["padding-left"])
 })
 
 await check("SH-25 a gap drag writes `gap`", async () => {
@@ -445,8 +434,8 @@ await check("SH-25 a gap drag writes `gap`", async () => {
   fire(handle(), "pointermove", { clientX: 70, clientY: 50, buttons: 1 })
   fire(handle(), "pointerup", { clientX: 70, clientY: 50 })
   assert.equal(element.style.gap, "16px")
-  assert.equal(queued.length, 1)
-  assert.match(JSON.stringify(queued[0].operation), /"tailwindPrefix":"gap","tailwindToken":"4"/)
+  assert.deepEqual(noted(), ["gap"])
+  assert.equal(lib.edits()[0].to, "16px")
 })
 
 await check("SH-26 a press without travel, or a cancelled drag, writes nothing", async () => {
@@ -455,13 +444,13 @@ await check("SH-26 a press without travel, or a cancelled drag, writes nothing",
   await frame()
   fire(handle(), "pointerdown", { clientX: 20, clientY: 50 })
   fire(handle(), "pointerup", { clientX: 20, clientY: 50 })
-  assert.equal(queued.length, 0)
+  assert.deepEqual(noted(), [])
   assert.equal(history.canUndo(), false)
 
   fire(handle(), "pointerdown", { clientX: 20, clientY: 50 })
   fire(handle(), "pointermove", { clientX: 40, clientY: 50, buttons: 1 })
   fire(handle(), "pointercancel", {})
-  assert.equal(queued.length, 0)
+  assert.deepEqual(noted(), [])
   assert.equal(element.getAttribute("style"), "display:flex; gap:12px; padding:10px 20px", "the cancel left a preview behind")
 })
 
@@ -493,7 +482,7 @@ await check("SH-28 the editor standing down mid-drag cancels it, and the release
   try {
     assert.equal(element.getAttribute("style"), ORIGINAL, "the preview stayed after the editor stood down")
     fire(handle(), "pointerup", { clientX: 40, clientY: 50 })
-    assert.equal(queued.length, 0)
+    assert.deepEqual(noted(), [])
     assert.equal(history.canUndo(), false, "the release committed a drag the editor had stood down from")
   } finally {
     lib.store.setState({ interactive: false })

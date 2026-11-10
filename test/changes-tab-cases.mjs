@@ -75,13 +75,7 @@ const bundled = await build({
       export { addAnnotation, annotations, resetAnnotationsForTest, updateSettings } from "./src/annotations/store"
       export { buildAnnotationBrief } from "./src/annotations/output"
       export { sendState, resetSendForTest } from "./src/annotations/handover"
-      export {
-        isEditQueued,
-        recordEdit,
-        resetJournalForTest,
-        markEditsWritten,
-      } from "./src/annotations/journal"
-      export { previewOnlyChanges, recordPreviewOnly, clearPreviewOnly } from "./src/core/change-prompt"
+      export { edits, recordEdit, resetJournalForTest } from "./src/annotations/journal"
       export { withdrawEdit } from "./src/core/withdraw"
       export { resetComponentUsageForTest } from "./src/core/component-usage"
       export { elementKey } from "./src/core/store"
@@ -104,42 +98,10 @@ const ui = await import(
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 10))
 
-/**
- * A store that records what is queued AND honours a withdrawal.
- *
- * The real one is the vendor's, reached through a patch that exposes its own
- * `su`. Modelled here rather than stubbed to a no-op, because the claim under
- * test is precisely that a withdrawal reaches the queue — a stub that accepted
- * the call and did nothing would pass while the product stayed broken.
- */
+/** The patched vendor's bridge, as much of it as the tab and the writer read. */
 function makeBridge() {
-  const queued = new Map()
   return {
-    queued,
-    store: {
-      addPendingPropertyOperation(mergeKey, operation, propertyKeys) {
-        const entry = queued.get(mergeKey) ?? { keys: new Set() }
-        for (const key of propertyKeys) entry.keys.add(key)
-        queued.set(mergeKey, entry)
-      },
-      removePendingPropertyOperation(mergeKey, propertyKeys) {
-        const entry = queued.get(mergeKey)
-        if (!entry) return
-        for (const key of propertyKeys) entry.keys.delete(key)
-        if (entry.keys.size === 0) queued.delete(mergeKey)
-      },
-      buildBatchOperations() {
-        return [...queued.values()].map(() => ({ op: "updateClass" }))
-      },
-      hasChanges() {
-        return queued.size > 0
-      },
-      setActiveTool() {},
-      onStateChange() {},
-      getCanvasTransform: () => ({ x: 0, y: 0, scale: 1 }),
-      viewportToPage: (x, y) => ({ x, y }),
-      pageToViewport: (x, y) => ({ x, y }),
-    },
+    store: { setActiveTool() {} },
     elementInfo() {
       return {
         tagName: "div",
@@ -179,7 +141,6 @@ let tab
 function reset() {
   ui.resetJournalForTest()
   ui.resetAnnotationsForTest()
-  ui.clearPreviewOnly()
   ui.resetComponentUsageForTest()
   ui.resetHistory()
   toasts.length = 0
@@ -375,7 +336,6 @@ await check("Send to agent posts every note and edit, and sends no commit to the
     assert.match(posted[0].brief, /^- Set `opacity: 0\.5` on this element\./m)
     assert.match(posted[0].brief, /\*\*Feedback:\*\* Tighten this/)
     assert.deepEqual(sent, [], "the send also wrote source")
-    assert.equal(bridge.queued.size > 0, true, "the preview's queue was drained as if committed")
   } finally {
     globalThis.fetch = real
   }
@@ -384,7 +344,7 @@ await check("Send to agent posts every note and edit, and sends no commit to the
 await check("an unwritable edit alone makes the button send", async () => {
   reset()
   const element = mount('<span class="icon">x</span>')
-  ui.recordEdit({ property: "icon", from: "Star", to: "Heart", element, written: false })
+  ui.recordEdit({ property: "icon", from: "Star", to: "Heart", element })
   // The MCP status answer lands on a later task; the button waits for it.
   await settle()
   tab.update()
@@ -663,18 +623,6 @@ await check("with no agent connected, Send to agent is never offered", async () 
   }
 })
 
-await check("an edit the old codemod marked written is still sent", async () => {
-  reset()
-  const element = mount('<button class="btn">Go</button>')
-  ui.createWriter(bridge).applyStyles(selectionOf(element), [{ property: "opacity", value: "0.5" }], "Opacity")
-  await settle()
-  ui.markEditsWritten()
-  bridge.queued.clear()
-  tab.update()
-  assert.equal(primary().textContent.trim(), "Send to agent")
-  assert.equal(primary().disabled, false, "a written-off edit is no longer offered to the agent")
-})
-
 console.log("\nOne copy")
 
 await check("the toolbar's notes.copy and the tab's Copy put identical text on the clipboard", async () => {
@@ -767,7 +715,7 @@ await check("clear-all is one undoable step, offered back on its toast", async (
 
 console.log("\nTaking a change back")
 
-await check("dropping a row withdraws the queued write, not just the row", async () => {
+await check("dropping a row takes the note out of the brief, not just off the list", async () => {
   reset()
   const element = mount('<button class="btn">Go</button>')
   const writer = ui.createWriter(bridge)
@@ -777,14 +725,13 @@ await check("dropping a row withdraws the queued write, not just the row", async
     "Opacity"
   )
   await settle()
-  assert.equal(bridge.store.hasChanges(), true, "the edit never reached the queue")
+  assert.equal(ui.edits().length, 1, "the edit never reached the journal")
 
   const [id] = rowIds()
-  ui.withdrawEdit(bridge, id)
+  assert.equal(ui.withdrawEdit(id), true)
 
-  // The whole point. Before this existed the row went and the operation stayed,
-  // so the next Apply wrote a change the designer had thrown away.
-  assert.equal(bridge.store.hasChanges(), false, "the queued write survived the withdrawal")
+  assert.deepEqual(ui.edits(), [], "the withdrawn note would still reach the agent")
+  assert.doesNotMatch(ui.buildAnnotationBrief(), /opacity/, "the brief still carries a withdrawn edit")
   assert.deepEqual(rowIds(), [], "the row survived the withdrawal")
 })
 
@@ -800,7 +747,7 @@ await check("the preview goes back to what it was", async () => {
   await settle()
   assert.equal(element.style.opacity, "0.5")
 
-  ui.withdrawEdit(bridge, rowIds()[0])
+  ui.withdrawEdit(rowIds()[0])
   // Safe only because rows collapse: no later row can have written `opacity` on
   // this element, so restoring the "from" cannot clobber somebody else's value.
   assert.equal(element.style.opacity, "1", "the page kept a change that was taken back")
@@ -834,68 +781,18 @@ await check("ANY row, in ANY order — the middle one goes first", async () => {
    * they were made in and not the reverse of it either. Undo could not do this;
    * it is a timeline and has to unwind. This is a set of independent rows.
    */
-  ui.withdrawEdit(bridge, ids[1])
+  ui.withdrawEdit(ids[1])
   tab.update()
   assert.deepEqual(rowIds(), [ids[0], ids[2]], "withdrawing the middle row disturbed its neighbours")
 
-  ui.withdrawEdit(bridge, ids[2])
+  ui.withdrawEdit(ids[2])
   tab.update()
   assert.deepEqual(rowIds(), [ids[0]], "withdrawing the last row disturbed the first")
 
-  ui.withdrawEdit(bridge, ids[0])
+  ui.withdrawEdit(ids[0])
   tab.update()
   assert.deepEqual(rowIds(), [], "the last withdrawal left something behind")
-  assert.equal(bridge.store.hasChanges(), false, "three withdrawals left a queued write")
-})
-
-await check("withdrawing an unwritable change clears the ledger too", async () => {
-  reset()
-  const element = mount('<span class="icon">x</span>')
-  ui.recordEdit({
-    property: "icon",
-    from: "Star",
-    to: "Heart",
-    element,
-    written: false,
-  })
-  ui.recordPreviewOnly({
-    filePath: "src/Fixture.tsx",
-    componentName: "Fixture",
-    tagName: "span",
-    className: "icon",
-    property: "icon",
-    from: "Star",
-    to: "Heart",
-  })
-  assert.equal(ui.previewOnlyChanges().length, 1)
-
-  tab.update()
-  ui.withdrawEdit(bridge, rowIds()[0])
-
-  // The ledger is what builds the brief. A withdrawn change left in it would
-  // reach the agent through the one document the designer never re-reads.
-  assert.equal(
-    ui.previewOnlyChanges().length,
-    0,
-    "a withdrawn change is still queued for the agent"
-  )
-})
-
-await check("a row that was already written is not queued, and says so", async () => {
-  reset()
-  const element = mount('<button class="btn">Go</button>')
-  const writer = ui.createWriter(bridge)
-  writer.applyStyles(
-    { element, tagName: "button", componentName: "Fixture", source: null, key: ui.elementKey(element, "Fixture", 0) },
-    [{ property: "opacity", value: "0.5" }],
-    "Opacity"
-  )
-  await settle()
-  const [id] = rowIds()
-  assert.equal(ui.isEditQueued(id), true, "a fresh writable edit is not owed")
-
-  ui.markEditsWritten()
-  assert.equal(ui.isEditQueued(id), false, "a committed edit is still owed")
+  assert.deepEqual(ui.edits(), [], "three withdrawals left a note")
 })
 
 /** The Stay on between apps row in the MCP section, or null. */

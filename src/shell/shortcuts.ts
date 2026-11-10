@@ -80,7 +80,7 @@ const restoreDisplay = new WeakMap<Element, string>()
 
 export function installShortcuts(context: EditorContext): void {
   const resolver = getResolver(context.bridge)
-  const writer = createWriter(context.bridge)
+  const writer = createWriter()
   const panel = shortcutsPanel()
   // Closed when the editor is hidden. The sheet is a modal on `document.body`,
   // which nothing that hides carries away, and it lists keys a hidden editor

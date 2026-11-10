@@ -1029,7 +1029,6 @@ const bundled = await build({
     contents: `
       export { createContext } from "./src/core/context"
       export { annotationsTab } from "./src/panels/inspector/tab-annotations"
-      export { clearPreviewOnly } from "./src/core/change-prompt"
       export { addAnnotation, resetAnnotationsForTest } from "./src/annotations/store"
       export { recordEdit, resetJournalForTest } from "./src/annotations/journal"
       export { buildAnnotationBrief } from "./src/annotations/output"
@@ -1094,7 +1093,6 @@ right.append(tab.node)
  * alone, and the next read reloads what was written.
  */
 function emptyOutbox() {
-  ui.clearPreviewOnly()
   ui.resetJournalForTest()
   ui.resetAnnotationsForTest()
   window.localStorage.clear()
@@ -1227,7 +1225,6 @@ await check("it sends the brief, the files and the origin", async () => {
     from: "none",
     to: "0 1px 2px rgba(0,0,0,.2)",
     element: subject,
-    written: false,
   })
   posted.length = 0
   assert.equal(sendButton().disabled, false, "a filled outbox must arm the button")

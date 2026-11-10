@@ -99,7 +99,6 @@ const bundled = await build({
       // Copy is a chord rather than a square now, so the only way to ask
       // whether the bar still offers it is to ask the registry the key reads.
       export { hasCommand, runCommand, registerCommand } from "./src/core/commands"
-      export { recordPreviewOnly, previewOnlyChanges, clearPreviewOnly } from "./src/core/change-prompt"
     `,
     resolveDir: PACKAGE_DIR,
     loader: "ts",

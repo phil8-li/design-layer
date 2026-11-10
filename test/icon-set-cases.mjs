@@ -254,7 +254,7 @@ const bundled = await build({
       export { iconNameOf, loadIconSet, loadedIconSet } from "./src/core/icon-set"
       export { installInspector } from "./src/panels/inspector"
       export * as history from "./src/core/history"
-      export { clearPreviewOnly, previewOnlyChanges } from "./src/core/change-prompt"
+      export { edits, resetJournalForTest } from "./src/annotations/journal"
     `,
     resolveDir: PACKAGE_DIR,
     loader: "ts",
@@ -283,7 +283,6 @@ const bridge = {
   subscribe: () => () => {},
   toast: (message, kind) => toasts.push({ message, kind }),
   store: {
-    addPendingPropertyOperation() {},
     getCanvasTransform: () => ({ x: 0, y: 0, scale: 1 }),
     setCanvasTransform() {},
     onCanvasTransformChange: () => () => {},
@@ -398,40 +397,36 @@ check("a swap redraws the glyph, renames it, and is one undoable step", () => {
   assert.equal(glyph.getAttribute("fill"), afterFill)
 })
 
-check("the swap is silent, and lands in the ledger for the agent", () => {
-  editorModule.clearPreviewOnly()
+check("the swap is silent, and is a note for the agent", () => {
+  editorModule.resetJournalForTest()
   resetGlyph()
-  // Preview-only is the icon lane's normal outcome, not a loss: the swap goes
-  // to the Changes tab for the agent. A toast per swap narrated direct
-  // manipulation the canvas already shows.
+  // The swap goes to the Changes tab for the agent. A toast per swap narrated
+  // direct manipulation the canvas already shows.
   writer.applyIcon(selection, variant("Heart"))
-  writer.applyIcon(selection, variant("Compass"))
   assert.equal(toasts.length, 0, toasts.map((toast) => toast.message).join(" | "))
-  assert.ok(editorModule.previewOnlyChanges().length > 0, "the swap never reached the ledger")
-  editorModule.clearPreviewOnly()
+  assert.equal(editorModule.edits().length, 1, "the swap never reached the notes")
+  editorModule.resetJournalForTest()
 })
 
-check("the swap is in the change ledger BEFORE the history event fires", () => {
-  // The toolbar repaints on the history event and decides there whether "Copy
-  // change prompts" is live, by reading this ledger. Recorded after `record`,
-  // an icon swap — the one change that can ONLY reach source through an agent —
-  // left that button disabled: the swap painted, Undo lit up, and the button
-  // holding the prompt for it stayed grey until some later, unrelated repaint.
-  editorModule.clearPreviewOnly()
+check("the swap is in the notes BEFORE the history event fires", () => {
+  // The toolbar repaints on the history event and counts what is waiting to be
+  // handed over. Recorded after `record`, the swap painted, Undo lit up, and
+  // the count stayed stale until some later, unrelated repaint.
+  editorModule.resetJournalForTest()
   resetGlyph()
   let atEvent = null
   const stop = history.onHistoryChange(() => {
-    atEvent = editorModule.previewOnlyChanges()
+    atEvent = editorModule.edits()
   })
   writer.applyIcon(selection, variant("Heart"))
   stop()
 
   assert.notEqual(atEvent, null, "the swap pushed no history step at all")
-  assert.equal(atEvent.length, 1, "the ledger was empty when the toolbar read it")
+  assert.equal(atEvent.length, 1, "the notes were empty when the toolbar read them")
   assert.equal(atEvent[0].property, "icon")
   assert.equal(atEvent[0].from, "Compass")
   assert.equal(atEvent[0].to, "Heart")
-  editorModule.clearPreviewOnly()
+  editorModule.resetJournalForTest()
 })
 
 check("re-picking the icon already drawn is not a step", () => {

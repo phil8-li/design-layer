@@ -2,13 +2,9 @@
  * Every change the designer made this session, as the outbox reads it back.
  *
  * The panel is one list with two kinds of row. Notes say what is wrong; edits
- * are the part the designer already fixed. `change-prompt.ts` keeps a ledger
- * too and this is deliberately not it — that one holds the SUBSET "Apply to
- * code" could not write, because its job is to be the second half of Apply.
- * This holds every edit, written or not, because its job is to be the record
- * of what happened. An agent handed only the unwritable ones reads a session
- * that moved a card, retyped its heading and deleted its sibling as a session
- * that swapped one icon.
+ * are the part the designer already fixed on the page. This holds every edit,
+ * because its job is to be the record of what happened, and the agent makes
+ * each one in code.
  *
  * Nothing here is persisted, and that is the one decision in this file worth
  * arguing about. `store.ts` writes its notes to `localStorage` because a note
@@ -40,16 +36,6 @@ interface JournalEntry {
    * nothing here is — and never read for anything the record already says.
    */
   element: Element | null
-  /**
-   * Whether the writer dispatched this edit to the source writer.
-   *
-   * Equal to `record.written` at the moment of the edit and kept separately
-   * anyway, because `markEditsWritten` OVERWRITES `record.written` when an
-   * Apply lands. Once that has happened the flag can no longer answer "was
-   * this queued", and rebuilding the answer from it is how a preview-only icon
-   * swap comes to be reported as already in the file.
-   */
-  queued: boolean
 }
 
 /**
@@ -64,15 +50,14 @@ interface Mutation {
   /** Where the entry sat, so an undo restores the order things happened in. */
   index: number
   /** What the entry read before this call, or null when this call created it. */
-  previous: { to: string; written: boolean; queued: boolean; sentAt?: string; sentIn?: string | null } | null
+  previous: { to: string; sentAt?: string; sentIn?: string | null } | null
   /** Whether this call took the entry out of the list — see `recordEdit`. */
   removed: boolean
 }
 
 /**
- * Module-scoped for the reason `change-prompt.ts` gives for its own ledger:
- * the writer fills this, the outbox panel reads it, the brief serializes it,
- * and none of the three owns the other two.
+ * Module-scoped: the writer fills this, the outbox panel reads it, the brief
+ * serializes it, and none of the three owns the other two.
  */
 const entries: JournalEntry[] = []
 const mutations: Mutation[] = []
@@ -200,12 +185,11 @@ function attempt(read: () => string): string {
 /**
  * Same element, same property — one entry, keeping the original `from`.
  *
- * `change-prompt.ts` answers this with a string built from the component, the
- * tag and the class list, because the row it has to match may outlive the node
- * it describes. Here the element itself is in hand and is the stronger answer:
- * two `<button class="btn">`s side by side are ONE entry under the string and
- * two under this, and they are two edits. It is also the only answer that
- * survives a class edit, which rewrites the very list the string is built from.
+ * Matched by the element itself, not by a string built from the component, the
+ * tag and the class list: two `<button class="btn">`s side by side are ONE
+ * entry under such a string and two under this, and they are two edits. It is
+ * also the only answer that survives a class edit, which rewrites the very list
+ * the string is built from.
  *
  * An edit with no element never collapses. There is no target to build the
  * fallback string out of either, and two unidentifiable edits merged into one
@@ -235,7 +219,6 @@ export function recordEdit(input: {
   from: string
   to: string
   element: Element | null
-  written: boolean
 }): EditRecord | null {
   if (input.from === input.to) return null
 
@@ -249,8 +232,6 @@ export function recordEdit(input: {
     const index = entries.indexOf(existing)
     const previous = {
       to: existing.record.to,
-      written: existing.record.written,
-      queued: existing.queued,
       sentAt: existing.record.sentAt,
       sentIn: existing.record.sentIn,
     }
@@ -258,8 +239,6 @@ export function recordEdit(input: {
     delete existing.record.sentAt
     delete existing.record.sentIn
     existing.record.to = input.to
-    existing.record.written = input.written
-    existing.queued = input.written
     const removed = existing.record.from === input.to
     if (removed) entries.splice(index, 1)
     remember({ entry: existing, index, previous, removed })
@@ -282,10 +261,8 @@ export function recordEdit(input: {
       // descriptor on every nudge would put that cost on the writer for a
       // result thrown away on the next line.
       target: input.element ? describeEditTarget(input.element) : null,
-      written: input.written,
     },
     element: input.element,
-    queued: input.written,
   }
   entries.push(entry)
   remember({ entry, index: entries.length - 1, previous: null, removed: false })
@@ -298,9 +275,7 @@ export function recordEdit(input: {
  *
  * Oldest first, and a collapse does not reorder — the two together are what
  * lets the outbox interleave edits with notes by `createdAt` and have the
- * array agree with the result. `previewOnlyChanges()` is newest-first and does
- * move a collapsed entry to the front, because a ledger is a to-do list and
- * this is a record of what happened.
+ * array agree with the result: this is a record of what happened.
  */
 export function edits(): EditRecord[] {
   return entries.map((entry) => entry.record)
@@ -398,8 +373,6 @@ export function dropLastEdit(): void {
     if (index !== -1) entries.splice(index, 1)
   } else {
     mutation.entry.record.to = mutation.previous.to
-    mutation.entry.record.written = mutation.previous.written
-    mutation.entry.queued = mutation.previous.queued
     if (mutation.previous.sentAt) {
       mutation.entry.record.sentAt = mutation.previous.sentAt
       mutation.entry.record.sentIn = mutation.previous.sentIn
@@ -411,65 +384,6 @@ export function dropLastEdit(): void {
     }
   }
   announce()
-}
-
-/**
- * Apply to code succeeded: what was queued is in the file, not promised to it.
- *
- * Deliberately not a sweep. `written` is already true for everything the
- * translator could spell, because the writer knows that fork at the moment of
- * the edit, so this usually changes nothing — but the tempting one-liner that
- * sets every row written would also promote the icon swap and the stranded
- * `transform`, which are in the outbox precisely BECAUSE Apply wrote nothing
- * for them. An agent told those are already in the file skips the only changes
- * still owed to source.
- */
-export function markEditsWritten(): void {
-  let moved = false
-  for (const entry of entries) {
-    if (!entry.queued) continue
-    // Clearing `queued` is the point of the call, not bookkeeping beside it.
-    //
-    // `written` alone cannot answer "has this reached the file", because the
-    // writer sets it at the MOMENT OF THE EDIT for anything it can spell —
-    // long before anyone presses Apply. Read on its own it means "this is
-    // writable", and the Changes tab spent a version telling designers a
-    // padding tweak was already in their files because of it.
-    //
-    // `queued` is the missing half: set beside `written` when the edit is
-    // recorded, cleared here when the commit that owed it has run. Ready and
-    // In-your-files are the two sides of this flag, and nothing else in the
-    // journal can tell them apart.
-    entry.queued = false
-    if (!entry.record.written) entry.record.written = true
-    moved = true
-  }
-  if (moved) announce()
-}
-
-/**
- * Is this edit still owed to a file?
- *
- * True between the edit and the commit that writes it. The panel needs the
- * distinction and `written` cannot carry it — see `markEditsWritten` — so the
- * flag is read through here rather than copied onto `EditRecord`, where it
- * would become a fourth piece of state for `recordEdit`'s collapse path to
- * keep consistent and for the brief to have an opinion about.
- */
-export function isEditQueued(id: string): boolean {
-  return entries.some((entry) => entry.record.id === id && entry.queued)
-}
-
-/**
- * How many edits still want something: not writable, or writable and queued.
- *
- * The edit half of `owedCount`, in one pass. Asking `isEditQueued` per row was
- * a scan per row, run by the tab badge on every announce.
- */
-export function owedEditCount(): number {
-  let owed = 0
-  for (const entry of entries) if (!entry.record.written || entry.queued) owed += 1
-  return owed
 }
 
 /**
@@ -504,45 +418,6 @@ export function editElement(id: string): LayerElement | null {
   // came from a selection, so it is a `LayerElement`; the cast states that
   // rather than widening the field and making every reader re-narrow it.
   return (entries.find((entry) => entry.record.id === id)?.element as LayerElement) ?? null
-}
-
-/**
- * Apply to code REFUSED one operation: take back the claim that it landed.
- *
- * The writer decides `written` when the edit is made, and on an Angular host it
- * answers true for a style the template writer can express. The server gets the
- * last word and can disagree: two `<div class="auth-row__icon">` in one
- * template score identically, so `matchNode` returns null rather than guess,
- * and the write is refused at commit time with the element already repainted.
- *
- * Left alone, that row sits in the outbox reading "In source". It is the one
- * field an agent acts on differently — told a change is already in the file it
- * skips it, and the change is then in nobody's hands: not the editor's, which
- * refused it, and not the agent's, which was told not to bother. Silently
- * losing a change is worse than either making it or reporting it undone.
- *
- * Matched on tag, classes and property, which is the identity the server
- * refused on. A descriptor ambiguous enough to be refused THERE is precise
- * enough to find the row here.
- */
-export function markEditRefused(match: {
-  tagName: string
-  className: string
-  property: string
-}): void {
-  let changed = false
-  for (const entry of entries) {
-    const target = entry.record.target
-    if (!target) continue
-    if (!entry.record.written) continue
-    if (entry.record.property !== match.property) continue
-    if (target.tagName !== match.tagName) continue
-    if (target.className !== match.className) continue
-    entry.record.written = false
-    entry.queued = false
-    changed = true
-  }
-  if (changed) announce()
 }
 
 /** Test seam: the journal is module state, and a case must start empty. */

@@ -898,7 +898,24 @@ async function sourceDefaultCases() {
 
 async function writerCases() {
   console.log("\nClass snapshot writer")
-  const { createWriter } = await load("src/core/writer.ts")
+  const { build } = await import("esbuild")
+  const bundled = await build({
+    stdin: {
+      contents: `
+        export { createWriter } from "./src/core/writer"
+        export { edits } from "./src/annotations/journal"
+      `,
+      resolveDir: PACKAGE_DIR,
+      loader: "ts",
+    },
+    bundle: true,
+    format: "esm",
+    write: false,
+    logLevel: "silent",
+  })
+  const { createWriter, edits } = await import(
+    `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString("base64")}`
+  )
   const parent = document.createElement("div")
   parent.className = "parent-shell"
   const element = document.createElement("button")
@@ -906,15 +923,6 @@ async function writerCases() {
   parent.append(element)
   document.body.append(parent)
 
-  const pending = []
-  const bridge = {
-    toast() {},
-    store: {
-      addPendingPropertyOperation(key, operation, propertyKeys) {
-        pending.push({ key, operation, propertyKeys })
-      },
-    },
-  }
   const selection = {
     element,
     tagName: "button",
@@ -927,28 +935,23 @@ async function writerCases() {
       componentName: "Button",
     },
   }
-  const writer = createWriter(bridge)
+  const writer = createWriter()
 
-  check("class swaps queue the removal and preserve pre-mutation identity", () => {
+  check("a class swap previews, and its note keeps the class list it started from", () => {
     writer.applyClasses(selection, { remove: ["px-2"], add: ["px-4"] }, "Swap padding")
     assert.equal(element.className, "rounded text-sm px-4")
-    assert.equal(pending[0].operation.className, "rounded px-2 text-sm")
-    assert.equal(pending[0].operation.parentClassName, "parent-shell")
-    assert.deepEqual(pending[0].operation.updates[0], {
-      tailwindPrefix: "px-2",
-      tailwindToken: "px-4",
-      value: "px-4",
-      standalone: true,
-      classPattern: "^px-2$",
-    })
+    const [edit] = edits()
+    assert.equal(edit.property, "class")
+    assert.equal(edit.from, "rounded px-2 text-sm")
+    assert.equal(edit.to, "rounded text-sm px-4")
   })
 
-  check("a pure removal queues an empty exact replacement instead of preview-only", () => {
+  check("a pure removal previews and joins the same note", () => {
     writer.applyClasses(selection, { remove: ["text-sm"], add: [] }, "Remove text size")
     assert.equal(element.classList.contains("text-sm"), false)
-    assert.equal(pending[1].operation.className, "rounded text-sm px-4")
-    assert.equal(pending[1].operation.updates[0].tailwindToken, "")
-    assert.equal(pending[1].operation.updates[0].classPattern, "^text-sm$")
+    assert.equal(edits().length, 1, "one element's class list is one note")
+    assert.equal(edits()[0].from, "rounded px-2 text-sm")
+    assert.equal(edits()[0].to, "rounded px-4")
   })
 
   parent.remove()
