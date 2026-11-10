@@ -186,7 +186,7 @@ async function run() {
 
     const fresh = Buffer.from(result.outputFiles?.[0]?.contents ?? new Uint8Array())
     if (!fs.existsSync(target.outfile)) {
-      console.error(`FAIL ${target.label} is missing — run \`npm run design:build\``)
+      console.error(`FAIL ${target.label} is missing — run \`npm run build\``)
       process.exit(1)
     }
     // Compiling proves the source is valid; it does not prove `dist/` matches it.
@@ -196,7 +196,7 @@ async function run() {
     if (!fresh.equals(onDisk)) {
       console.error(
         `FAIL ${target.label} is stale — dist/ is ${onDisk.length} bytes, ` +
-          `src/ compiles to ${fresh.length}. Run \`npm run design:build\`.`
+          `src/ compiles to ${fresh.length}. Run \`npm run build\`.`
       )
       process.exit(1)
     }
