@@ -32,11 +32,29 @@
  *    through by reference. Breakpoints are a compile-time fact of the host's
  *    build; a prefix borrowed from a library would compile to nothing.
  *
- * Loading follows `core/icon-set.ts` exactly, for the reasons stated there: one
- * shared in-flight promise, a warning and an empty answer on failure, and a
- * failure that is never cached — a dev server that was still starting has to be
- * askable again. Mutations are the opposite and REJECT, because every one of
- * them is a button a person just pressed and the panel has to be able to say so.
+ * Loading follows `core/icon-set.ts`, for the reasons stated there: one shared
+ * in-flight promise, a warning and an empty answer on failure, and a failure
+ * that is never cached — a dev server that was still starting has to be
+ * askable again. Unlike the icon set, the failure is a STATE the panel can
+ * read (`libraryListState()`), because an empty list after a failed load and
+ * an empty list after a good one are different facts and the Libraries
+ * section says which. Mutations are the opposite and REJECT, because every one
+ * of them is a button a person just pressed and the panel has to be able to
+ * say so.
+ *
+ * ## The list's machine
+ *
+ *     idle    --loadLibraries-->          loading(g)
+ *     failed  --loadLibraries-->          loading(g)   (the retry)
+ *     loading(g) --200, g current-->      ready
+ *     loading(g) --error, g current-->    failed(reason)
+ *     loading(g) --answer, g stale-->     (ignored)
+ *     ready   --loadLibraries-->          ready        (the cache answers)
+ *     *       --refreshLibraries-->       loading(g+1) (the old answer goes stale)
+ *
+ * `setListState` is the one writer and `libraryListState` the one reader. The
+ * generation is what lets a refresh supersede a load still in flight without
+ * the older answer landing last and winning.
  */
 
 import { config, type DesignSystemCatalog, type DesignSystemToken } from "../core/config"
@@ -56,7 +74,16 @@ import type {
 export type LibraryComponentEntry = LibraryComponent & { library: string; libraryName: string }
 
 let cache: Library[] = []
-let loaded = false
+
+/** Whether `cache` can be trusted, and why not when it cannot; see the header. */
+export type LibraryListState =
+  | { status: "idle" }
+  | { status: "loading"; generation: number }
+  | { status: "ready" }
+  | { status: "failed"; reason: string }
+
+let listState: LibraryListState = { status: "idle" }
+let generation = 0
 let inFlight: Promise<Library[]> | null = null
 
 const listeners = new Set<() => void>()
@@ -277,35 +304,54 @@ function adopt(library: Library): Library {
   return library
 }
 
+/** Where the list stands: see the machine in the header. */
+export function libraryListState(): LibraryListState {
+  return listState
+}
+
+/** The one writer of `listState`. Every move is news to the panel. */
+function setListState(next: LibraryListState): void {
+  listState = next
+  notify()
+}
+
 export function loadLibraries(apiBase: string): Promise<Library[]> {
-  if (loaded) return Promise.resolve(cache)
-  inFlight ??= send<{ libraries?: Library[] }>(endpoint(apiBase))
+  if (listState.status === "ready") return Promise.resolve(cache)
+  if (listState.status === "loading" && inFlight) return inFlight
+  const mine = (generation += 1)
+  const current = () => listState.status === "loading" && listState.generation === mine
+  inFlight = send<{ libraries?: Library[] }>(endpoint(apiBase))
     .then((payload) => {
+      if (!current()) return cache
+      inFlight = null
       cache = Array.isArray(payload.libraries) ? payload.libraries : []
-      loaded = true
-      notify()
+      setListState({ status: "ready" })
       return cache
     })
     .catch((error: unknown) => {
+      if (!current()) return cache
       console.warn("[designlayer] could not load the added libraries", error)
-      // Not cached, and `loaded` is left alone: the next surface to ask gets a
-      // real request rather than the empty list this one settled for.
+      // Not cached: `failed` is a state the next `loadLibraries` leaves, so the
+      // next surface to ask gets a real request rather than this empty answer.
       inFlight = null
+      setListState({ status: "failed", reason: error instanceof Error ? error.message : String(error) })
       return []
     })
+  setListState({ status: "loading", generation: mine })
   return inFlight
 }
 
 /**
- * The same load, past the cache.
+ * The same load, past the cache — the suites' reload seam.
  *
- * The list endpoint re-reads and re-parses every source file it points at, so
- * this is how a designer who just edited their own token CSS sees the new token
- * without restarting anything.
+ * No product surface calls it: the panel has no refresh control, and the list
+ * the editor needs is loaded once and then kept current by the mutations below.
+ * It stays because the list endpoint re-reads every source file, so a test that
+ * changes the stub server's libraries reads them back through the real load.
  */
 export function refreshLibraries(apiBase: string): Promise<Library[]> {
-  loaded = false
   inFlight = null
+  listState = { status: "idle" }
   return loadLibraries(apiBase)
 }
 
@@ -330,10 +376,15 @@ export function discoverLibraries(apiBase: string): Promise<LibraryCandidate[]> 
  * reports zero colours — so there is no library here to hang the problem on and
  * the error is the only carrier the challenge has.
  */
-export function addLibrary(
-  apiBase: string,
-  input: { path?: string; url?: string; kind?: LibrarySourceKind; name?: string }
-): Promise<Library> {
+/** What one add asks for; the section holds a refused one to replay it. */
+export interface AddLibraryInput {
+  path?: string
+  url?: string
+  kind?: LibrarySourceKind
+  name?: string
+}
+
+export function addLibrary(apiBase: string, input: AddLibraryInput): Promise<Library> {
   return send<{ library: Library }>(endpoint(apiBase), {
     method: "POST",
     body: JSON.stringify(input),
@@ -447,12 +498,28 @@ export function signInToLibrary(
  * given, so the abort reaches the transport with no new plumbing. The rejection
  * that comes back on abort is the platform's `AbortError`, which is NOT a
  * sentence to show anybody — the caller knows it asked, and says its own thing.
+ * The server sees the abort too: the route aborts its run when the request
+ * closes early, so Cancel stops the window as well as the wait.
+ *
+ * `budgetMs` is the longest the server says an answer can take; the panel sets
+ * its own deadline from it. `code` is the server's machine word for the outcome
+ * (`busy` when another site's sign-in holds the browser). The server also sends
+ * an always-empty `provider`, which nothing here reads: the panel names the
+ * provider from the challenge it already holds.
  */
 export function openProviderSignIn(
   apiBase: string,
   url: string,
   options: { signal?: AbortSignal } = {}
-): Promise<{ ok: boolean; reason?: string; provider?: string; origin?: string; scheme?: LibraryCredentialScheme; addedAt?: number }> {
+): Promise<{
+  ok: boolean
+  code?: string
+  reason?: string
+  budgetMs?: number
+  origin?: string
+  scheme?: LibraryCredentialScheme
+  addedAt?: number
+}> {
   return send(`${authEndpoint(apiBase)}/signin`, {
     method: "POST",
     body: JSON.stringify({ url }),
@@ -469,16 +536,27 @@ export function openProviderSignIn(
  * be impossible costs a press and an honest sentence from the server. So only
  * an explicit `available: false` withdraws it; a request that failed, or a
  * server too old to know the route, leaves it standing.
+ *
+ * `budgetMs` rides along when the server reports it (0 when it does not), so
+ * the panel's first deadline can come from the server rather than a constant.
  */
-export async function canOpenProviderSignIn(apiBase: string): Promise<boolean> {
+export async function canOpenProviderSignIn(
+  apiBase: string
+): Promise<{ available: boolean; budgetMs: number }> {
   try {
-    const answer = await send<{ available?: boolean }>(`${authEndpoint(apiBase)}/signin`, {
-      method: "GET",
-    })
-    return answer?.available !== false
+    const answer = await send<{ available?: boolean; budgetMs?: unknown }>(
+      `${authEndpoint(apiBase)}/signin`,
+      { method: "GET" }
+    )
+    return { available: answer?.available !== false, budgetMs: budgetOf(answer?.budgetMs) }
   } catch {
-    return true
+    return { available: true, budgetMs: 0 }
   }
+}
+
+/** A server-stated budget in ms, or 0 for an answer that carried none. */
+export function budgetOf(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0
 }
 
 /**
@@ -667,6 +745,10 @@ export function loadLibraryIcons(apiBase: string): Promise<IconVariant[]> {
   iconsInFlight = Promise.all(wanted.map((library) => fetchGlyphs(apiBase, library))).then(
     (sets) => {
       const icons = sets.flatMap((set) => set ?? [])
+      // Superseded: the enabled set moved while this was out, and the cache,
+      // the key and the newer flight all belong to that set now. The caller
+      // still gets what it asked for; the cache does not.
+      if (iconKey !== wanted) return icons
       iconsInFlight = null
       // A failure is handed to this caller and remembered by nobody: dropping
       // the key is what makes the next picker open ask again.

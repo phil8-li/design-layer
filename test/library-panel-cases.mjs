@@ -308,8 +308,14 @@ const VARIANT_DECLARATIONS = [
  */
 const server = {
   libraries: [],
+  /** Whether `GET /libraries` fails, the way a dev server still starting does. */
+  failList: false,
+  /** Icon requests held open until the test releases them, in arrival order. */
+  heldIcons: null,
   reset() {
     server.libraries = []
+    server.failList = false
+    server.heldIcons = null
   },
 }
 
@@ -328,7 +334,17 @@ async function serve(input, init = {}) {
   })
 
   if (rest === "/libraries" && method === "GET") {
+    if (server.failList) {
+      return { ok: false, status: 500, json: async () => ({ message: "The dev server is still starting" }) }
+    }
     return reply({ libraries: clone(server.libraries) })
+  }
+
+  const glyphs = /^\/libraries\/([a-z0-9-]+)\/icons$/.exec(rest)
+  if (glyphs) {
+    const answer = () => reply({ icons: [{ name: `${glyphs[1]}-glyph`, nodes: [], rootFill: "" }] })
+    if (!server.heldIcons) return answer()
+    return new Promise((resolve) => server.heldIcons.push(() => resolve(answer())))
   }
 
   /*
@@ -1295,6 +1311,101 @@ await check("the libraries stylesheet names no colour of its own", () => {
   const withoutTokens = editor.librariesCss.replace(/var\([^)]*\)/g, "")
   const literals = withoutTokens.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []
   assert.deepEqual(literals, [], `raw colours in librariesCss: ${literals.join(", ")}`)
+})
+
+// ── The list's load state and the glyph cache ──────────────────────────────
+
+console.log("\nThe store's machines")
+
+/*
+ * A FRESH store, bundled on its own, because both machines start from a state
+ * the shared bundle above left long ago: a list never loaded, a glyph cache
+ * never filled. The stub fetch is global, so it serves this copy too.
+ */
+const freshStore = async () => {
+  const fresh = await build({
+    stdin: { contents: `export * from "./src/libraries/store"`, resolveDir: PACKAGE_DIR, loader: "ts" },
+    bundle: true,
+    format: "esm",
+    write: false,
+    logLevel: "silent",
+  })
+  return import(`data:text/javascript;base64,${Buffer.from(fresh.outputFiles[0].text).toString("base64")}#${Math.random()}`)
+}
+
+/*
+ * A failed first load was stored as the same bits as "never asked", so the
+ * panel drew it as an empty project and nothing ever asked again: every
+ * enabled library was missing from the pickers until a reload.
+ */
+await check("a failed first load is a state, and the next load retries it", async () => {
+  const store = await freshStore()
+  server.reset()
+  server.libraries = [{ ...clone(NIMBUS), enabled: true }]
+  server.failList = true
+  assert.deepEqual(store.libraryListState(), { status: "idle" })
+  const warn = console.warn
+  console.warn = () => {}
+  let answer
+  try {
+    const loading = store.loadLibraries(API)
+    assert.equal(store.libraryListState().status, "loading", "a load in flight is not loading")
+    answer = await loading
+  } finally {
+    console.warn = warn
+  }
+  assert.deepEqual(answer, [], "a failed load answered with rows")
+  assert.equal(store.libraryListState().status, "failed", "a failed load is not failed")
+  assert.match(store.libraryListState().reason, /still starting/, "the failure lost the server's sentence")
+  assert.equal(
+    store.activeDesignSystem().colors.some((token) => token.library),
+    false,
+    "a failed load put library tokens in the catalog"
+  )
+
+  server.failList = false
+  await store.loadLibraries(API)
+  assert.equal(store.libraryListState().status, "ready", "the retry did not land")
+  const ids = store.activeDesignSystem().colors.map((token) => token.id)
+  assert.ok(ids.includes(`${NIMBUS.id}/color:brand-500`), `the enabled library is still missing: ${ids.join(", ")}`)
+})
+
+await check("a refresh supersedes a load still in flight", async () => {
+  const store = await freshStore()
+  server.reset()
+  server.libraries = [clone(NIMBUS)]
+  const first = store.loadLibraries(API)
+  server.libraries = [clone(NIMBUS), clone(MERIDIAN)]
+  const second = store.refreshLibraries(API)
+  await Promise.all([first, second])
+  assert.deepEqual(store.libraryList().map((library) => library.id), [NIMBUS.id, MERIDIAN.id])
+  assert.equal(store.libraryListState().status, "ready")
+})
+
+/*
+ * The glyph-race probe: a fetch for a library that was turned off while it
+ * was out wrote its glyphs into the cache of the set that replaced it.
+ */
+await check("a glyph fetch that lands after its library was turned off stays out of the picker", async () => {
+  const store = await freshStore()
+  server.reset()
+  server.libraries = [{ ...clone(NIMBUS), id: "glyph-lib", enabled: true, counts: { ...NIMBUS.counts, iconDrawings: 1 } }]
+  await store.loadLibraries(API)
+  server.heldIcons = []
+  const stale = store.loadLibraryIcons(API)
+  await store.setLibraryEnabled(API, "glyph-lib", false)
+  assert.deepEqual(await store.loadLibraryIcons(API), [], "a set with no glyph library fetched glyphs")
+  server.heldIcons.shift()()
+  await stale
+  assert.deepEqual(
+    store.loadedLibraryIcons().map((glyph) => glyph.name),
+    [],
+    "the turned-off library's glyphs are back in the picker"
+  )
+  server.heldIcons = null
+  await store.setLibraryEnabled(API, "glyph-lib", true)
+  assert.deepEqual((await store.loadLibraryIcons(API)).map((glyph) => glyph.name), ["glyph-lib-glyph"])
+  assert.deepEqual(store.loadedLibraryIcons().map((glyph) => glyph.name), ["glyph-lib-glyph"])
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)
