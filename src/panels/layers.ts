@@ -107,12 +107,15 @@ function setAttr(node: Element, name: string, value: string | null): void {
  * the cascade can tell apart.
  *
  * A component wins over whatever it renders as and is the only kind that takes
- * a colour. Then media, vectors and a text leaf, by the same tests the
- * inspector's layer header uses (`layerKind` there), so the row and the header
- * name the same kind. A box with children is a frame, split by layout the way
- * Figma splits auto layout; a box without children is a rectangle.
+ * a colour. Then media, vectors and a text leaf. A box with children is a
+ * frame, split by layout the way Figma splits auto layout; a box without
+ * children is a rectangle.
+ *
+ * Exported because the inspector's layer header names the selection's kind by
+ * this one rule (`section-layer-header.ts`), so the row and the header can
+ * never disagree about what an element is.
  */
-type LayerKind = "component" | "image" | "vector" | "text" | "stack-horizontal" | "stack-vertical"
+export type LayerKind = "component" | "image" | "vector" | "text" | "stack-horizontal" | "stack-vertical"
   | "grid" | "frame" | "rectangle"
 
 /**
@@ -135,7 +138,7 @@ const KIND_GLYPH: Record<LayerKind, IconName> = {
 
 const MEDIA = new Set(["img", "picture", "video", "canvas"])
 
-function layerKindOf(element: LayerElement, promoted: boolean, look: Look | null): LayerKind {
+export function layerKindOf(element: LayerElement, promoted: boolean, look: Look | null): LayerKind {
   if (promoted) return "component"
   const tag = element.tagName.toLowerCase()
   if (MEDIA.has(tag)) return "image"
