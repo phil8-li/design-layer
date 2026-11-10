@@ -481,8 +481,8 @@ and the check that enforces it when one exists.
 - Light roles built from ink washes (`textMuted` 80%, `textDisabled` 64%,
   `borderStrong` 26%, `borderInteractive` 48%, `hairline` 7%) and the light
   `rowSelectedMuted` mix stay in `tokens.ts` only.
-- Code-tab syntax tints (`PALETTE.code`, `src/core/tokens.ts:308-314`) and
-  scrollbar thumbs (`:218-219`) stay in source only; each serves one surface.
+- Scrollbar thumbs (`src/core/tokens.ts:218-219`) stay in source only; they
+  serve one surface.
 - Components list only properties the source states. Text weight for
   buttons, fields and headers, and the modal's fill, are set per stylesheet in
   `src/core/css/` and are not tokens here.
