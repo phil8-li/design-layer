@@ -310,6 +310,20 @@ export function editCount(): number {
   return entries.length
 }
 
+/**
+ * How many edits leaving this document would cost: the rows no send carried.
+ *
+ * The journal is in memory and dies with the page, so these are what a
+ * navigation discards. A sent edit is with the agent already, and notes are
+ * filed per app and come back, so neither is counted. The app chooser's
+ * switch warning reads this and nothing else.
+ */
+export function unsentEditCount(): number {
+  let unsent = 0
+  for (const entry of entries) if (!entry.record.sentAt) unsent += 1
+  return unsent
+}
+
 export function onEditsChange(listener: () => void): () => void {
   listeners.add(listener)
   return () => listeners.delete(listener)

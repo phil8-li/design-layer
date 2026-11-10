@@ -380,6 +380,9 @@ async function laneFor(app, chooserUrl, marker, extra = {}) {
         export { appChooserCss } from "./src/core/css/app-chooser"
         export { shellCss } from "./src/core/css"
         export { appScopedKey } from "./src/core/app-scope"
+        export { clearEdits, edits, markEditsSent, recordEdit, removeEdit } from "./src/annotations/journal"
+        export { createWriter } from "./src/core/writer"
+        export { undo } from "./src/core/history"
       `,
       resolveDir: PACKAGE_DIR,
       loader: "ts",
@@ -423,8 +426,6 @@ const baseBridge = {
   subscribe: () => () => {},
   store: {
     setActiveTool() {},
-    hasChanges: () => false,
-    buildBatchOperations: () => [],
     onStateChange() {},
     getCanvasTransform: () => ({ x: 0, y: 0, scale: 1 }),
     viewportToPage: (x, y) => ({ x, y }),
@@ -434,27 +435,31 @@ const baseBridge = {
 
 /**
  * One control, mounted into a panel slot, with its own toast log and its own
- * answer to "is there unapplied work".
+ * answer to "is there unsent work".
  *
- * Pending work arrives through `bridge.store.hasChanges` rather than through
- * the ledger, because that is the queue a designer is most likely to be holding
- * and because `pendingWork` reads all of them through this one bridge — a
- * module-level ledger entry would leak into every later case on the same graph.
+ * Pending work is one edit in the lane's own journal, the module the chooser
+ * reads. The journal is module state, so every mount starts it empty, and a
+ * case that leaves edits behind cannot leak them into the next one.
  *
  * The menu is found through `aria-controls` rather than by class: several
  * controls are mounted into this one document and every one of them appends a
  * `.de-app-menu` to the body, so a query by class would answer with whichever
  * was installed first.
  */
+function pendEdit(lane) {
+  lane.recordEdit({ property: "padding-left", from: "16px", to: "24px", element: null, written: false })
+}
+
 function mount(lane, { pending = false } = {}) {
   const toasts = []
-  let hasChanges = pending
+  lane.clearEdits()
+  if (pending) pendEdit(lane)
   const left = slot()
   const context = lane.createContext(
     {
       ...baseBridge,
       toast: (message, kind, action) => toasts.push({ message, kind, action }),
-      store: { ...baseBridge.store, hasChanges: () => hasChanges },
+      store: baseBridge.store,
     },
     { overlay: slot(), toolbar: slot(), left, right: slot() }
   )
@@ -472,7 +477,8 @@ function mount(lane, { pending = false } = {}) {
     rows: () => Array.from(menu.querySelectorAll(".de-app-menu-row")),
     note: () => menu.querySelector(".de-app-menu-note"),
     setPending: (value) => {
-      hasChanges = value
+      if (value) pendEdit(lane)
+      else lane.clearEdits()
     },
     destroy: () => {
       chooser.destroy()
@@ -800,7 +806,7 @@ await check("the row for the app you are on is marked, even spelled another way"
 /*
  * Switching to the app you are already on would be a real switch: the page
  * would go to this app's editor again, and in a browser tab the session's
- * unapplied work would be gone in exchange for nothing. The row stays pressable
+ * unsent work would be gone in exchange for nothing. The row stays pressable
  * because it is the one row that answers the question the menu was opened to
  * ask — it just answers it by closing.
  */
@@ -1113,7 +1119,7 @@ console.log("\nSwitching to another app")
  * `devScript: null` because an absent key would leave it guessing whether the
  * browser meant "use the default" or "this is an old build".
  */
-await check("with nothing unapplied, one click asks the server to switch", async () => {
+await check("with nothing unsent, one click asks the server to switch", async () => {
   server.reset()
   const ui = await opened(mount(named))
   press(ui.rows()[1])
@@ -1137,10 +1143,9 @@ await check("with nothing unapplied, one click asks the server to switch", async
  * holding, and the comment defending that said the switch had been made free:
  * the pinned notes and the preview-only ledger moved to per-app storage, so
  * switching away files them rather than losing them. Both true. Neither of them
- * is the removal queue, the Angular queue or the vendor store, which are in
- * memory, have no `beforeunload` anywhere in the package, and go with the
- * document when a supervisor kills it. A designer with a column of unapplied
- * inspector edits lost every one of them to a click on a row that looked
+ * is the edit journal, which is in memory, has no `beforeunload` anywhere in
+ * the package, and goes with the document when a supervisor kills it. A
+ * designer with a column of unsent inspector edits lost every one of them to a click on a row that looked
  * exactly like the safe one beside it.
  *
  * What the armed step must NOT do is charge everybody for that. It appears only
@@ -1156,7 +1161,7 @@ await check("with work outstanding, the first press warns and the second switche
   assert.equal(
     server.calls.filter((call) => call.method === "POST" && call.url === `${API}/apps/switch`).length,
     0,
-    "a session holding unapplied edits was switched away on one click"
+    "a session holding unsent edits was switched away on one click"
   )
   // The row still says which app it is — losing that would make the warning
   // impossible to place — and the port's slot names the OUTCOME of the next
@@ -1168,7 +1173,7 @@ await check("with work outstanding, the first press warns and the second switche
   // is width taken off the name beside it. The instruction lives in the toast
   // and the whole of it in the accessible name, both asserted below.
   assert.equal(row.querySelector(".de-app-menu-name").textContent, "docs")
-  assert.match(row.querySelector(".de-app-menu-where").textContent, /^Discards \d+ unapplied change/)
+  assert.match(row.querySelector(".de-app-menu-where").textContent, /^Discards \d+ unsent change/)
   assert.ok(row.classList.contains("de-app-menu-row--danger"), "the armed row carries no fill")
   assert.match(row.getAttribute("aria-label"), /will be lost/)
   // The words are in the toast as well, because a reader looking at the canvas
@@ -1179,7 +1184,7 @@ await check("with work outstanding, the first press warns and the second switche
   // row stands itself down after six seconds and the card would go on telling
   // the reader to click again, where clicking again now only re-arms.
   assert.equal(ui.toasts.at(-1).kind, "info")
-  assert.match(ui.toasts.at(-1).message.title, /discards \d+ unapplied change/)
+  assert.match(ui.toasts.at(-1).message.title, /discards \d+ unsent change/)
 
   press(row)
   await settle()
@@ -1254,26 +1259,94 @@ await check("closing the menu takes the armed row's second click away with it", 
  * The half of a session's work that a switch genuinely does not cost, stated
  * where the chooser can be held to it.
  *
- * Pinned notes and the preview-only ledger are keyed per app rather than per
- * page, so switching files them under the app they belong to and switching back
- * brings them out. That is why the armed step counts unapplied EDITS and says
+ * Pinned notes are keyed per app rather than per page, so switching files them
+ * under the app they belong to and switching back brings them out. That is why the armed step counts unsent EDITS and says
  * nothing about notes: naming them would be warning about a loss that does not
  * happen, and a warning that overstates is one people learn to click through.
  * `core/app-scope.ts` owns the key and its own suites own the round trip; this
  * case exists so that removing the scope shows up here, in the control whose
  * copy depends on it, and not only three files away.
  */
-await check("notes and the preview-only ledger are filed per app, not dropped", () => {
+await check("notes are filed per app, not dropped", () => {
   assert.notEqual(
     named.appScopedKey("designlayer.annotations."),
     ghost.appScopedKey("designlayer.annotations."),
     "two apps share one annotation bucket, so switching would overwrite notes"
   )
-  assert.notEqual(
-    named.appScopedKey("designlayer.preview-only."),
-    ghost.appScopedKey("designlayer.preview-only."),
-    "two apps share one ledger, so switching would overwrite the change list"
+})
+
+/*
+ * The warning counts what a switch loses: the journal's edits that no send has
+ * carried. It used to count the vendor store, the removal queue and the
+ * Angular queue, which an edit filled and nothing ever drained. So an undo or
+ * a clear-on-send left it warning about changes that were gone, and a React
+ * text edit (which filled no queue) left on one click and took the edit with
+ * it. These drive the real writer, the real undo and the journal's own send
+ * stamp, not a stand-in for the count.
+ */
+async function warnsOnSwitch(lane, act) {
+  server.reset()
+  const ui = await opened(mount(lane))
+  const target = window.document.createElement("div")
+  target.className = "card"
+  target.textContent = "Hello"
+  window.document.body.append(target)
+  const bridge = { ...baseBridge, store: { ...baseBridge.store, addPendingPropertyOperation() {} } }
+  const selection = {
+    element: target,
+    key: "k1",
+    componentName: "Card",
+    source: { filePath: "src/Card.tsx", lineNumber: 3, columnNumber: 1, componentName: "Card" },
+  }
+  act(lane.createWriter(bridge), selection)
+  const row = ui.rows()[1]
+  press(row)
+  await settle()
+  const switched = server.calls.some((call) => call.method === "POST" && call.url === `${API}/apps/switch`)
+  const result = { switched, where: row.querySelector(".de-app-menu-where").textContent, toast: ui.toasts.at(-1)?.message.title }
+  ui.destroy()
+  target.remove()
+  lane.clearEdits()
+  server.reset()
+  return result
+}
+
+await check("a style edit arms the switch and names it as unsent", async () => {
+  const result = await warnsOnSwitch(named, (writer, selection) =>
+    writer.applyStyles(selection, [{ property: "padding-left", value: "24px" }], "Padding")
   )
+  assert.equal(result.switched, false, "a session holding an unsent edit switched on one click")
+  assert.equal(result.where, "Discards 1 unsent change")
+  assert.equal(result.toast, "Switching discards 1 unsent change")
+})
+
+await check("an undone edit leaves nothing to discard, so the switch is one click", async () => {
+  const result = await warnsOnSwitch(named, (writer, selection) => {
+    writer.applyStyles(selection, [{ property: "padding-left", value: "24px" }], "Padding")
+    named.undo()
+  })
+  assert.equal(named.edits().length, 0)
+  assert.equal(result.switched, true, "the warning counted an edit that undo had taken back")
+})
+
+await check("edits a send carried, or cleared after it, do not arm the switch", async () => {
+  const cleared = await warnsOnSwitch(named, (writer, selection) => {
+    writer.applyStyles(selection, [{ property: "padding-left", value: "32px" }], "Padding")
+    // What "Clear on copy or send" does once a send reaches the queue.
+    for (const edit of named.edits()) named.removeEdit(edit.id)
+  })
+  assert.equal(cleared.switched, true, "the warning counted edits a send had already cleared")
+  const stamped = await warnsOnSwitch(named, (writer, selection) => {
+    writer.applyStyles(selection, [{ property: "padding-left", value: "40px" }], "Padding")
+    named.markEditsSent(named.edits().map((edit) => edit.id), new Date().toISOString(), "change-1")
+  })
+  assert.equal(stamped.switched, true, "the warning counted edits the agent already has")
+})
+
+await check("a React text edit arms the switch", async () => {
+  const result = await warnsOnSwitch(named, (writer, selection) => writer.applyText(selection, "Team plan"))
+  assert.equal(result.switched, false, "a text edit left on one click and was lost")
+  assert.equal(result.where, "Discards 1 unsent change")
 })
 
 /*
@@ -1582,9 +1655,9 @@ await check("edits made during the wait keep the page, and the ready editor wait
   const told = ui.toasts.at(-1)
   assert.equal(told.kind, "info")
   assert.equal(told.message.title, "docs is ready")
-  assert.equal(told.message.description, "It did not open, so your unapplied changes are still here.")
+  assert.equal(told.message.description, "It did not open, so your unsent changes are still here.")
   assert.equal(told.action?.label, "Open")
-  assert.equal(ui.note().textContent, "docs is ready. It did not open, so your unapplied changes are still here.")
+  assert.equal(ui.note().textContent, "docs is ready. It did not open, so your unsent changes are still here.")
 
   const row = ui.menu.querySelector(".de-app-menu-row--ready")
   assert.ok(row, "the menu does not offer the ready editor")
@@ -1600,9 +1673,9 @@ await check("edits made during the wait keep the page, and the ready editor wait
 
   press(row)
   await settle()
-  assert.deepEqual(navigations, [], "the ready editor opened on one click over unapplied edits")
-  assert.match(row.querySelector(".de-app-menu-where").textContent, /^Discards \d+ unapplied change/)
-  assert.match(ui.toasts.at(-1).message.title, /^Switching discards \d+ unapplied change/)
+  assert.deepEqual(navigations, [], "the ready editor opened on one click over unsent edits")
+  assert.match(row.querySelector(".de-app-menu-where").textContent, /^Discards \d+ unsent change/)
+  assert.match(ui.toasts.at(-1).message.title, /^Switching discards \d+ unsent change/)
   press(row)
   await settle()
   assert.deepEqual(navigations, ["http://localhost:3458/#/guide"])
@@ -2125,7 +2198,7 @@ console.log("\nSwitching to an editor that is already running")
  * A row backed by a live editor is a different and much better thing than an
  * app row. The destination is already serving, so switching is a NAVIGATION:
  * nothing is started and nothing is waited for. This document still ends, so
- * unapplied work arms the row like any other.
+ * unsent work arms the row like any other.
  */
 const EDITOR_ROW = {
   kind: "editor",
@@ -2219,7 +2292,7 @@ await check("an editor row lands on its app's last page, not the root", async ()
 })
 
 /*
- * Going to another editor unloads this document, and the unapplied work goes
+ * Going to another editor unloads this document, and the unsent work goes
  * with it, exactly as for an app row. So with work outstanding the first press
  * arms and the second goes. The way back reaches the editor, not the edits,
  * which is why this row no longer skips the confirm.
@@ -2232,10 +2305,10 @@ await check("an editor row arms with work outstanding, and goes on the second pr
   const row = ui.rows()[0]
   press(row)
   await settle()
-  assert.deepEqual(navigations, [], "a session holding unapplied edits left on one click")
-  assert.match(row.querySelector(".de-app-menu-where").textContent, /^Discards \d+ unapplied change/)
+  assert.deepEqual(navigations, [], "a session holding unsent edits left on one click")
+  assert.match(row.querySelector(".de-app-menu-where").textContent, /^Discards \d+ unsent change/)
   assert.match(row.getAttribute("aria-label"), /will be lost/)
-  assert.match(ui.toasts.at(-1).message.title, /discards \d+ unapplied change/)
+  assert.match(ui.toasts.at(-1).message.title, /discards \d+ unsent change/)
   press(row)
   await settle()
   assert.deepEqual(navigations, ["http://localhost:3464/"], "the second press did not go")

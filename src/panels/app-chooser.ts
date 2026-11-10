@@ -64,13 +64,13 @@
  * ## Why both row kinds arm before they go, in a browser tab
  *
  * In a browser tab going anywhere ends this document, and ending this document
- * ends the three queues that hold unapplied edits: the removal queue, the
- * Angular queue and the vendor store are all in memory, and nothing in this
- * package writes a `beforeunload`. The pinned notes and the preview-only ledger
- * are filed per app and survive; nothing else does.
+ * ends the edit journal (`annotations/journal.ts`): it is in memory on purpose,
+ * and nothing in this package writes a `beforeunload`. The pinned notes are
+ * filed per app and survive; the edits do not.
  *
- * So a row arms only when `hasPendingChanges()` says there is something to
- * lose: the common empty session keeps its single click, because a navigation
+ * So a row arms only when `unsentEditCount()` says there is something to
+ * lose — edits no send has carried, whatever kind (a style, a text, an icon, a
+ * prop, a move): the common empty session keeps its single click, because a navigation
  * that answers the first click with a question has to be performed twice every
  * time, and the second click appears exactly when the loss is real. An
  * `editor` row used to skip the confirm on the grounds that the way back is one
@@ -111,7 +111,7 @@
  * is how a wait is abandoned. There is no Cancel control (DESIGN.md names none).
  */
 
-import { createApply } from "../core/apply"
+import { unsentEditCount } from "../annotations/journal"
 import { readScoped, writeScoped } from "../core/app-scope"
 import { config } from "../core/config"
 import { el } from "../core/dom"
@@ -316,7 +316,7 @@ export function rowLabels(apps: RunningApp[]): Map<RunningApp, string> {
 
 /** How much is at stake, for the sentence on an armed row. */
 function changeWord(count: number): string {
-  return plural(count, "unapplied change")
+  return plural(count, "unsent change")
 }
 
 /**
@@ -649,21 +649,6 @@ export function installAppChooser(
   let positionFrame = 0
 
   /**
-   * Is anything in this document holding an edit that has not reached source.
-   *
-   * The committer rather than a local copy of the same three checks. This file
-   * used to answer the question in prose and get it wrong: it argued that a
-   * switch costs nothing because the pinned notes and the preview-only ledger
-   * are filed per app, which is true, and never asked about the removal queue,
-   * the Angular queue or the vendor store, which are filed nowhere at all.
-   * `createApply` is where "is there unapplied work" is defined for the Apply
-   * button and the Changes tab; reading it here is the only version of this
-   * that cannot drift away from them a second time. It is never asked to
-   * commit anything — the two counts are the whole of what this control wants.
-   */
-  const committer = createApply({ bridge: context.bridge, toast: context.toast })
-
-  /**
    * The row waiting for its second click, and the way back from it
    * (`panels/arm.ts`).
    *
@@ -688,9 +673,8 @@ export function installAppChooser(
    * times when the session is holding nothing at all.
    *
    * With work outstanding it is not free in a browser tab. Every row ends with
-   * this document unloaded, and the removal queue, the Angular queue and the
-   * vendor store go with it. So the click arms when `hasPendingChanges()` says
-   * so, names the number it would cost, and stands itself down after six
+   * this document unloaded, and the edit journal goes with it. So the click
+   * arms when `unsentEditCount()` says so, names the number it would cost, and stands itself down after six
    * seconds — the same control, the same window and the same reasoning as
    * clearing every note in the annotations tab. Inside the Mac app the desk
    * shows the other editor in another tab and this document stays, so there is
@@ -708,20 +692,12 @@ export function installAppChooser(
     // armed the row, not the confirmation it asks for.
     if (arm.repeats(row, event)) return true
     const armedRow = arm.target()
-    if (armedRow === row || isInDesk() || !committer.hasPendingChanges()) {
+    const owed = isInDesk() ? 0 : unsentEditCount()
+    if (armedRow === row || owed === 0) {
       disarm()
       return false
     }
     disarm()
-    /*
-     * At least one, because the two questions are answered by different
-     * machinery. `hasPendingChanges` is the vendor store's own boolean;
-     * `pendingCount` asks it to build the operations a commit would send and
-     * falls back to the removals alone when it cannot. A store that says yes
-     * and then declines to count is rare and real, and "0 unapplied changes
-     * will be lost" would be the one sentence here that argues for pressing on.
-     */
-    const owed = Math.max(1, committer.pendingCount())
     arm.arm(row, () => {
       row.classList.remove("de-app-menu-row--danger")
       metaLine.textContent = meta
@@ -742,7 +718,7 @@ export function installAppChooser(
      * cannot see the fill.
      */
     metaLine.textContent = `Discards ${changeWord(owed)}`
-    row.setAttribute("aria-label", `Switch to ${label} anyway. ${changeWord(owed)} will be lost.`)
+    row.setAttribute("aria-label", `Switch to ${label} anyway. ${plural(owed, "change")} you have not sent will be lost.`)
     // The default rung, not `error` — `DURATION.error` is `Infinity`, and a
     // card that never dismisses outlives the `ARMED_MS` window it is
     // describing. The row disarms after six seconds and the card would go on
@@ -785,7 +761,7 @@ export function installAppChooser(
    * Not disabled, because it is the one row that answers the question the menu
    * was opened to ask — "which one am I on" — and a disabled control is a
    * control you are told not to read. Switching to it would reload this
-   * editor, and the session's unapplied work would be gone in exchange for
+   * editor, and the session's unsent edits would be gone in exchange for
    * nothing.
    */
   const rowFor = (app: RunningApp, labels: Map<RunningApp, string>): HTMLButtonElement => {
@@ -1245,7 +1221,7 @@ export function installAppChooser(
       position()
     }
     context.toast(
-      { title: `${label} is ready`, description: "It did not open, so your unapplied changes are still here." },
+      { title: `${label} is ready`, description: "It did not open, so your unsent changes are still here." },
       "info",
       { label: "Open", onClick: openReady }
     )
@@ -1282,7 +1258,7 @@ export function installAppChooser(
         // Asked again now, not at the click: the wait is long and the note
         // dismissible, so the designer may have edited all through it. Inside
         // the Mac app this document stays whatever the answer.
-        if (!isInDesk() && committer.hasPendingChanges()) holdReady(onLocalhost(answer.url), label, appUrl)
+        if (!isInDesk() && unsentEditCount() > 0) holdReady(onLocalhost(answer.url), label, appUrl)
         else go(onLocalhost(answer.url))
         return
       }
@@ -1336,7 +1312,7 @@ export function installAppChooser(
       const labels = rowLabels(others)
       menu.replaceChildren(liveRegion, readyRowFor(standing), ...others.map((app) => rowFor(app, labels)))
       liveRegion.replaceChildren(
-        note(`${standing.label} is ready. It did not open, so your unapplied changes are still here.`)
+        note(`${standing.label} is ready. It did not open, so your unsent changes are still here.`)
       )
       settleRows(held)
       return

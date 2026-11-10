@@ -321,7 +321,7 @@ export const appChooserCss = `/* ---------- app chooser ---------- */
  */
 .de-app-menu-row--busy { pointer-events: none; }
 /*
- * Armed: the next click on this row ends the session and takes unapplied edits
+ * Armed: the next click on this row ends the session and takes unsent edits
  * with it.
  *
  * The same pair \`.de-ann-clear--armed\` uses, because it is the same control in
