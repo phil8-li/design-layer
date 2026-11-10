@@ -1626,9 +1626,12 @@ await checkAsync("a URL library caches its catalog and refreshes on request", as
     assert.equal((await context.store.list()).libraries[0].counts.components, 2)
 
     const refreshed = await context.store.update(library.id, { refresh: true })
-    assert.equal(refreshed.library.counts.components, 0)
+    // A refresh that reads nothing keeps what the library had: the error says
+    // why, and the catalog the pickers already use is not thrown away.
+    assert.equal(refreshed.library.counts.components, 2, "a refresh that found nothing threw the catalog away")
     assert.ok(refreshed.library.error, "a refresh that found nothing said nothing about it")
     assert.match(refreshed.library.error, /Check the address/)
+    assert.equal((await context.store.list()).libraries[0].counts.components, 2)
   } finally {
     await context.cleanup()
   }

@@ -31,10 +31,6 @@ import { CODE_VIEWS, codeText, elementCode, type CodeTokenKind, type CodeView } 
 import type { EditorContext } from "../../core/context"
 import type { InspectorTab } from "./index"
 
-// Re-exported only so `tab-annotations.ts` and `tab-design-system.ts` compile
-// until they import the contract from `./index`; it goes with this file.
-export type { InspectorTab }
-
 /** The five tints `css/code.ts` reserves, plus the one kind that takes none. */
 const TINT: Record<CodeTokenKind, string | null> = {
   tag: "de-code-tag",

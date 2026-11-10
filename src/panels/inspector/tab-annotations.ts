@@ -59,7 +59,7 @@ import {
 } from "../../annotations/types"
 import type { EditorContext } from "../../core/context"
 import { section, selectField } from "./field"
-import type { InspectorTab } from "./tab-code"
+import type { InspectorTab } from "./index"
 import { tokens } from "../../core/tokens"
 import { plural } from "../../core/format"
 

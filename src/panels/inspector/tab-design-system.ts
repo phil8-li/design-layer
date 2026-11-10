@@ -33,7 +33,7 @@ import { dsLintSection } from "../../lint/panel"
 import { loadLintTools } from "../../lint/store"
 import { el } from "../../core/dom"
 import type { EditorContext } from "../../core/context"
-import type { InspectorTab } from "./tab-code"
+import type { InspectorTab } from "./index"
 
 export function designSystemTab(editor: EditorContext): InspectorTab {
   const libraries = librariesSection(editor)

@@ -27,7 +27,7 @@ import { httpError } from "./http-error.mjs"
 import { contentTypeRefusal, readBody, sendJson } from "./http-json.mjs"
 import { createIconSet } from "./icon-set.mjs"
 import { createAuthStore } from "./library-auth.mjs"
-import { createBrowserSignIn } from "./library-signin.mjs"
+import { completeSignIn, createBrowserSignIn } from "./library-signin.mjs"
 import { createLibraryStore } from "./libraries.mjs"
 import { fetchLibraryUrl } from "./library-url.mjs"
 import { isLocalRequest } from "./loopback.mjs"
@@ -164,32 +164,27 @@ function libraryRoutes({ libraries, auth, signin }, rest, req, res, url) {
       res.on("close", () => {
         if (!res.writableEnded) controller.abort()
       })
-      const outcome = await signin.signIn(target, { signal: controller.signal })
-      if (!outcome.ok) {
-        // Not a 500: a person closing the window, or a provider that grants no
-        // reusable session, is an ordinary outcome with a sentence attached.
-        return sendJson(res, 200, {
-          ok: false,
-          reason: outcome.reason,
-          provider: outcome.provider ?? "",
-        })
-      }
-
-      const credential = { scheme: "cookie", value: outcome.cookie }
-      const probe = await fetchLibraryUrl(target, { credential })
-      if (probe.sso || !probe.ok) {
-        return sendJson(res, 200, {
-          ok: false,
-          provider: outcome.provider ?? "",
-          reason: probe.sso
-            ? "The sign-in worked in the window, but the site still refuses the editor. This one " +
-              "may need a token."
-            : `The site answered HTTP ${probe.status} after signing in`,
-        })
-      }
-
-      const saved = await auth.saveCredential({ url: target, ...credential })
-      return sendJson(res, 200, { ok: true, provider: outcome.provider ?? "", ...saved })
+      /*
+       * `completeSignIn` runs the window, verifies the captured session against
+       * the live URL inside the run's own `verifying` phase, and stores it only
+       * if the wall opened: a verify still in flight when the person pressed
+       * Cancel is dropped, not stored behind their back. `cancelled` means the
+       * request is already gone, so there is nobody to answer.
+       */
+      const outcome = await completeSignIn(
+        { signin, probe: fetchLibraryUrl, save: (entry) => auth.saveCredential(entry) },
+        target,
+        { signal: controller.signal }
+      )
+      if (outcome.code === "cancelled") return
+      // `provider` stays in the answer, empty, for a client that still reads it.
+      return sendJson(
+        res,
+        200,
+        outcome.ok
+          ? { ...outcome, provider: "" }
+          : { ok: false, code: outcome.code, reason: outcome.reason, budgetMs: outcome.budgetMs, provider: "" }
+      )
     })
   }
 
