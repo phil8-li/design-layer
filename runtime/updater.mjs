@@ -581,7 +581,8 @@ export function restartDesk({ spawnImpl = spawn } = {}) {
   child.unref?.()
 }
 
-function resumeFile(home = os.homedir()) {
+/** Where the editors to bring back are written; the Mac installer saves there too (desktop/mac/agent.mjs). */
+export function resumeFile(home = os.homedir()) {
   return path.join(home, ".local", "state", "designlayer", "resume.json")
 }
 
