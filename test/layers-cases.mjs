@@ -164,9 +164,19 @@ const {
  * and only the first arrives here.
  */
 const queued = []
+/** The bridge's listeners, so a drag's siblings subscription can be counted. */
+const listeners = new Set()
+const sent = []
 const bridge = {
   elementInfo,
   toast() {},
+  subscribe(listener) {
+    listeners.add(listener)
+    return () => listeners.delete(listener)
+  },
+  send(message) {
+    sent.push(message)
+  },
   store: {
     addPendingPropertyOperation(key, operation, propertyKeys) {
       queued.push({ key, operation, propertyKeys })
@@ -180,6 +190,8 @@ const slot = () => {
   window.document.body.append(node)
   return node
 }
+// The tree asks for the saved styles as it mounts; this server has none.
+globalThis.fetch = async () => ({ ok: true, json: async () => ({}) })
 const context = createContext(bridge, {
   overlay: slot(),
   toolbar: slot(),
@@ -680,6 +692,88 @@ check("the platform's modifier adds one row without taking the rest", () => {
   assert.equal(after.length, 2, "cmd+Enter did not add the focused row to the selection")
   assert.ok(after.includes(first), "adding a row dropped the one already selected")
 })
+
+// ── Drag to reorder ─────────────────────────────────────────────────────────
+
+console.log("\nDrag to reorder")
+
+const dragOn = (node, type) => node.dispatchEvent(new window.Event(type, { bubbles: true }))
+const cardRow = () => rows().find((row) => row.querySelector(".de-layer-name").textContent === "Card")
+
+check("a drag asks for the row's siblings and lets go of them when it ends", () => {
+  const before = listeners.size
+  const row = cardRow()
+  assert.ok(row.draggable, "the component row is not draggable in the fixture")
+  dragOn(row, "dragstart")
+  assert.equal(listeners.size, before + 1)
+  assert.equal(sent.at(-1).type, "getSiblings")
+  dragOn(row, "dragend")
+  assert.equal(listeners.size, before, "the ended drag kept listening for siblings")
+})
+
+/*
+ * The rows are virtualized, so a long drag that scrolls can take the dragged
+ * row out of the tree. Its `dragend` then fires on a node that is no longer in
+ * the document and bubbles nowhere, and a drag that only listened on the tree
+ * stayed running: still subscribed, and ready to file a reorder note for a
+ * gesture that had ended.
+ */
+check("a drag whose row left the tree still ends when the drag does", () => {
+  const before = listeners.size
+  const row = cardRow()
+  const tree = row.parentElement
+  const next = row.nextSibling
+  dragOn(row, "dragstart")
+  row.remove()
+  dragOn(row, "dragend")
+  tree.insertBefore(row, next)
+  assert.equal(listeners.size, before, "the drag outlived its dragend")
+})
+
+check("a second drag without an end heard lets go of the first", () => {
+  const before = listeners.size
+  const row = cardRow()
+  dragOn(row, "dragstart")
+  dragOn(row, "dragstart")
+  assert.equal(listeners.size, before + 1, "the missed end leaked the first drag's subscription")
+  window.document.body.dispatchEvent(new window.Event("dragend", { bubbles: true }))
+  assert.equal(listeners.size, before, "a dragend outside the tree did not end the drag")
+})
+
+// ── Saved-style counts at boot ──────────────────────────────────────────────
+
+/*
+ * The counts read the saved sets, and the sets used to be asked for only when
+ * the Design tab first drew a styled section — so every page load showed no
+ * counts at all until something was selected. The tree asks at boot now.
+ */
+await (async () => {
+  const key = keyOfRow(0)
+  setState({ selection: [] })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url) =>
+    String(url).endsWith("/options")
+      ? { ok: true, json: async () => ({ [key]: savedSet(key, ["Compact", "Roomy"]) }) }
+      : { ok: true, json: async () => ({}) }
+  const boot = await load(`
+    export { createContext } from "./src/core/context"
+    export { installLayersPanel } from "./src/panels/layers"
+    export { getState } from "./src/core/store"
+    // boot graph
+  `)
+  const left = slot()
+  boot.installLayersPanel(boot.createContext(bridge, { overlay: slot(), toolbar: slot(), left, right: slot() }))
+  for (let turn = 0; turn < 4; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+  globalThis.fetch = originalFetch
+  check("the saved-style counts are there on load, before anything is selected", () => {
+    assert.equal(boot.getState().selection.length, 0)
+    const row = Array.from(left.querySelectorAll(".de-layer")).find(
+      (node) => node.querySelector(".de-layer-name").textContent === "Page"
+    )
+    assert.equal(row.querySelector(".de-layer-saved").textContent, "2", "the counts waited for a selection")
+  })
+  left.remove()
+})()
 
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed > 0 ? 1 : 0)

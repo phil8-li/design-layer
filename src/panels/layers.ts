@@ -1061,10 +1061,12 @@ export function installLayersPanel(context: EditorContext): void {
     lines: Set<number>; to: number } | null = null
   let stopSiblings: (() => void) | null = null
 
-  function startDrag(row: Row, ref: DragRef): void {
+  function startDrag(row: Row, ref: DragRef, source: EventTarget | null): void {
     // A drag whose end was never heard still holds a siblings subscription.
     endDrag()
     drag = { ref, element: row.element, parent: row.parent, lines: new Set(), to: 0 }
+    // Heard on the row node itself as well: see the `dragend` listener below.
+    source?.addEventListener("dragend", endDrag, { once: true })
     stopSiblings = context.bridge.subscribe((message) => {
       if (message.type !== "siblingsList") return
       stopSiblings?.()
@@ -1195,7 +1197,7 @@ export function installLayersPanel(context: EditorContext): void {
     const ref = row?.meta.drag
     if (!row || !ref) return event.preventDefault()
     ;(event as DragEvent).dataTransfer?.setData("text/plain", row.meta.name)
-    startDrag(row, ref)
+    startDrag(row, ref, event.target)
     /*
      * The lift goes on a frame late, and the delay is the point rather than a
      * hedge. The browser snapshots this row for the drag image once the handler
@@ -1239,10 +1241,12 @@ export function installLayersPanel(context: EditorContext): void {
     writer.noteReorder(describe(pending.element), `before:${name}`)
   })
   /*
-   * On the document, in capture, not on the tree. Rows are virtualized, so a
+   * A drag ends wherever its `dragend` is heard. Rows are virtualized, so a
    * long drag that auto-scrolls can take the dragged row out of the tree, and
-   * its `dragend` then fires on a detached node that never bubbles here — the
-   * drag stayed set and a later drop over the tree filed a note for it.
+   * its `dragend` then fires on a detached node that bubbles nowhere — the
+   * drag stayed set and a later drop over the tree filed a note for it. So
+   * `startDrag` listens on the row node itself, which hears it detached or
+   * not, and the document hears it in capture for any drag that row missed.
    */
   document.addEventListener("dragend", () => {
     if (drag) endDrag()
