@@ -21,6 +21,7 @@ import path from "node:path"
 import { resolveConfig } from "../config.mjs"
 import { handoffQueue } from "../server/handoff.mjs"
 import { contentTypeRefusal } from "../server/http-json.mjs"
+import { createIconSet } from "../server/icon-set.mjs"
 import { createDesignLayerRoutes } from "../server/routes.mjs"
 
 let passed = 0
@@ -235,6 +236,21 @@ await check("the sign-in window is told to stop when the panel's request goes aw
   } finally {
     await withSignin.close()
   }
+})
+
+console.log("\nThe icon set follows its file")
+
+await check("an edited icon set is served without a restart, and an unchanged one from memory", () => {
+  const file = path.join(root, "icons.json")
+  const draw = (count) =>
+    JSON.stringify(Object.fromEntries(Array.from({ length: count }, (_, i) => [`I${i}`, { nodes: [["path", { d: "M0 0" }]] }])))
+  fs.writeFileSync(file, draw(1))
+  const set = createIconSet({ icons: { attribute: "data-icon", data: file } })
+  const first = set.read()
+  assert.equal(set.read(), first, "an unchanged file was parsed again")
+  fs.writeFileSync(file, draw(3))
+  fs.utimesSync(file, new Date(), new Date(Date.now() + 5000))
+  assert.equal(set.read().icons.length, 3, "the edited set was served stale")
 })
 
 fs.rmSync(root, { recursive: true, force: true })
