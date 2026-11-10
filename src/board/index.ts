@@ -17,8 +17,33 @@
  * jump at either end of the trip.
  *
  * Nothing here may throw into the page. Every async path is caught and logged,
- * and a request that arrives while a transition is running is ignored rather
- * than queued — two overlapping transitions cannot both land.
+ * and a request that arrives while a transition is running is queued, not
+ * started: two overlapping transitions cannot both land, so the LAST request
+ * runs once the current one has (see `queued`).
+ *
+ * ## The lifecycle (`Phase`, moved only by `setPhase`)
+ *
+ *   closed           --open()-->                             opening
+ *   opening          --the open lands-->                     open
+ *   open             --close() to this page-->               closing{current}
+ *   closing{current} --board hidden, page growing back-->    closing{settling}
+ *   closing{current|settling} --transition done-->           closed
+ *   open             --close(another page)-->                closing{page}
+ *   closing{page}    --routed in place, faded-->             closed
+ *   closing{page}    --fell back to location.assign-->       closing{leaving}
+ *   closing{leaving} --the document unloads-->               (gone)
+ *   closing{leaving} --still here after LEAVE_TIMEOUT_MS, or
+ *                      any open/close/toggle/Escape-->       closed
+ *   any              --mode change, error, destroy-->        closed (closeInstant)
+ *
+ * `closing{settling}` is what the store and the DOM already call closed: the
+ * board is hidden and `canvasView` is off, and only the view transition is
+ * still growing the page back. It reads as closed to everything outside (see
+ * `up`) and as busy to a new request, which is queued until it lands.
+ * `closing{leaving}` exists because `location.assign` does not always unload
+ * the document: the app's `beforeunload` prompt can be cancelled, and a 204 or
+ * a download leaves the page where it is. Without a way out the board stayed
+ * in `closing` for good, and open, close, toggle and Escape all did nothing.
  */
 
 import { registerCommand } from "../core/commands"
@@ -93,7 +118,15 @@ export interface Board {
   destroy(): void
 }
 
-type Phase = "closed" | "opening" | "open" | "closing"
+/** See the lifecycle table in the header. */
+type Phase =
+  | { kind: "closed" }
+  | { kind: "opening" }
+  | { kind: "open" }
+  | { kind: "closing"; reason: "current" | "settling" | "page" | "leaving" }
+
+/** How long a `location.assign` may leave this document in place before the board gives the page back. */
+const LEAVE_TIMEOUT_MS = 4000
 
 const STYLE_ID = "designlayer-board-style"
 /*
@@ -260,8 +293,15 @@ export function installBoard(context: EditorContext): Board {
       : null
   guardBox?.observe(root, { attributes: true, attributeFilter: ["style"] })
 
-  let phase: Phase = "closed"
-  let busy = false
+  let phase: Phase = { kind: "closed" }
+  /** The one writer of `phase`. See the table in the header. */
+  const setPhase = (next: Phase) => {
+    phase = next
+  }
+  const leaving = () => phase.kind === "closing" && phase.reason === "leaving"
+  /** Whether the board is up, as everything outside it sees it: settling is already closed. */
+  const up = () => phase.kind !== "closed" && !(phase.kind === "closing" && phase.reason === "settling")
+  let leaveTimer = 0
   /**
    * The last request made while a transition was running, run when it lands.
    *
@@ -275,8 +315,8 @@ export function installBoard(context: EditorContext): Board {
     const next = queued
     queued = null
     if (!next) return
-    if (next.kind === "open" && phase === "closed") void open()
-    else if (next.kind === "close" && phase === "open") void close(next.target)
+    if (next.kind === "open" && phase.kind === "closed") void open()
+    else if (next.kind === "close" && phase.kind === "open") void close(next.target)
   }
   /** Bumped by every instant close, so an async path can tell it was overtaken. */
   let epoch = 0
@@ -423,8 +463,8 @@ export function installBoard(context: EditorContext): Board {
   const adoptFresh = () => {
     // Mid-open it waits for the open to land; a closing or closed board just
     // keeps the answer for its next open.
-    if (phase !== "open") {
-      freshPending = phase === "opening"
+    if (phase.kind !== "open") {
+      freshPending = phase.kind === "opening"
       return
     }
     freshPending = false
@@ -602,7 +642,7 @@ export function installBoard(context: EditorContext): Board {
     world.style.willChange = ""
     root.dataset.scale = String(Math.round(camera.scale * 1000) / 1000)
     world.style.setProperty("--de-board-inv", String(1 / camera.scale))
-    if (phase === "open" || phase === "opening") scheduleFrames()
+    if (phase.kind === "open" || phase.kind === "opening") scheduleFrames()
   }
 
   /** Input is moving the camera: keep it on one layer and hold the hover UI. */
@@ -657,12 +697,12 @@ export function installBoard(context: EditorContext): Board {
   }
 
   function zoomStep(factor: number): void {
-    if (phase !== "open") return
+    if (phase.kind !== "open") return
     void tweenCamera(zoomAt(tweenTarget ?? camera, factor, center()), STEP_MS)
   }
 
   const zoomTo100 = () => {
-    if (phase !== "open") return
+    if (phase.kind !== "open") return
     const base = tweenTarget ?? camera
     void tweenCamera(zoomAt(base, 1 / base.scale, center()), STEP_MS)
   }
@@ -705,7 +745,8 @@ export function installBoard(context: EditorContext): Board {
 
   /* ── showing and hiding ───────────────────────────────────────────────── */
 
-  const showBoard = (state: Phase) => {
+  /** `data-state` on the board root, which the stylesheet keys on. */
+  const showBoard = (state: Phase["kind"]) => {
     syncRootBox()
     root.dataset.state = state
   }
@@ -867,9 +908,14 @@ export function installBoard(context: EditorContext): Board {
     else root.blur()
   }
 
-  /** Everything the store and the document need to say the board is gone. */
-  const markClosed = () => {
-    phase = "closed"
+  /**
+   * Everything the store and the document need to say the board is gone.
+   * `settling` when a view transition is still growing the page back: the
+   * board is gone for everyone, and a new request waits for the transition.
+   */
+  const markClosed = (next: Phase = { kind: "closed" }) => {
+    setPhase(next)
+    clearTimeout(leaveTimer)
     html.dataset.deView = "live"
     pool.release(IDLE_RELEASE_MS)
     giveFocusBack()
@@ -879,7 +925,6 @@ export function installBoard(context: EditorContext): Board {
   /** Down at once, mid-transition or not: hidden chrome and mode switches. */
   const closeInstant = () => {
     epoch += 1
-    busy = false
     queued = null
     try {
       transition?.skipTransition()
@@ -895,14 +940,16 @@ export function installBoard(context: EditorContext): Board {
   /* ── open ─────────────────────────────────────────────────────────────── */
 
   const open = async (): Promise<void> => {
-    if (busy) {
+    // A refused navigation: give the page back, then open as asked.
+    if (leaving()) closeInstant()
+    if (phase.kind === "closing") {
       // Asked for while the board is still closing — including the last stretch
       // of a closing transition, where the board already reads "closed" but the
       // page is still growing back — so open again once it lands.
-      if (phase === "closing" || phase === "closed") queued = { kind: "open" }
+      queued = { kind: "open" }
       return
     }
-    if (phase !== "closed") return
+    if (phase.kind !== "closed") return
     const state = context.getState()
     if (state.chromeHidden) return
     const stale = staleLauncherMessage(config)
@@ -910,10 +957,9 @@ export function installBoard(context: EditorContext): Board {
       notify(stale)
       return
     }
-    busy = true
     const mine = ++epoch
     try {
-      phase = "opening"
+      setPhase({ kind: "opening" })
       html.dataset.deView = "canvas"
       currentPath = liveRoute()
       rememberVisit(currentPath)
@@ -976,7 +1022,7 @@ export function installBoard(context: EditorContext): Board {
         await tweenCamera(target, BOARD_ENTER_MS)
       }
       if (mine !== epoch) return
-      phase = "open"
+      setPhase({ kind: "open" })
       root.dataset.state = "open"
       settle()
       // Once the open has landed, not during it: the restyle is one more thing
@@ -987,8 +1033,6 @@ export function installBoard(context: EditorContext): Board {
     } catch (error) {
       warn(error)
       if (mine === epoch) closeInstant()
-    } finally {
-      if (mine === epoch) busy = false
     }
     if (mine === epoch) runQueued()
   }
@@ -1010,7 +1054,7 @@ export function installBoard(context: EditorContext): Board {
      */
     const finish = () => {
       hideBoard(!reduced && transition !== null)
-      markClosed()
+      markClosed(transition ? { kind: "closing", reason: "settling" } : { kind: "closed" })
     }
     if (slot && slot.width > 0) {
       if (reduced) injectVt("", "de-vt-fade")
@@ -1038,7 +1082,9 @@ export function installBoard(context: EditorContext): Board {
     if (transition) {
       await transition.finished.catch(warn)
       unveilHost()
-      if (mine === epoch) clearVt()
+      if (mine !== epoch) return
+      clearVt()
+      setPhase({ kind: "closed" })
       return
     }
     if (reduced) {
@@ -1059,9 +1105,19 @@ export function installBoard(context: EditorContext): Board {
     if (rect) await tweenCamera(focusCamera(rect), BOARD_FLY_MS)
     if (mine !== epoch) return
     const strategy = await navigateLive(path, { window: window as unknown as NavigateWindow })
+    if (mine !== epoch) return
     // A full navigation is under way: the frame holds the screen until the new
-    // document paints, and this document is about to be gone.
-    if (strategy === "assign" || mine !== epoch) return
+    // document paints, and this document is about to be gone. If it is still
+    // here after a while the navigation did not happen, and the board gives the
+    // page back rather than staying up with nothing to do.
+    if (strategy === "assign") {
+      setPhase({ kind: "closing", reason: "leaving" })
+      clearTimeout(leaveTimer)
+      leaveTimer = setTimeout(() => {
+        if (mine === epoch && leaving()) closeInstant()
+      }, LEAVE_TIMEOUT_MS) as unknown as number
+      return
+    }
     currentPath = liveRoute()
     unveilHost()
     await fade(root, 1, 0, prefersReducedMotion() ? BOARD_FADE_MS : BOARD_HANDOFF_MS)
@@ -1072,26 +1128,29 @@ export function installBoard(context: EditorContext): Board {
   }
 
   const close = async (targetPath?: string): Promise<void> => {
-    if (busy) {
-      // Asked for while the board is still opening: close once it has landed.
-      if (phase === "opening" || phase === "open") queued = { kind: "close", target: targetPath }
+    if (leaving()) {
+      // The navigation did not take the document away: close means give the page back now.
+      closeInstant()
       return
     }
-    if (phase !== "open") return
-    busy = true
+    if (phase.kind === "opening") {
+      // Asked for while the board is still opening: close once it has landed.
+      queued = { kind: "close", target: targetPath }
+      return
+    }
+    if (phase.kind !== "open") return
     const mine = ++epoch
     try {
-      phase = "closing"
+      const target = targetPath ? normalizeRoute(targetPath) : currentPath
+      const toCurrent = target === currentPath || !rects.has(target)
+      setPhase({ kind: "closing", reason: toCurrent ? "current" : "page" })
       root.dataset.state = "closing"
       settle()
-      const target = targetPath ? normalizeRoute(targetPath) : currentPath
-      if (target === currentPath || !rects.has(target)) await closeToCurrent(mine)
+      if (toCurrent) await closeToCurrent(mine)
       else await closeToPage(target, mine)
     } catch (error) {
       warn(error)
       if (mine === epoch) closeInstant()
-    } finally {
-      if (mine === epoch) busy = false
     }
     if (mine === epoch) runQueued()
   }
@@ -1107,7 +1166,7 @@ export function installBoard(context: EditorContext): Board {
 
   const flushWheel = () => {
     wheelFrame = 0
-    if (phase !== "open") return
+    if (phase.kind !== "open") return
     stopTween()
     if (pendingZoom !== 1) camera = zoomAt(camera, pendingZoom, zoomPoint)
     if (pendingPan.x || pendingPan.y) camera = pan(camera, pendingPan.x, pendingPan.y)
@@ -1117,7 +1176,7 @@ export function installBoard(context: EditorContext): Board {
   }
 
   const onWheel = (event: WheelEvent) => {
-    if (phase !== "open" || !inBoard(event.target)) return
+    if (phase.kind !== "open" || !inBoard(event.target)) return
     event.preventDefault()
     const unit = event.deltaMode === 1 ? LINE_HEIGHT : event.deltaMode === 2 ? boardSize().height : 1
     if (event.ctrlKey || event.metaKey) {
@@ -1136,7 +1195,7 @@ export function installBoard(context: EditorContext): Board {
   let drag: { id: number; x: number; y: number } | null = null
 
   const onPointerDown = (event: PointerEvent) => {
-    if (phase !== "open" || !inBoard(event.target)) return
+    if (phase.kind !== "open" || !inBoard(event.target)) return
     const target = event.target as Element
     if (target.closest(".de-board-zoom, .de-board-live")) return
     if (event.button !== 1 && !(event.button === 0 && spaceHeld)) return
@@ -1154,13 +1213,13 @@ export function installBoard(context: EditorContext): Board {
   }
 
   const onMouseDown = (event: MouseEvent) => {
-    if (phase === "open" && event.button === 1 && inBoard(event.target)) {
+    if (phase.kind === "open" && event.button === 1 && inBoard(event.target)) {
       Event.prototype.preventDefault.call(event)
     }
   }
 
   const onPointerMove = (event: PointerEvent) => {
-    if (phase !== "open") return
+    if (phase.kind !== "open") return
     if (drag && event.pointerId === drag.id) {
       camera = pan(camera, event.clientX - drag.x, event.clientY - drag.y)
       drag.x = event.clientX
@@ -1189,7 +1248,7 @@ export function installBoard(context: EditorContext): Board {
   }
 
   const onDoubleClick = (event: MouseEvent) => {
-    if (phase !== "open" || !inBoard(event.target)) return
+    if (phase.kind !== "open" || !inBoard(event.target)) return
     if ((event.target as Element).closest(".de-board-zoom, .de-board-live")) return
     const path = frameAt(localPoint(event))
     if (path) void close(path)
@@ -1223,7 +1282,7 @@ export function installBoard(context: EditorContext): Board {
   }
 
   const onKeyDown = (event: KeyboardEvent) => {
-    if (phase === "closed") return
+    if (!up()) return
     /*
      * Escape is taken in EVERY phase the board is up, not only once it is open.
      *
@@ -1236,11 +1295,11 @@ export function installBoard(context: EditorContext): Board {
     if (event.key === "Escape") {
       if (!keyIsOurs(event, OWNS_ESCAPE)) return
       consume(event)
-      if (phase === "open") void close()
-      else if (phase === "opening") queued = { kind: "close" }
+      if (phase.kind === "open" || leaving()) void close()
+      else if (phase.kind === "opening") queued = { kind: "close" }
       return
     }
-    if (phase !== "open" || !keyIsOurs(event)) return
+    if (phase.kind !== "open" || !keyIsOurs(event)) return
     const plain = !event.metaKey && !event.ctrlKey && !event.altKey
     if (event.key === " " || event.code === "Space") {
       // A focused Live button activates on Space; everywhere else it is the pan key.
@@ -1326,10 +1385,10 @@ export function installBoard(context: EditorContext): Board {
    * ways out: Escape, a frame's Live button, or ⌘. and the toolbar.
    */
   const unsubscribe = context.subscribe((next, previous) => {
-    if (phase === "closed") return
+    if (!up()) return
     const modeChanged = next.interactive !== previous.interactive || next.annotating !== previous.annotating
     // Somebody else took the view down (a reset, a test): follow at once.
-    const dropped = !next.canvasView && previous.canvasView && phase === "open"
+    const dropped = !next.canvasView && previous.canvasView && phase.kind === "open"
     if (modeChanged || dropped) closeInstant()
   })
 
@@ -1347,11 +1406,11 @@ export function installBoard(context: EditorContext): Board {
   let relayoutTimer = 0
   const RELAYOUT_MS = 160
   const relayout = () => {
-    if (phase === "opening" || phase === "closing") {
+    if (phase.kind === "opening" || phase.kind === "closing") {
       relayoutTimer = setTimeout(relayout, RELAYOUT_MS) as unknown as number
       return
     }
-    if (phase !== "open") return
+    if (phase.kind !== "open") return
     syncRootBox()
     const size = measureCanvas()
     if (Math.abs(size.width - frameSize.width) < 1 && Math.abs(size.height - frameSize.height) < 1) return
@@ -1361,31 +1420,32 @@ export function installBoard(context: EditorContext): Board {
   const unsubscribeInsets = onInsetsChange(() => {
     const before = insets.left
     syncRootBox()
-    if (phase === "closed") return
+    if (!up()) return
     camera = { ...camera, x: camera.x + (before - insets.left) }
     applyCamera()
     clearTimeout(relayoutTimer)
     relayoutTimer = setTimeout(relayout, RELAYOUT_MS) as unknown as number
   })
   const onResize = () => {
-    if (phase === "closed") return
+    if (!up()) return
     clearTimeout(relayoutTimer)
     relayoutTimer = setTimeout(relayout, RELAYOUT_MS) as unknown as number
   }
   window.addEventListener("resize", onResize)
 
   const board: Board = {
-    isOpen: () => phase !== "closed",
+    isOpen: up,
     open: () => open().catch(warn),
     close: (targetPath) => close(targetPath).catch(warn),
     // Mid-closing a toggle means "open again", mid-opening it means "close".
-    toggle: () => (phase === "closed" || phase === "closing" ? open() : close()).catch(warn),
+    // A board left up by a refused navigation is up, so a toggle closes it.
+    toggle: () => (phase.kind === "closed" || (phase.kind === "closing" && !leaving()) ? open() : close()).catch(warn),
     fit() {
-      if (phase !== "open") return
+      if (phase.kind !== "open") return
       void tweenCamera(fitTarget(), FIT_MS)
     },
     prewarm() {
-      if (phase !== "closed") return
+      if (up()) return
       try {
         currentPath = liveRoute()
         liveScroll = { x: window.scrollX, y: window.scrollY }
@@ -1424,7 +1484,7 @@ export function installBoard(context: EditorContext): Board {
 
   const disposers = [
     registerCommand("view.canvas", () => {
-      if (phase === "closed" || phase === "closing") void board.open()
+      if (phase.kind === "closed" || phase.kind === "closing") void board.open()
       else board.fit()
     }),
     registerCommand("view.canvas.toggle", () => void board.toggle()),

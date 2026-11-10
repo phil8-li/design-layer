@@ -875,6 +875,54 @@ await check("release blanks every frame after the grace, unless the board schedu
   pool.destroy()
 })
 
+// A closed board stops its queue at once: the load in flight finishes, and no
+// frame after it starts during the grace.
+await check("release stops the load queue at once", () => {
+  const container = window.document.createElement("div")
+  const pool = frames.createFramePool()
+  for (const path of ["/a", "/b", "/c", "/d"]) container.append(pool.ensure({ path }).element)
+  pool.schedule(["/a", "/b", "/c", "/d"])
+  assert.equal(pool.get("/a").status, "loading")
+  pool.release(30000)
+  while (loadPending(container)) {}
+  assert.equal(pool.get("/a").status, "loaded", "the load in flight was thrown away")
+  for (const path of ["/b", "/c", "/d"]) {
+    assert.equal(pool.get(path).status, "idle", `${path} started loading on a closed board`)
+    assert.equal(pool.get(path).iframe.getAttribute("src"), null)
+  }
+  pool.schedule(["/a", "/b"])
+  assert.equal(pool.get("/b").status, "loading", "a reopen does not start the queue again")
+  pool.destroy()
+})
+
+// A page that never fires load is not a loaded page: it shows its placeholder,
+// does not count against the budget, and the queue moves on.
+await check("a frame that never loads is failed, not loaded", async () => {
+  const container = window.document.createElement("div")
+  const loadedOrder = []
+  const pool = frames.createFramePool({ loadTimeoutMs: 20, onLoad: (view) => loadedOrder.push(view.path) })
+  for (const path of ["/hang", "/next"]) container.append(pool.ensure({ path }).element)
+  pool.schedule(["/hang", "/next"])
+  await sleep(40)
+  const hung = pool.get("/hang")
+  assert.equal(hung.status, "failed")
+  assert.equal(hung.element.hasAttribute("data-loaded"), false, "the placeholder is hidden over an empty frame")
+  assert.match(hung.element.textContent, /Did not load/)
+  assert.equal(hung.iframe.getAttribute("src"), "about:blank", "the hung page is still running")
+  assert.equal(pool.loadedCount(), 0, "a failed frame counts as a loaded document")
+  assert.equal(pool.get("/next").status, "loading", "the queue stopped behind the failed frame")
+  loadPending(container)
+  assert.deepEqual(loadedOrder, ["/next"])
+  pool.schedule(["/hang", "/next"])
+  assert.equal(hung.status, "failed", "a failed frame is retried while the board stays open")
+  // The next opening tries again.
+  pool.release(10)
+  await sleep(30)
+  assert.equal(hung.status, "idle")
+  assert.match(hung.element.textContent, /Loading…/)
+  pool.destroy()
+})
+
 // A load that has only just been asked for, and has no document yet, is taken
 // back for a view transition to capture past it; an older one keeps going.
 await check("holdFresh takes back only a load younger than its limit", async () => {
@@ -1477,6 +1525,48 @@ await check("closing to another page flies to it, routes the live page, then fad
   assert.equal(editor.getState().canvasView, false)
   delete window.next
   window.history.pushState({}, "", "/")
+})
+
+/*
+ * No router and nothing hears popstate, so Live falls to location.assign —
+ * which, like a cancelled beforeunload prompt, a 204 or a download, leaves
+ * this document in place. The board used to stay in "closing" for good, and
+ * open, close, toggle and Escape all did nothing.
+ */
+const untilState = async (state, ms) => {
+  for (let waited = 0; waited < ms && root.dataset.state !== state; waited += 50) await sleep(50)
+}
+await check("a Live that falls to location.assign and stays gives the page back", async () => {
+  try {
+    await board.open()
+    $('button.de-board-live[data-path="/settings"]').click()
+    await sleep(2200)
+    assert.equal(root.dataset.state, "closing", "the board did not wait for the navigation")
+    assert.equal(board.isOpen(), true)
+    // Escape while it waits gives the page back at once.
+    const escape = new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+    window.document.body.dispatchEvent(escape)
+    assert.equal(escape.defaultPrevented, true, "Escape fell through while the board was still up")
+    assert.equal(root.dataset.state, "closed", "Escape did nothing while the board waited")
+    assert.equal(editor.getState().canvasView, false)
+
+    // And with no input, it gives the page back after a while by itself.
+    window.history.pushState({}, "", "/")
+    await board.open()
+    assert.equal(root.dataset.state, "open", "the board did not open again")
+    $('button.de-board-live[data-path="/settings"]').click()
+    await sleep(2200)
+    assert.equal(root.dataset.state, "closing")
+    await untilState("closed", 5000)
+    assert.equal(root.dataset.state, "closed", "the board stayed up after a navigation that never happened")
+    assert.equal(editor.getState().canvasView, false)
+    await board.toggle()
+    assert.equal(root.dataset.state, "open", "toggle did nothing after the refused navigation")
+    await board.close()
+    await untilState("closed", 1000)
+  } finally {
+    window.history.pushState({}, "", "/")
+  }
 })
 
 await check("12 routes through the board: never more than 8 frames alive", async () => {
