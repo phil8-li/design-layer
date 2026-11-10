@@ -23,13 +23,27 @@
  * the pointer puts the editor back into inspecting — the release then leaves it
  * alone rather than yanking the mode out from under the person who just chose
  * it. A companion that finds itself ignored re-claims the next time it arms,
- * which is the same gesture that claimed it the first time.
+ * which is the same gesture that claimed it the first time: claiming a name it
+ * already holds puts the editor back into `interactive`.
+ *
+ * Every mode write here is the store's PURE `setMode`. A companion is not a
+ * person choosing a mode, so it never opens or retabs the inspector the way
+ * the toolbar's buttons do (`EditorContext.chooseMode`); a release that threw
+ * open a panel the person had closed would be the surprise this API exists to
+ * prevent.
+ *
+ *   unclaimed          --claim(n)-->            claimed(restoreTo = mode)
+ *   claimed            --claim(other)-->        claimed
+ *   claimed            --person picks a mode--> claimed, overridden
+ *   claimed, overridden --claim(held n)-->      claimed (interactive again)
+ *   claimed            --release(last)-->       unclaimed, mode restored
+ *   claimed, overridden --release(last)-->      unclaimed, mode left alone
  */
 
 import type { EditorContext } from "./context"
-import { editorMode, type EditorMode } from "./store"
+import { editorMode, setMode, type EditorMode } from "./store"
 
-export interface CompanionApi {
+interface CompanionApi {
   /** Bumped when an existing member changes shape. Companions may check it. */
   version: 1
   mode(): EditorMode
@@ -73,20 +87,20 @@ export function installCompanionApi(context: EditorContext): void {
     // the mode on screen is this editor's own doing and putting it back is a
     // correction rather than a surprise.
     if (previous && previous !== "interactive" && editorMode() === "interactive") {
-      context.setMode(previous)
+      setMode(previous)
     }
   }
 
   window.__DESIGNLAYER__ = {
     version: 1,
     mode: () => editorMode(),
-    setMode: (mode) => context.setMode(mode),
+    setMode,
     claimPointer(name) {
       if (!claims.has(name)) {
         if (claims.size === 0) restoreTo = editorMode()
         claims.add(name)
-        if (editorMode() !== "interactive") context.setMode("interactive")
       }
+      if (editorMode() !== "interactive") setMode("interactive")
       return () => release(name)
     },
     onModeChange(listener) {

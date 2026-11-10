@@ -13,7 +13,7 @@
  * script opened.
  */
 
-import { config } from "../core/config"
+import { config, readLoopbackOrigin } from "../core/config"
 
 /**
  * What the desk names each tab's frame, followed by the tab's id.
@@ -61,7 +61,7 @@ export const DESK_SHOWING_MESSAGE = "designlayer-desk:showing"
  * unapplied edits it holds stay. desktop/mac/shell-page.mjs spells the same
  * string.
  */
-export const DESK_GO_MESSAGE = "designlayer-desk:go"
+const DESK_GO_MESSAGE = "designlayer-desk:go"
 
 /**
  * The origins the desk can be on: the one the prelude names, and the same port
@@ -82,6 +82,20 @@ function deskOrigins(): string[] {
   } catch {
     return [desk]
   }
+}
+
+/**
+ * Whether a message from `origin` may speak for the desk.
+ *
+ * The configured desk origins when the prelude names a desk, the same rule
+ * `deskOrigin` applies to messages going the other way. With no desk named
+ * (an editor process started without the Mac app's plist) any loopback page
+ * still qualifies, as before: the only thing the desk ever sends here is the
+ * way-back key, and ⌘. has to keep working from the Mac app's tab strip.
+ */
+export function isDeskOrigin(origin: string): boolean {
+  const desks = deskOrigins()
+  return desks.length ? desks.includes(origin) : readLoopbackOrigin(origin) !== null
 }
 
 /**
@@ -137,7 +151,7 @@ export function isInDesk(win: Window = window): boolean {
   return deskOrigin(win) !== null
 }
 
-export type DeskAnswer =
+type DeskAnswer =
   /** `delivered` is how many app windows took the page: 0 while the app is still starting. */
   | { ok: true; delivered: number }
   /** `refused` carries the desk's own sentence; `unreachable` means nothing answered. */

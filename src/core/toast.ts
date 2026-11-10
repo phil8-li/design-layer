@@ -50,7 +50,7 @@
  *   - an error, or a change that did not fully land ("preview only");
  *   - a handoff: notes or change prompts copied, or sent to the agent;
  *   - something copied to the clipboard, which has no visible trace;
- *   - a write to source or to disk (Apply to code, a lint fix, a saved default);
+ *   - a write to source or to disk (a lint fix, a saved default);
  *   - a destructive step that offers Undo (deleting notes);
  *   - a system change: switching apps, adding a library, signing in.
  *
@@ -61,9 +61,32 @@
  *
  * `tools/toast-gallery.mjs` renders every toast the editor raises, and the
  * silent events, on one page for review.
+ *
+ * ---------------------------------------------------------------------------
+ * THE TOASTER'S LIFECYCLE
+ *
+ * One `Toaster` value, read through `toasterPhase()` and moved only by
+ * `transition()`:
+ *
+ *   idle    --install-->                         loading (host mounted, import started)
+ *   loading --imported-->                        loading (rendered; Sonner not subscribed yet)
+ *   loading --subscribed-->                      ready   (the queue drains, in order)
+ *   loading --import failed, retries left-->     loading (re-import after RETRY_DELAY_MS)
+ *   loading --import failed, no retries left-->  failed  (the queue shows as fallback cards)
+ *   *       --destroy-->                         idle
+ *
+ * A message raised while `loading` waits in that phase's queue; in `ready` it
+ * goes to Sonner; in `failed` it is drawn as a plain DOM card, so an error is
+ * never silent just because the React half could not load.
+ *
+ * `imported`, `subscribed` and `import failed` each name the mount (its
+ * `generation`) they were raised for. One that arrives for a mount that has
+ * since been destroyed, or destroyed and installed again, is ignored: a
+ * ReadyGate effect from a root that is still unmounting must not mark the new
+ * one ready before its own Sonner is listening.
  */
 
-import { toasterCss } from "./css/toast"
+import { TOAST_FALLBACK_ATTR, TOAST_FALLBACK_CARD_ATTR, toasterCss } from "./css/toast"
 import { CHROME_ATTR } from "./dom"
 
 type View = typeof import("./toaster-view")
@@ -91,6 +114,8 @@ export interface ToastAction {
 const HOST_ID = "designlayer-toaster"
 
 /**
+ * How long a card stays, by what it is.
+ *
  * Four seconds for news. A failure waits to be dismissed.
  *
  * The vendor used two seconds for everything, which is too short for the
@@ -107,22 +132,31 @@ const HOST_ID = "designlayer-toaster"
  * wrong by nothing at all — while the preview still shows the change that did
  * not get written.
  *
- * So an error stays, and `closeButton` below turns on to give it a way out. The
- * standing rule `css/lint.ts` documents — that anything needing to outlive the
- * glance belongs on a surface rather than in a toast — is still the right rule,
- * and the 52 states that break it are a backlog rather than a reason to keep
- * discarding them silently in the meantime.
+ * So an error stays, and `closeButton` in `toaster-view.ts` turns on to give it
+ * a way out. The standing rule `css/lint.ts` documents — that anything needing
+ * to outlive the glance belongs on a surface rather than in a toast — is still
+ * the right rule, and the 52 states that break it are a backlog rather than a
+ * reason to keep discarding them silently in the meantime.
+ *
+ * AN ACTION ON AN INFO CARD LENGTHENS IT, and only that card (`infoAction`).
+ * Four seconds is the right length for a sentence you read and forget, and the
+ * wrong length for a button: about as long as it takes to notice a row has
+ * gone, decide it should not have, and move the pointer — so an undo that
+ * expired on the reading rung would be an offer withdrawn just as it was being
+ * accepted. Eight, not `Infinity`: an undo is not an error, it has a natural
+ * end, and a card that sat there until dismissed would make every delete cost
+ * two clicks after all. An ERROR with an action keeps the error rung — it
+ * stays until dismissed, with or without a button on it.
+ *
+ * `sticky` is for a notice about a state that lasts as long as it lasts — the
+ * boot wait — and is taken back with `retract` when that state ends.
  */
-const DURATION: Record<ToastKind, number> = { info: 4000, error: Number.POSITIVE_INFINITY }
-
-interface Mounted {
-  host: HTMLElement
-  shadow: ShadowRoot
-  mountPoint: HTMLElement
-  /** Set once `toaster-view` has loaded and rendered into `mountPoint`. */
-  unmount: (() => void) | null
-  loading: boolean
-}
+const DURATION = {
+  info: 4000,
+  infoAction: 8000,
+  error: Number.POSITIVE_INFINITY,
+  sticky: Number.POSITIVE_INFINITY,
+} as const
 
 /**
  * What a card says: a short title, and optionally a body under it.
@@ -134,13 +168,16 @@ interface Mounted {
  *
  * `id` names a card so it can be taken back with `retract` — for a notice
  * about a state that may end before the card would, like the boot wait.
+ * `sticky` keeps an info card up until it is retracted or closed, for the
+ * same kind of notice when the state can outlast the four-second rung.
  */
-export type ToastMessage = string | { title: string; description?: string; id?: string }
+export type ToastMessage = string | { title: string; description?: string; id?: string; sticky?: boolean }
 
 export interface ToastContent {
   title: string
   description?: string
   id?: string
+  sticky?: boolean
 }
 
 /**
@@ -164,6 +201,7 @@ export function splitToast(message: ToastMessage): ToastContent {
       title,
       ...(description ? { description } : {}),
       ...(message.id ? { id: message.id } : {}),
+      ...(message.sticky ? { sticky: true } : {}),
     }
   }
   const text = message.trim()
@@ -177,45 +215,78 @@ export function splitToast(message: ToastMessage): ToastContent {
   return { title, description }
 }
 
-let mounted: Mounted | null = null
-/** The React half, once loaded. Its Toaster may still be subscribing. */
-let view: View | null = null
-let ready = false
-/** Raised before the Toaster's subscription exists. Drained once, in order. */
-const pending: Array<[ToastContent, ToastKind, ToastAction | undefined]> = []
-
-function emit(sonner: View["sonner"], content: ToastContent, kind: ToastKind, action?: ToastAction): void {
+/** One card's worth: what it says, its kind, and its button if it has one. */
+interface Toast {
+  content: ToastContent
+  kind: ToastKind
   /*
-   * An action on an INFO card lengthens it, and only that card.
-   *
-   * `DURATION.info` is four seconds, which is the right length for a sentence
-   * you read and forget. It is the wrong length for a button: four seconds is
-   * about as long as it takes to notice a row has gone, decide it should not
-   * have, and move the pointer — so an undo that expires on the reading rung
-   * would be an offer withdrawn just as it was being accepted.
-   *
-   * Eight, not `Infinity`. An undo is not an error: it has a natural end,
-   * because the moment passes and the reader moves on, and a card that sat
-   * there until dismissed would make every delete cost two clicks after all —
-   * which is exactly what keeping the row's single click was for.
+   * An action survives the queue, and it has to. Dropping it on the way
+   * through would be the worst possible failure mode: the card still appears,
+   * still says what happened, and silently is not offering the way back —
+   * which reads as an undo that was pressed and did nothing rather than as one
+   * that was never there.
    */
-  const options = {
-    description: content.description,
-    ...(content.id ? { id: content.id } : {}),
-    ...(action ? { duration: 8000, action: { label: action.label, onClick: action.onClick } } : {}),
-  }
-  // An error is the typed call, because the type is what selects the glyph.
-  // News is the UNTYPED call, which has no glyph at all: an icon on every card
-  // made the rare one that matters look like the rest. So the only card with
-  // an icon, and the only colour in the toaster, is a failure (`css/toast.ts`).
-  if (kind === "error") sonner.error(content.title, { duration: DURATION.error, ...options })
-  else sonner(content.title, { duration: DURATION.info, ...options })
+  action?: ToastAction
 }
 
-/** Called by `toaster-view`'s ReadyGate once Sonner's subscription exists. */
-function onReady(): void {
-  ready = true
-  for (const [content, kind, action] of pending.splice(0)) emit(view!.sonner, content, kind, action)
+/** The shadow-root host every phase past `idle` owns. */
+interface Mount {
+  host: HTMLElement
+  mountPoint: HTMLElement
+  /** Which install this is; events raised for an earlier one are stale. */
+  generation: number
+}
+
+/** The lifecycle in the header, one variant per phase, each with what it owns. */
+type Toaster =
+  | { phase: "idle" }
+  | {
+      phase: "loading"
+      mount: Mount
+      /** Imports that have failed on this mount; the one in flight is number `attempts`. */
+      attempts: number
+      /** Raised before Sonner's subscription exists. Drained once, in order. */
+      queue: Toast[]
+      /** The React half, once loaded and rendered. Its Toaster may still be subscribing. */
+      rendered: { view: View; unmount: () => void } | null
+    }
+  | { phase: "ready"; mount: Mount; view: View; unmount: () => void }
+  | { phase: "failed"; mount: Mount; attempts: number; error: unknown; list: HTMLElement }
+
+export type ToasterPhase = Toaster["phase"]
+
+type ToasterEvent =
+  | { type: "install" }
+  | { type: "imported"; generation: number; view: View }
+  | { type: "subscribed"; generation: number }
+  | { type: "importFailed"; generation: number; error: unknown }
+  | { type: "destroy" }
+
+let toaster: Toaster = { phase: "idle" }
+let installs = 0
+
+/** Where the lifecycle is. For suites and tools; nothing in the editor branches on it. */
+export function toasterPhase(): ToasterPhase {
+  return toaster.phase
+}
+
+/**
+ * Re-imports after a failed one, then gives up: two retries, at these delays.
+ *
+ * A failed module fetch is cached by the browser for that URL, so a retry asks
+ * for the same module under a new query (`retry=N`), which the launcher's
+ * route ignores. Two, because the failures worth retrying are short — the
+ * launcher rebuilding or replacing `dist/toaster.js` while a tab boots — and
+ * each retry holds the queue back, errors included: two retries spread over
+ * about two and a half seconds outlast a rebuild without leaving a failure
+ * unseen for long. A failure that outlasts both will outlast more, and the
+ * fallback card takes over from there.
+ */
+const RETRY_DELAY_MS = [500, 2000] as const
+
+function retryUrl(url: string, attempt: number): string {
+  if (attempt === 0) return url
+  return `${url}${url.includes("?") ? "&" : "?"}retry=${attempt}`
 }
 
 declare global {
@@ -226,49 +297,24 @@ declare global {
 }
 
 /**
- * Loads and renders the React half into the mounted shadow root. Idempotent.
+ * Imports the React half for one mount, and reports back as an event.
  *
  * The launcher serves it as a module of its own beside the overlay, and the
  * overlay names its URL, so React and Sonner are not even parsed until the
  * first message (see `build.mjs`). A bundle run without the launcher — the
  * suites bundle `src/` themselves — has no URL and compiles the view in
- * through the plain `import()`.
+ * through the plain `import()`, where a retry simply calls it again.
  */
-function load(): void {
-  const target = mounted
-  if (!target || target.loading) return
-  target.loading = true
+function startImport(generation: number, attempt: number): void {
   const url = window.__DESIGNLAYER_TOASTER__
-  const loading: Promise<View> = url ? import(url) : import("./toaster-view")
+  const loading: Promise<View> = url ? import(retryUrl(url, attempt)) : import("./toaster-view")
   loading.then(
-    (loaded) => {
-      // Destroyed (or destroyed and re-installed) while loading: the shadow root
-      // this was meant for is gone, and the new one schedules its own load.
-      if (mounted !== target) return
-      view = loaded
-      target.unmount = loaded.mountToaster(target.mountPoint, onReady)
-    },
-    (error) => {
-      // Messages stay queued: a later one retries the load.
-      if (mounted === target) target.loading = false
-      console.warn("[designlayer] toaster failed to load", error)
-    }
+    (view) => transition({ type: "imported", generation, view }),
+    (error) => transition({ type: "importFailed", generation, error })
   )
 }
 
-/**
- * Mounts the toaster. Idempotent, and cheap enough to call from `notify`.
- *
- * Called from `notify`, so a toast raised before anything else has mounted is
- * queued rather than lost.
- *
- * Only the cheap half runs here: the host, its shadow root and stylesheet. The
- * React half loads at idle after the first input (`prepareToasterOnFirstInput`)
- * or with the first message, whichever is first — never on the boot path.
- */
-export function installToaster(): () => void {
-  if (mounted) return destroy
-
+function createMount(generation: number): Mount {
   const host = document.createElement("div")
   host.id = HOST_ID
   // The chrome marker, and it is load-bearing rather than decorative: the
@@ -283,8 +329,194 @@ export function installToaster(): () => void {
   const mountPoint = document.createElement("div")
   shadow.append(style, mountPoint)
   document.body.append(host)
+  return { host, mountPoint, generation }
+}
 
-  mounted = { host, shadow, mountPoint, unmount: null, loading: false }
+/** The one place the lifecycle moves. See the table in the header. */
+function transition(event: ToasterEvent): void {
+  const current = toaster
+
+  if (event.type === "destroy") {
+    if (current.phase === "idle") return
+    toaster = { phase: "idle" }
+    if (current.phase === "ready") current.unmount()
+    if (current.phase === "loading") current.rendered?.unmount()
+    current.mount.host.remove()
+    return
+  }
+
+  if (event.type === "install") {
+    if (current.phase !== "idle") return
+    installs += 1
+    toaster = { phase: "loading", mount: createMount(installs), attempts: 0, queue: [], rendered: null }
+    startImport(installs, 0)
+    return
+  }
+
+  // The rest answer an import or a render begun for one mount; drop them
+  // when that mount is no longer the current one.
+  if (current.phase !== "loading" || current.mount.generation !== event.generation) return
+  const { generation } = current.mount
+
+  switch (event.type) {
+    case "imported": {
+      if (current.rendered) return
+      // In the state before `mountToaster` runs, so a ReadyGate that fired
+      // synchronously would still find it; `unmount` is filled in after.
+      const rendered = { view: event.view, unmount: () => {} }
+      toaster = { ...current, rendered }
+      rendered.unmount = event.view.mountToaster(current.mount.mountPoint, () =>
+        transition({ type: "subscribed", generation })
+      )
+      return
+    }
+    case "subscribed": {
+      if (!current.rendered) return
+      const { view, unmount } = current.rendered
+      toaster = { phase: "ready", mount: current.mount, view, unmount }
+      for (const toast of current.queue) emit(view.sonner, toast)
+      return
+    }
+    case "importFailed": {
+      const attempts = current.attempts + 1
+      console.warn(`[designlayer] toaster failed to load (attempt ${attempts})`, event.error)
+      const delay = RETRY_DELAY_MS[attempts - 1]
+      if (delay !== undefined) {
+        toaster = { ...current, attempts }
+        window.setTimeout(() => {
+          if (toaster.phase === "loading" && toaster.mount.generation === generation) startImport(generation, attempts)
+        }, delay)
+        return
+      }
+      const list = createFallbackList(current.mount)
+      toaster = { phase: "failed", mount: current.mount, attempts, error: event.error, list }
+      for (const toast of current.queue) showFallback(list, toast)
+      return
+    }
+  }
+}
+
+function durationOf({ content, kind, action }: Toast): number {
+  if (kind === "error") return DURATION.error
+  if (content.sticky) return DURATION.sticky
+  return action ? DURATION.infoAction : DURATION.info
+}
+
+function emit(sonner: View["sonner"], toast: Toast): void {
+  const { content, kind, action } = toast
+  const options = {
+    duration: durationOf(toast),
+    description: content.description,
+    ...(content.id ? { id: content.id } : {}),
+    ...(action ? { action: { label: action.label, onClick: action.onClick } } : {}),
+  }
+  // An error is the typed call, because the type is what selects the glyph.
+  // News is the UNTYPED call, which has no glyph at all: an icon on every card
+  // made the rare one that matters look like the rest. So the only card with
+  // an icon, and the only colour in the toaster, is a failure (`css/toast.ts`).
+  if (kind === "error") sonner.error(content.title, options)
+  else sonner(content.title, options)
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * The fallback card, for a session whose React half never loaded
+ *
+ * Plain DOM in the same shadow root, styled by `css/toast.ts` to read like the
+ * Sonner card: same surface, corner, cast, type, glyph and close button, same
+ * corner of the screen. What it does not have is Sonner's motion, swipe and
+ * stack: it is the floor under an error, not a second toaster. Durations are
+ * the same table, so news still leaves by itself and an error still waits.
+ * ---------------------------------------------------------------------------
+ */
+
+/** Sonner's own error glyph and close cross (sonner@2, MIT), so the two cards match. */
+const ERROR_GLYPH =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" height="20" width="20" aria-hidden="true"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0v-4.5A.75.75 0 0110 5zm0 10a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/></svg>'
+const CLOSE_GLYPH =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>'
+
+function createFallbackList(mount: Mount): HTMLElement {
+  const section = document.createElement("section")
+  section.setAttribute(TOAST_FALLBACK_ATTR, "")
+  // Sonner's own region semantics, minus its hotkey.
+  section.setAttribute("aria-label", "Notifications")
+  section.setAttribute("aria-live", "polite")
+  const list = document.createElement("ol")
+  section.append(list)
+  mount.mountPoint.append(section)
+  return list
+}
+
+function showFallback(list: HTMLElement, toast: Toast): void {
+  const { content, kind, action } = toast
+  const card = document.createElement("li")
+  card.setAttribute(TOAST_FALLBACK_CARD_ATTR, "")
+  card.dataset.type = kind
+  if (content.id) {
+    // Sonner replaces a card raised again under the same id; so does this.
+    for (const other of [...list.children]) if ((other as HTMLElement).dataset.id === content.id) other.remove()
+    card.dataset.id = content.id
+  }
+  const remove = () => card.remove()
+
+  if (kind === "error") {
+    const icon = document.createElement("div")
+    icon.setAttribute("data-icon", "")
+    icon.innerHTML = ERROR_GLYPH
+    card.append(icon)
+  }
+  const title = document.createElement("div")
+  title.setAttribute("data-title", "")
+  title.textContent = content.title
+  card.append(title)
+  if (content.description) {
+    const description = document.createElement("div")
+    description.setAttribute("data-description", "")
+    description.textContent = content.description
+    card.append(description)
+  }
+  if (action) {
+    const button = document.createElement("button")
+    button.type = "button"
+    button.setAttribute("data-button", "")
+    button.textContent = action.label
+    button.addEventListener("click", () => {
+      action.onClick()
+      remove()
+    })
+    card.append(button)
+  }
+  const close = document.createElement("button")
+  close.type = "button"
+  close.setAttribute("data-close-button", "")
+  close.setAttribute("aria-label", "Close toast")
+  close.innerHTML = CLOSE_GLYPH
+  close.addEventListener("click", remove)
+  card.append(close)
+
+  list.append(card)
+  const duration = durationOf(toast)
+  if (Number.isFinite(duration)) window.setTimeout(remove, duration)
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * The entry points
+ * ---------------------------------------------------------------------------
+ */
+
+/**
+ * Mounts the toaster and starts loading its React half. Idempotent, and cheap
+ * enough to call from `notify`.
+ *
+ * The host, its shadow root and stylesheet are created at once; React and
+ * Sonner arrive with the import. Only two callers reach it — the first message
+ * (`notify`) and the prewarm at idle after the first input
+ * (`prepareToasterOnFirstInput`) — so it never runs on the boot path.
+ */
+export function installToaster(): () => void {
+  transition({ type: "install" })
   return destroy
 }
 
@@ -292,7 +524,7 @@ export function installToaster(): () => void {
  * Loads the React half ahead of the first message, once one is likely.
  *
  * The first card used to wait for React to load at all — measured ~27ms from
- * an Apply click to the card, against ~1ms for every card after it. A toast
+ * a click to its card, against ~1ms for every card after it. A toast
  * answers something the user did, so the first input is the earliest moment
  * one becomes likely. The load then waits for the user to pause — 300ms
  * with no pointer or key — and for an idle callback after that, so its
@@ -310,7 +542,6 @@ export function prepareToasterOnFirstInput(): void {
   const run = () => {
     for (const type of activity) window.removeEventListener(type, rearm, true)
     installToaster()
-    load()
   }
   const idle = () => {
     // Safari has no idle callback; the pause is the promise there.
@@ -330,14 +561,7 @@ export function prepareToasterOnFirstInput(): void {
 }
 
 function destroy(): void {
-  if (!mounted) return
-  const { host, unmount } = mounted
-  mounted = null
-  view = null
-  ready = false
-  pending.length = 0
-  unmount?.()
-  host.remove()
+  transition({ type: "destroy" })
 }
 
 /**
@@ -347,21 +571,18 @@ export function notify(message: ToastMessage, kind: ToastKind = "info", action?:
   const content = splitToast(message)
   if (!content.title) return
   installToaster()
-  if (ready && view) {
-    emit(view.sonner, content, kind, action)
-    return
+  const toast: Toast = { content, kind, action }
+  switch (toaster.phase) {
+    case "ready":
+      emit(toaster.view.sonner, toast)
+      return
+    case "failed":
+      showFallback(toaster.list, toast)
+      return
+    case "loading":
+      toaster.queue.push(toast)
+      return
   }
-  /*
-   * An action survives the queue, and it has to.
-   *
-   * A toast raised before Sonner's subscription exists is held here and drained
-   * once it does. Dropping the action on the way through would be the worst
-   * possible failure mode: the card still appears, still says what happened,
-   * and silently is not offering the way back — which reads as an undo that was
-   * pressed and did nothing rather than as one that was never there.
-   */
-  pending.push([content, kind, action])
-  load()
 }
 
 /**
@@ -372,10 +593,19 @@ export function notify(message: ToastMessage, kind: ToastKind = "info", action?:
  * has given up) a card still saying it is waiting is wrong.
  */
 export function retract(id: string): void {
-  for (let i = pending.length - 1; i >= 0; i -= 1) {
-    if (pending[i][0].id === id) pending.splice(i, 1)
+  switch (toaster.phase) {
+    case "loading": {
+      const { queue } = toaster
+      for (let i = queue.length - 1; i >= 0; i -= 1) if (queue[i].content.id === id) queue.splice(i, 1)
+      return
+    }
+    case "ready":
+      toaster.view.sonner.dismiss(id)
+      return
+    case "failed":
+      for (const card of [...toaster.list.children]) if ((card as HTMLElement).dataset.id === id) card.remove()
+      return
   }
-  if (ready && view) view.sonner.dismiss(id)
 }
 
 /*

@@ -9,7 +9,7 @@
 
 import { isAngularHost, owningComponentName, resolveAngularSource } from "./angular"
 import type { ClassUpdate } from "./tailwind"
-import { notify, type ToastAction, type ToastMessage } from "./toast"
+import { notify, type ToastAction, type ToastKind, type ToastMessage } from "./toast"
 import type { SourceRef } from "./types"
 
 /**
@@ -134,7 +134,7 @@ export interface RewriteBridge {
    * it anywhere else would mean a second path to the toaster, which is exactly
    * what the wrapper exists to prevent.
    */
-  toast(message: ToastMessage, kind?: "info" | "error", action?: ToastAction): void
+  toast(message: ToastMessage, kind?: ToastKind, action?: ToastAction): void
   root(): HTMLElement | null
   store: RewriteStore
 }
@@ -142,7 +142,6 @@ export interface RewriteBridge {
 declare global {
   interface Window {
     __DESIGNLAYER_BRIDGE__?: RewriteBridge
-    __DESIGNLAYER_WS_PORT__?: number
     /** The patched vendor's deferred boot; see `whenBridgeReady`. */
     __DESIGNLAYER_VENDOR_BOOT__?: () => void
   }
@@ -199,14 +198,15 @@ function withAngularElementInfo(bridge: RewriteBridge): RewriteBridge {
  * replacing the method here rather than at each of them is what makes the
  * swap total: there is no path left that can paint the old toast by accident.
  *
- * `Object.create` rather than a spread, unlike the wrapper above. `tokens` is
- * defined on the bridge as GETTERS over the vendor's live values; spreading
- * would freeze them into a snapshot taken at boot, and a prototype link keeps
- * them live for the cost of the same one line.
+ * `Object.create` rather than a spread, so the vendor's bridge stays the
+ * prototype: it defines some members (`tokens`) as getters over live values,
+ * and a prototype link keeps any such member live where a spread would freeze
+ * it at boot. Nothing in the editor reads `tokens` today, which is why the
+ * Angular wrapper above can spread; this one keeps the safer shape for free.
  */
 function withEditorToast(bridge: RewriteBridge): RewriteBridge {
   const wrapped: RewriteBridge = Object.create(bridge)
-  wrapped.toast = (message: ToastMessage, kind: "info" | "error" = "info", action?: ToastAction) =>
+  wrapped.toast = (message: ToastMessage, kind: ToastKind = "info", action?: ToastAction) =>
     notify(message, kind, action)
   return wrapped
 }
@@ -362,23 +362,52 @@ function usableFrame(info: RewriteElementInfo | null): SourceRef | null {
   return null
 }
 
+interface PromiseCache<K, V> {
+  get(key: K): Promise<V | null> | undefined
+  set(key: K, value: Promise<V | null>): unknown
+  delete(key: K): unknown
+}
+
+/**
+ * Remembers a resolution while it is pending and once it has an answer, and
+ * forgets a `null` or a rejection.
+ *
+ * THE ONE CACHE RULE for source resolution. A "no" here is usually transient:
+ * the first ask lands before the sourcemap is fetched, before Angular has
+ * bootstrapped, or while the vendor's socket is reconnecting after a dev
+ * server restart (its `discoverFile` then drops the request and answers
+ * `null` after a timeout). Remembering that "no" left the element or the whole
+ * component unresolvable until a reload. A rejection resolves to `null`.
+ */
+export function memoizeNonNull<K, V>(
+  cache: PromiseCache<K, V>,
+  key: K,
+  compute: () => Promise<V | null>
+): Promise<V | null> {
+  const cached = cache.get(key)
+  if (cached) return cached
+  // Started synchronously, as each cache always started its resolver; a
+  // synchronous throw counts as a rejection.
+  const pending: Promise<V | null> = (async () => compute())()
+    .catch(() => null)
+    .then((value) => {
+      if (value === null && cache.get(key) === pending) cache.delete(key)
+      return value
+    })
+  cache.set(key, pending)
+  return pending
+}
+
 /** Per-element, because resolution costs a sourcemap fetch and never changes. */
 const sourceByElement = new WeakMap<Element, Promise<SourceRef | null>>()
 /** Per-component, because `discoverFile` shells out to `grep`. */
 const pathByComponent = new Map<string, Promise<string | null>>()
 
 function discoverPath(bridge: RewriteBridge, componentName: string): Promise<string | null> {
-  const cached = pathByComponent.get(componentName)
-  if (cached) return cached
-  const pending = Promise.resolve()
-    .then(() => bridge.discoverFile(componentName))
-    .then((path) => {
-      const normalized = normalizeSourcePath(path)
-      return isProjectSourcePath(normalized) ? normalized : null
-    })
-    .catch(() => null)
-  pathByComponent.set(componentName, pending)
-  return pending
+  return memoizeNonNull(pathByComponent, componentName, async () => {
+    const normalized = normalizeSourcePath(await bridge.discoverFile(componentName))
+    return isProjectSourcePath(normalized) ? normalized : null
+  })
 }
 
 async function resolve(bridge: RewriteBridge, element: Element): Promise<SourceRef | null> {
@@ -433,25 +462,12 @@ async function resolve(bridge: RewriteBridge, element: Element): Promise<SourceR
   }
 }
 
-/**
- * Where this element is written, resolved once and remembered.
- *
- * A `null` is not cached: the first ask can land before the sourcemap has been
- * fetched, and a permanently-remembered "no" would leave that element
- * unwritable for as long as it stays mounted.
- */
+/** Where this element is written, resolved once and remembered (`memoizeNonNull`). */
 export function resolveElementSource(
   bridge: RewriteBridge,
   element: Element
 ): Promise<SourceRef | null> {
-  const cached = sourceByElement.get(element)
-  if (cached) return cached
-  const pending = resolve(bridge, element).then((source) => {
-    if (!source) sourceByElement.delete(element)
-    return source
-  })
-  sourceByElement.set(element, pending)
-  return pending
+  return memoizeNonNull(sourceByElement, element, () => resolve(bridge, element))
 }
 
 /** Test seam: drops the per-component grep results. */

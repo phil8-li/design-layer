@@ -127,17 +127,7 @@ const EXEMPT = [
  * by BOTH rules, so it silences that one combination and nothing else about
  * either rule. Same terms as `EXEMPT`: capped, and every row argues itself.
  */
-const IMPOSSIBLE = [
-  {
-    fill: /^\.de-toolbar \.de-tool\[aria-pressed="true"\]$/,
-    ink: /^\.de-toolbar \.de-tool--commit:not\(\[disabled\]\)$/,
-    why:
-      "The commit square is an action, never a toggle: nothing writes `aria-pressed` " +
-      "on it, and `css/toolbar.ts` says no code path renders it at all today — the " +
-      "rule is kept only so the fill-versus-ink argument beside it stays pinned by " +
-      "toolbar-cases. A pressed commit is a state with no element.",
-  },
-]
+const IMPOSSIBLE = []
 
 /**
  * Rules whose pair is real but whose ground this cannot resolve statically.

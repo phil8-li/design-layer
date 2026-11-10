@@ -270,10 +270,6 @@ export const baseCss = `${paletteCss}
   --de-vw: calc((100vw - var(--de-left) - var(--de-right)) / 100);
 }
 
-${VENDOR_CHROME.map((selector) => `#react-rewrite-root ${selector}`).join(",\n")} {
-  display: none !important;
-}
-
 /*
  * Inset the app so the chrome never covers what you are editing.
  *

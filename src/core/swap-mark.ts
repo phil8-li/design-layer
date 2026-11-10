@@ -44,7 +44,7 @@ export interface SwapMark {
   show(done: boolean): void
 }
 
-export interface SwapMarkOptions {
+interface SwapMarkOptions {
   /** Box and glyph size. Defaults to `icon.marker`, the panel rung. */
   size?: IconSize
   /** The glyph swapped TO. Defaults to `Check`, i.e. a confirmation. */
@@ -72,9 +72,9 @@ export function swapMark(resting: IconName, options: SwapMarkOptions = {}): Swap
     {
       class: options.tint === "inherit" ? "de-swap de-swap--plain" : "de-swap",
       "aria-hidden": "true",
-      // The box is `icon.marker` in the stylesheet, which is right for the three
-      // panel call sites and wrong for the toolbar's 16px squares. Written
-      // inline only when it differs, so the common case stays in CSS.
+      // The box is `icon.marker` in the stylesheet, which is right for a panel's
+      // copy button and wrong for the toolbar's 16px squares. Written inline
+      // only when it differs, so the common case stays in CSS.
       ...(size === tokens.icon.marker ? {} : { style: `width:${size}px;height:${size}px` }),
     },
     [rest, done]

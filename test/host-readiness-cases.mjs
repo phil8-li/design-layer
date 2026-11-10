@@ -33,25 +33,25 @@ const readiness = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString("base64")}`
 )
 
-assert.equal(readiness.hasHydratedReactHost(), false)
+assert.equal((readiness.findHostClaim() !== null), false)
 
 const editorRoot = document.createElement("div")
 editorRoot.setAttribute("data-designlayer", "")
 Object.defineProperty(editorRoot, "__reactFiber$editor", { value: {} })
 document.body.prepend(editorRoot)
-assert.equal(readiness.hasHydratedReactHost(), false)
+assert.equal((readiness.findHostClaim() !== null), false)
 
 const nextPortal = document.createElement("nextjs-portal")
 const portalChild = document.createElement("div")
 Object.defineProperty(portalChild, "__reactProps$dev-overlay", { value: {} })
 nextPortal.append(portalChild)
 document.body.prepend(nextPortal)
-assert.equal(readiness.hasHydratedReactHost(), false)
+assert.equal((readiness.findHostClaim() !== null), false)
 
 const pending = readiness.whenHostHydrated(1_000)
 Object.defineProperty(document.getElementById("host"), "__reactFiber$fixture", { value: {} })
 await pending
-assert.equal(readiness.hasHydratedReactHost(), true)
+assert.equal((readiness.findHostClaim() !== null), true)
 
 /*
  * An Angular host leaves a different mark, and asking React's question of it
@@ -61,7 +61,7 @@ assert.equal(readiness.hasHydratedReactHost(), true)
  * — it was merely slow enough to feel broken.
  */
 assert.equal(
-  readiness.hasHydratedReactHost(document, "angular"),
+  (readiness.findHostClaim(document, "angular") !== null),
   false,
   "a React expando was mistaken for an Angular bootstrap"
 )
@@ -70,7 +70,7 @@ const angularRoot = document.createElement("app-root")
 angularRoot.setAttribute("ng-version", "22.0.5")
 document.body.append(angularRoot)
 assert.equal(
-  readiness.hasHydratedReactHost(document, "angular"),
+  (readiness.findHostClaim(document, "angular") !== null),
   true,
   "ng-version did not read as a bootstrapped Angular host"
 )
@@ -89,7 +89,7 @@ assert.equal(
   ).window.document
   Object.defineProperty(page.getElementById("app"), "__reactFiber$fixture", { value: {} })
   assert.equal(
-    readiness.hasHydratedReactHost(page, "react"),
+    (readiness.findHostClaim(page, "react") !== null),
     true,
     "a hundred <style>s in <head> spent the scan budget before it reached the app"
   )

@@ -99,7 +99,7 @@ const { build } = await import("esbuild")
 const bundled = await build({
   stdin: {
     contents: `
-      export { installAppViewport, shiftCondition } from "./src/shell/app-viewport"
+      export { installAppViewport, rewriteWidthUnits, shiftCondition } from "./src/shell/app-viewport"
       export { mountShell } from "./src/shell/shell"
       export { setState } from "./src/core/store"
       export { shellCss } from "./src/core/css"
@@ -172,6 +172,23 @@ const mediaTexts = () => {
 }
 
 // ───────────────────────────────────────── the breakpoint rewrite, as text ───
+
+/*
+ * B-SF-4: a path or a quoted string is text, not a length. `hero-2vw.png`
+ * became `herocalc(... * -2).png` and "Version 2vi" lost its words while the
+ * editor was mounted.
+ */
+await check("vw inside a url(), a quoted string or an identifier is left as written", () => {
+  for (const value of ['url("/img/hero-2vw.png")', "url(hero-2vw.png)", '"Version 2vi"', "'50vw wide'", "hero-2vw"]) {
+    assert.equal(editor.rewriteWidthUnits(value), value)
+  }
+  assert.equal(editor.rewriteWidthUnits("50vw"), "calc(var(--de-vw, 1vw) * 50)")
+  assert.equal(editor.rewriteWidthUnits("0 -2vw"), "0 calc(var(--de-vw, 1vw) * -2)")
+  assert.equal(
+    editor.rewriteWidthUnits('url(a-1vw.png) 1.5dvw "3vi"'),
+    'url(a-1vw.png) calc(var(--de-vw, 1vw) * 1.5) "3vi"'
+  )
+})
 
 await check("a pixel width feature is shifted by what the panels are holding", () => {
   assert.equal(editor.shiftCondition("(max-width: 1024px)", 500), "(max-width: 1524px)")

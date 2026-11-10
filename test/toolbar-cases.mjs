@@ -16,7 +16,7 @@ import vm from "node:vm"
 import { JSDOM } from "jsdom"
 
 import { browserPrelude, resolveConfig } from "../config.mjs"
-import { chooserUrlFromEnv } from "../runtime/launcher.mjs"
+import { chooserUrlFromEnv } from "../runtime/chooser-url.mjs"
 import { PACKAGE_DIR } from "./host.mjs"
 
 let passed = 0
@@ -86,14 +86,14 @@ const bundled = await build({
       // The collapse is one motion drawn across two stylesheets, so the cases
       // that check the two halves agree have to be able to read both.
       export { launcherCss } from "./src/core/css/launcher"
-      // The bar and the disc are one object with one position, and the only
+      // The bar and the disc are two objects with two positions, and the only
       // way to assert that is to drive both of them from the same graph.
       export { createLauncher } from "./src/shell/launcher"
       // The gesture on its own, because the RESTING half of it cannot be
       // reached through the real bar: every case that drives that one drags it
       // first, and a surface with a dragged position has left the branch under
       // test for the rest of the file.
-      export { installDrag } from "./src/shell/launcher"
+      export { installDrag, DRAG_SLACK } from "./src/shell/drag"
       export { icon } from "./src/core/icons"
       export { tokens } from "./src/core/tokens"
       // Copy is a chord rather than a square now, so the only way to ask
@@ -446,9 +446,10 @@ check("the bar offers three modes and can never be in a fourth", () => {
  * pressing Notes off leaves the Changes list up to read instead of snapping the
  * panel back to Design under the pointer.
  *
- * Driven through `context.setMode` as well as through the buttons, because the
- * rule lives in the context rather than in the two click handlers — that is
- * what stops ⌥ keys bound to the same modes arriving at a different panel.
+ * Driven through `context.chooseMode` as well as through the buttons, because
+ * the rule lives in the context rather than in the two click handlers — that is
+ * what stops ⌥ keys bound to the same modes arriving at a different panel. The
+ * pure `context.setMode` (a restore, a companion) moves no panel.
  */
 check("each mode brings the right panel's matching tab with it", () => {
   const press = (name) =>
@@ -466,13 +467,13 @@ check("each mode brings the right panel's matching tab with it", () => {
   assert.equal(context.getState().inspectorOpen, true, "Inspect switched a tab behind a shut panel")
 
   // Off is not a request for a tab: the list you were just reading stays up.
-  context.setMode("annotating")
+  context.chooseMode("annotating")
   assert.equal(tab(), "annotations")
   press("Notes")
   assert.equal(editor.editorMode(), "interactive")
   assert.equal(tab(), "annotations", "leaving a mode moved the panel out from under the reader")
 
-  context.setMode("inspecting")
+  context.chooseMode("inspecting")
   assert.equal(tab(), "design", "the keymap's path to a mode skips the panel")
 })
 
@@ -1707,37 +1708,28 @@ check("each state is named to assistive tech and drawn in a different shape", ()
   )
   assert.equal(inspecting.fill, "currentColor", "the editor holding the pointer must draw it solid")
   assert.equal(handedOver.fill, "none", "handing the pointer back must hollow it")
-  context.setInteractive(false)
+  context.setMode("inspecting")
 })
 
 /*
- * The same claim the old pill made, now that everything is a square.
+ * ON is the accent as a FILL on the square, and the old pill's pressed
+ * treatment did not survive its only user.
  *
- * It used to read: a pressed MODE must not wear the primary ACTION's filled
- * indigo pill, because two identical pills a few pixels apart are two things to
- * press rather than one state you are standing in. Both of those controls are
- * 32px squares now, so the collision is closer and the claim is the same one:
- * a toggle that is ON and the commit that is ARMED must not be told apart by
- * hue alone.
- *
- * They are not. ON is the accent as a FILL, armed is the accent as INK on the
- * bar's own ground — two different properties, so the two are distinguishable
- * without holding them side by side.
+ * The armed commit used to sit beside this as the accent as INK, so the two
+ * could be told apart without holding them side by side. The commit left the
+ * bar for the Changes tab and its dead rule left the stylesheet; the fill is
+ * what remains to pin.
  */
-check("an on toggle and the armed commit do not wear the same treatment", () => {
+check("an on toggle wears the accent fill, and the retired pill treatment is gone", () => {
   const rule = (selector) =>
     editor.toolbarCss.match(new RegExp(`${selector}\\s*\\{[^}]*\\}`, "s"))?.[0] ?? ""
   const pressed = rule('\\.de-toolbar \\.de-tool\\[aria-pressed="true"\\]')
-  const commit = rule("\\.de-toolbar \\.de-tool--commit:not\\(\\[disabled\\]\\)")
   assert.ok(pressed, "the pressed tool rule must exist")
-  assert.ok(commit, "the armed commit rule must exist")
   assert.ok(pressed.includes(`background: ${editor.tokens.color.accentSurface};`), pressed)
-  assert.doesNotMatch(commit, /background:/, "the commit borrowed the toggle's fill")
-  assert.ok(commit.includes(`color: ${editor.tokens.color.accent};`), commit)
-  // And the retired pill vocabulary did not survive its only user. A pressed
-  // `.de-button` treatment kept for nobody is a treatment the next text button
-  // in the chrome inherits by accident.
+  // A pressed `.de-button` treatment kept for nobody is a treatment the next
+  // text button in the chrome inherits by accident.
   assert.equal(rule('\\.de-button\\[aria-pressed="true"\\]'), "")
+  assert.doesNotMatch(editor.toolbarCss, /de-tool--commit/, "the dead commit rule is back")
 })
 
 /*
@@ -1810,12 +1802,12 @@ check("no control in the bar counts the outbox or reopens the Changes tab", () =
 // dimmed would be a control that had quietly stopped meaning anything.
 check("flipping the mode no longer stands anything down", () => {
   const inert = () => buttons().filter((button) => button.disabled).length
-  context.setInteractive(false)
+  context.setMode("inspecting")
   const off = inert()
-  context.setInteractive(true)
+  context.setMode("interactive")
   assert.equal(inert(), off)
   assert.equal(interactive().disabled, false)
-  context.setInteractive(false)
+  context.setMode("inspecting")
 })
 
 /** Returns whether the canvas swallowed the app's click. */
@@ -1833,21 +1825,21 @@ const clickApp = () => {
 }
 
 check("with interactive off a canvas click IS swallowed", () => {
-  context.setInteractive(false)
+  context.setMode("inspecting")
   assert.equal(clickApp(), true)
 })
 
 check("with interactive on a canvas click is NOT swallowed", () => {
-  context.setInteractive(true)
+  context.setMode("interactive")
   assert.equal(clickApp(), false)
 })
 
 check("pointer, key and double-click handlers all stand down together", () => {
   const target = window.document.getElementById("cta")
-  context.setInteractive(false)
+  context.setMode("inspecting")
   context.select(null)
   context.setState({ scope: null, hovered: null })
-  context.setInteractive(true)
+  context.setMode("interactive")
 
   window.__stack = [target, window.document.getElementById("app")]
   const pointer = (type, init = {}) =>
@@ -1867,7 +1859,7 @@ check("pointer, key and double-click handlers all stand down together", () => {
 })
 
 check("a bare letter reaches the app in interactive mode too", () => {
-  context.setInteractive(true)
+  context.setMode("interactive")
   const event = new window.KeyboardEvent("keydown", { key: "h", bubbles: true, cancelable: true })
   window.dispatchEvent(event)
   assert.equal(event.defaultPrevented, false)
@@ -1875,7 +1867,7 @@ check("a bare letter reaches the app in interactive mode too", () => {
 })
 
 check("leaving the mode hands the canvas back", () => {
-  context.setInteractive(false)
+  context.setMode("inspecting")
   assert.equal(editor.editorOwnsInput(), true)
   assert.equal(clickApp(), true)
   window.__stack = [window.document.getElementById("cta"), window.document.getElementById("app")]
@@ -2358,7 +2350,6 @@ const area = (left, right) => {
   html.style.setProperty("--de-bar-right", `${right}px`)
   html.style.setProperty("--de-left", `${left}px`)
   html.style.setProperty("--de-right", `${right}px`)
-  html.style.setProperty("--de-top", "0px")
 }
 
 const point = (target, type, x, y, pointerId = 7) =>
@@ -2816,6 +2807,87 @@ await moves("a saved corner restores the disc and never the bar", async () => {
   restored.destroy()
   window.localStorage.removeItem("designlayer:launcher-position")
   await frame()
+})
+
+/*
+ * A cancelled drag produces no click, so it must not leave the click-suppress
+ * flag standing.
+ *
+ * The flag exists to eat the click the browser fires at the end of a drag. A
+ * `pointercancel` (the OS took the touch, a palm landed) ends the gesture with
+ * no click, so nothing consumes it — and the next Enter or Space on the focused
+ * disc fires a click with no pointerdown in front of it, which the stale flag
+ * swallowed: the disc did not open the editor. The second half pins that a
+ * drag that ENDS normally still eats its own click.
+ */
+await moves("a cancelled drag of the disc does not swallow the next keyboard press", async () => {
+  area(0, 0)
+  let opened = 0
+  const launcher = editor.createLauncher(() => {
+    opened += 1
+  })
+  const disc = launcher.element
+  window.document.body.append(disc)
+  disc.getBoundingClientRect = rectOf(0, 0, 40, 40)
+  await frame()
+
+  point(disc, "pointerdown", 0, 0, 11)
+  point(disc, "pointermove", editor.DRAG_SLACK + 50, editor.DRAG_SLACK + 50, 11)
+  assert.equal(disc.classList.contains("de-launcher--dragging"), true, "the drag never armed")
+  point(disc, "pointercancel", editor.DRAG_SLACK + 50, editor.DRAG_SLACK + 50, 11)
+  await frame()
+  assert.equal(disc.classList.contains("de-launcher--dragging"), false)
+
+  // Enter or Space on the focused disc: a click with `detail` 0 and no press.
+  disc.dispatchEvent(new window.MouseEvent("click", { bubbles: true, detail: 0 }))
+  assert.equal(opened, 1, "the keyboard press after a cancelled drag was swallowed")
+
+  // A drag that ends with pointerup still eats the click that follows it.
+  point(disc, "pointerdown", 100, 100, 12)
+  point(disc, "pointermove", 200, 200, 12)
+  point(disc, "pointerup", 200, 200, 12)
+  disc.dispatchEvent(new window.MouseEvent("click", { bubbles: true, detail: 1 }))
+  assert.equal(opened, 1, "the click at the end of a drag opened the editor")
+
+  launcher.destroy()
+  window.localStorage.removeItem("designlayer:launcher-position")
+  await frame()
+})
+
+/*
+ * Losing pointer capture is a cancel.
+ *
+ * Capture can go without a pointerup or a pointercancel — the element leaves
+ * the document mid-drag, devtools or the OS takes the pointer. The gesture used
+ * to stay armed: the grabbing class stayed on, and every later press was
+ * ignored as "a second contact", so the bar could not be moved until a reload.
+ */
+await moves("a lost pointer capture ends the bar's drag, and the next drag works", async () => {
+  area(0, 0)
+  point(bar, "pointerdown", 500, 700, 21)
+  point(bar, "pointermove", 560, 700, 21)
+  assert.equal(bar.classList.contains("de-toolbar--dragging"), true, "the drag never armed")
+
+  point(bar, "lostpointercapture", 560, 700, 21)
+  assert.equal(
+    bar.classList.contains("de-toolbar--dragging"),
+    false,
+    "a lost capture left the bar wearing the dragging class"
+  )
+  await frame()
+  const held = [bar.style.left, bar.style.top]
+
+  point(bar, "pointerdown", 500, 600, 22)
+  point(bar, "pointermove", 440, 560, 22)
+  assert.equal(
+    bar.classList.contains("de-toolbar--dragging"),
+    true,
+    "after a lost capture the bar ignored the next press"
+  )
+  point(bar, "pointerup", 440, 560, 22)
+  await frame()
+  assert.notDeepEqual([bar.style.left, bar.style.top], held, "the next drag did not move the bar")
+  assert.equal(bar.classList.contains("de-toolbar--dragging"), false)
 })
 
 check("the pill's ground says it can be moved, and nothing selects while it is", () => {

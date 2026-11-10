@@ -77,6 +77,14 @@ const BAR = nest({ of: ".de-toolbar", outer: t.radius["3xl"], inset: t.space["2x
 export const TOOLBAR_HEIGHT =
   HAIRLINE + Number.parseFloat(BAR.padding) + TOOL + Number.parseFloat(BAR.padding) + HAIRLINE
 
+/**
+ * How far the resting pill sits off the bottom of the window. Exported because
+ * `shell/toolbar.ts` restates where the pill rests for its clamp, and uses the
+ * same number as the margin a dragged pill keeps from every edge: a dragged
+ * surface has to be able to land exactly where an undragged one sits.
+ */
+export const TOOLBAR_INSET = t.size.panelInset
+
 /** The lift, which is most of what makes this read as floating. */
 const LIFT = t.shadow.float
 
@@ -166,7 +174,7 @@ export const toolbarCss = `/* ---------- toolbar ---------- */
  */
 .de-toolbar {
   position: fixed;
-  bottom: ${t.size.panelInset}px;
+  bottom: ${TOOLBAR_INSET}px;
   left: 50vw;
   transform: translateX(-50%);
   display: flex;
@@ -436,32 +444,6 @@ html.designlayer-chrome-hidden .de-toolbar {
 /* The press lives on \`.de-tool\` above now, at the kit's 0.98, for every square. */
 
 /*
- * The commit, armed: accent as INK, never as a fill.
- *
- * The fill is taken. A pressed panel toggle wears it, and two accent-filled
- * squares four glyphs apart would say the same thing about two controls that do
- * not resemble each other at all — one reports a panel is open, the other is
- * the only button here that writes a file. This is the argument that kept the
- * old mode pill off \`.de-button--primary\`, made again now that both controls
- * are the same square.
- *
- * So the difference is carried in the ink, and the thing it reports is not a
- * state but a READINESS: \`textDisabled\` while there is nothing to write,
- * \`accent\` the moment a change is waiting. The pair used to be two opacities —
- * 35% against 75% — which is the technique \`textDisabled\` exists to replace.
- * On the dark ground: 7.44:1 for the dead state, 4.68:1 for the armed one.
- *
- * Both of those are readable and neither is a brighter version of the other,
- * so the thing separating them is hue — a grey mark against an indigo one. That is
- * weaker than the rest of this bar's steps by design here (the fill is taken,
- * see above), and it is the one place in the toolbar where a reader who cannot
- * sort blue from grey gets no second cue. Nothing renders this rule today: the
- * committer moved to the Changes tab, and \`toolbar-cases.mjs\` keeps the rule
- * pinned so the argument above is not re-litigated by accident.
- */
-.de-toolbar .de-tool--commit:not([disabled]) { color: ${t.color.accent}; }
-
-/*
  * THE CHROME'S SHARED TEXT BUTTON, as the kit's secondary action at editor
  * density: the row's 24px height and 12px type, and the kit's xs button
  * geometry (\`space.md\` sides, a \`space["2xs"]\` glyph gap).
@@ -552,8 +534,7 @@ html.designlayer-chrome-hidden .de-toolbar {
  * written so a pressed MODE could not be mistaken for the primary ACTION's
  * filled pill. The mode switch was its only user and is a square now, and a
  * vocabulary kept for nobody is a vocabulary the next person matches something
- * against by accident. The argument it existed to make survives on the squares:
- * see \`.de-tool--commit\` above.
+ * against by accident.
  */
 /*
  * Disabled owns BOTH halves of the pair, because owning one is what broke it.

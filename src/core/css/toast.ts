@@ -15,6 +15,9 @@
  *      type size the library hard-codes with the token that already answers
  *      for it everywhere else in this chrome.
  *
+ * A third block follows both and touches neither: the fallback card, which
+ * `core/toast.ts` draws only when the React half could not load.
+ *
  * ORDER IS THE MECHANISM, not specificity. Sonner declares its palette at
  * `[data-sonner-toaster][data-sonner-theme='light']` — two attribute
  * selectors, (0,2,0). The override block matches the same element at the same
@@ -33,6 +36,7 @@
  */
 
 import { tokens as t } from "../tokens"
+import { LAUNCHER_CLEARANCE } from "./launcher"
 import { CONTROL_RADIUS } from "./panels"
 import { sonnerCss } from "./sonner-css"
 
@@ -480,6 +484,124 @@ const overrides = `
 }
 `
 
+/** The fallback list and one of its cards (`showFallback` in `core/toast.ts`). */
+export const TOAST_FALLBACK_ATTR = "data-de-toast-fallback"
+export const TOAST_FALLBACK_CARD_ATTR = "data-de-toast-card"
+
+/*
+ * THE FALLBACK CARD: drawn only when the React half never loaded.
+ *
+ * `core/toast.ts` retries the import and, when every attempt fails, draws each
+ * message as a plain list item in the same shadow root so an error is still
+ * seen. These rules make that card read like the Sonner one above: the same
+ * corner and offsets (\`toaster-view.ts\`: 300px wide, bottom
+ * \`LAUNCHER_CLEARANCE + space.sm\`, right \`panelInset\`), the same surface,
+ * squircle and cast, and the same grid of glyph, title, body, action and close.
+ * No Sonner selector matches it and none of these match a Sonner card, so
+ * neither stylesheet can move the other. No motion beyond the buttons' own
+ * press: this is the floor under an error, not a second toaster. Newest at the
+ * bottom, at most \`VISIBLE_TOASTS\` (3) showing; an older card shows again
+ * when a newer one closes.
+ */
+const fallbackCss = `
+[${TOAST_FALLBACK_ATTR}] {
+  position: fixed;
+  right: ${t.size.panelInset}px;
+  bottom: ${LAUNCHER_CLEARANCE + t.space.sm}px;
+  z-index: ${LAYER};
+  width: 300px;
+  font-family: ${t.font.ui};
+}
+[${TOAST_FALLBACK_ATTR}] > ol {
+  display: flex;
+  flex-direction: column;
+  gap: ${t.space.sm}px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[${TOAST_FALLBACK_CARD_ATTR}]:nth-last-child(n + 4) { display: none; }
+[${TOAST_FALLBACK_CARD_ATTR}] {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  padding: ${t.space.md}px ${t.space.sm}px ${t.space.md}px ${t.space.md}px;
+  border-radius: ${CARD_RADIUS};
+  corner-shape: ${t.cornerShape};
+  background: ${t.color.bgRaised};
+  color: ${t.color.text};
+  box-shadow: ${t.shadow.popover};
+  font-size: ${t.type.body};
+  line-height: ${t.type.leadingRow};
+}
+[${TOAST_FALLBACK_CARD_ATTR}] [data-title] {
+  grid-area: 1 / 2;
+  font-weight: ${t.type.weightSection};
+  text-wrap: pretty;
+}
+[${TOAST_FALLBACK_CARD_ATTR}] [data-description] {
+  grid-area: 2 / 2;
+  margin-top: ${t.space["3xs"]}px;
+  color: ${t.color.textMuted};
+  font-size: ${t.type.caption};
+  font-weight: ${t.type.weightBody};
+  line-height: ${t.type.leadingBody};
+  text-wrap: pretty;
+}
+[${TOAST_FALLBACK_CARD_ATTR}] [data-icon] {
+  grid-area: 1 / 1;
+  display: flex;
+  height: ${t.icon.inline}px;
+  width: ${t.icon.inline}px;
+  margin: 0 ${t.space.md}px 0 0;
+  color: ${t.color.danger};
+}
+[${TOAST_FALLBACK_CARD_ATTR}] [data-icon] > svg {
+  height: ${t.icon.inline}px;
+  width: ${t.icon.inline}px;
+}
+[${TOAST_FALLBACK_CARD_ATTR}] button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: ${t.size.rowHeight}px;
+  margin: ${BUTTON_BLEED}px 0 ${BUTTON_BLEED}px ${t.space.sm}px;
+  border: none;
+  corner-shape: ${t.cornerShape};
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  transition: background-color ${t.duration.hover} ${t.ease}, box-shadow ${t.duration.hover} ${t.ease},
+    transform ${t.duration.hover} ${t.ease};
+}
+[${TOAST_FALLBACK_CARD_ATTR}] [data-button] {
+  grid-area: 1 / 3;
+  padding: 0 ${t.space.sm}px;
+  border-radius: ${CONTROL_RADIUS};
+  font-size: ${t.type.body};
+  font-weight: ${t.type.weightValue};
+  color: ${t.color.accentText};
+}
+[${TOAST_FALLBACK_CARD_ATTR}] [data-close-button] {
+  grid-area: 1 / 4;
+  align-self: start;
+  width: ${t.size.rowHeight}px;
+  padding: 0;
+  border-radius: ${CLOSE_RADIUS};
+  color: ${t.color.text};
+}
+@media (hover: hover) and (pointer: fine) {
+  [${TOAST_FALLBACK_CARD_ATTR}] button:hover { background: ${t.color.bgRaisedHover}; }
+}
+[${TOAST_FALLBACK_CARD_ATTR}] button:active { transform: scale(0.98); }
+[${TOAST_FALLBACK_CARD_ATTR}] button:focus-visible { box-shadow: ${FOCUS_RING}; }
+@media (prefers-reduced-motion: reduce) {
+  [${TOAST_FALLBACK_CARD_ATTR}] button:active { transform: none; }
+}
+`
+
 /** Sonner's stylesheet, then ours. The order is the mechanism — see above. */
 export const toasterCss = `${sonnerCss}\n${overrides}
 /*
@@ -511,4 +633,4 @@ export const toasterCss = `${sonnerCss}\n${overrides}
   [data-sonner-toast] [data-button]:active,
   [data-sonner-toaster] [data-sonner-toast] [data-close-button]:active { transform: none !important; }
 }
-`
+${fallbackCss}`

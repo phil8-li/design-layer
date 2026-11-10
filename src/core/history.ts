@@ -69,12 +69,21 @@ export function canRedo(): boolean {
 }
 
 /** The label of the step reverted, or null when there was nothing to revert. */
+/*
+ * A step that throws still moves to the other stack, and the toolbar still
+ * hears about it. Dropped between the two, it vanished from the timeline and
+ * left Undo and Redo lit for a state that no longer existed; the throw itself
+ * still reaches the caller (`runCommand` reports it).
+ */
 export function undo(): string | null {
   const step = past.pop()
   if (!step) return null
-  step.undo()
-  future.push(step)
-  notify()
+  try {
+    step.undo()
+  } finally {
+    future.push(step)
+    notify()
+  }
   return step.label
 }
 
@@ -82,9 +91,12 @@ export function undo(): string | null {
 export function redo(): string | null {
   const step = future.pop()
   if (!step) return null
-  step.redo()
-  past.push(step)
-  notify()
+  try {
+    step.redo()
+  } finally {
+    past.push(step)
+    notify()
+  }
   return step.label
 }
 

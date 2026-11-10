@@ -120,6 +120,14 @@ export function dropScoped(key: string): void {
  * written behind it and read only at boot, so a dead or slow server costs the
  * cross-origin copy and never a read.
  *
+ * KNOWN GAP (two origins open at once). Each origin hydrates only at boot and
+ * writes a whole key (the notes list) last-write-wins on its stamp. With the
+ * Mac app and a browser tab both open, a note added in one is lost when the
+ * other, still holding its boot copy, writes the list later. The fix is a
+ * re-hydrate on `visibilitychange` or a per-note merge by id; until then this
+ * is documented, not handled. `post` also treats any HTTP reply as accepted,
+ * so a value the server refuses as too large is resent every boot.
+ *
  * Only what is the designer's work is copied: notes, their settings and the
  * preview-only ledger. The running-apps cache is a guess about this moment and
  * is rewritten on every menu open; copying it would be traffic with no reader.

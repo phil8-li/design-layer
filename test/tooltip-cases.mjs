@@ -336,7 +336,8 @@ check("two tipped controls share one card and one ruler", () => {
   over(b)
   assert.equal(document.querySelectorAll(".de-tip").length, 1)
   assert.equal(document.querySelectorAll(".de-tip-ruler").length, 1)
-  assert.equal(document.querySelectorAll(".de-tip-layer").length, 2)
+  // One label slot: the second, from the crossfading port, never showed.
+  assert.equal(document.querySelectorAll(".de-tip-layer").length, 1)
 })
 
 check("the card is decoration, and says so", () => {
@@ -608,6 +609,55 @@ check("Escape and a press both take the card down at once", () => {
     fire()
     assert.equal(isOpen(), false, "the card survived an answer")
   }
+})
+
+/*
+ * The shell collapses the editor on any Escape nobody marked as spent
+ * (`shell/shortcuts.ts`). An Escape that only took a tip down was not marked,
+ * so one press closed the tip AND collapsed the editor.
+ */
+check("an Escape that closes a card is marked spent, and one that closes nothing is not", () => {
+  reset()
+  over(a)
+  const closing = new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+  document.dispatchEvent(closing)
+  assert.equal(isOpen(), false)
+  assert.equal(closing.defaultPrevented, true, "the shell would also collapse the editor on this press")
+  const idle = new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+  document.dispatchEvent(idle)
+  assert.equal(idle.defaultPrevented, false, "an Escape with no card up was swallowed")
+})
+
+check("focus moving to an untipped field leaves a tip the pointer rests on", () => {
+  reset()
+  const field = document.createElement("input")
+  app.append(field)
+  over(a)
+  field.focus()
+  advance(400)
+  assert.equal(isOpen(), true, "a focus change elsewhere closed a hover tip")
+  assert.equal(liveText(), "Undo · ⌘Z")
+  field.blur()
+  field.remove()
+})
+
+check("focus moving to an untipped field still closes a tip focus opened", () => {
+  reset()
+  // An input, because jsdom reports `:focus-visible` for a focused field only.
+  const tipped = document.createElement("input")
+  tipped.setAttribute("data-de-tip", "Search")
+  tipped.__rect = { left: 300, top: 300, width: 80, height: 24 }
+  const field = document.createElement("input")
+  app.append(tipped, field)
+  tipped.focus()
+  assert.equal(isOpen(), true, "keyboard focus did not open the tip")
+  assert.equal(liveText(), "Search")
+  field.focus()
+  advance(400)
+  assert.equal(isOpen(), false, "the focus tip outlived the focus")
+  field.blur()
+  tipped.remove()
+  field.remove()
 })
 
 check("a press leaves the run warm, so the next control is instant", () => {

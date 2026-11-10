@@ -2,6 +2,29 @@
  * Editor state. A tiny observable store so every panel reads one source of
  * truth for selection and tool — the same rule the app itself follows for
  * continuous gestures (one live value, many followers).
+ *
+ * WHO OWNS THE POINTER. Four inputs decide it, read through `editorOwnsInput`
+ * and `selectionOwnsInput` below; every mode combines with every
+ * `chromeHidden` × `canvasView`, so there is no illegal row to forbid, only an
+ * owner to name:
+ *
+ *   chromeHidden  canvasView  mode         owner
+ *   true          any         any          the app (one disc on screen)
+ *   false         true        any          the board (canvas view)
+ *   false         false       interactive  the app
+ *   false         false       annotating   the editor, pinning notes
+ *   false         false       inspecting   the editor, selecting
+ *
+ * The mode survives hiding and the board, so leaving either lands back in
+ * whichever mode was live. Writers: `setMode` (the mode pair), `setChromeHidden`
+ * (hiding), the board (`canvasView`, a mirror of its own phase). Anything that
+ * mirrors the answer outside the store (a class on `<html>`, a painter)
+ * recomputes on `editorStandDownChanged`, never on one input it picked.
+ *
+ * Notification order: a listener that writes during a notification does not
+ * interleave. Its patch is applied at once (so `getState()` reads it) but
+ * announced after the current round, as a round of its own with its own
+ * `previous`, so every listener sees every change once and in order.
  */
 
 import type { ElementOptionSet, LayerElement, Selection, ToolId } from "./types"
@@ -41,7 +64,7 @@ export interface EditorState {
    * source care about, so the record is patched in place and this counter tells
    * those panes — today the inspector's Instance and Classes sections — to
    * re-read it. Everything else reads `source` lazily at the moment it needs
-   * it (the writer at Apply, the handover at copy), so nothing goes stale.
+   * it (the handover when notes are copied or sent), so nothing goes stale.
    */
   sourceRevision: number
   /**
@@ -76,11 +99,11 @@ export interface EditorState {
    * Which of the inspector's tabs is showing.
    *
    * It lives here rather than staying the private variable it was inside
-   * `installInspector`, because the toolbar now has to be able to say "show me
-   * the Changes tab" — the bar's commit button became a status indicator, and
-   * an indicator that cannot take you to the thing it counts is just a number.
-   * The store is how every lane in this editor reaches another one, and a
-   * direct call into the panel would be the first exception to that.
+   * `installInspector`, because other lanes have to be able to say "show me
+   * the Changes tab": choosing a mode brings its tab (`chooseMode` in
+   * `core/context.ts`), and the keymap reaches tabs by slot. The store is how
+   * every lane in this editor reaches another one, and a direct call into the
+   * panel would be the first exception to that.
    *
    * The inspector still OWNS it: it writes this when a tab is clicked and reads
    * it to decide what to show, so the two directions are one value rather than
@@ -162,7 +185,6 @@ export interface EditorState {
   canvasView: boolean
   /** Option sets keyed by `Selection.key`. */
   optionSets: Record<string, ElementOptionSet>
-  dirty: boolean
 }
 
 type Listener = (state: EditorState, previous: EditorState) => void
@@ -192,7 +214,6 @@ const state: EditorState = {
   annotating: false,
   canvasView: false,
   optionSets: {},
-  dirty: false,
 }
 
 const listeners = new Set<Listener>()
@@ -206,6 +227,13 @@ export function subscribe(listener: Listener): () => void {
   return () => listeners.delete(listener)
 }
 
+/*
+ * Rounds waiting to be announced, oldest first. Each carries the snapshot taken
+ * just before its patch landed, so its listeners diff exactly that patch.
+ */
+const rounds: EditorState[] = []
+let notifying = false
+
 export function setState(patch: Partial<EditorState>): void {
   const previous = { ...state }
   let changed = false
@@ -216,7 +244,25 @@ export function setState(patch: Partial<EditorState>): void {
     changed = true
   }
   if (!changed) return
-  for (const listener of listeners) listener(state, previous)
+  rounds.push(previous)
+  // A write from inside a listener queues behind the round that is running;
+  // see "Notification order" in the header.
+  if (notifying) return
+  notifying = true
+  try {
+    for (let round = rounds.shift(); round; round = rounds.shift()) {
+      // The state as of THIS round's patch: the next waiting round's
+      // `previous` when one is queued, else a snapshot of now. A snapshot, so
+      // a listener that writes mid-round cannot show the later listeners of
+      // this round a change their `previous` does not account for; they hear
+      // it in its own round.
+      const next = rounds[0] ?? { ...state }
+      for (const listener of listeners) listener(next, round)
+    }
+  } finally {
+    notifying = false
+    rounds.length = 0
+  }
 }
 
 export function primarySelection(): Selection | null {
@@ -306,10 +352,14 @@ export function editorMode(): EditorMode {
 /**
  * Moves to one of the three, clearing whatever the last one set.
  *
- * Dropping the hover target on the way out of `inspecting` is the same
- * housekeeping `setInteractive` always did: `hovered` is written on every
- * pointermove and a stale one keeps the canvas frame loop awake painting an
- * outline over an app the editor has stood down from.
+ * The PURE move: the mode and nothing else. A person choosing a mode also gets
+ * the inspector tab that answers it (`EditorContext.chooseMode`); a restore —
+ * a companion handing the pointer back — must not, or it throws open a panel
+ * the person closed.
+ *
+ * Dropping the hover target on the way out of `inspecting`: `hovered` is
+ * written on every pointermove and a stale one keeps the canvas frame loop
+ * awake painting an outline over an app the editor has stood down from.
  */
 export function setMode(mode: EditorMode): void {
   setState({
@@ -317,6 +367,25 @@ export function setMode(mode: EditorMode): void {
     annotating: mode === "annotating",
     ...(mode === "inspecting" ? {} : { hovered: null }),
   })
+}
+
+/** Whether a write moved the mode. The one diff every mode follower uses. */
+export function modeChanged(next: EditorState, previous: EditorState): boolean {
+  return next.interactive !== previous.interactive || next.annotating !== previous.annotating
+}
+
+/**
+ * Stands the whole editor down to the launcher disc, or brings it back. The
+ * one writer of `chromeHidden`: the bar's Hide button, the keys, the escape
+ * stop and the disc all come through here.
+ *
+ * The hover target is cleared in BOTH directions, unlike the mode switch.
+ * Going out, a stale hover would keep the frame loop awake over a canvas
+ * nobody is drawing; coming back, the pointer has been over the app for a
+ * while and the element it last rested on is not news worth an outline.
+ */
+export function setChromeHidden(hidden: boolean): void {
+  setState({ chromeHidden: hidden, hovered: null })
 }
 
 /**

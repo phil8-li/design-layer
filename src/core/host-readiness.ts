@@ -18,16 +18,20 @@
  */
 
 import { config } from "./config"
+import { EDITOR_ROOT_SELECTOR } from "./dom"
 
 const REACT_HOST_PREFIXES = ["__reactFiber$", "__reactProps$"]
 const MAX_ELEMENTS_TO_SCAN = 128
 const DEFAULT_TIMEOUT_MS = 10_000
 
+/*
+ * The editor's own roots, plus Next's dev overlay: React-rendered trees that
+ * are not the app, so their expandos are not the app's claim.
+ */
+const NOT_THE_APP = `${EDITOR_ROOT_SELECTOR}, nextjs-portal`
+
 function isEditorTree(element: Element): boolean {
-  return (
-    element.matches("[data-designlayer], #react-rewrite-root, nextjs-portal") ||
-    Boolean(element.closest("[data-designlayer], #react-rewrite-root, nextjs-portal"))
-  )
+  return element.closest(NOT_THE_APP) !== null
 }
 
 function hasReactHostMarker(element: Element): boolean {
@@ -75,14 +79,6 @@ export function findHostClaim(
   return null
 }
 
-/** True once a host-owned element has been hydrated or client-rendered. */
-export function hasHydratedReactHost(
-  root: Document = document,
-  framework: string = config.host.framework
-): boolean {
-  return findHostClaim(root, framework) !== null
-}
-
 const NOT_MARKUP = new Set(["SCRIPT", "NOSCRIPT", "TEMPLATE", "STYLE", "LINK"])
 
 /**
@@ -116,7 +112,7 @@ function reactContainerKey(node: object): string | undefined {
  * A claim with no container above it is not something this can vouch for, so
  * it answers yes and keeps the wait.
  */
-export function mayBeHydrating(claim: Element, root: Document = document): boolean {
+function mayBeHydrating(claim: Element, root: Document = document): boolean {
   if (reactContainerKey(root)) return true
   for (let node: Element | null = claim; node; node = node.parentElement) {
     const key = reactContainerKey(node)

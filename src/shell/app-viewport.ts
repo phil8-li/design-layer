@@ -55,7 +55,29 @@ const CANVAS_VW = "--de-vw"
  * four are "one percent of the width the app has", which is the thing this file
  * is redefining, so all four are rewritten.
  */
-const WIDTH_UNIT = /(-?\d*\.?\d+)(?:[dsl]?v(?:w|i))\b/gi
+const WIDTH_UNIT = /(?<![\w.-])(-?\d*\.?\d+)(?:[dsl]?v(?:w|i))\b/gi
+
+/*
+ * The parts of a value that are not lengths: a `url(...)` and a quoted
+ * string. `hero-2vw.png` in a path or "Version 2vi" in `content` are text,
+ * and rewriting them broke the image or changed the words while the editor
+ * was mounted. The lookbehind on `WIDTH_UNIT` keeps `hero-2vw` out of a bare
+ * identifier too, so its `-` is never read as a minus sign.
+ */
+const NOT_A_LENGTH = /url\([^)]*\)|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/gi
+
+/** `value` with every width length pointed at the canvas, text left alone. Test seam. */
+export function rewriteWidthUnits(value: string): string {
+  let out = ""
+  let last = 0
+  const rewrite = (part: string) =>
+    part.replace(WIDTH_UNIT, (_, size: string) => `calc(var(${CANVAS_VW}, 1vw) * ${size})`)
+  for (const skip of value.matchAll(NOT_A_LENGTH)) {
+    out += rewrite(value.slice(last, skip.index)) + skip[0]
+    last = (skip.index ?? 0) + skip[0].length
+  }
+  return out + rewrite(value.slice(last))
+}
 
 /**
  * The same question asked without state.
@@ -117,7 +139,7 @@ interface QueryPatch {
   original: string
 }
 
-export interface AppViewport {
+interface AppViewport {
   /**
    * Re-read the app's stylesheets. Called for you when one arrives or changes;
    * exposed because a test should not have to wait for a MutationObserver.
@@ -216,10 +238,8 @@ export function installAppViewport(): AppViewport {
       if (value.includes(CANVAS_VW)) continue
       if (!HAS_WIDTH_UNIT.test(value)) continue
       const priority = style.getPropertyPriority(property)
-      const next = value.replace(
-        WIDTH_UNIT,
-        (_, size: string) => `calc(var(${CANVAS_VW}, 1vw) * ${size})`
-      )
+      const next = rewriteWidthUnits(value)
+      if (next === value) continue
       style.setProperty(property, next, priority)
       // Recorded even if the engine refused the new value: restoring a
       // declaration to what it already says costs nothing and cannot be wrong.

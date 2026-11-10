@@ -22,6 +22,11 @@
  *   CLOSE   a 150ms fade to scale 0.99, so the label does not vanish in the
  *           frame the pointer left. Reduced motion paints every step in place.
  *
+ * And the answers, which close at once with no grace and no fade: a press,
+ * Escape (marked spent when it closed an open card), the window blurring or
+ * hiding, the control being hidden. Focus moving to something untipped is
+ * a departure only for a tip that focus opened (`hoveredBy`).
+ *
  * ---------------------------------------------------------------------------
  * THE BUDGET
  *
@@ -82,6 +87,7 @@
 
 import { TIP_CLOSE_MS, TIP_TRAVEL_MS, TIP_WRAP_WIDTH } from "./css/tooltip"
 import { el } from "./dom"
+import { prefersReducedMotion } from "./motion"
 import { tokens as t } from "./tokens"
 
 // ─────────────────────────────────────────────────────── the contract ──────
@@ -89,48 +95,35 @@ import { tokens as t } from "./tokens"
 /** The label. Read from the control, or written by `tip()` / `tipAttrs()`. */
 export const TIP_ATTR = "data-de-tip"
 /**
- * Which side to try FIRST — `"above"` or `"below"`. Optional, and read from the
- * nearest ancestor that carries it, so a container can set it for its children
- * (the toolbar strip, a row of actions) instead of every button repeating it.
+ * Present = the label is a sentence and may take more than one line. Read from
+ * the nearest ancestor, so a container can set it for its children; the call
+ * sites that want it set it directly.
  */
-export const TIP_PLACEMENT_ATTR = "data-de-tip-placement"
-/**
- * Kept for the call sites that set it. Every tip opens without a wait now (the
- * kit's zero delay), so the attribute no longer changes anything.
- */
-export const TIP_INSTANT_ATTR = "data-de-tip-instant"
-/** Present = the label is a sentence and may take more than one line. */
 export const TIP_WRAP_ATTR = "data-de-tip-wrap"
 /** Written on the card itself while it is visible. */
 const OPEN_ATTR = "data-de-tip-open"
 
-export type TipSide = "above" | "below"
+type TipSide = "above" | "below"
 
-export interface TipOptions {
-  /** Try this side first. Default `"below"`; see `DEFAULT_SIDE`. */
-  side?: TipSide
-  /** No-op since tips open instantly; kept so existing call sites compile. */
-  instant?: boolean
-  /** The label is prose. Let it wrap rather than run as one line. */
-  wrap?: boolean
+interface TipOptions {
   /** Appended after a `·`, for what the name cannot say: a shortcut, a result. */
   second?: string
 }
 
 /** Enough of a `DOMRect` to place against, so a test can hand over a literal. */
-export interface TipRect {
+interface TipRect {
   left: number
   top: number
   width: number
   height: number
 }
 
-export interface TipSize {
+interface TipSize {
   width: number
   height: number
 }
 
-export interface TipPlacement {
+interface TipPlacement {
   /** Viewport pixels, ready for the card's `translate()`. */
   left: number
   top: number
@@ -157,9 +150,8 @@ export interface TipPlacement {
  * bottom bar, which sounds like two rules and is one: below, unless below is
  * off the screen. The bar is pinned `panelInset` (12px) from the bottom of the
  * viewport and stands 36 tall, so a card needing ~33px plus an 8px gap cannot
- * fit under it and `placeTip` flips it above on its own. The attribute exists
- * for a surface that wants to declare the intent rather than inherit it from
- * the geometry — it costs nothing and it survives the bar being moved.
+ * fit under it and `placeTip` flips it above on its own, so no call site
+ * declares a side.
  */
 const DEFAULT_SIDE: TipSide = "below"
 
@@ -188,6 +180,9 @@ const WARM = Number.parseFloat(t.duration.resize)
  * The gap between two toolbar buttons is 4px of padding the pointer crosses in
  * one frame. Closing on the way across and reopening on the other side is two
  * state changes for something the reader experienced as one movement.
+ *
+ * Not a `tokens.duration`: those time motion, and this times nothing visible —
+ * it is an allowance for the pointer, owned here because only the tooltip waits.
  */
 const GRACE = 80
 
@@ -301,28 +296,11 @@ const now = (): number =>
     ? performance.now()
     : Date.now()
 
-/**
- * Reduced motion, asked of the platform rather than guessed.
- *
- * The stylesheet already clamps the transitions; this is the other half, for
- * the two things a stylesheet cannot reach — the spring, which is arithmetic in
- * this file, and the swap, which is a scripted animation. The query object is
- * cached because `matchMedia` allocates, and it is re-read every time because
- * the setting can change while the editor is open.
- *
- * Guarded for jsdom, which implements neither this nor the Web Animations API
- * and drives every suite in `test/`.
+/*
+ * Reduced motion (`prefersReducedMotion`, from `motion.ts`): the stylesheet
+ * clamps the transitions, and the runtime also asks, so it never starts a
+ * travel and closes in one step rather than on the exit timer.
  */
-let reduceQuery: MediaQueryList | null | undefined
-function prefersReducedMotion(): boolean {
-  if (reduceQuery === undefined) {
-    reduceQuery =
-      typeof window !== "undefined" && typeof window.matchMedia === "function"
-        ? window.matchMedia("(prefers-reduced-motion: reduce)")
-        : null
-  }
-  return reduceQuery?.matches === true
-}
 
 /** True when frames exist. jsdom only has them under `pretendToBeVisual`. */
 const framed = (): boolean => typeof requestAnimationFrame === "function"
@@ -332,12 +310,8 @@ const framed = (): boolean => typeof requestAnimationFrame === "function"
 interface Card {
   /** The placed, sized box. Carries the open attribute and the side variables. */
   root: HTMLElement
-  /** The surface, and the exit fade. */
-  box: HTMLElement
-  /** Two label slots from the port this replaced; only `live` is shown. */
-  layers: [HTMLElement, HTMLElement]
-  /** Which of the two is showing. */
-  live: 0 | 1
+  /** The label's text. Its layer centres it in the box. */
+  face: HTMLElement
   /** An unseen copy of the face, for measuring. See `css/tooltip.ts`. */
   ruler: HTMLElement
 }
@@ -348,10 +322,13 @@ let card: Card | null = null
 let phase: Phase = "closed"
 /** The control the card is showing for. */
 let anchored: HTMLElement | null = null
-/** The control the pointer is on. */
+/** The control the pointer (or keyboard focus) is on. */
 let hovered: HTMLElement | null = null
-/** The side `anchored` asked for, kept so scrolling can re-place without it. */
-let preferred: TipSide = DEFAULT_SIDE
+/**
+ * What put `hovered` there. A focus change elsewhere answers only a tip that
+ * focus opened; one the pointer rests on stays until the pointer leaves.
+ */
+let hoveredBy: "pointer" | "focus" | null = null
 /** The last measured card size, kept so scrolling can re-place without it. */
 let measured: TipSize = { width: 0, height: 0 }
 /** Where the card was last put, so a warm successor can travel from it. */
@@ -415,34 +392,25 @@ function nearby(next: TipRect): boolean {
 
 // ---- the card ------------------------------------------------------------
 
-function layer(): HTMLElement {
-  return el("div", { class: "de-tip-layer" }, [el("div", { class: "de-tip-face" })])
-}
-
 /** The card, made once. Idempotent, and re-parents itself if it is torn out. */
 function ensureCard(): Card {
   if (card && card.root.isConnected && card.ruler.isConnected) return card
   if (!card) {
-    const layers: [HTMLElement, HTMLElement] = [layer(), layer()]
-    layers[1].style.opacity = "0"
-    const box = el("div", { class: "de-tip-box" }, layers)
+    const face = el("div", { class: "de-tip-face" })
+    const box = el("div", { class: "de-tip-box" }, [el("div", { class: "de-tip-layer" }, [face])])
     card = {
       root: el("div", {
         class: "de-tip",
         // Decoration. The control keeps its own name — see the header.
         "aria-hidden": "true",
       }, [box]),
-      box,
-      layers,
-      live: 0,
+      face,
       ruler: el("div", { class: "de-tip-ruler de-tip-face" }),
     }
   }
   document.body.append(card.root, card.ruler)
   return card
 }
-
-const face = (node: HTMLElement): HTMLElement => node.firstElementChild as HTMLElement
 
 function setWrap(node: HTMLElement, wrap: boolean): void {
   if (wrap) node.setAttribute(TIP_WRAP_ATTR, "")
@@ -475,21 +443,14 @@ function applySide(side: TipSide): void {
   card?.root.style.setProperty("--de-tip-origin", side === "above" ? "center bottom" : "center top")
 }
 
-/** Write the label into the live slot. Nothing slides, blurs or crossfades. */
+/** Write the label in place. Nothing slides, blurs or crossfades. */
 function relabel(text: string, wrap: boolean): void {
-  const c = ensureCard()
-  const target = face(c.layers[c.live])
+  const target = ensureCard().face
   target.textContent = text
   setWrap(target, wrap)
-  c.layers[c.live].style.opacity = "1"
-  c.layers[c.live ^ 1].style.opacity = "0"
 }
 
 // ---- reading the call site -----------------------------------------------
-
-/** The nearest ancestor carrying `attribute`, including the control itself. */
-const inherited = (node: HTMLElement, attribute: string): string | null =>
-  node.closest(`[${attribute}]`)?.getAttribute(attribute) ?? null
 
 const restoreTitle = (): void => {
   if (!borrowed) return
@@ -599,14 +560,7 @@ function show(node: HTMLElement): void {
     size = measure(label.text, wrap)
   }
 
-  const declared = inherited(node, TIP_PLACEMENT_ATTR)
-  preferred = declared === "above" || declared === "below" ? declared : DEFAULT_SIDE
-  const placement = placeTip({
-    anchor: node.getBoundingClientRect(),
-    tip: size,
-    viewport,
-    prefer: preferred,
-  })
+  const placement = placeTip({ anchor: node.getBoundingClientRect(), tip: size, viewport })
 
   anchored = node
   measured = size
@@ -658,11 +612,17 @@ function beginClose(instant: boolean): void {
  *
  * Deduplicated on `hovered` because this is delegated from the document and
  * `pointerover` bubbles — crossing from a button's icon to the button itself is
- * a second event about the same control.
+ * a second event about the same control. The pointer arriving on a control
+ * focus already opened takes the tip over; focus arriving under the pointer
+ * does not, so the tip stays the pointer's.
  */
-function schedule(node: HTMLElement): void {
-  if (node === hovered) return
+function schedule(node: HTMLElement, by: "pointer" | "focus"): void {
+  if (node === hovered) {
+    if (by === "pointer") hoveredBy = by
+    return
+  }
   hovered = node
+  hoveredBy = by
   clearLeaveTimer()
   show(node)
 }
@@ -670,6 +630,7 @@ function schedule(node: HTMLElement): void {
 /** Leave a control: nothing for `GRACE`, then close. */
 function leave(): void {
   hovered = null
+  hoveredBy = null
   if (phase === "closed") return
   clearLeaveTimer()
   leaveTimer = setTimeout(() => {
@@ -687,6 +648,7 @@ function leave(): void {
  */
 export function hideTip(): void {
   hovered = null
+  hoveredBy = null
   clearLeaveTimer()
   if (phase === "open") beginClose(true)
   else if (phase === "closing") finishClose()
@@ -720,7 +682,6 @@ function reposition(): void {
     anchor: anchored.getBoundingClientRect(),
     tip: measured,
     viewport: { width: window.innerWidth, height: window.innerHeight },
-    prefer: preferred,
   })
   applySide(placement.side)
   /* A jump: the card is keeping up with a control the reader is scrolling
@@ -814,7 +775,7 @@ export function installTooltips(): () => void {
   const onPointerOver = (event: PointerEvent): void => {
     if (event.pointerType === "touch") return
     const node = anchorFor(event.target)
-    if (node) schedule(node)
+    if (node) schedule(node, "pointer")
     else leave()
   }
   /* Leaving the window entirely: `relatedTarget` is null and no `pointerover`
@@ -822,10 +783,16 @@ export function installTooltips(): () => void {
   const onPointerOut = (event: PointerEvent): void => {
     if (event.relatedTarget === null) leave()
   }
+  /*
+   * Focus landing somewhere untipped closes only a tip that focus opened. A tip
+   * the pointer rests on is the pointer's: a panel taking focus as it opens, or
+   * a script focusing a field, says nothing about it — the same reasoning as
+   * `onFocusOut` below.
+   */
   const onFocusIn = (event: FocusEvent): void => {
     const node = anchorFor(event.target)
-    if (node && focusIsVisible(node)) schedule(node)
-    else leave()
+    if (node && focusIsVisible(node)) schedule(node, "focus")
+    else if (hoveredBy === "focus") leave()
   }
   /*
    * Only the control the card is FOR. A `focusout` anywhere else in the
@@ -837,8 +804,16 @@ export function installTooltips(): () => void {
   const onFocusOut = (event: FocusEvent): void => {
     if (anchorFor(event.target) === anchored) hideTip()
   }
+  /*
+   * An Escape that closes an open card is spent, and is marked so: the shell's
+   * last-resort Escape (`shell/shortcuts.ts`, which skips a `defaultPrevented`
+   * press) would otherwise collapse the editor on the same press. Close, then
+   * deselect, then collapse — one step per press.
+   */
   const onKeyDown = (event: KeyboardEvent): void => {
-    if (event.key === "Escape") hideTip()
+    if (event.key !== "Escape") return
+    if (phase === "open") event.preventDefault()
+    hideTip()
   }
   /*
    * A press is an answer. The reader stopped asking what the control does and
@@ -880,25 +855,24 @@ export function installTooltips(): () => void {
 /**
  * The attribute bag for an `el()` call — the shape the chrome already builds.
  *
- * `shell/toolbar.ts` has a private helper of exactly this signature, down to
- * the ` · ` separator, and its comment argues the case: one parameter rather
- * than two "because the tip has one shape, and a second overload would be how
- * the separator ends up spelled two ways". That is now true of the whole
- * chrome rather than of one file, which is why the helper moves here.
+ * `shell/toolbar.ts` still has a private helper (`tip`) that builds this bag,
+ * down to the ` · ` separator and the key order, and its comment argues the
+ * case: one parameter rather than two "because the tip has one shape, and a
+ * second overload would be how the separator ends up spelled two ways". That is
+ * true of the whole chrome rather than of one file, so `tipAttrs(label,
+ * { second })` returns exactly what that helper returns, for it to switch to.
  *
  * `aria-label` comes with it and is not optional. A card marked `aria-hidden`
  * is not a name, so a control given only a tip is a control with no accessible
  * name at all — the thing this pairing exists to make unspellable.
  */
 export function tipAttrs(label: string, options: TipOptions = {}): Record<string, string> {
-  const attrs: Record<string, string> = {
-    [TIP_ATTR]: options.second ? `${label} · ${options.second}` : label,
-    "aria-label": label,
-  }
-  if (options.side) attrs[TIP_PLACEMENT_ATTR] = options.side
-  if (options.instant) attrs[TIP_INSTANT_ATTR] = ""
-  if (options.wrap) attrs[TIP_WRAP_ATTR] = ""
-  return attrs
+  return { [TIP_ATTR]: tipText(label, options), "aria-label": label }
+}
+
+/** The card's text: the name, then ` · ` and the second part when there is one. */
+function tipText(label: string, options: TipOptions): string {
+  return options.second ? `${label} · ${options.second}` : label
 }
 
 /**
@@ -914,10 +888,7 @@ export function tipAttrs(label: string, options: TipOptions = {}): Record<string
  * set it at the call site.
  */
 export function tip(node: HTMLElement, label: string, options: TipOptions = {}): void {
-  node.setAttribute(TIP_ATTR, options.second ? `${label} · ${options.second}` : label)
-  if (options.side) node.setAttribute(TIP_PLACEMENT_ATTR, options.side)
-  if (options.instant) node.setAttribute(TIP_INSTANT_ATTR, "")
-  if (options.wrap) node.setAttribute(TIP_WRAP_ATTR, "")
+  node.setAttribute(TIP_ATTR, tipText(label, options))
   /* A `title` left behind would paint the OS tip over ours a second later. */
   node.removeAttribute("title")
 }

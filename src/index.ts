@@ -1,9 +1,23 @@
 /**
  * Entry point for the Figma-style DesignLayer overlay.
  *
- * Loaded by the dev proxy on :3456 after the vendored React Rewrite bundle,
- * which we drive headlessly for fiber -> source resolution and source writes.
- * Nothing here runs on :3000.
+ * Loaded by the dev proxy (each app's editor runs on a port of its own, see
+ * `runtime/editor-ports.mjs`) after the vendored React Rewrite bundle, which
+ * we drive headlessly for fiber -> source resolution. Nothing here runs on the
+ * app's own dev server port.
+ *
+ * THE BOOT, as one value (`BootPhase`, moved only by `setPhase` below):
+ *
+ *   (module)          --boot()-->                         waiting
+ *   waiting           --SLOW_BOOT ms, still waiting-->    slow (notice shows)
+ *   waiting | slow    --host + bridge ready, lanes in-->  attached
+ *   waiting | slow    --a gate throws-->                  failed
+ *   waiting | slow    --a lane install throws-->          failed
+ *
+ * Inside a canvas-view frame `boot` never runs and no phase is published.
+ * The phase is published as `window.__designlayer.boot`, with a
+ * `designlayer:boot` event on `window` at each move, so a tool or an agent
+ * probing the page reads one value instead of waiting for a console line.
  */
 
 import { hydrateScoped } from "./core/app-scope"
@@ -87,7 +101,40 @@ if (!IN_BOARD_FRAME) installWayBack()
 const SLOW_BOOT = 1200
 const BOOT_WAIT = "boot-wait"
 
+type BootPhase = "waiting" | "slow" | "attached" | "failed"
+
+declare global {
+  interface Window {
+    /** Read-only facts for tools and agents probing the page. */
+    __designlayer?: { boot: BootPhase }
+  }
+}
+
+/*
+ * The one writer of the phase. Published on `window` rather than as an
+ * attribute on `<html>`: writing on `<html>` before the host has hydrated is
+ * what `core/host-readiness.ts` forbids (a hydration mismatch in the app).
+ */
+let phase: BootPhase | null = null
+function setPhase(next: BootPhase): void {
+  if (phase === next || phase === "attached" || phase === "failed") return
+  phase = next
+  window.__designlayer = { ...window.__designlayer, boot: next }
+  window.dispatchEvent(new CustomEvent("designlayer:boot", { detail: next }))
+}
+
+/** The one failure message, for a gate that gave up or a lane that threw. */
+function failBoot(error: unknown): void {
+  retract(BOOT_WAIT)
+  console.warn("[designlayer]", error)
+  setPhase("failed")
+  // The one message that has to reach the page rather than the console: the
+  // editor is not coming up, and nothing else on screen will say so.
+  notify("Could not attach to this page. Reload to try again.", "error")
+}
+
 async function boot(): Promise<void> {
+  setPhase("waiting")
   /*
    * Started first and awaited just before the stores exist, so the wait for the
    * machine copy of notes runs beside the wait for the host instead of after it.
@@ -106,16 +153,16 @@ async function boot(): Promise<void> {
    * that has not happened yet.
    *
    * The notice is on a timer rather than immediate, so a fast host never sees
-   * it. It is taken back on both paths, including the throw, because a
-   * "waiting" toast outliving the thing it described would be worse than never
-   * having said anything. Clearing the timer alone only covered a notice not
-   * yet shown; one already up stayed for its full four seconds beside a booted
-   * editor, or beside the failure card it contradicts — hence the id.
+   * it. It is sticky — the wait can run twenty seconds (ten for the host, ten
+   * for the bridge), and a notice that expired after four left the rest of the
+   * wait silent — and it is taken back on every path, because a "waiting"
+   * toast outliving the thing it described would be worse than never having
+   * said anything — hence the id.
    */
-  const slow = setTimeout(
-    () => notify({ title: "Waiting for the app…", id: BOOT_WAIT }),
-    SLOW_BOOT
-  ) as unknown as number
+  const slow = setTimeout(() => {
+    setPhase("slow")
+    notify({ title: "Waiting for the app…", id: BOOT_WAIT, sticky: true })
+  }, SLOW_BOOT) as unknown as number
   try {
     // In this order: the bridge boots the vendor, and the vendor's boot is
     // work the app's first paint should not wait for. On a client-rendered
@@ -125,16 +172,32 @@ async function boot(): Promise<void> {
     bridge = await whenBridgeReady()
   } catch (error) {
     clearTimeout(slow)
-    retract(BOOT_WAIT)
-    console.warn("[designlayer]", error)
-    // The one message that has to reach the page rather than the console: the
-    // editor is not coming up, and nothing else on screen will say so.
-    notify("Could not attach to this page. Reload to try again.", "error")
+    failBoot(error)
     return
   }
   clearTimeout(slow)
   retract(BOOT_WAIT)
 
+  /*
+   * A lane that throws while installing fails the boot the same way a gate
+   * does. Unhandled, it left a half-mounted editor (some panels, no keyboard)
+   * and no message.
+   */
+  try {
+    await attach(bridge, hydrated)
+  } catch (error) {
+    failBoot(error)
+    return
+  }
+  setPhase("attached")
+  // Kept for the tools that still wait for it; new tools read the phase.
+  console.info("[designlayer] Figma-style overlay ready")
+}
+
+async function attach(
+  bridge: Awaited<ReturnType<typeof whenBridgeReady>>,
+  hydrated: Promise<unknown>
+): Promise<void> {
   const shell = mountShell()
   /*
    * Straight after the shell, because it is the other half of the inset.
@@ -258,7 +321,6 @@ async function boot(): Promise<void> {
   prepareToasterOnFirstInput()
 
   context.refresh()
-  console.info("[designlayer] Figma-style overlay ready")
 }
 
 if (!IN_BOARD_FRAME) void boot()

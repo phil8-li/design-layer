@@ -12,9 +12,17 @@ import { shellCss } from "../core/css"
 import { CHROME_ATTR, el } from "../core/dom"
 import { focusControl, installFocusModality } from "../core/focus"
 import type { EditorSlots } from "../core/context"
-import { editorOwnsInput, getState, setState, subscribe } from "../core/store"
+import {
+  editorOwnsInput,
+  editorStandDownChanged,
+  getState,
+  setChromeHidden,
+  setState,
+  subscribe,
+} from "../core/store"
+import { notifyInsets } from "./insets"
 import { createLauncher } from "./launcher"
-import { mountOverlayScrollbar } from "./overlay-scrollbar"
+import { inkWhileScrolling, mountOverlayScrollbar } from "./overlay-scrollbar"
 import { mountPanelResize } from "./resize"
 
 const STYLE_ID = "designlayer-shell-style"
@@ -50,7 +58,8 @@ function restoreChromeFocus(): () => void {
    * event keeps descending to our controls and its default action survives.
    * While the editor owns input, only events aimed at our chrome are touched,
    * so the vendor keeps its guard everywhere it actually means it — over the
-   * app being edited. Interactive mode widens that to the app; see below.
+   * app being edited. When the editor stands down, the app's events are
+   * declawed too, but only for the vendor's turn; see `reclaw`.
    */
   const declaw = (event: Event) => {
     const target = event.target
@@ -63,12 +72,14 @@ function restoreChromeFocus(): () => void {
      * gesture aimed at the app, so with the mode ON the app stayed exactly as
      * dead as with it off — an app button received neither pointerdown nor
      * click. Declawing over the app is therefore the mode's second half, and
-     * the one that actually makes the claim true.
+     * the one that actually makes the claim true. Hidden chrome and canvas
+     * view stand the editor down the same way, so they declaw the same way.
      */
     if (!ours && editorOwnsInput()) return
-    event.stopPropagation = () => {}
-    event.stopImmediatePropagation = () => {}
-    event.preventDefault = () => {}
+    event.stopPropagation = noop
+    event.stopImmediatePropagation = noop
+    event.preventDefault = noop
+    if (!ours) appEvents.add(event)
 
     // Focus is forced only for our own fields. Over the app the native default
     // action is enough, now that nothing is suppressing it.
@@ -87,12 +98,50 @@ function restoreChromeFocus(): () => void {
     focusControl(focusable, { preventScroll: true })
   }
 
+  /*
+   * THE APP'S OWN CALLS ARE THE APP'S. An app event is declawed only for the
+   * vendor's guard, and gets its native methods back the moment the guard has
+   * run.
+   *
+   * Declawing for the whole path made the app's own `preventDefault()` and
+   * `stopPropagation()` no-ops too, for every click while the editor stood
+   * down: a router `<Link>` followed its `href` as a full page load (which
+   * reboots the editor), and a "click outside" listener fired through the
+   * app's own `stopPropagation`.
+   *
+   * This listener is on `<html>` in the capture phase: the first stop after
+   * `document`, where the vendor's guard listens. So every `document` capture
+   * listener, the guard included and whatever order it registered in, still
+   * meets the no-ops, and everything from `<html>` down — the app's React root,
+   * its own elements, every bubble listener — meets the native methods again.
+   * Deleting the own-property overrides uncovers the ones on the prototype.
+   * Chrome events keep theirs for the whole path: the guard is not the only
+   * thing that must not cancel our own gestures (see `focusControl` above).
+   */
+  const appEvents = new WeakSet<Event>()
+  const reclaw = (event: Event) => {
+    if (!appEvents.has(event)) return
+    appEvents.delete(event)
+    const own = event as unknown as Record<string, unknown>
+    delete own.stopPropagation
+    delete own.stopImmediatePropagation
+    delete own.preventDefault
+  }
+
   const types = ["pointerdown", "mousedown", "click", "pointerup", "mouseup", "dblclick"]
-  for (const type of types) window.addEventListener(type, declaw, true)
+  for (const type of types) {
+    window.addEventListener(type, declaw, true)
+    document.documentElement.addEventListener(type, reclaw, true)
+  }
   return () => {
-    for (const type of types) window.removeEventListener(type, declaw, true)
+    for (const type of types) {
+      window.removeEventListener(type, declaw, true)
+      document.documentElement.removeEventListener(type, reclaw, true)
+    }
   }
 }
+
+const noop = (): void => {}
 
 /**
  * Words typed into one of our fields stay in it.
@@ -148,68 +197,22 @@ function holdTextInFields(): () => void {
  */
 const SCROLL_IDLE_MS = 700
 function markScrolling(): () => void {
-  const timers = new WeakMap<Element, ReturnType<typeof setTimeout>>()
+  const ink = inkWhileScrolling(SCROLL_IDLE_MS)
   const onScroll = (event: Event): void => {
     const node = event.target
     if (!(node instanceof Element) || !node.hasAttribute(CHROME_ATTR)) return
-    node.setAttribute("data-scrolling", "")
-    clearTimeout(timers.get(node))
-    timers.set(node, setTimeout(() => node.removeAttribute("data-scrolling"), SCROLL_IDLE_MS))
+    ink(node)
   }
   document.addEventListener("scroll", onScroll, { capture: true, passive: true })
   return () => document.removeEventListener("scroll", onScroll, true)
 }
 
-/**
- * Who wants to know when the app area changes width.
- *
- * The two panel flags are store state and anything can subscribe to them, but
- * the WIDTHS deliberately are not: a seam drag moves them on every frame and
- * routing that through the store would wake every lane in the editor on every
- * pointermove (see the note on the subscription in `mountShell`). So the one
- * fact a floating surface actually needs — "the edges moved, re-check yourself"
- * — is published here instead, already filtered by `resize.ts` down to the
- * frames where the reported inset really changed.
- *
- * Module-level rather than on `Shell`, because the lanes that care install
- * after `mountShell` returns and would otherwise each have to be handed it.
+/*
+ * The inset readers moved to `insets.ts` so the launcher and the drag can
+ * share them; these re-exports keep the board, snapping and the responsive
+ * section importing from the shell, where they always have.
  */
-const insetListeners = new Set<() => void>()
-
-export function onInsetsChange(fn: () => void): () => void {
-  insetListeners.add(fn)
-  return () => insetListeners.delete(fn)
-}
-
-/**
- * What the panels are holding right now, in the app's own pixels.
- *
- * Read off the inline properties `syncInsets` writes rather than through
- * `getComputedStyle`, for the reason the launcher reads them the same way: a
- * caller woken by `onInsetsChange` is running immediately after those writes,
- * so the inline values are this frame's by construction. A caller that is not
- * gets the last settled pair, which is the same number every surface is
- * currently drawn against.
- */
-export function appInsets(): { left: number; right: number } {
-  const style = document.documentElement.style
-  const read = (name: string) => Number.parseFloat(style.getPropertyValue(name)) || 0
-  return { left: read("--de-left"), right: read("--de-right") }
-}
-
-/**
- * How wide the app believes it is: the window, less both panels.
- *
- * This is the width the app's own stylesheet is answering to — `shell/
- * app-viewport.ts` points its `vw` and its breakpoints at exactly this strip —
- * so anything in the chrome that reports "the width the app is laid out at"
- * has to ask this rather than `window.innerWidth`, or it describes a viewport
- * the app stopped using.
- */
-export function canvasWidth(): number {
-  const { left, right } = appInsets()
-  return Math.max(0, window.innerWidth - left - right)
-}
+export { appInsets, canvasWidth, onInsetsChange } from "./insets"
 
 export function mountShell(): Shell {
   if (!document.getElementById(STYLE_ID)) {
@@ -266,7 +269,7 @@ export function mountShell(): Shell {
    * at the end of its own exit (see `css/launcher.ts`) it is inert and
    * untabbable until the editor actually stands down.
    */
-  const launcher = createLauncher(() => setState({ chromeHidden: false, hovered: null }))
+  const launcher = createLauncher(() => setChromeHidden(false))
 
   /*
    * The panels stop being two independent slabs and become a row.
@@ -323,7 +326,7 @@ export function mountShell(): Shell {
     {
       class: "de-escape",
       type: "button",
-      onclick: () => setState({ chromeHidden: true }),
+      onclick: () => setChromeHidden(true),
     },
     ["Hide the editor and return to the page"]
   )
@@ -432,7 +435,6 @@ export function mountShell(): Shell {
     const right = chromeHidden ? 0 : resize.inset("right")
     style.setProperty("--de-left", `${left}px`)
     style.setProperty("--de-right", `${right}px`)
-    style.setProperty("--de-top", "0px")
 
     /*
      * The toolbar centres on a second pair that IGNORES hiding.
@@ -458,16 +460,18 @@ export function mountShell(): Shell {
      * Announced AFTER the properties are written, so a listener that clamps
      * itself against them reads this frame's edges rather than the last one's.
      *
-     * The bar's clamp reads these two inline values directly (see `edge` in
-     * `shell/launcher.ts`), which is only exact because of this ordering.
+     * The bar's clamp reads these two inline values directly (`readInset` in
+     * `shell/insets.ts`), which is only exact because of this ordering.
      */
-    for (const listener of insetListeners) listener()
+    notifyInsets()
   }
 
-  // The mode as a class, because one thing about it is CSS's to answer: whether
+  // The gate as a class, because one thing about it is CSS's to answer: whether
   // the app's `pointer-events: none` glyphs are hit-testable (see base.ts).
-  // Hidden chrome answers the same as interactive mode here — it is the same
-  // claim, that the editor is not standing between the pointer and the app.
+  // It mirrors `editorOwnsInput()`, so it recomputes whenever any of that
+  // gate's inputs moves (`editorStandDownChanged`), canvas view included:
+  // keyed on two of the inputs, it went stale after Interactive → canvas view
+  // → V, and the app's icons could not be selected until the next mode change.
   const syncMode = () => {
     document.documentElement.classList.toggle("designlayer-inspecting", editorOwnsInput())
   }
@@ -508,7 +512,7 @@ export function mountShell(): Shell {
   syncMode()
   syncChrome()
   // Only the panel toggles and the hide switch move the insets, and only the
-  // mode switch and the hide switch move the mode. `hovered` changes on every
+  // gate's inputs move the gate class. `hovered` changes on every
   // pointermove, so an unguarded subscription would write inline custom
   // properties — and force a style recalc of the whole app — on mouse motion.
   //
@@ -518,7 +522,7 @@ export function mountShell(): Shell {
   // `syncInsets` directly instead.
   const unsubscribe = subscribe((next, previous) => {
     const hiddenChanged = next.chromeHidden !== previous.chromeHidden
-    if (next.interactive !== previous.interactive || hiddenChanged) syncMode()
+    if (editorStandDownChanged(next, previous)) syncMode()
     if (hiddenChanged) syncChrome()
     if (
       !hiddenChanged &&
@@ -551,7 +555,6 @@ export function mountShell(): Shell {
       document.documentElement.classList.remove("designlayer-chrome-hidden")
       document.documentElement.style.removeProperty("--de-left")
       document.documentElement.style.removeProperty("--de-right")
-      document.documentElement.style.removeProperty("--de-top")
       document.documentElement.style.removeProperty("--de-bar-left")
       document.documentElement.style.removeProperty("--de-bar-right")
       document.documentElement.style.removeProperty(config.chrome.dockedPanel.offsetVar)

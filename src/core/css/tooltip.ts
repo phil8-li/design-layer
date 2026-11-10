@@ -36,8 +36,8 @@
  *                  is a CSS transition on that transform, so an interrupted
  *                  run restarts from where the card visibly is.
  *   .de-tip-box    THE SURFACE, and the exit fade.
- *   .de-tip-layer  The label's slot. Two exist from the port this replaced;
- *                  only one is ever shown now, and nothing crossfades.
+ *   .de-tip-layer  The label's slot, centring the face in the box. Nothing
+ *                  crossfades into it.
  *   .de-tip-face   THE TEXT. Padding and typography, and the only thing whose
  *                  natural size is ever measured.
  *
@@ -172,9 +172,9 @@ export const tooltipCss = `/* ---------- tooltip ---------- */
 }
 
 /*
- * A label, centred in the box. Two of these exist and only the live one is
- * shown; centred with a grid so a face that is momentarily wider than the box
- * (the frame between a relabel and the size write) overhangs evenly.
+ * The label, centred in the box with a grid, so a face that is momentarily
+ * wider than the box (the frame between a relabel and the size write)
+ * overhangs evenly.
  */
 .de-tip-layer {
   position: absolute;

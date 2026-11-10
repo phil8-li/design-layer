@@ -66,13 +66,16 @@ export function usingKeyboard(): boolean {
  * reads better than the `?.focus()` chain it replaces, and keeps the modality
  * decision in one place rather than at twenty call sites.
  *
- * CONTROLS, and the six remaining bare `focus()` calls are the exception rather
- * than an oversight: a rename input, the two filters, the search, the manual
- * path field and the note composer all focus a TEXT ENTRY to be typed into.
- * Their focus reads as a caret and a border, never as an outline ring, so there
- * is nothing here for the modality to decide — and two of them commit their
- * value on `blur`, which makes their focus the last thing worth routing through
- * a shared helper.
+ * CONTROLS. The bare `focus()` calls left in the chrome are of two other
+ * kinds, and neither is an oversight. Most focus a TEXT ENTRY to be typed into
+ * (a filter, a search, a path field, the note composer): their focus reads as
+ * a caret and a border, never as an outline ring, so there is nothing here for
+ * the modality to decide, and some commit their value on `blur`, which makes
+ * their focus the last thing worth routing through a shared helper. The rest
+ * move focus INTO or BACK OUT OF a container (the shortcuts sheet's card and
+ * the control it returns to, the board, a dialog), where the focused node is a
+ * landing spot rather than a control the gesture pressed. Grep `.focus(` for
+ * the current list; a new control-focus belongs here.
  */
 export function focusControl(
   element: HTMLElement | null | undefined,
@@ -162,5 +165,8 @@ export function installFocusModality(): () => void {
     document.querySelector(`[${FOCUS_ATTR}]`)?.removeAttribute(FOCUS_ATTR)
     document.documentElement.removeAttribute(MODALITY_ATTR)
     document.getElementById(MODALITY_STYLE_ID)?.remove()
+    // Back to the state an install starts in, so a re-install's first keydown
+    // is not a no-op against a stale `keyboard`.
+    keyboard = false
   }
 }

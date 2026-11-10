@@ -40,9 +40,16 @@ import { el } from "./dom"
 export interface TravellingSurface {
   /** Put the surface under `selected`, or hide it when there is nothing to mark. */
   track(selected: HTMLElement | null | undefined): void
+  /**
+   * Stop re-measuring: disconnect the resize observer and drop a placement
+   * still queued for this turn. For a strip that is being thrown away — the
+   * observer otherwise holds every item it ever watched. The surface node and
+   * its last placement stay; the caller owns the DOM.
+   */
+  destroy(): void
 }
 
-export interface TravellingSurfaceOptions {
+interface TravellingSurfaceOptions {
   /** Class for the moving node — `de-tab-pill`, `de-segment-thumb`. */
   className: string
   /** Attribute the stylesheet reads to know a measurement exists. */
@@ -63,7 +70,7 @@ export interface TravellingSurfaceOptions {
  * that container's content, the offsets stay correct in a strip that has
  * scrolled sideways.
  */
-export function installTravellingSurface(
+function installTravellingSurface(
   container: HTMLElement,
   options: TravellingSurfaceOptions
 ): TravellingSurface {
@@ -143,6 +150,10 @@ export function installTravellingSurface(
         }
       }
       placeSoon(read)
+    },
+    destroy() {
+      observer?.disconnect()
+      queuedReads.delete(read)
     },
   }
 }

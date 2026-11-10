@@ -3,13 +3,18 @@
  *
  * Nearly all of this chrome's motion is a stylesheet declaration, which means
  * the reduced-motion blanket in `css/base.ts` clamps it and no module has to
- * think about it. Three things fall outside that: `scrollIntoView`'s `behavior`
- * is an argument rather than a property, `shell/resize.ts` animates a width
- * from JS a frame at a time, and both need the same question answered.
+ * think about it. What falls outside that is motion JavaScript decides:
+ * `scrollIntoView`'s `behavior` is an argument rather than a property (five
+ * callers of `smoothScroll`), eight modules time their own steps in script
+ * (the panel resize, the board, the tooltip, the selection outline, row
+ * leaves, class chips, the insert and annotation surfaces), and `playExit`
+ * below plays a fade on a copy. Every one of them needs the same question
+ * answered.
  *
- * Asking it in one place is the point. Written inline it was three copies of
- * the same guarded `matchMedia` call, and a fourth would have been written
- * without the guard.
+ * Asking it in one place is the point: `prefersReducedMotion` is the only
+ * `matchMedia("(prefers-reduced-motion: reduce)")` in `src/`. Written inline it
+ * was a copy per module, and the next copy would have been written without the
+ * guard.
  */
 
 import { tokens } from "./tokens"
@@ -47,18 +52,18 @@ export function smoothScroll(): ScrollBehavior {
 const ARRIVE_RISE = 3
 
 /** Which side of its trigger a surface was actually placed on. */
-export type ArriveSide = "below" | "above"
+type ArriveSide = "below" | "above"
 
 /**
- * Which way it sits horizontally, for the one surface where that is a decision.
+ * Which way it sits horizontally.
  *
  * `center` for anything anchored to a control, because a popover under a field
  * spans the field: there is no left or right corner nearer the trigger than the
- * middle of the edge. A CONTEXT menu is different — it hangs off a single point
- * — so its nearest corner is a real corner, and the layer menu is the only
- * caller that passes anything but the default.
+ * middle of the edge. Both callers (`annotations/canvas.ts`, `panels/app-chooser.ts`)
+ * take the default; the layer menu, a context menu that could have used a real
+ * corner, has no entrance at all.
  */
-export type ArriveEdge = "left" | "right" | "center"
+type ArriveEdge = "left" | "right" | "center"
 
 /**
  * Point a popover's entrance at the control that opened it.
@@ -84,6 +89,14 @@ export type ArriveEdge = "left" | "right" | "center"
  * Reduced motion needs no branch here. The blanket in `css/base.ts` clamps the
  * animation to nothing, and two custom properties nobody interpolates cost
  * nothing to have written.
+ *
+ * ## Who reads it today
+ *
+ * Less than the above suggests. Neither caller's surface wears `.de-arrive`
+ * any more (the kit opens popovers instantly), and the keyframe ignores `rise`.
+ * The one live reader is the annotation composer's sheet (`css/annotations.ts`),
+ * whose `transform-origin` takes `--de-arrive-origin`, so its exit copy
+ * (`playExit`) shrinks toward the pin. The app chooser's menu reads neither.
  *
  * `core/tooltip.ts`'s `applySide` is the same function for the tooltip's own
  * pair of properties. They are not merged because the tooltip is a port of an
@@ -113,7 +126,7 @@ export function arriveFrom(
  * to 0.98 over `exit` on `easeExit`. Both are shorter than any entrance,
  * because dismissal hands control back.
  */
-export type ExitKind = "menu" | "modal"
+type ExitKind = "menu" | "modal"
 
 const EXIT_SCALE: Record<ExitKind, number> = { menu: 0.99, modal: 0.98 }
 const EXIT_EASE: Record<ExitKind, string> = { menu: tokens.easeReveal, modal: tokens.easeExit }

@@ -40,6 +40,40 @@
  * own animation (a fold settling, a window resize) the inset jumps straight to
  * the destination and the panel slides over ground the app has already given
  * up, which is exactly what the hide/show transition already does.
+ *
+ * ## The two machines, per side
+ *
+ * Open or closed is the SHELL's state (`layersOpen` / `inspectorOpen`); this
+ * file holds a copy in `Entry.open`, written only by `setOpen`, and reports a
+ * close upward through `onClose` rather than taking one. `Entry.collapse` is
+ * the only state of its own, and it exists only for the length of a drag:
+ *
+ *   open      --drag below half the minimum-->  collapsing  (collapse "pending")
+ *   collapsing --drag back above it-->          open        (collapse "none")
+ *   collapsing --pointercancel-->               open        (collapse "none")
+ *   collapsing --pointerup-->                   closed      (onClose, collapse "none")
+ *   open      --Enter on the focused seam-->    closed      (onClose at once)
+ *   closed    --toolbar toggle | key-->         open        (setOpen from the shell)
+ *
+ * Only a callback that arrives while the controller is dragging can arm
+ * "pending". The library also calls `onCollapsedChange` from its keyboard map
+ * (Enter on a separator, WAI-ARIA's window-splitter "collapse" key), with no
+ * drag at all; that once set a flag nothing acted on until the NEXT ordinary
+ * drag ended, which then closed the panel. Enter now closes at once, the same
+ * way a drag-to-close does, and an ordinary resize can never close a panel.
+ *
+ * Widths, per side (see the next section for why there are two):
+ *
+ *   prefit   --ready()-->                       fitted to innerWidth (jumped)
+ *   fitted to innerWidth --first frame-->       fitted to the rail   (jumped, notify)
+ *   fitted   --drag end | arrow key | reset-->  desired = n, persisted, layout()
+ *   fitted   --window resize | setOpen-->       applied re-derived from desired
+ *   fitted   --size change-->                   painted; reported to the shell
+ *                                               only when the inset moved
+ *
+ * DESIRED never comes from the fitting pass; APPLIED never reaches storage;
+ * REPORTED is the last inset the shell was told, so an unchanged one costs
+ * nothing.
  */
 
 import {
@@ -48,10 +82,12 @@ import {
   createPanelGroup,
   FILL_ATTRIBUTE,
   SEPARATOR_ATTRIBUTE,
+  TRANSITION,
 } from "motion-panels"
 import type { PanelController, PanelOptions } from "motion-panels"
 
 import { el } from "../core/dom"
+import { readJsonPref, writeJsonPref } from "../core/prefs"
 import { tokens } from "../core/tokens"
 import { prefersReducedMotion } from "../core/motion"
 
@@ -124,25 +160,29 @@ const SPECS: Record<PanelSide, Spec> = {
  * by hand, with nothing keeping them in agreement. Motion wants seconds and a
  * number array where CSS wants a string, which is why the conversion exists;
  * it is not a reason for the values to be typed twice.
+ *
+ * REACH: motion-panels 0.6 applies this transition only to a fold to or from
+ * zero. A settle from one width to another (a seam double-click, a keyboard
+ * resize, a window re-fit) uses the library's own default, 0.25s on the same
+ * curve, and the library zeroes that itself under reduced motion.
  */
 const FOLD = {
   duration: Number.parseFloat(tokens.duration.resize) / 1000,
-  ease: cubicBezierPoints(tokens.ease),
+  ease: cubicBezierPoints(tokens.ease) ?? TRANSITION.ease,
 } as const
 
 /**
- * `cubic-bezier(a, b, c, d)` as the four numbers Motion takes.
+ * `cubic-bezier(a, b, c, d)` as the four numbers Motion takes, or undefined if
+ * the token is ever written in a form this cannot read — a keyword, say.
  *
- * Falls back to the curve's own control points if the token is ever written in
- * a form this cannot read — a keyword, say. A fold on a slightly wrong curve is
+ * The fallback above is the library's own default curve rather than the
+ * token's points typed out a second time: a fold on a slightly wrong curve is
  * a much smaller failure than a fold that throws, and the test suite pins the
  * token's shape.
  */
-function cubicBezierPoints(curve: string): [number, number, number, number] {
+function cubicBezierPoints(curve: string): [number, number, number, number] | undefined {
   const numbers = curve.match(/-?\d*\.?\d+/g)?.map(Number)
-  return numbers?.length === 4
-    ? (numbers as [number, number, number, number])
-    : [0.32, 0.72, 0, 1]
+  return numbers?.length === 4 ? (numbers as [number, number, number, number]) : undefined
 }
 
 /**
@@ -150,9 +190,9 @@ function cubicBezierPoints(curve: string): [number, number, number, number] {
  *
  * Every other transition here is a stylesheet declaration, so the blanket in
  * `css/base.ts` clamps it. This one is a JS animation writing an inline width
- * per frame, and no media query can touch it: a reader who asked for less
- * motion still got 240ms of panel width on a seam double-click, a keyboard
- * resize, or a window re-fit.
+ * per frame, and no media query can touch it, so the fold asks here. (The
+ * library's default timing, used for width-to-width settles, already asks
+ * the same media query itself; see REACH on `FOLD`.)
  *
  * The query itself lives in `core/motion.ts`, which is where the other two
  * places JS has to ask this question read it from.
@@ -167,45 +207,36 @@ function foldTransition(): typeof FOLD | { duration: 0 } {
  * A panel width is a working preference, so it outlives the tab.
  *
  * Same bargain the launcher's corner and the theme toggle already make, and
- * the same guard: `localStorage` does not return null when an origin's storage
- * is blocked, it THROWS on property access, and this runs during boot.
+ * through the same guard (`core/prefs.ts`): this read runs during boot, and
+ * blocked storage throws rather than answering null.
  */
 const STORAGE_KEY = "designlayer:panel-widths"
 
 type Widths = Partial<Record<PanelSide, number>>
 
-function storedWidths(): Widths {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (!raw) return {}
-    const parsed: unknown = JSON.parse(raw)
-    if (typeof parsed !== "object" || parsed === null) return {}
-    const widths: Widths = {}
-    for (const side of SIDES) {
-      const value = (parsed as Record<string, unknown>)[side]
-      // A stored width is clamped on the way IN as well as on the way out: a
-      // hand-edited or stale entry should not be able to mount the editor with
-      // a panel wider than the screen.
-      if (typeof value !== "number" || !Number.isFinite(value)) continue
-      widths[side] = Math.max(SPECS[side].minSize, Math.round(value))
-    }
-    return widths
-  } catch {
-    return {}
+function parseWidths(parsed: unknown): Widths | null {
+  if (typeof parsed !== "object" || parsed === null) return null
+  const widths: Widths = {}
+  for (const side of SIDES) {
+    const value = (parsed as Record<string, unknown>)[side]
+    // A stored width is clamped on the way IN as well as on the way out: a
+    // hand-edited or stale entry should not be able to mount the editor with
+    // a panel wider than the screen.
+    if (typeof value !== "number" || !Number.isFinite(value)) continue
+    widths[side] = Math.max(SPECS[side].minSize, Math.round(value))
   }
+  return widths
 }
 
-function rememberWidths(widths: Record<PanelSide, number>): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(widths))
-  } catch {
-    // The drag still worked; it just will not outlive the tab.
-  }
-}
+const storedWidths = (): Widths => readJsonPref(STORAGE_KEY, parseWidths) ?? {}
+
+const rememberWidths = (widths: Record<PanelSide, number>): void =>
+  writeJsonPref(STORAGE_KEY, widths)
 
 // ────────────────────────────────────────────────────────── the rail ───────
 
 interface Entry {
+  side: PanelSide
   controller: PanelController<number>
   panel: HTMLElement
   separator: HTMLElement
@@ -215,8 +246,11 @@ interface Entry {
   /** What the window allowed. What the controller is actually holding. */
   applied: number
   open: boolean
-  /** A drag folded it past its own minimum; acted on once the drag ends. */
-  closing: boolean
+  /**
+   * "pending" while a drag holds the panel below half its minimum; the close
+   * lands when that drag ends. Only ever "pending" while dragging.
+   */
+  collapse: "none" | "pending"
   /** The last inset reported upward, so an unchanged value costs nothing. */
   reported: number
 }
@@ -307,15 +341,28 @@ export function mountPanelResize(options: PanelResizeOptions): PanelResize {
      * Pulling a panel past half its own minimum closes it.
      *
      * Providing this callback is what turns the behaviour on in the library at
-     * all, and the close is DEFERRED to the end of the gesture rather than done
-     * here. This fires from a `pointermove`, while the seam still holds the
-     * pointer capture for the drag — hiding the element it is captured on
-     * mid-gesture is how a drag gets stuck with the pointer released and the
-     * body still locked. By the time `publish` sees `dragging` go false the
-     * pointer is up and the capture is gone.
+     * all. During a drag the close is DEFERRED to the end of the gesture rather
+     * than done here. This fires from a `pointermove`, while the seam still
+     * holds the pointer capture for the drag — hiding the element it is
+     * captured on mid-gesture is how a drag gets stuck with the pointer
+     * released and the body still locked. By the time the subscriber below
+     * sees `dragging` go false the pointer is up and the capture is gone; a
+     * cancelled drag calls back with `false` first, which disarms it.
+     *
+     * Outside a drag the only caller is the library's keyboard map: Enter on
+     * the focused seam, always with `true`, since this file never hands the
+     * controller a `collapsed` option. There is no capture to wait for, so the
+     * panel closes now, by the same report a drag-to-close makes. The focused
+     * seam hides with its panel, and the browser moves focus to `<body>`; every
+     * way back (⇧⌘\, the inspector's ⌥ slot keys, ⇧⌘1 into the chrome) listens
+     * on the window, so the keyboard loses nothing it needs.
      */
     onCollapsedChange: (collapsed) => {
-      entry.closing = collapsed
+      if (entry.controller.state.dragging) {
+        entry.collapse = collapsed ? "pending" : "none"
+      } else if (collapsed && entry.open) {
+        options.onClose(entry.side)
+      }
     },
   })
 
@@ -336,13 +383,14 @@ export function mountPanelResize(options: PanelResizeOptions): PanelResize {
       // Assigned immediately below; the controller needs the entry to exist so
       // its own callbacks can read the widths off it.
       controller: undefined as unknown as PanelController<number>,
+      side,
       panel,
       separator,
       spec,
       desired,
       applied: desired,
       open: !panel.hidden,
-      closing: false,
+      collapse: "none",
       reported: -1,
     }
     entry.controller = createPanel<number>(group, optionsFor(entry))
@@ -398,8 +446,8 @@ export function mountPanelResize(options: PanelResizeOptions): PanelResize {
     teardown.push(
       entry.controller.subscribe(() => {
         publish(entry)
-        if (entry.closing && !entry.controller.state.dragging) {
-          entry.closing = false
+        if (entry.collapse === "pending" && !entry.controller.state.dragging) {
+          entry.collapse = "none"
           options.onClose(side)
         }
       })
@@ -480,14 +528,23 @@ export function mountPanelResize(options: PanelResizeOptions): PanelResize {
       // `aria-valuemin`/`-max`, nobody can reach a seam before the first
       // paint, and `notify` reads computed styles — before that paint, a
       // forced restyle and layout of the whole document in the middle of boot.
-      requestAnimationFrame(() => setTimeout(() => {
-        const width = railWidth()
-        if (width !== measured) {
-          measured = width
-          layout(true, width)
-        }
-        group.notify()
-      }))
+      let timer = 0
+      const frame = requestAnimationFrame(() => {
+        timer = window.setTimeout(() => {
+          const width = railWidth()
+          if (width !== measured) {
+            measured = width
+            layout(true, width)
+          }
+          group.notify()
+        })
+      })
+      // A rail destroyed before its first frame must not fit or notify
+      // controllers that are already gone.
+      teardown.push(() => {
+        cancelAnimationFrame(frame)
+        window.clearTimeout(timer)
+      })
     },
     setOpen(side, open) {
       const entry = entries[side]

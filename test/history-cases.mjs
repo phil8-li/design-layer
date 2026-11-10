@@ -473,5 +473,26 @@ check("the timeline keeps the newest HISTORY_LIMIT steps and drops the oldest", 
   history.resetHistory()
 })
 
+/*
+ * A step that throws still crosses to the other stack, and the toolbar still
+ * hears about it (B-boot-state-12). Before, it was popped and dropped: gone
+ * from the timeline, with Undo and Redo lit for a state that did not exist.
+ */
+check("a step that throws on undo still moves to redo, and the change is announced", () => {
+  history.resetHistory()
+  let heard = 0
+  const stop = history.onHistoryChange(() => {
+    heard += 1
+  })
+  history.record({ label: "Broken", undo: () => { throw new Error("detached") }, redo() {} })
+  heard = 0
+  assert.throws(() => history.undo(), /detached/)
+  assert.equal(heard, 1, "the toolbar was not told the stacks moved")
+  assert.equal(history.canUndo(), false)
+  assert.equal(history.canRedo(), true, "the step that threw vanished from the timeline")
+  stop()
+  history.resetHistory()
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)

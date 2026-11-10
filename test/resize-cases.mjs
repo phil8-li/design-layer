@@ -399,6 +399,63 @@ await check("the arrow keys resize the seam they are pressed on", async () => {
   assert.equal(inset("--de-left"), `${px(panel("left"))}px`)
 })
 
+/*
+ * Enter is the library's collapse key (WAI-ARIA's window splitter). It calls
+ * `onCollapsedChange(true)` with no drag at all; the shell once stored that as
+ * a close to make "when the drag ends", so nothing happened on the key and the
+ * NEXT ordinary resize shut the panel.
+ */
+const pressEnter = async (side) => {
+  seam(side).focus()
+  const event = new window.KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" })
+  seam(side).dispatchEvent(event)
+  await settle()
+  return event
+}
+
+await check("Enter on a focused seam closes that panel at once", async () => {
+  mount()
+  const event = await pressEnter("right")
+  assert.equal(event.defaultPrevented, true, "the seam left Enter for a shortcut to take too")
+  assert.equal(editor.getState().inspectorOpen, false, "Enter on the seam did nothing")
+  assert.equal(panel("right").hidden, true)
+  assert.equal(seam("right").hidden, true, "a closed panel left its seam behind")
+  assert.equal(inset("--de-right"), "0px")
+  assert.equal(editor.getState().layersOpen, true, "Enter closed the other panel")
+  editor.setState({ inspectorOpen: true })
+  await settle()
+  assert.equal(px(panel("right")), tokens.size.inspectorWidth, "the panel came back at the wrong width")
+})
+
+await check("Enter on a seam then a widen drag does not close the panel", async () => {
+  mount()
+  await pressEnter("right")
+  // Whatever Enter did, the panel is open again before the drag.
+  editor.setState({ inspectorOpen: true })
+  await settle()
+  await (await dragSeam("right", -30)).release()
+  assert.equal(editor.getState().inspectorOpen, true, "an ordinary resize closed the panel")
+  assert.equal(px(panel("right")), tokens.size.inspectorWidth + 30)
+})
+
+await check("a drag-to-close that is cancelled leaves the panel open, and the next drag too", async () => {
+  mount()
+  const grip = seam("left")
+  const send = (type, x) =>
+    grip.dispatchEvent(
+      new window.PointerEvent(type, { bubbles: true, cancelable: true, button: 0, pointerId: 1, clientX: x, clientY: 100 })
+    )
+  send("pointerdown", 0)
+  send("pointermove", -4)
+  send("pointermove", -(tokens.size.panelWidth - 40))
+  send("pointercancel", 0)
+  await settle()
+  assert.equal(editor.getState().layersOpen, true, "a cancelled drag closed the panel")
+  await (await dragSeam("left", 20)).release()
+  assert.equal(editor.getState().layersOpen, true, "a cancelled collapse closed the panel on the next drag")
+  assert.equal(px(panel("left")), tokens.size.panelWidth + 20)
+})
+
 // ───────────────────────────────────────────────── outliving the tab ───────
 
 await check("a width outlives the tab", async () => {
