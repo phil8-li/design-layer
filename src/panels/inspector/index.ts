@@ -328,7 +328,7 @@ export function installInspector(editor: EditorContext): void {
       /*
        * The badge changes this tab's width, and the pill may be standing under
        * it. The pill's resize observer would notice only after the next layout,
-       * so an Apply showed the old pill width for a frame and the panel's last
+       * so a new count showed the old pill width for a frame and the panel's last
        * write trailed everything else by that frame. Re-tracking here measures
        * in the same task; the observer then finds the box already published and
        * writes nothing.
@@ -482,7 +482,7 @@ export function installInspector(editor: EditorContext): void {
    * owed rather than paid while the panel is off screen.
    *
    * A microtask, not a frame. Every write of one task — a commit's four
-   * properties, a selection and the ledger entry it files — still lands in one
+   * properties, a selection and the journal entry it files — still lands in one
    * repaint, and the repaint is done before the task yields, so the panel
    * describes the new element in the same task as the keypress or click that
    * chose it. A `requestAnimationFrame` here waited for the next frame and ran

@@ -1,8 +1,8 @@
 /**
  * Which app's work this is, and where to keep it.
  *
- * Everything the editor remembers between reloads — the notes pinned to a page,
- * the ledger of changes the writer could not express — belongs to ONE app. That
+ * Everything the editor remembers between reloads — the notes pinned to a page
+ * and their settings — belongs to ONE app. That
  * was an invisible assumption for as long as an editor process meant an app: a
  * session edited what it was started with, and the storage key only had to tell
  * two ROUTES of that app apart.
@@ -289,7 +289,7 @@ function readServerEntries(raw: unknown): StorageEntry[] {
  * one on the server: the case of notes written on an old address, opened after
  * notes were already written for the same page somewhere else. Neither is
  * "newer" in any sense the person would agree with, so when both are lists —
- * which notes and the ledger are — the result keeps both, the old ones first,
+ * which notes are — the result keeps both, the old ones first,
  * and drops an entry the server already has by `id` or by content. Anything
  * else goes to the server's copy.
  */

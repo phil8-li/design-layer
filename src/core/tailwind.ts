@@ -220,8 +220,8 @@ const DURATION_STEPS = new Set([0, 75, 100, 150, 200, 300, 500, 700, 1000])
 /**
  * Properties Tailwind has no utility for, written as an arbitrary-property
  * class (`[font-variation-settings:'wdth'_92]`). A text style read from a
- * stylesheet carries its variable-font axes, and without this every pick of
- * one reported its axes as preview only.
+ * stylesheet carries its variable-font axes, and without this the brief could
+ * name no class for them.
  */
 const ARBITRARY_PROPERTIES = new Set([
   "font-variation-settings",

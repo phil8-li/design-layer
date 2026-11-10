@@ -287,7 +287,7 @@ async function loadRoutes(config) {
  * Not mounted on the proxy, which binds `auto`: this URL is typed into an
  * agent's config file by hand and has to survive a restart. A busy port is a
  * warning and nothing more — the editor's whole job is unaffected, and the
- * clipboard path in the Prompts tab still works.
+ * Changes tab's Copy still works.
  *
  * When the start screen this editor came from already serves it ("Stay on
  * between apps"), nothing binds here; `server/mcp-control.mjs` relays instead.

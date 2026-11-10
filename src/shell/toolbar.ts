@@ -376,7 +376,7 @@ export function installToolbar(context: EditorContext): void {
   }
 
   /*
-   * Nothing here reports the queue or the outbox, and that is deliberate. The
+   * Nothing here reports the outbox, and that is deliberate. The
    * count lives in one place, the Changes tab's badge; a square here carrying
    * it was a second reader that could disagree with the panel it pointed at,
    * and its only action, "open the panel", is what the inspector toggle does.
