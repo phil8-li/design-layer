@@ -13,7 +13,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 
-import { writeAtomic } from "./file-io.mjs"
+import { writeFileAtomicAsync } from "../runtime/state-dir.mjs"
 import { createSerial } from "./serial.mjs"
 
 const MAX_OPTIONS_PER_SET = 40
@@ -102,7 +102,7 @@ export function createOptionsStore({ stateDir }) {
   }
 
   function writeFileSets(sets) {
-    return writeAtomic(optionsFile, `${JSON.stringify(sets, null, 2)}\n`)
+    return writeFileAtomicAsync(optionsFile, `${JSON.stringify(sets, null, 2)}\n`)
   }
 
   return {

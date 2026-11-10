@@ -63,6 +63,8 @@ import { createRequire } from "node:module"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
+import { writeFileAtomicAsync } from "../runtime/state-dir.mjs"
+
 /**
  * The checkers this module knows how to drive, and the names the panel shows.
  *
@@ -815,10 +817,7 @@ function createIgnoreStore({ stateDir }) {
   }
 
   async function writeFileIds(ids) {
-    await fs.mkdir(storeDir, { recursive: true })
-    const temp = `${ignoreFile}.${process.pid}.tmp`
-    await fs.writeFile(temp, `${JSON.stringify({ ids }, null, 2)}\n`, "utf8")
-    await fs.rename(temp, ignoreFile)
+    await writeFileAtomicAsync(ignoreFile, `${JSON.stringify({ ids }, null, 2)}\n`)
   }
 
   return {

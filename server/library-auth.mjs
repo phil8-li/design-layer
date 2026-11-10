@@ -65,6 +65,8 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 
+import { writeFileAtomicAsync } from "../runtime/state-dir.mjs"
+
 /** Long enough for any real token, short enough that a paste of a page is refused. */
 const MAX_CREDENTIAL = 8192
 /**
@@ -411,8 +413,6 @@ export function createAuthStore(config = {}) {
   async function writeAll(credentials) {
     await fs.mkdir(storeDir, { recursive: true })
     await keepUnreadable(authFile)
-    const temp = `${authFile}.${process.pid}.tmp`
-    const payload = { credentials }
     /*
      * 0600 on the temp file, before it has any content in it.
      *
@@ -422,8 +422,7 @@ export function createAuthStore(config = {}) {
      * only at creation, so this also means the mode survives a rewrite of an
      * existing file, which a later `chmod` would not guarantee.
      */
-    await fs.writeFile(temp, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 })
-    await fs.rename(temp, authFile)
+    await writeFileAtomicAsync(authFile, `${JSON.stringify({ credentials }, null, 2)}\n`, { mode: 0o600 })
   }
 
   return {

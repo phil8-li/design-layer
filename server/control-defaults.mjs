@@ -5,7 +5,7 @@ import path from "node:path"
 import { createRequire } from "node:module"
 
 import { isEditableSourcePath } from "../config.mjs"
-import { writeAtomic } from "./file-io.mjs"
+import { writeFileAtomicAsync } from "../runtime/state-dir.mjs"
 import { httpError as refusal } from "./http-error.mjs"
 import { createSerial } from "./serial.mjs"
 
@@ -230,7 +230,7 @@ export function createControlDefaults(config) {
     return { source, root: parseObject(parse, source, target.exportName) }
   }
 
-  const writeSource = (source) => writeAtomic(file, source)
+  const writeSource = (source) => writeFileAtomicAsync(file, source)
 
   return {
     configured: true,

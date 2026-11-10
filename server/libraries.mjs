@@ -52,6 +52,8 @@ import { createHash } from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
 
+import { writeFileAtomicAsync } from "../runtime/state-dir.mjs"
+
 import { importedStylesheets } from "./design-system-detect.mjs"
 import { looksLikeComponentLibrary, scanComponentLibrary } from "./library-components.mjs"
 import {
@@ -506,10 +508,7 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
   async function writeEntries(entries) {
     await fs.mkdir(storeDir, { recursive: true })
     await keepUnreadable(librariesFile)
-    const temp = `${librariesFile}.${process.pid}.tmp`
-    const payload = { libraries: entries }
-    await fs.writeFile(temp, `${JSON.stringify(payload, null, 2)}\n`, "utf8")
-    await fs.rename(temp, librariesFile)
+    await writeFileAtomicAsync(librariesFile, `${JSON.stringify({ libraries: entries }, null, 2)}\n`)
   }
 
   /**

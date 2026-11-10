@@ -27,6 +27,7 @@ import { DEFAULT_DESK_PORT } from "../../runtime/mac-desk.mjs"
 import { PREFERRED_START_SCREEN_PORT } from "../../runtime/start-screen.mjs"
 import { appName } from "../../runtime/app-name.mjs"
 import { lastPage } from "../../runtime/last-pages.mjs"
+import { writeFileAtomic } from "../../runtime/state-dir.mjs"
 import { currentCommit } from "../../runtime/updater.mjs"
 import {
   APP_FEATURES,
@@ -558,9 +559,7 @@ const WINDOW_ID = /^(main|w[a-z0-9]{1,24})$/
  */
 /** Written whole, then renamed: a desk stopped mid-write leaves the last copy. */
 function writeJsonAtomic(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(`${file}.tmp`, JSON.stringify(value))
-  fs.renameSync(`${file}.tmp`, file)
+  writeFileAtomic(file, JSON.stringify(value))
 }
 
 function createTabStore(file) {
