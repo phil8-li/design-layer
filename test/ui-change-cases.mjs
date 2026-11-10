@@ -7,7 +7,7 @@
  *
  * Every case that touches a file snapshots it first and restores in a `finally`,
  * so a failure mid-run still leaves the tree exactly as it was found. Run with
- * `npm run design:test` while `npm run design` is up.
+ * `node cli.mjs --dev` while `node cli.mjs --dev` is up.
  *
  * Ports are read from the running launcher's `endpoint.json`, never assumed:
  * the vendor abandons 3456/3457 the moment either is busy, and a hardcoded port
@@ -671,7 +671,7 @@ async function socketOriginCases() {
     })
 
   if ((await handshake(null)) !== "open") {
-    console.log("  skip (engine socket not reachable — start `npm run design`)")
+    console.log("  skip (engine socket not reachable — start `node cli.mjs --dev`)")
     return
   }
 

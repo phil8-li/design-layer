@@ -2,7 +2,7 @@
   "name": "designlayer",
   "version": "0.1.0",
   "private": true,
-  "description": "A Figma-like visual editor that attaches to your running React or Angular app and writes every change back to the component source.",
+  "description": "A Figma-like visual editor that attaches to your running React or Angular app and turns every edit into a note your coding agent makes in source.",
   "license": "MIT",
   "author": "Haoyang (Phil) Li",
   "repository": {
