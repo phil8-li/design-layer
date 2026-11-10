@@ -622,7 +622,7 @@ const CHOOSER_CASES = [
   {
     id: "menu-armed",
     axis: "Menu — state",
-    title: "Armed — a switch that would discard unapplied edits",
+    title: "Armed — a switch that would discard unsent edits",
     note: "The first click on a row arms it when `hasPendingChanges()` is true; the second click goes.",
     appName: "shop-web",
     apps: MENU_THREE,

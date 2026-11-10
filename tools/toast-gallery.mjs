@@ -91,12 +91,12 @@ const EVENTS = [
   {
     group: "System changes",
     items: [
-      { event: "Switch apps with unapplied changes (first click)", message: { title: "Switching discards 2 unapplied changes", description: "Click again to go to Docs site anyway." }, kind: "info", source: "src/panels/app-chooser.ts", find: "Click again to go to ${label} anyway.`" },
+      { event: "Switch apps with unsent changes (first click)", message: { title: "Switching discards 2 unsent changes", description: "Click again to go to Docs site anyway." }, kind: "info", source: "src/panels/app-chooser.ts", find: "Click again to go to ${label} anyway.`" },
       { event: "Switch apps", message: "Starting Docs site…", kind: "info", source: "src/panels/app-chooser.ts", find: "`Starting ${label}\\u2026`" },
       { event: "Switch to an app that stopped", message: "Docs site is no longer running. Start it again, or choose another app.", kind: "error", source: "src/panels/app-chooser.ts", find: "is no longer running. Start it again, or choose another app.`" },
       { event: "Add a design library", message: "Added Acme UI", kind: "info", source: "src/libraries/libraries-section.ts", find: "`Added ${library.name}`" },
       { event: "Remove a design library", message: "Removed Acme UI", kind: "info", source: "src/libraries/libraries-section.ts", find: "`Removed ${library.name}`" },
-      { event: "Sign in to a library site", message: "Signed in to figma.com", kind: "info", source: "src/libraries/libraries-section.ts", find: "`Signed in to ${record.origin}`" },
+      { event: "Sign in to a library site", message: "Signed in to figma.com", kind: "info", source: "src/libraries/libraries-section.ts", find: "`Signed in to ${answer.origin ?? \"that site\"}`" },
       { event: "Forget a sign-in", message: "Forgot the sign-in for figma.com", kind: "info", source: "src/libraries/libraries-section.ts", find: "`Forgot the sign-in for ${entry.origin}`" },
       { event: "Library scan failed", message: { title: "Could not scan this project", description: "Add a design-system file by path below." }, kind: "error", source: "src/libraries/libraries-section.ts", find: 'title: "Could not scan this project"' },
       { event: "Add a library with an empty link", message: "Paste a link first", kind: "error", source: "src/libraries/libraries-section.ts", find: '"Paste a link first"' },
