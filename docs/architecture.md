@@ -120,7 +120,9 @@ runtime/mac-desk.mjs        where DesignLayer.app's desk is, when this Mac has o
 runtime/mcp-hub.mjs         the start screen's MCP endpoint, for "Stay on between apps"
 runtime/updater.mjs         checks GitHub for a newer main, updates this copy, restarts it
 runtime/payload.mjs         the files a copy without .git runs from (the Mac download, an update)
-runtime/state-dir.mjs       ~/.local/state/designlayer and its atomic writer
+runtime/state-dir.mjs       ~/.local/state/designlayer, and the package's one temp-and-rename writer
+runtime/loopback.mjs        the loopback guard every route, the MCP endpoint, the start screen and the desk apply
+runtime/http-error.mjs      the one way a server or start-screen module refuses a request
 runtime/exit-hooks.mjs      one exit path for every process
 runtime/project-facts.mjs   manifest and framework file names
 runtime/config-file.mjs     where a host's designlayer.config.mjs is, without loading it
@@ -136,11 +138,10 @@ runtime/vendor-server-patch.mjs one fix to the vendor's server-side batch writer
 runtime/vendor-lazy.mjs     keeps jscodeshift out of the launch, loads it on first use
 runtime/favicon.svg         the start screen's icon
 server/routes.mjs           loopback-guarded HTTP routes
-server/loopback.mjs         the loopback guard every route and the MCP endpoint apply
 server/http-json.mjs        JSON replies, body reader, content-type check
-server/http-error.mjs       the one way a server module refuses a request
 server/serial.mjs           a promise chain that runs tasks one after another
-server/file-io.mjs          the file I/O the server modules share
+server/file-io.mjs          the file cache, limiter and known-size read the server modules share
+server/babel.mjs            the host-first @babel/parser loader and its one plugin list
 server/agent.mjs            the /agent route: writes the request file, queues the change for MCP
 server/handoff.mjs          the change queue between Send to agent and wait_for_change
 server/mcp.mjs              the MCP server: four tools over JSON-RPC
@@ -181,6 +182,7 @@ src/core/                   store, config, bridge, tokens, icons, history, the s
 src/core/css/               the editor's stylesheets, one module per surface
 src/core/store.ts           editor state, and the EditorMode machine (one reader, one writer)
 src/core/prefs.ts           guarded localStorage preferences
+src/core/api.ts             sendJson, the JSON transport the lint and library stores share
 src/core/angular.ts         the Angular half of "where is this element written"
 src/core/element-target.ts  how the browser describes an element to the server
 src/core/element-code.ts    a selected element written out as JSX or HTML, for Copy as code
