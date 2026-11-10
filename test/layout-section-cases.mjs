@@ -78,7 +78,7 @@ const bundled = await build({
       } from "./src/panels/inspector/section-autolayout"
       export { sizeControls } from "./src/panels/inspector/section-layout"
       export { unifiedLayoutSection } from "./src/panels/inspector/section-unified-layout"
-      export { isExpanded, numberField, setExpanded } from "./src/panels/inspector/field"
+      export { disclosure, forgetSectionFold, isExpanded, numberField, setExpanded, panelFlag, setPanelFlag } from "./src/panels/inspector/field"
       export { matchShortcut } from "./src/core/keymap"
       export { runCommand } from "./src/core/commands"
     `,
@@ -480,12 +480,12 @@ await check("a full flex line gets shrink-0 so a typed width sticks, and only th
 })
 
 await check("Lock aspect ratio scales the other axis on commit", () => {
-  layout.setExpanded("layout.aspect-lock", false)
+  layout.setPanelFlag("layout.aspect-lock", false)
   const first = scene({ children: 0 })
   const lock = byLabel(layout.sizeControls(first.context), "Lock aspect ratio")
   assert.equal(lock.getAttribute("aria-pressed"), "false")
   lock.click()
-  assert.equal(layout.isExpanded("layout.aspect-lock"), true)
+  assert.equal(layout.panelFlag("layout.aspect-lock").on, true)
 
   const { context, writes } = scene({ children: 0, rect: { width: 200, height: 100 } })
   const row = layout.sizeControls(context)
@@ -494,7 +494,7 @@ await check("Lock aspect ratio scales the other axis on commit", () => {
   writes.length = 0
   commit(field(row, "size.height"), 50)
   assert.deepEqual(flat(writes), { height: "50px", width: "100px" })
-  layout.setExpanded("layout.aspect-lock", false)
+  layout.setPanelFlag("layout.aspect-lock", false)
 })
 
 await check("the column-3 controls all land in the trailing column", () => {
@@ -582,6 +582,56 @@ await check("a scrub's commit reads the value from before the scrub, and leaves 
   assert.deepEqual(seen, [])
   assert.equal(target.style.width, "100px")
   assert.equal(target.style.flexShrink, "")
+})
+
+/* ---------- panel memory ---------- */
+
+console.log("\nPanel memory")
+
+/*
+ * One section, two titles: "Auto layout" on a box that lays out its children,
+ * "Layout" on one that does not. The fold was keyed by the title, so folding
+ * it on one kind of box left it open on the other.
+ */
+await check("folding Layout on a flex box keeps it folded on a plain box, and back", () => {
+  layout.forgetSectionFold("Layout")
+  const flex = layout.unifiedLayoutSection(scene({ style: PADDED }).context)
+  assert.equal(flex.querySelector(".de-section-title").textContent, "Auto layout")
+  flex.querySelector(".de-section-header").click()
+  assert.equal(flex.querySelector(".de-section-body").hidden, true)
+
+  const plain = layout.unifiedLayoutSection(scene({ children: 0 }).context)
+  assert.equal(plain.querySelector(".de-section-title").textContent, "Layout")
+  assert.equal(plain.querySelector(".de-section-body").hidden, true, "the fold did not follow the section")
+  plain.querySelector(".de-section-header").click()
+  assert.equal(layout.unifiedLayoutSection(scene({ style: PADDED }).context).querySelector(".de-section-body").hidden, false)
+  layout.forgetSectionFold("Layout")
+})
+
+/*
+ * The reveal plays on the one render after the person OPENED a group. Closing
+ * one used to leave it marked "just flipped", and the aspect lock, which opens
+ * nothing, took the mark from whatever group had just opened.
+ */
+await check("a disclosure's reveal is for the render after it opens, never after it closes", () => {
+  const key = "probe.disclosure"
+  layout.setExpanded(key, false)
+  layout.disclosure(key).toggle()
+  assert.equal(layout.disclosure(key).open, true)
+  assert.equal(layout.disclosure(key).justOpened(), true)
+  assert.equal(layout.disclosure(key).justOpened(), false, "the reveal played twice")
+
+  layout.disclosure(key).toggle()
+  layout.disclosure(key).toggle()
+  layout.disclosure(key).toggle()
+  assert.equal(layout.disclosure(key).open, false)
+  assert.equal(layout.disclosure(key).justOpened(), false, "a group just shut is marked as just opened")
+
+  layout.disclosure(key).toggle()
+  layout.panelFlag("layout.aspect-lock").toggle()
+  assert.equal(layout.disclosure(key).justOpened(), true, "the aspect lock took the open group's reveal")
+  layout.setPanelFlag("layout.aspect-lock", false)
+  layout.setExpanded(key, false)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

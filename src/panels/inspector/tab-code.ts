@@ -29,21 +29,11 @@ import { clear, el } from "../../core/dom"
 import { swapMark } from "../../core/swap-mark"
 import { CODE_VIEWS, codeText, elementCode, type CodeTokenKind, type CodeView } from "../../core/element-code"
 import type { EditorContext } from "../../core/context"
+import type { InspectorTab } from "./index"
 
-export interface InspectorTab {
-  node: HTMLElement
-  /**
-   * Re-read the world. Called on activation, and on every invalidation while
-   * the tab is the visible one — never for a hidden tab, which is first built
-   * when it is first shown.
-   */
-  update(): void
-  /**
-   * Work that must happen at load whether or not the tab is ever shown, for a
-   * tab whose data other surfaces read. Optional; most tabs have none.
-   */
-  boot?(): void
-}
+// Re-exported only so `tab-annotations.ts` and `tab-design-system.ts` compile
+// until they import the contract from `./index`; it goes with this file.
+export type { InspectorTab }
 
 /** The five tints `css/code.ts` reserves, plus the one kind that takes none. */
 const TINT: Record<CodeTokenKind, string | null> = {

@@ -511,11 +511,14 @@ check("focus survives the rebuild through data-de-field", () => {
   assert.equal(document.activeElement, after)
 })
 
-check("the section says plainly that it writes classes, not the prop", () => {
+// Since the editor stopped writing to source, the note says the swap previews
+// and becomes a note; it said "writes its classes", which read as a file write.
+check("the section says plainly that it previews classes, not the prop", () => {
   renderSection()
   const note = host.querySelector(".de-variant-note")
   assert.ok(note)
-  assert.match(note.textContent, /writes its classes, not the/)
+  assert.match(note.textContent, /previews its classes, not the .* prop, and goes to Changes\./)
+  assert.doesNotMatch(note.textContent, /writes/)
 })
 
 /*

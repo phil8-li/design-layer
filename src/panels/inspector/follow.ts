@@ -23,6 +23,19 @@
  * the typing away or take the control out from under the pointer. Nothing is
  * marked as owed, because nothing needs to be: `shown` still describes the old
  * box, so the first check after the hold ends repaints.
+ *
+ * Suspended while nobody could see a repaint — another tab, a closed panel, a
+ * hidden editor (`showing()` answers all three) or a hidden document. Then a
+ * signal schedules nothing and a check reads no layout, so the hidden editor
+ * costs the app no `getBoundingClientRect` per frame of its own animation.
+ *
+ *   idle      --track(elements)-->   watching
+ *   watching  --signal-->            check --same--> watching
+ *                                          --differs, < 50 ms since last--> throttled --timer--> check
+ *                                          --differs--> repaint (the panel calls track again)
+ *   watching  --press | typing | open menu | scrub | popup--> held --release--> watching
+ *   any       --not showing-->       suspended --wake (panel back on screen)--> check
+ *   any       --track([])-->         idle
  */
 
 import { isChrome } from "../../core/dom"
@@ -44,6 +57,8 @@ const MIN_INTERVAL_MS = 50
 export interface Follow {
   /** Aims the watch at what a render described, and records what it showed. */
   track(elements: readonly Element[]): void
+  /** Checks once, for the panel coming back on screen after a suspension. */
+  wake(): void
 }
 
 /**
@@ -77,7 +92,7 @@ function typing(node: Element): boolean {
 
 export function followSelection(options: {
   host: HTMLElement
-  /** True while a repaint would be seen: the Design tab is the one showing. */
+  /** True while a repaint would be seen: the Design tab is showing, on screen. */
   showing(): boolean
   repaint(): void
 }): Follow {
@@ -126,7 +141,7 @@ export function followSelection(options: {
   }
 
   const soon = (): void => {
-    if (frame || tracked.length === 0) return
+    if (frame || tracked.length === 0 || !options.showing()) return
     frame = requestAnimationFrame(check)
   }
 
@@ -189,5 +204,6 @@ export function followSelection(options: {
       }
       shown = describeGeometry(tracked)
     },
+    wake: soon,
   }
 }

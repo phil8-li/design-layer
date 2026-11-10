@@ -18,17 +18,15 @@ import type { IconName } from "../../core/icons"
 import { tokens } from "../../core/tokens"
 import {
   alignPad,
+  disclosure,
   iconSegmented,
-  isExpanded,
   miniButton,
   numberField,
   propRow,
-  setExpanded,
-  takeJustExpanded,
   trailingToggle,
 } from "./field"
 import { fieldMenu } from "./section-layout"
-import { MIXED, isMulti, mixedNumber, selectedOf, sharedValue, computedOf } from "./multi"
+import { MIXED, isMulti, mixedNumber, sectionWriters, selectedOf, sharedValue, computedOf } from "./multi"
 import { fieldToken } from "./token-row"
 import type { SectionContext } from "./index"
 
@@ -61,8 +59,8 @@ const CROSS_GLYPH: Record<"horizontal" | "vertical", IconName[]> = {
   vertical: ["AlignStartVertical", "AlignCenterVertical", "AlignEndVertical"],
 }
 
-const SIDES = ["left", "top", "right", "bottom"] as const
-type Side = (typeof SIDES)[number]
+const PAD_ORDER = ["left", "top", "right", "bottom"] as const
+type Side = (typeof PAD_ORDER)[number]
 
 const PAD_GLYPH: Record<Side, IconName> = {
   top: "PadTop",
@@ -82,7 +80,13 @@ function wrapsOf(computed: CSSStyleDeclaration): boolean {
   return computed.flexWrap === "wrap" || computed.flexWrap === "wrap-reverse"
 }
 
-function placeOf(value: string): Place {
+/**
+ * Computed placement as an alignment pad cell. Never null: the pad always marks
+ * a cell, so anything it cannot draw (`normal`, `stretch`, `space-*`) reads as
+ * the start. `section-align.ts` and `section-typography.ts` collapse the same
+ * keywords differently, for controls that can show no state.
+ */
+function padPlace(value: string): Place {
   if (value === "center") return "center"
   if (value === "flex-end" || value === "end" || value === "right") return "flex-end"
   return "flex-start"
@@ -265,19 +269,14 @@ export function autoLayoutRows(context: SectionContext): HTMLElement[] {
   ]
 }
 
-// Numeric commits deliberately skip `invalidate`: the inspector rebuilds on the
-// next frame, which would tear the field out from under a drag-scrub.
-function writers(context: SectionContext) {
-  const { selection, writer } = context
-  return {
-    apply: (writes: Array<{ property: string; value: string }>, summary: string) =>
-      writer.applyStyles(selection, writes, summary),
-    preview: (writes: Array<{ property: string; value: string }>) => {
-      for (const entry of writes) selection.element.style.setProperty(entry.property, entry.value)
-    },
-  }
-}
-
+/*
+ * Numeric commits here use `apply`, not `commit`: they leave the repaint to
+ * `follow.ts`, which sees the style write and rebuilds once the person has
+ * left the field. A microtask rebuild from a commit that fired on `blur` can
+ * land between the blur and the focus of the field Tab is moving to, and take
+ * that field out of the document before it could take focus. Choices that
+ * change which controls are drawn (the pad, Auto gap, Wrap) `commit`.
+ */
 /** A column cell holding a stack of fields, like Figma's two gap fields for a grid. */
 function column(...children: Array<Node | null>): HTMLElement {
   return el("div", { class: "de-lay-column" }, children)
@@ -285,17 +284,17 @@ function column(...children: Array<Node | null>): HTMLElement {
 
 function alignmentGapRow(context: SectionContext): HTMLElement {
   const { selection, computed, writer, invalidate } = context
-  const { apply, preview } = writers(context)
+  const { apply, preview } = sectionWriters(context)
   const flow = flowOf(computed)
   const vertical = flow === "vertical"
   const wraps = wrapsOf(computed)
-  const justify = placeOf(computed.justifyContent)
-  const align = placeOf(computed.alignItems)
+  const justify = padPlace(computed.justifyContent)
+  const align = padPlace(computed.alignItems)
   const auto = computed.justifyContent === "space-between"
   // The pad marks a cell only when every layer sits there.
   const placed = sharedValue(
     context,
-    (style) => `${style.justifyContent === "space-between" ? "auto" : placeOf(style.justifyContent)} ${placeOf(style.alignItems)}`
+    (style) => `${style.justifyContent === "space-between" ? "auto" : padPlace(style.justifyContent)} ${padPlace(style.alignItems)}`
   )
 
   const pad = alignmentPad({
@@ -389,7 +388,7 @@ function alignmentGapRow(context: SectionContext): HTMLElement {
 
 /** Grid flow: [columns × rows] and [column gap / row gap], as Figma draws it. */
 function gridRow(context: SectionContext): HTMLElement {
-  const { apply, preview } = writers(context)
+  const { apply, preview } = sectionWriters(context)
   const tracks = (property: "grid-template-columns" | "grid-template-rows", label: string, title: string) => {
     const value = sharedValue(context, (style) => trackCount(style.getPropertyValue(property)))
     const mixed = isMulti(context) && value === null && sharedValue(context, (style) => style.getPropertyValue(property)) === null
@@ -437,16 +436,17 @@ function gridRow(context: SectionContext): HTMLElement {
  */
 function paddingRows(context: SectionContext): HTMLElement {
   const { invalidate } = context
-  const { apply, preview } = writers(context)
+  const { apply, preview } = sectionWriters(context)
   const value = (style: CSSStyleDeclaration, side: Side) =>
     Number.parseFloat(style.getPropertyValue(`padding-${side}`)) || 0
-  const individual = isExpanded(PADDING_EXPANDER)
+  const perSide = disclosure(PADDING_EXPANDER)
+  const individual = perSide.open
   const toggle = trailingToggle({
     label: "Individual padding",
     glyph: icon("IndividualSides", tokens.icon.action),
     pressed: individual,
     onClick: () => {
-      setExpanded(PADDING_EXPANDER, !individual)
+      perSide.toggle()
       invalidate()
     },
   })
@@ -499,8 +499,8 @@ function paddingRows(context: SectionContext): HTMLElement {
         }),
       ]
   const block = el("div", { class: "de-stack de-lay-padding" }, rows)
-  // Opened only on the render that follows the press — see `takeJustExpanded`.
-  if (individual && takeJustExpanded(PADDING_EXPANDER)) revealGroup(rows[1])
+  // Opened only on the render that follows the press — see `disclosure`.
+  if (individual && perSide.justOpened()) revealGroup(rows[1])
   return block
 }
 

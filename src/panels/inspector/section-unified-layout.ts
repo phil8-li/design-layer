@@ -27,7 +27,7 @@ import { el } from "../../core/dom"
 import { icon } from "../../core/icons"
 import { tokens } from "../../core/tokens"
 import { registerCommand } from "../../core/commands"
-import { isExpanded, propRow, setExpanded, takeJustExpanded, trailingToggle } from "./field"
+import { disclosure, propRow, trailingToggle } from "./field"
 import { styledSection } from "../../options/panel"
 import { revealGroup } from "../../core/leave"
 import { laysOutChildren, SIDES, tokenRow } from "./token-row"
@@ -70,7 +70,8 @@ function spacingBindings(context: SectionContext, housed: boolean): HTMLElement 
   ].filter((row): row is HTMLElement => row !== null)
   if (!uniform.length) return null
 
-  const open = isExpanded(PRECISION_EXPANDER)
+  const precision = disclosure(PRECISION_EXPANDER)
+  const open = precision.open
   const toggle = trailingToggle({
     label: open ? "Hide per-side tokens" : "Show per-side tokens",
     // A double chevron: this toggle lengthens a list, where the padding and
@@ -78,7 +79,7 @@ function spacingBindings(context: SectionContext, housed: boolean): HTMLElement 
     glyph: icon(open ? "ChevronsDownUp" : "ChevronsUpDown", tokens.icon.action),
     pressed: open,
     onClick: () => {
-      setExpanded(PRECISION_EXPANDER, !open)
+      precision.toggle()
       context.invalidate()
     },
   })
@@ -101,7 +102,7 @@ function spacingBindings(context: SectionContext, housed: boolean): HTMLElement 
   // Only the rows open, not the header that discloses them: the toggle was on
   // screen before the press and should not animate in again.
   const precisionRows = el("div", { class: "de-stack" }, perSide.map(cell))
-  if (perSide.length > 0 && takeJustExpanded(PRECISION_EXPANDER)) revealGroup(precisionRows)
+  if (perSide.length > 0 && precision.justOpened()) revealGroup(precisionRows)
 
   return el("div", { class: "de-layout-group" }, [
     // The title names the family; the toggle takes column 3 like every other

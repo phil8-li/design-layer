@@ -45,6 +45,7 @@ import {
   type Place,
 } from "./section-align"
 import type { InspectorSection, SectionContext } from "./index"
+import { MIXED } from "./multi"
 
 /** One size for every mark in the section, the `action` rung the toolbar uses. */
 const GLYPH = tokens.icon.action
@@ -250,7 +251,7 @@ function readout(label: string, value: string): HTMLElement {
 /** One number for the whole selection, or "Mixed" when they differ. */
 function shared(values: number[]): string {
   const rounded = values.map((value) => round(value, 0))
-  return rounded.every((value) => value === rounded[0]) ? String(rounded[0]) : "Mixed"
+  return rounded.every((value) => value === rounded[0]) ? String(rounded[0]) : MIXED
 }
 
 function positionRow(picked: Selection[]): HTMLElement {
@@ -351,7 +352,7 @@ function rotationRow(context: SectionContext, picked: Selection[]): HTMLElement 
     label: icon("Rotation", GLYPH),
     title: "Rotation",
     value: mixed ? null : angles[0],
-    placeholder: "Mixed",
+    placeholder: MIXED,
     suffix: "°",
     onPreview: (value) => {
       for (const state of states) {

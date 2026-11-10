@@ -17,18 +17,17 @@ import { icon, type IconName } from "../../core/icons"
 import { tokens } from "../../core/tokens"
 import { TIP_ATTR } from "../../core/tooltip"
 import {
+  disclosure,
   iconSegmented,
-  isExpanded,
   numberField,
   propRow,
   selectField,
-  setExpanded,
   textField,
   trailingToggle,
 } from "./field"
 import { styledSection } from "../../options/panel"
 import { directText, textStyleEvidence, tokenRow } from "./token-row"
-import { MIXED, mixedNumber, selectedOf, sharedValue } from "./multi"
+import { MIXED, mixedNumber, sectionWriters, selectedOf, sharedValue } from "./multi"
 import type { InspectorSection } from "./index"
 
 export const TYPE_SETTINGS_EXPANDER = "typography.settings"
@@ -108,7 +107,7 @@ const CASE: Choice[] = [
 ]
 
 /** Computed placement collapsed onto the three values the rail can show. */
-function placeOf(value: string): string | null {
+function railPlace(value: string): string | null {
   if (value === "center") return "center"
   if (value === "flex-end" || value === "end") return "flex-end"
   // `normal` and `stretch` are the untouched defaults, and both leave the first
@@ -142,8 +141,8 @@ function verticalAxis(
   // the two axes, and only when its direction is a column.
   const column = flex && computed.flexDirection.startsWith("column")
   return column
-    ? { property: "justify-content", current: placeOf(computed.justifyContent) }
-    : { property: "align-items", current: placeOf(computed.alignItems) }
+    ? { property: "justify-content", current: railPlace(computed.justifyContent) }
+    : { property: "align-items", current: railPlace(computed.alignItems) }
 }
 
 /** First family in the stack — what the user typed, not the fallback chain. */
@@ -159,7 +158,7 @@ function decorationOf(value: string): string {
 }
 
 export const typographySection: InspectorSection = (context) => {
-  const { selection, computed, writer, invalidate } = context
+  const { selection, computed, invalidate } = context
   // The same predicate the `Text style` token row is gated on, so the section
   // and its row cannot disagree about whether this element has text.
   if (!directText(selection.element)) return null
@@ -167,12 +166,9 @@ export const typographySection: InspectorSection = (context) => {
   // text; a font write fanned out to a frame would land on its children.
   if (!selectedOf(context).every((entry) => directText(entry.element))) return null
 
-  const apply = (property: string, value: string) => {
-    writer.applyStyles(selection, [{ property, value }], `Set ${property}`)
-  }
-  const preview = (property: string, value: string) => {
-    selection.element.style.setProperty(property, value)
-  }
+  const writers = sectionWriters(context)
+  const apply = (property: string, value: string) => writers.apply([{ property, value }], `Set ${property}`)
+  const preview = (property: string, value: string) => writers.preview([{ property, value }])
   const commit = (property: string) => (value: string) => {
     apply(property, value)
     invalidate()
@@ -190,7 +186,8 @@ export const typographySection: InspectorSection = (context) => {
   const textCase = shared((style) => style.textTransform || "none")
   const vertical = verticalAxis(computed)
   const verticalPlace = vertical ? shared((style) => verticalAxis(style)?.current ?? null) : null
-  const settingsOpen = isExpanded(TYPE_SETTINGS_EXPANDER)
+  const typeSettings = disclosure(TYPE_SETTINGS_EXPANDER)
+  const settingsOpen = typeSettings.open
 
   /**
    * One rail, built from a `Choice[]`. `enabled` blanks the value as well as
@@ -348,7 +345,7 @@ export const typographySection: InspectorSection = (context) => {
         glyph: icon("Settings", tokens.icon.action),
         pressed: settingsOpen,
         onClick: () => {
-          setExpanded(TYPE_SETTINGS_EXPANDER, !settingsOpen)
+          typeSettings.toggle()
           invalidate()
         },
       }),

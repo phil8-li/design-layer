@@ -234,6 +234,30 @@ check("an effect is one row; its settings open under it and stay open", () => {
   assert.equal(byLabel(view.node, "Offset X"), null)
 })
 
+/*
+ * Open settings are remembered per layer and per effect. They were keyed by
+ * list position alone and shared by every element: selecting another layer
+ * opened its effect of the same number, and removing an effect above an open
+ * one left the settings open on the row that slid into its place.
+ */
+check("an effect's open settings stay with that layer and that effect", () => {
+  const two = '<div style="box-shadow:0px 2px 8px 0px rgba(0,0,0,0.15), 0px 8px 24px 0px rgba(0,0,0,0.3)"></div>'
+  const first = mount("effectsSection", two)
+  const settingsOf = (view, index) =>
+    view.node.querySelector(`[data-de-row="effects.${index}"]`).querySelector('[aria-label="Effect settings"]')
+  click(settingsOf(first, 1))
+  assert.equal(settingsOf(first, 1).getAttribute("aria-expanded"), "true")
+
+  const other = mount("effectsSection", two)
+  assert.equal(settingsOf(other, 1).getAttribute("aria-expanded"), "false", "another layer opened the same effect")
+
+  // Remove the effect above the open one: the open settings move up with it.
+  // (No layout in jsdom, so the row's exit is skipped and the write is immediate.)
+  click(first.node.querySelector('[data-de-row="effects.0"] [aria-label="Remove effect"]'))
+  assert.equal(first.node.querySelectorAll(".de-effect").length, 1)
+  assert.equal(settingsOf(first, 0).getAttribute("aria-expanded"), "true", "the open effect closed when the one above left")
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 dom.window.close()
 if (failed) process.exitCode = 1

@@ -2,10 +2,10 @@
  * Size — width and height, each carrying Figma's Fixed / Hug / Fill mode.
  *
  * The X/Y fields that used to live here are gone. They emitted `transform:
- * translate()`, which `core/tailwind.ts` cannot express, so every nudge was
- * dropped on "Apply to code" without saying so. In a flow layout the honest
- * controls are the sizing modes: Fixed is a length, Hug is `fit-content`, Fill
- * is `100%`, and all three reach source.
+ * translate()`, which `core/tailwind.ts` cannot express, so the agent's brief
+ * could name no utility for a nudge. In a flow layout the honest controls are
+ * the sizing modes: Fixed is a length, Hug is `fit-content`, Fill is `100%`
+ * (`flex-1` on a flex line), and all three have a utility an agent can write.
  *
  * The mode rides INSIDE the field, in its trailing slot — `W 708 ⌄`, and
  * `W 708 Fill` once the mode is worth a word — and pressing it opens a menu of
@@ -25,8 +25,8 @@ import {
   type Axis,
 } from "../../core/sizing"
 import { tokens } from "../../core/tokens"
-import { isExpanded, numberField, propRow, setExpanded, trailingToggle } from "./field"
-import { mixedNumber, sharedValue } from "./multi"
+import { numberField, panelFlag, propRow, trailingToggle } from "./field"
+import { mixedNumber, sectionWriters, sharedValue } from "./multi"
 import type { SectionContext } from "./index"
 import type { LayerElement } from "../../core/types"
 import type { StyleWrite } from "../../core/writer"
@@ -38,8 +38,8 @@ const FILL = "100%"
 
 const STEM: Record<Axis, string> = { width: "w", height: "h" }
 
-/** Panel-level, like the per-side toggles: the lock survives the rebuild each write causes. */
-const ASPECT_LOCK = "layout.aspect-lock"
+/** A panel flag, not a disclosure: the lock survives the rebuild each write causes and opens nothing. */
+export const ASPECT_LOCK = "layout.aspect-lock"
 
 const MODE_WORD: Record<Mode, string> = { fixed: "Fixed", hug: "Hug", fill: "Fill" }
 
@@ -175,18 +175,16 @@ function inAutoLayout(element: LayerElement, computed: CSSStyleDeclaration): boo
  * section built from several files — see `section-unified-layout.ts`.
  */
 export function sizeControls(context: SectionContext): HTMLElement {
-  const { selection, computed, writer, invalidate } = context
+  const { selection, computed, invalidate } = context
   const element = selection.element
   const rect = element.getBoundingClientRect()
-  const locked = isExpanded(ASPECT_LOCK)
+  const lock = panelFlag(ASPECT_LOCK)
+  const locked = lock.on
   // Measured at render, so a commit scales the other axis by the box as it was
   // drawn rather than by a ratio a previous locked edit already rounded.
   const ratio = rect.width > 0 && rect.height > 0 ? rect.height / rect.width : null
 
-  const write = (writes: StyleWrite[], summary: string) => {
-    writer.applyStyles(selection, writes, summary)
-    invalidate()
-  }
+  const { commit: write, preview } = sectionWriters(context)
 
   /**
    * The writes for a size typed or scrubbed into one axis, plus the other axis
@@ -236,9 +234,9 @@ export function sizeControls(context: SectionContext): HTMLElement {
       title,
       ...mixedNumber(size),
       min: 0,
-      onPreview: (value) => {
-        for (const entry of lengths(axis, value, true)) element.style.setProperty(entry.property, entry.value)
-      },
+      // Every selected layer, with the primary's writes: the commit hands the
+      // same writes to every layer through `fanOutWriter`.
+      onPreview: (value) => preview(lengths(axis, value, true)),
       onCommit: (value) => write(lengths(axis, value), `Set ${axis}`),
       trailing,
     })
@@ -253,7 +251,7 @@ export function sizeControls(context: SectionContext): HTMLElement {
       glyph: icon("Constrain", tokens.icon.action),
       pressed: locked,
       onClick: () => {
-        setExpanded(ASPECT_LOCK, !locked)
+        lock.toggle()
         invalidate()
       },
     }),

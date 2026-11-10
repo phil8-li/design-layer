@@ -7,17 +7,16 @@
 
 import { COPY_REFUSED, copyText } from "../../core/clipboard"
 import { el } from "../../core/dom"
+import { icon } from "../../core/icons"
 import { prefersReducedMotion } from "../../core/motion"
 import { tokens } from "../../core/tokens"
+import { section, textField } from "./field"
+import { selectedOf } from "./multi"
+import type { InspectorSection } from "./index"
 
 /** The chip's own exit, off the ramp and clamped for reduced motion. */
 const CHIP_LEAVE_MS = (): number =>
   prefersReducedMotion() ? 0 : Number.parseFloat(tokens.duration.reveal)
-import { icon } from "../../core/icons"
-import { tokens as t } from "../../core/tokens"
-import { section, textField } from "./field"
-import { selectedOf } from "./multi"
-import type { InspectorSection } from "./index"
 
 const CHIP_STYLE = [
   "display:inline-flex",
@@ -26,9 +25,9 @@ const CHIP_STYLE = [
   "max-width:100%",
   "height:18px",
   "padding:0 2px 0 6px",
-  `border-radius:${t.radius.xs}`,
-  `background:${t.color.bgRaised}`,
-  `color:${t.color.textMuted}`,
+  `border-radius:${tokens.radius.xs}`,
+  `background:${tokens.color.bgRaised}`,
+  `color:${tokens.color.textMuted}`,
   "font-size:10px",
 ].join(";")
 
@@ -37,15 +36,15 @@ const PATH_STYLE = [
   "padding:4px 6px",
   "text-align:left",
   "border:none",
-  `border-radius:${t.radius.sm}`,
-  `background:${t.color.bgSunken}`,
-  `color:${t.color.textDim}`,
-  `font-family:${t.font.mono}`,
+  `border-radius:${tokens.radius.sm}`,
+  `background:${tokens.color.bgSunken}`,
+  `color:${tokens.color.textDim}`,
+  `font-family:${tokens.font.mono}`,
   "font-size:10px",
   "line-height:1.4",
   "word-break:break-all",
   "cursor:copy",
-  `transition:color ${t.duration.hover} ${t.ease}`,
+  `transition:color ${tokens.duration.hover} ${tokens.ease}`,
 ].join(";")
 
 export const classesSection: InspectorSection = (context) => {
@@ -98,7 +97,7 @@ export const classesSection: InspectorSection = (context) => {
             })
           },
         },
-        [icon("X", t.icon.marker)]
+        [icon("X", tokens.icon.marker)]
       ),
     ])
   )

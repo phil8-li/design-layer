@@ -9,32 +9,52 @@ import { el, holdTransitions, isChrome, round } from "../../core/dom"
 import { icon } from "../../core/icons"
 import {
   installIconSegmentThumb,
-  installSegmentThumb,
   type TravellingSurface,
 } from "../../core/travelling-surface"
 import { tokens } from "../../core/tokens"
 import { TIP_ATTR, TIP_WRAP_ATTR } from "../../core/tooltip"
 
-/**
- * Panel-level memory. Collapse and expander state belong to the *panel*, not to
- * the selected element: the inspector is torn down and rebuilt on every write,
- * so anything held in the DOM or in a section-local variable would reset the
- * moment you typed into the control you just opened.
+/* ---------- panel memory ---------- */
+
+/*
+ * Panel-level memory. Fold, disclosure and toggle state belong to the *panel*,
+ * not to the selected element: the inspector is torn down and rebuilt on every
+ * write, so anything held in the DOM or in a section-local variable would reset
+ * the moment you typed into the control you just opened. Session memory only:
+ * a reload starts every section at its default.
+ *
+ * Three stores, one per kind of memory, each with one writer:
+ *
+ *   section fold   id   default --header press--> folded | open (user's choice wins)
+ *   disclosure     key  closed --toggle--> opening --render takes justOpened()--> open
+ *                       open --toggle--> closed (and the pending one-shot is dropped)
+ *   panel flag     key  off <--toggle--> on   (a setting, never animated: the aspect lock)
  */
-const collapsedSections = new Map<string, boolean>()
-const expanders = new Map<string, boolean>()
 
-export function isExpanded(key: string): boolean {
-  return expanders.get(key) === true
-}
+/** The user's fold choice per section id; absent means the section's default. */
+const sectionFolds = new Map<string, boolean>()
+const disclosures = new Map<string, boolean>()
+const panelFlags = new Map<string, boolean>()
 
-export function setExpanded(key: string, value: boolean): void {
-  expanders.set(key, value)
-  justExpanded = key
+/**
+ * Titles that name ONE section in two states, so they share one fold.
+ *
+ * The fold is keyed by the title a section is drawn with, and the Layout
+ * section is drawn as "Auto layout" on a box that lays out its children and as
+ * "Layout" on one that does not, so folding it on a flex box left it open on a
+ * plain one. `styledSection` (options/panel.ts) passes only the title, so the
+ * alias lives here rather than as an id threaded through it.
+ */
+const FOLD_ID: Readonly<Record<string, string>> = { "Auto layout": "Layout" }
+const foldId = (title: string): string => FOLD_ID[title] ?? title
+
+/** Drops the user's fold choice for one section, so its default applies again. Test seam. */
+export function forgetSectionFold(title: string): void {
+  sectionFolds.delete(foldId(title))
 }
 
 /**
- * Which disclosure the user just flipped, for the ONE render that follows.
+ * Which disclosure the user just opened, for the ONE render that follows.
  *
  * The Design tab rebuilds every section on every commit, so a group cannot tell
  * from its own existence whether it has just been revealed or has been open all
@@ -43,13 +63,67 @@ export function setExpanded(key: string, value: boolean): void {
  * nothing to do with the disclosure.
  *
  * Read once and cleared, so it describes an interaction rather than a state.
+ * Set only on open and dropped on close, so a group the user just SHUT never
+ * plays a reveal the next time something opens it some other way.
  */
-let justExpanded: string | null = null
+let justOpened: string | null = null
 
-export function takeJustExpanded(key: string): boolean {
-  if (justExpanded !== key) return false
-  justExpanded = null
-  return true
+/** A disclosure's open state. Test seam; sections use `disclosure(key)`. */
+export function isExpanded(key: string): boolean {
+  return disclosures.get(key) === true
+}
+
+/** Opens or shuts a disclosure, the one writer behind `disclosure().toggle()`. Test seam. */
+export function setExpanded(key: string, open: boolean): void {
+  disclosures.set(key, open)
+  if (open) justOpened = key
+  else if (justOpened === key) justOpened = null
+}
+
+/** A row group the user opens under its trailing toggle: per-side widths, an effect's numbers. */
+export interface Disclosure {
+  readonly open: boolean
+  toggle(): void
+  /** True on the one render after the user opened it, so the group can play its reveal. */
+  justOpened(): boolean
+}
+
+export function disclosure(key: string): Disclosure {
+  const open = isExpanded(key)
+  return {
+    open,
+    toggle: () => setExpanded(key, !open),
+    justOpened: () => {
+      if (justOpened !== key) return false
+      justOpened = null
+      return true
+    },
+  }
+}
+
+/** A panel setting that is not a disclosure: no group opens, so nothing animates. */
+export function panelFlag(key: string): { readonly on: boolean; toggle(): void } {
+  const on = panelFlags.get(key) === true
+  return { on, toggle: () => setPanelFlag(key, !on) }
+}
+
+/** Test seam for `panelFlag`. */
+export function setPanelFlag(key: string, on: boolean): void {
+  panelFlags.set(key, on)
+}
+
+/** Moves the disclosures keyed `${stem}.<n>` with a list whose item `removed` left. */
+export function shiftDisclosures(stem: string, removed: number): void {
+  const moved: Array<[number, boolean]> = []
+  for (const [key, open] of disclosures) {
+    if (!key.startsWith(`${stem}.`)) continue
+    const index = Number(key.slice(stem.length + 1))
+    if (!Number.isInteger(index) || index < removed) continue
+    disclosures.delete(key)
+    if (index > removed) moved.push([index - 1, open])
+  }
+  for (const [index, open] of moved) disclosures.set(`${stem}.${index}`, open)
+  if (justOpened?.startsWith(`${stem}.`)) justOpened = null
 }
 
 /* ---------- numeric expressions ---------- */
@@ -130,7 +204,7 @@ function readSum(cursor: Cursor): number | null {
  * app's own document, and a field that executes arbitrary text is a script
  * injection point one paste away.
  */
-export function evaluateNumeric(raw: string): number | null {
+function evaluateNumeric(raw: string): number | null {
   const cursor: Cursor = { text: raw.trim(), at: 0 }
   if (!cursor.text) return null
   const value = readSum(cursor)
@@ -141,7 +215,7 @@ export function evaluateNumeric(raw: string): number | null {
 
 /* ---------- controls ---------- */
 
-export interface NumberFieldOptions {
+interface NumberFieldOptions {
   /** Stable identity so focus survives the panel rebuild after a write. */
   id?: string
   /**
@@ -190,7 +264,8 @@ export interface NumberFieldOptions {
   token?: FieldToken
   /**
    * Live value during a scrub. Sections wire this to an inline style so the
-   * drag is visible without queueing a source write (and a toast) per frame.
+   * drag is visible without filing a note per frame; the scrub rewinds what it
+   * drew and commits once when it ends.
    */
   onPreview?(value: number): void
   onCommit(value: number): void
@@ -288,15 +363,74 @@ function previewLog(): { record(preview: () => void): void; rewind(commit: () =>
   }
 }
 
-/** Figma-style scrubbable number input: drag the label, or type a value. */
+/**
+ * How a scrub or a typed edit ends. `commit` writes the value the field shows
+ * (a scrub's last preview, or the parsed text); `cancel` puts the last committed
+ * value back. Invalid text cannot be committed and ends as a cancel.
+ */
+type FieldExit = "commit" | "cancel"
+
+/** A scrub in progress: what `finish` needs to end it, from any exit. */
+interface Scrub {
+  label: HTMLElement
+  finish(exit: FieldExit): void
+}
+
+/**
+ * Every live scrub, so a rebuild can end the ones on the nodes it removes.
+ *
+ * A scrub listens on its label, and a rebuild detaches the label mid-gesture:
+ * the pointerup then lands on whatever is under the pointer and the gesture
+ * never ends, leaving its preview on the page with no note behind it and its
+ * MutationObserver on the whole document. `finishScrubs` is how the panel ends
+ * them first (`index.ts` calls it before it clears or replaces a section).
+ */
+const liveScrubs = new Set<Scrub>()
+
+/**
+ * Ends every scrub whose label is inside `root`, committing its last value.
+ *
+ * Commit rather than revert, because every other way a scrub ends already
+ * commits: `pointerup`, `pointercancel` (the platform taking the pointer back)
+ * and a lost capture all write the value the last preview drew. A rebuild is
+ * one more interruption of the same gesture, and committing it keeps the
+ * page and the Changes tab in agreement: what the person last saw is what the
+ * note says, rather than the element snapping back under a pointer still held.
+ */
+export function finishScrubs(root: Node): void {
+  for (const scrub of [...liveScrubs]) {
+    if (!scrub.label.isConnected || root.contains(scrub.label)) scrub.finish("commit")
+  }
+}
+
+/**
+ * Figma-style scrubbable number input: drag the label, or type a value.
+ *
+ * One gesture at a time, and `committed` is the only record of the value the
+ * field last stood for (mirrored into `defaultValue`, which `follow.ts` reads to
+ * tell typing in progress from a settled field):
+ *
+ *   idle      --type-->                          typing    (value !== committed)
+ *   typing    --Enter | blur | Arrow--> finish(commit) --> idle (committed = value)
+ *   typing    --Enter | blur, invalid--> finish(cancel) --> idle (text reverts)
+ *   typing    --Escape-->              finish(cancel) --> idle (text reverts, blur)
+ *   idle      --label pointerdown-->   scrubbing (preview once per frame)
+ *   scrubbing --pointerup | pointercancel | lostpointercapture | label detached
+ *              | panel rebuild (`finishScrubs`)--> finish(commit) --> idle
+ *
+ * `finish` is the single exit: it releases the pointer, the listeners, the
+ * pressed look and the preview log's MutationObserver, rewinds the previews,
+ * and then commits or reverts.
+ */
 export function numberField(options: NumberFieldOptions): HTMLElement {
   if (options.token?.bound) return boundNumberField(options, options.token)
-  const initial = options.value === null ? "" : String(round(options.value))
+  let committed = options.value === null ? "" : String(round(options.value))
+  let scrub: Scrub | null = null
   const input = el("input", {
     type: "text",
     inputmode: "decimal",
     "aria-label": accessibleName(options.title, options.label),
-    value: initial,
+    value: committed,
     placeholder: options.placeholder ?? "",
     disabled: options.disabled,
     "data-de-field": options.id,
@@ -305,27 +439,35 @@ export function numberField(options: NumberFieldOptions): HTMLElement {
   const clampValue = (value: number) =>
     Math.min(options.max ?? Number.POSITIVE_INFINITY, Math.max(options.min ?? Number.NEGATIVE_INFINITY, value))
 
-  const commit = (raw: string) => {
-    const parsed = evaluateNumeric(raw)
-    if (parsed === null) return
-    const next = clampValue(parsed)
+  const write = (next: number) => {
     // Show the result, not the expression — the field is now the value again.
     // As its default too: a committed value is no longer typing in progress,
     // which is what holds the panel's geometry repaints off (`follow.ts`).
-    input.value = String(round(next))
-    input.defaultValue = input.value
+    committed = String(round(next))
+    input.value = committed
+    input.defaultValue = committed
     options.onCommit(next)
+  }
+
+  /** The typed text's exit. A scrub has its own `finish`, set while it runs. */
+  const finishTyping = (exit: FieldExit) => {
+    const parsed = exit === "commit" ? evaluateNumeric(input.value) : null
+    if (parsed === null) {
+      input.value = committed
+      return
+    }
+    write(clampValue(parsed))
   }
 
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault()
-      commit(input.value)
+      finishTyping("commit")
       return
     }
     if (event.key === "Escape") {
       event.preventDefault()
-      input.value = initial
+      finishTyping("cancel")
       input.blur()
       return
     }
@@ -333,7 +475,7 @@ export function numberField(options: NumberFieldOptions): HTMLElement {
     event.preventDefault()
     const step = (options.step ?? 1) * modifierScale(event)
     const current = evaluateNumeric(input.value) ?? 0
-    commit(String(round(event.key === "ArrowUp" ? current + step : current - step)))
+    write(clampValue(round(event.key === "ArrowUp" ? current + step : current - step)))
   })
   /*
    * Commit on blur only when the person left a changed value behind.
@@ -346,8 +488,8 @@ export function numberField(options: NumberFieldOptions): HTMLElement {
    * person leaving the field.
    */
   input.addEventListener("blur", () => {
-    if (!input.isConnected || input.value === initial) return
-    commit(input.value)
+    if (!input.isConnected || input.value === committed) return
+    finishTyping("commit")
   })
 
   const label = el(
@@ -356,11 +498,11 @@ export function numberField(options: NumberFieldOptions): HTMLElement {
     [options.label]
   )
 
-  // Drag the label to scrub, the way Figma and Leva both behave. The commit is
-  // deferred to pointerup: committing per pointermove queues a source write and
-  // fires the engine toast dozens of times for one gesture.
+  // Drag the label to scrub, the way Figma and Leva both behave. The previews
+  // draw on the page; the one write is deferred to the end of the gesture, so
+  // a drag files one note and one undo step rather than one per pointermove.
   label.addEventListener("pointerdown", (event) => {
-    if (options.disabled) return
+    if (options.disabled || scrub) return
     event.preventDefault()
     label.setPointerCapture(event.pointerId)
     const startX = event.clientX
@@ -372,12 +514,13 @@ export function numberField(options: NumberFieldOptions): HTMLElement {
     // Say that the gesture is what is driving the number. The lit label is the
     // pressed-control appearance from `css/panels.ts`; the field's own accent
     // border is the one it already wears for focus, which is the other way this
-    // control gets driven. Both are cleared in `onUp`, including the
-    // `pointercancel` path, so a drag that ends off the label cannot strand it.
+    // control gets driven. Both are cleared in `finish`, whatever ended the drag.
     label.classList.add("de-field-label--scrubbing")
     label.closest(".de-field")?.classList.add("de-field--scrubbing")
 
     const onMove = (move: PointerEvent) => {
+      // A label the panel took away mid-drag cannot hear its own pointerup.
+      if (!label.isConnected) return live.finish("commit")
       latest = clampValue(startValue + (move.clientX - startX) * (options.step ?? 1) * modifierScale(move))
       input.value = String(round(latest))
       if (!options.onPreview || frame) return
@@ -387,22 +530,34 @@ export function numberField(options: NumberFieldOptions): HTMLElement {
         previews.record(() => options.onPreview?.(latest))
       })
     }
-    const onUp = () => {
-      if (frame) cancelAnimationFrame(frame)
-      label.classList.remove("de-field-label--scrubbing")
-      label.closest(".de-field")?.classList.remove("de-field--scrubbing")
-      // `pointercancel` has already dropped the capture; releasing twice throws.
-      if (label.hasPointerCapture(event.pointerId)) label.releasePointerCapture(event.pointerId)
-      label.removeEventListener("pointermove", onMove)
-      label.removeEventListener("pointerup", onUp)
-      label.removeEventListener("pointercancel", onUp)
-      previews.rewind(() => {
-        if (latest !== startValue) options.onCommit(latest)
-      })
+    const onEnd = () => live.finish("commit")
+    const live: Scrub = {
+      label,
+      finish(exit) {
+        if (scrub !== live) return
+        scrub = null
+        liveScrubs.delete(live)
+        if (frame) cancelAnimationFrame(frame)
+        label.classList.remove("de-field-label--scrubbing")
+        label.closest(".de-field")?.classList.remove("de-field--scrubbing")
+        // A cancelled or removed capture is already gone; releasing twice throws.
+        if (label.hasPointerCapture(event.pointerId)) label.releasePointerCapture(event.pointerId)
+        label.removeEventListener("pointermove", onMove)
+        label.removeEventListener("pointerup", onEnd)
+        label.removeEventListener("pointercancel", onEnd)
+        label.removeEventListener("lostpointercapture", onEnd)
+        previews.rewind(() => {
+          if (exit === "commit" && latest !== startValue) write(latest)
+          else input.value = committed
+        })
+      },
     }
+    scrub = live
+    liveScrubs.add(live)
     label.addEventListener("pointermove", onMove)
-    label.addEventListener("pointerup", onUp)
-    label.addEventListener("pointercancel", onUp)
+    label.addEventListener("pointerup", onEnd)
+    label.addEventListener("pointercancel", onEnd)
+    label.addEventListener("lostpointercapture", onEnd)
   })
 
   // `--numeric` rather than styling every `.de-field input`: tabular figures
@@ -498,7 +653,7 @@ export function group(caption: string, ...children: Array<Node | null>): HTMLEle
   ])
 }
 
-export interface PropRowOptions {
+interface PropRowOptions {
   /**
    * One caption over the whole row (Figma's `Position`), or one per column
    * (`Opacity` over the first field, `Corner radius` over the second). A `null`
@@ -572,7 +727,7 @@ export function trailingToggle(options: {
   return button
 }
 
-export interface IconChoice {
+interface IconChoice {
   value: string
   label: string
   glyph: Node
@@ -582,8 +737,8 @@ export interface IconChoice {
 /**
  * One-of-several, drawn as glyphs on a continuous rail.
  *
- * The icon twin of `segmented` — Auto layout's flow strip, the sizing modes,
- * both text-alignment triples. Exactly one cell is chosen at a time, which is
+ * Auto layout's flow strip, the text-alignment triples, Justify, Decoration
+ * and Case. Exactly one cell is chosen at a time, which is
  * the invariant that earns the rail: it says the choice is among THESE.
  */
 export function iconSegmented(options: {
@@ -608,12 +763,11 @@ export function iconSegmented(options: {
   const node = el("div", { class: "de-iseg", role: "group", "aria-label": options.label }, buttons)
 
   /*
-   * The same travelling chip the word version gets, for the reason its own
-   * comment gives: this is called the icon twin of `segmented`, and a twin that
-   * teleports beside one that slides is two answers to one gesture.
+   * The chip travels, as the tab strips' pill does: a chip that teleports beside
+   * one that slides is two answers to one gesture.
    *
-   * The park-then-release in `placeThumb` is the same trick too, needed for the
-   * same reason: this panel rebuilds all thirteen sections on every commit, so
+   * The park-then-release in `placeThumb` is needed because this panel
+   * rebuilds all thirteen sections on every commit, so
    * the control the user pressed no longer exists by the time anything could
    * animate. Placing the chip where the PREVIOUS build had it and releasing it
    * a frame later makes the replacement perform the move its predecessor never
@@ -635,7 +789,7 @@ export function iconSegmented(options: {
   return node
 }
 
-export interface ActionChoice {
+interface ActionChoice {
   label: string
   glyph: Node
   /** Present only for a cell that HOLDS a state; omit for a pure action. */
@@ -719,7 +873,7 @@ function modifierScale(event: { shiftKey: boolean; altKey: boolean; metaKey: boo
   return 1
 }
 
-export interface TextFieldOptions {
+interface TextFieldOptions {
   id?: string
   /** A letter or a drawn mark, never a word — see `NumberFieldOptions.label`. */
   label: string | Node
@@ -730,21 +884,41 @@ export interface TextFieldOptions {
   onCommit(value: string): void
 }
 
+/**
+ * A free-text field with the number field's commit and cancel contract: Enter
+ * or leaving a changed value commits once, Escape puts the last committed text
+ * back. `committed` is what makes "once" true — Enter's own blur fires `change`
+ * for the value it has just committed, and that second call used to reach the
+ * writer as a duplicate.
+ */
 export function textField(options: TextFieldOptions): HTMLElement {
   const name = accessibleName(options.title, options.label)
+  let committed = options.value
   const input = el("input", {
     type: "text",
     "aria-label": name,
-    value: options.value,
+    value: committed,
     placeholder: options.placeholder ?? "",
     "data-de-field": options.id,
   }) as HTMLInputElement
-  input.addEventListener("change", () => options.onCommit(input.value))
+  const commit = () => {
+    committed = input.value
+    input.defaultValue = committed
+    options.onCommit(committed)
+  }
+  input.addEventListener("change", () => {
+    if (input.value !== committed) commit()
+  })
   input.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return
-    event.preventDefault()
-    options.onCommit(input.value)
-    input.blur()
+    if (event.key === "Enter") {
+      event.preventDefault()
+      commit()
+      input.blur()
+    } else if (event.key === "Escape") {
+      event.preventDefault()
+      input.value = committed
+      input.blur()
+    }
   })
   return el("div", { class: "de-field" }, [
     el("span", { class: "de-field-label", style: "cursor:default", title: name }, [options.label]),
@@ -752,7 +926,7 @@ export function textField(options: TextFieldOptions): HTMLElement {
   ])
 }
 
-export interface SelectFieldOptions {
+interface SelectFieldOptions {
   id?: string
   label: string
   value: string
@@ -811,15 +985,8 @@ export function selectField(options: SelectFieldOptions): HTMLElement {
   ])
 }
 
-export interface SegmentedOptions {
-  label: string
-  value: string
-  options: Array<{ value: string; label: string; title?: string }>
-  onCommit(value: string): void
-}
-
 /**
- * Where each segmented control last was, and which one the user just pressed.
+ * Where each icon rail's chip last was, and which rail the user just pressed.
  *
  * The chip travels, which is what a segmented control is for — but this panel
  * rebuilds all thirteen sections on every commit, so the control the user
@@ -830,54 +997,19 @@ export interface SegmentedOptions {
  * moved to the current one a frame later. The rebuild stops mattering: the new
  * control performs the transition the old one would have.
  *
- * Keyed by label, which is unique within a panel. `justSegmented` is what keeps
- * this honest — without it, selecting a second element whose value differs
- * would slide the chip as if somebody had pressed it, and a panel that animates
- * on selection change is a panel that animates constantly.
+ * Per rail label (the label is unique within the Design tab; two rails sharing
+ * one would animate from each other's value):
+ *
+ *   unknown --built--> shown(value) --built again--> shown(value')   (chip placed, no travel)
+ *   shown(v) --pressed--> pressed --next build--> shown(v')           (chip travels v → v')
+ *
+ * `justSegmented` is the `pressed` state, read once by the next build: without
+ * it, selecting a second element whose value differs would slide the chip as if
+ * somebody had pressed it, and a panel that animates on selection change is a
+ * panel that animates constantly.
  */
 const segmentedWas = new Map<string, string>()
 let justSegmented: string | null = null
-
-/** Two or three mutually exclusive words — Figma's `Packed | Space between`. */
-export function segmented(options: SegmentedOptions): HTMLElement {
-  const buttons = options.options.map((option) =>
-    el(
-      "button",
-      {
-        class: "de-segment",
-        type: "button",
-        title: option.title ?? option.label,
-        "aria-pressed": String(option.value === options.value),
-        onclick: () => {
-          justSegmented = options.label
-          options.onCommit(option.value)
-        },
-      },
-      [option.label]
-    )
-  )
-  const node = el(
-    "div",
-    { class: "de-segmented", role: "group", "aria-label": options.label },
-    buttons
-  )
-  // The same helper the tab strips use — measurement, the zero-refusal, the
-  // first-placement jump and the resize re-measure are one implementation now.
-  const thumb = installSegmentThumb(node)
-
-  const was = segmentedWas.get(options.label)
-  segmentedWas.set(options.label, options.value)
-  const pressed = justSegmented === options.label
-  if (pressed) justSegmented = null
-
-  const at = (value: string): HTMLElement | null => {
-    const index = options.options.findIndex((option) => option.value === value)
-    return index < 0 ? null : buttons[index]
-  }
-
-  placeThumb(thumb, at, was, options.value, pressed)
-  return node
-}
 
 /**
  * Puts a segmented control's chip under its value, the moment the control is
@@ -916,7 +1048,7 @@ function placeThumb(
   })
 }
 
-export interface IconButtonOptions {
+interface IconButtonOptions {
   label: string
   /**
    * A unicode mark or a drawn one.
@@ -972,11 +1104,6 @@ export function miniButton(options: {
   )
 }
 
-/** Drops the user's fold choice for one section, so its default applies again. */
-export function forgetSectionFold(title: string): void {
-  collapsedSections.delete(title)
-}
-
 /**
  * A collapsible section. The header folds the body in place rather than asking
  * the panel to re-render: a rebuild here would drop focus from whatever the
@@ -989,14 +1116,14 @@ export function section(
   /**
    * Whether this section starts folded the FIRST time it is drawn.
    *
-   * Only consulted when the panel has no memory of the title yet, so it is a
+   * Only consulted when the panel has no memory of the section yet, so it is a
    * default rather than a state: once the user has folded or unfolded it, their
    * choice wins for the rest of the session and this argument is ignored.
    *
-   * It exists for Settings in the Changes tab, which is the one section in the
-   * panel that should not be open on arrival — it is somewhere you go once,
-   * below a list you are reading every time, and unfolded by default it pushes
-   * that list up by the height of six rows for a block nobody asked for.
+   * Responsive passes it, because per-breakpoint overrides are a web concept a
+   * Figma user did not come for and the section folds on arrival; Selection
+   * colors passes it above four colours, where the list would push everything
+   * under it a screen down.
    */
   collapsedByDefault = false,
   /**
@@ -1012,7 +1139,8 @@ export function section(
   // A default, not a choice: it is not stored, so a section whose default
   // changes with its content (Selection colors folds above four colours)
   // follows it until the user presses the header, and their choice wins after.
-  const folded = (): boolean => collapsedSections.get(title) ?? collapsedByDefault
+  const id = foldId(title)
+  const folded = (): boolean => sectionFolds.get(id) ?? collapsedByDefault
   const collapsed = folded()
   const wrapped = el("div", { class: "de-section-body" }, [body])
   wrapped.hidden = collapsed
@@ -1086,7 +1214,7 @@ export function section(
     // add a fill, not collapse the section the new row would land in.
     if ((event.target as HTMLElement | null)?.closest(".de-section-actions")) return
     const next = !folded()
-    collapsedSections.set(title, next)
+    sectionFolds.set(id, next)
     wrapped.hidden = next
     toggle.setAttribute("aria-expanded", String(!next))
     toggle.setAttribute("title", `${next ? "Expand" : "Collapse"} ${title}`)
