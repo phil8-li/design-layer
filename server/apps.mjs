@@ -19,6 +19,7 @@
 import { chooserUrlFromEnv } from "../runtime/chooser-url.mjs"
 import { listEditors } from "../runtime/editor-registry.mjs"
 import { lastPage, portOfUrl, rememberPage } from "../runtime/last-pages.mjs"
+import { httpError as refusal } from "./http-error.mjs"
 
 // The chooser's own scan is the floor: it probes every candidate port
 // concurrently with a 1.5s ceiling and then reads package.json off disk for the
@@ -26,13 +27,6 @@ import { lastPage, portOfUrl, rememberPage } from "../runtime/last-pages.mjs"
 // and stops well short of the point where a menu waiting on it reads as hung.
 const CHOOSER_TIMEOUT_MS = 4000
 
-// Same helper as routes.mjs, and a copy on purpose: importing it from there
-// would close a cycle, since that module builds this one.
-function refusal(message, statusCode) {
-  const error = new Error(message)
-  error.statusCode = statusCode
-  return error
-}
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)

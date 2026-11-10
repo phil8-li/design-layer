@@ -5,12 +5,9 @@ import path from "node:path"
 import { createRequire } from "node:module"
 
 import { isEditableSourcePath } from "../config.mjs"
-
-function refusal(message, statusCode = 400) {
-  const error = new Error(message)
-  error.statusCode = statusCode
-  return error
-}
+import { writeAtomic } from "./file-io.mjs"
+import { httpError as refusal } from "./http-error.mjs"
+import { createSerial } from "./serial.mjs"
 
 function unwrap(node) {
   let current = node
@@ -184,19 +181,28 @@ function applyPatches(source, patches) {
   return next
 }
 
-/** One serialised editor per configured source file. */
+/**
+ * A control-default writer that refuses every request with one reason: the
+ * shape for a project that configured none, and for one whose configured file
+ * cannot be used (see `controlDefaultsFor` in `routes.mjs`).
+ */
+export function refusingControlDefaults(message, statusCode) {
+  const refuse = async () => {
+    throw refusal(message, statusCode)
+  }
+  return { configured: false, read: refuse, write: refuse, remove: refuse }
+}
+
+/**
+ * One serialised editor per configured source file.
+ *
+ * Throws when the configured file is outside the editable source roots; the
+ * route table turns that into a refusing writer rather than failing whole.
+ */
 export function createControlDefaults(config) {
   const target = config.controls?.leva?.sourceDefaults ?? null
-  let queue = Promise.resolve()
 
-  if (!target) {
-    return {
-      configured: false,
-      read: async () => { throw refusal("Source-backed control defaults are not configured", 404) },
-      write: async () => { throw refusal("Source-backed control defaults are not configured", 404) },
-      remove: async () => { throw refusal("Source-backed control defaults are not configured", 404) },
-    }
-  }
+  if (!target) return refusingControlDefaults("Source-backed control defaults are not configured", 404)
 
   // Against the project root, not the working directory. A host writes
   // `src/lib/…` meaning its own src, and the start screen can be answered from
@@ -217,22 +223,14 @@ export function createControlDefaults(config) {
     ;({ parse } = createRequire(import.meta.url)("@babel/parser"))
   }
 
-  const serial = (task) => {
-    const run = queue.then(task, task)
-    queue = run.then(() => undefined, () => undefined)
-    return run
-  }
+  const serial = createSerial()
 
   const readSource = async () => {
     const source = await fs.readFile(file, "utf8")
     return { source, root: parseObject(parse, source, target.exportName) }
   }
 
-  const writeSource = async (source) => {
-    const temporary = `${file}.${process.pid}.tmp`
-    await fs.writeFile(temporary, source, "utf8")
-    await fs.rename(temporary, file)
-  }
+  const writeSource = (source) => writeAtomic(file, source)
 
   return {
     configured: true,

@@ -70,6 +70,7 @@ import { isEditableSourcePath, resolveEditableSource } from "../config.mjs"
 import { scanTemplate } from "./angular-source.mjs"
 import { createLimiter } from "./file-io.mjs"
 import { scanJsx } from "./react-source.mjs"
+import { httpError as refusal } from "./http-error.mjs"
 
 /**
  * Guards on a directory nobody vetted, not product limits.
@@ -142,12 +143,6 @@ const ELEMENT_SELECTOR = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/
 
 /** A name that is a legal identifier but starts lowercase, which JSX reads as a DOM tag. */
 const LOWERCASE_IDENTIFIER = /^[a-z][A-Za-z0-9_$]*$/
-
-function refusal(message, statusCode = 400) {
-  const error = new Error(message)
-  error.statusCode = statusCode
-  return error
-}
 
 /**
  * Which lane a name names, or a sentence explaining that it names neither.
