@@ -14,8 +14,9 @@ repository, phil8-li/design-layer-landing-page.
 ## What this is
 
 A visual editor that proxies a running React or Angular dev server, injects an
-editor overlay, and writes edits back into the host app's component source. It
-also serves MCP so a coding agent can receive notes from the designer.
+editor overlay, and turns each edit into a plain-language note. It serves MCP so
+a coding agent receives the notes and makes the changes in the host app's
+source. DesignLayer itself writes only a lint fix and a saved control default.
 
 ## Commands
 
@@ -23,6 +24,8 @@ also serves MCP so a coding agent can receive notes from the designer.
 npm install          # also builds src/ into dist/ (prepare script)
 npm run build        # rebuild dist/ after any change under src/
 npm test             # full suite, no host app needed; a bare clone is green
+node test/run.mjs mcp board --skip library-signin-live   # filter by substring
+node test/mcp-handoff-cases.mjs                          # one suite alone
 npm run verify       # generated files are fresh + vendor patch still applies
 npx tsc --noEmit     # typecheck src/
 ```
@@ -30,7 +33,8 @@ npx tsc --noEmit     # typecheck src/
 Run `npm run build && npm test` before saying a change works. Four suites
 (`token-cases`, `responsive-cases`, `picker-cases`, `icon-set-cases`) print
 `SKIPPED — no host app found` on a clean clone. That is expected; do not point
-`DESIGNLAYER_HOST` at another app to un-skip them.
+`DESIGNLAYER_HOST` at another app to un-skip them. `library-signin-live-cases`
+opens a real Chrome window. More runner flags: [docs/testing.md](docs/testing.md).
 
 The Mac app is its own surface. Its window loads the desk page at
 `http://localhost:3454`, which frames the start screen and the editors, served
@@ -46,15 +50,17 @@ browser tab before you say it works.
 | `cli.mjs` | argv contract, entry point, app supervisor |
 | `config.mjs` | config defaults, discovery, resolution, host detection |
 | `build.mjs` | bundles `src/` to `dist/designlayer.js`, `dist/toaster.js`, `dist/tokens.mjs` |
-| `runtime/` | start screen, launcher, port scan, the patch against `react-rewrite-cli@0.1.1` |
-| `server/` | loopback HTTP routes, MCP server (`mcp.mjs`), source writers for React and Angular |
+| `designlayer.config.example.mjs` | every config key, commented |
+| `runtime/` | start screen, launcher, port scan, state dir, exit hooks, the patches against `react-rewrite-cli@0.1.1` |
+| `server/` | loopback HTTP routes (`routes.mjs`), MCP server (`mcp.mjs`, queue in `handoff.mjs`), the `/agent` handoff, library readers, source lookups for React and Angular |
 | `src/` | the editor UI (TypeScript, plain DOM, bundled to an IIFE) |
-| `test/` | one `*-cases.mjs` file per area; `test/host.mjs` locates the optional host app |
-| `tools/` | generators (`build-icons`, `build-notices`, `build-sonner-css`), perf and e2e harnesses |
+| `test/` | one `*-cases.mjs` file per area; `test/run.mjs` runs them; `test/host.mjs` locates the optional host app |
+| `tools/` | generators (`build-icons`, `build-notices`, `build-sonner-css`), build plugins, the motion budget and contrast sweep used by tests, perf and e2e harnesses |
 | `desktop/mac/` | the Mac Dock app (LaunchAgent + Chrome web app) |
+| `launch/` | double-click launcher for a remote dev box |
 | `docs/` | user documentation |
 
-Full file list: [docs/architecture.md](docs/architecture.md#layout).
+File list (`src/` by folder): [docs/architecture.md](docs/architecture.md#layout).
 
 ## Rules that break builds or reviews
 
@@ -74,18 +80,20 @@ Full file list: [docs/architecture.md](docs/architecture.md#layout).
   any dependency change.
 - **`runtime/vendor-patch.mjs`** splices a minified bundle at pinned anchors. Do
   not bump `react-rewrite-cli` unless the task is to redo those patches.
-- **UI copy is asserted by tests.** Changing a label or message means updating
-  the cases that assert it (`grep -rn "old text" test/`).
-- **Every route is loopback-only.** Keep the `isLocalRequest` guard on anything
-  new in `server/routes.mjs` or `server/mcp.mjs`.
+- **UI copy is asserted by tests and tools.** Changing a label or message means
+  updating every place that quotes it
+  (`grep -rn "old text" src test tools desktop docs README.md DESIGN.md`).
+- **Every route is loopback-only.** Add a route as a branch inside `route()` in
+  `server/routes.mjs`: the `isLocalRequest` guard and the JSON content-type
+  check run before it. Keep the guard in `server/mcp.mjs`.
 
 ## Style
 
 - No linter or formatter: match the file. ES modules, double quotes, no
   semicolons.
 - Comments explain a decision, not the line below them.
-- Add or update a `test/*-cases.mjs` case with every behavior change, and add a
-  new suite file to the `test` script in `package.json`.
+- Add or update a `test/*-cases.mjs` case with every behavior change. The
+  runner finds a new suite file on its own.
 - Commit subject: one plain sentence on what the software now does, from a
   user's point of view. No `feat:`/`fix:` prefixes. The body explains why the
   old behavior was wrong.
