@@ -16,7 +16,7 @@
 
 import type { Rect, Size } from "./camera"
 
-export interface BoardLayout {
+interface BoardLayout {
   frames: Rect[]
   columns: number
   rows: number
@@ -27,14 +27,14 @@ export interface BoardLayout {
 }
 
 /** Column gap as a share of the frame's width. */
-export const GAP_X_SHARE = 0.08
+const GAP_X_SHARE = 0.08
 /**
  * Row gap. The label above each frame is drawn at screen size, so at the small
  * zooms where the whole board is visible it needs world room that grows as the
  * zoom shrinks; the pixel floor covers a short, wide canvas.
  */
-export const GAP_Y_SHARE = 0.12
-export const GAP_Y_MIN = 140
+const GAP_Y_SHARE = 0.12
+const GAP_Y_MIN = 140
 
 export function layoutFrames(count: number, frame: Size, target: Size = frame): BoardLayout {
   const gapX = Math.round(frame.width * GAP_X_SHARE)

@@ -42,11 +42,11 @@ export const MAX_SCALE = 4
  * Fit never magnifies. A board of one page fitted at 1.4× would show that page
  * larger than it is live, which is a lie about what the page looks like.
  */
-export const FIT_MAX_SCALE = 1
+const FIT_MAX_SCALE = 1
 /** Air around the fitted content, as a share of the board on each side. */
 export const FIT_PADDING = 0.07
 
-export function clampScale(scale: number, min = MIN_SCALE, max = MAX_SCALE): number {
+function clampScale(scale: number, min = MIN_SCALE, max = MAX_SCALE): number {
   if (!Number.isFinite(scale)) return 1
   return Math.min(max, Math.max(min, scale))
 }
@@ -80,10 +80,6 @@ export function focus(frame: Rect): Camera {
 
 export function screenToWorld(camera: Camera, point: Point): Point {
   return { x: (point.x - camera.x) / camera.scale, y: (point.y - camera.y) / camera.scale }
-}
-
-export function worldToScreen(camera: Camera, point: Point): Point {
-  return { x: point.x * camera.scale + camera.x, y: point.y * camera.scale + camera.y }
 }
 
 export function rectToScreen(camera: Camera, rect: Rect): Rect {
@@ -142,7 +138,7 @@ export function interpolate(a: Camera, b: Camera, t: number): Camera {
  * same curve the view transition's keyframes do. Newton steps with a bisection
  * fallback, the way browsers solve it.
  */
-export function cubicBezier(x1: number, y1: number, x2: number, y2: number): (t: number) => number {
+function cubicBezier(x1: number, y1: number, x2: number, y2: number): (t: number) => number {
   const cx = 3 * x1
   const bx = 3 * (x2 - x1) - cx
   const ax = 1 - cx - bx
@@ -176,5 +172,4 @@ export function cubicBezier(x1: number, y1: number, x2: number, y2: number): (t:
 }
 
 /** The board's one curve, as CSS and as a function: fast out, long settle. */
-export const BOARD_EASE_CSS = "cubic-bezier(0.22, 1, 0.36, 1)"
 export const boardEase = cubicBezier(0.22, 1, 0.36, 1)

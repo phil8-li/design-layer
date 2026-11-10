@@ -1058,7 +1058,6 @@ await check("mounts as a body sibling of .de-root, hidden, below the chrome", ()
   assert.ok(!chromeRoot.contains(root))
   assert.ok(root.hasAttribute("data-designlayer"))
   assert.equal(root.dataset.state, "closed")
-  assert.equal(html.dataset.deView, "live")
   assert.equal(root.style.getPropertyValue("--de-board-left"), "240px")
   assert.equal(root.style.getPropertyValue("--de-board-right"), "260px")
   const css = $("#designlayer-board-style").textContent
@@ -1120,7 +1119,6 @@ await check("prewarm starts loading the current page before the board opens", as
 
 await check("open (fallback path): canvas view on, frames, live buttons, zoom control", async () => {
   const opening = board.open()
-  assert.equal(html.dataset.deView, "canvas", "set from the start of opening")
   await opening
   assert.equal(editor.getState().canvasView, true)
   assert.equal(editor.editorOwnsInput(), false)
@@ -1280,7 +1278,6 @@ await check("Escape closes to the current page", async () => {
   await sleep(600)
   assert.equal(root.dataset.state, "closed")
   assert.equal(editor.getState().canvasView, false)
-  assert.equal(html.dataset.deView, "live")
 })
 
 /*
@@ -1327,7 +1324,6 @@ await check("a mode change closes instantly", () => {
   context.setMode("interactive")
   assert.equal(root.dataset.state, "closed")
   assert.equal(editor.getState().canvasView, false)
-  assert.equal(html.dataset.deView, "live")
   context.setMode("inspecting")
 })
 
@@ -1673,7 +1669,6 @@ await check("destroy removes the board, its styles and its commands", () => {
   assert.equal($(".de-board"), null)
   assert.equal($("#designlayer-board-style"), null)
   assert.equal(editor.hasCommand("view.canvas"), false)
-  assert.equal(html.dataset.deView, undefined)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

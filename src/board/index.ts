@@ -100,13 +100,19 @@ import { buildPages, fetchRoutes, MAX_PAGES, normalizeRoute, readVisited, rememb
  * the vendor overlay, whose socket takes one client and would knock this page's
  * editor off it. The prelude of a launcher that has the guard says so; one that
  * does not gets a sentence instead of a board.
+ *
+ * Compatibility only, kept on 2026-11-10: `config.mjs` always sets
+ * `boardFrames` now, so this answers only an editor process older than that.
+ * Remove it, with `isBoardFrame`'s second line and `cleanFrameDocument` in
+ * ./frames, once old processes no longer need supporting (review after
+ * 2027-02-01).
  */
 export function staleLauncherMessage(settings: Pick<DesignLayerConfig, "boardFrames">): string | null {
   if (settings.boardFrames) return null
   return "Restart this editor to use canvas view. It was started before canvas view was added."
 }
 
-export interface Board {
+interface Board {
   isOpen(): boolean
   open(): Promise<void>
   /** Back to live: to the page you came from, or — given a path — to that one. */
@@ -219,7 +225,6 @@ interface LabelView {
 
 export function installBoard(context: EditorContext): Board {
   const html = document.documentElement
-  html.dataset.deView = "live"
 
   if (!document.getElementById(STYLE_ID)) {
     const style = el("style", { id: STYLE_ID })
@@ -916,7 +921,6 @@ export function installBoard(context: EditorContext): Board {
   const markClosed = (next: Phase = { kind: "closed" }) => {
     setPhase(next)
     clearTimeout(leaveTimer)
-    html.dataset.deView = "live"
     pool.release(IDLE_RELEASE_MS)
     giveFocusBack()
     if (context.getState().canvasView) context.setState({ canvasView: false })
@@ -960,7 +964,6 @@ export function installBoard(context: EditorContext): Board {
     const mine = ++epoch
     try {
       setPhase({ kind: "opening" })
-      html.dataset.deView = "canvas"
       currentPath = liveRoute()
       rememberVisit(currentPath)
       liveScroll = { x: window.scrollX, y: window.scrollY }
@@ -1478,7 +1481,6 @@ export function installBoard(context: EditorContext): Board {
       unveilHost()
       root.remove()
       document.getElementById(STYLE_ID)?.remove()
-      delete html.dataset.deView
     },
   }
 

@@ -88,7 +88,7 @@ export function cleanFrameDocument(iframe: HTMLIFrameElement, extraSelector = ""
 }
 
 /** Documents alive at once, the current page included. */
-export const MAX_LOADED_FRAMES = 8
+const MAX_LOADED_FRAMES = 8
 /** A page that never fires `load` must not hold the queue forever. */
 const LOAD_TIMEOUT_MS = 15000
 
@@ -105,7 +105,7 @@ export interface FrameView {
   setFile(file: string | undefined): void
 }
 
-export interface FramePool {
+interface FramePool {
   get(path: string): FrameView | undefined
   /** The view for a page, built on first ask. */
   ensure(page: PageEntry): FrameView
@@ -128,7 +128,7 @@ export interface FramePool {
   destroy(): void
 }
 
-export interface FramePoolOptions {
+interface FramePoolOptions {
   max?: number
   /** Test seam: how long a load may take before the frame is failed. */
   loadTimeoutMs?: number

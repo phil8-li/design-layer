@@ -14,26 +14,19 @@
  * which is the specific way this feature looks broken while every part of it is
  * working.
  *
- * ## The resolution seam, and why it is a hook rather than an import
+ * ## One resolver
  *
- * The marker layer owns how a CSS selector becomes elements — it has to, that
- * is the thing it draws. But the count has to agree with it, so one of the two
- * has to defer. It is arranged so that either direction works and neither can
- * produce a second answer:
+ * `resolveFinding` in ./resolve turns a finding's selector into elements, and
+ * this module is its only caller: it runs once per audit into the index below,
+ * and is re-run when the page changes under it (`refreshLintResolution`). A
+ * finding with no selector (one inside a template or an HTML file) is real and
+ * has no element: it is listed, counted in the total, and left out of the
+ * on-page figure.
  *
- *   - `resolveLintSelector` here is a complete implementation of the rules the
- *     marker contract states (state pseudo-classes stripped, framework scoping
- *     attributes stripped, unparseable parts skipped rather than thrown), so a
- *     marker layer can simply paint `lintResolution()` and nothing needs
- *     registering at all.
- *   - `setLintResolver` lets the marker layer install its own instead, and then
- *     the index — and therefore the count, and therefore `findingsFor` — is
- *     built from the marker layer's answer rather than from a second opinion.
- *
- * Either way there is exactly one resolution per run. What is NOT offered is a
- * way for the marker layer to report a count back after painting: a number
- * arriving after the panel has already drawn its summary is a number that is
- * one paint stale, and the panel would flicker between two totals.
+ * What is NOT offered is a way for the marker layer to report a count back
+ * after painting: a number arriving after the panel has already drawn its
+ * summary is a number that is one paint stale, and the panel would flicker
+ * between two totals.
  *
  * ## Loading follows `libraries/store.ts`
  *
@@ -47,7 +40,7 @@
  */
 
 import { markerLayer, onMarkerLayerChange, setMarkerLayer } from "../annotations/store"
-import { isChrome } from "../core/dom"
+import { resolveFinding } from "./resolve"
 
 /* ---------- the wire shapes ---------- */
 
@@ -58,7 +51,7 @@ import { isChrome } from "../core/dom"
  * is installed but inapplicable, silently omitted from the list, turns a green
  * audit into a lie. The panel renders the sentence beside the name.
  */
-export interface LintTool {
+interface LintTool {
   id: string
   name: string
   available: boolean
@@ -92,19 +85,16 @@ export interface LintFinding {
 }
 
 /** What `fix({ ids })` answers: what was written, and what refused to be. */
-export interface LintFixResult {
+interface LintFixResult {
   fixed: string[]
   failed: Array<{ id: string; reason: string }>
 }
 
 /** One finding and the live elements it was resolved to. Elements may be empty. */
-export interface LintPlacement {
+interface LintPlacement {
   finding: LintFinding
   elements: Element[]
 }
-
-/** How a finding becomes elements. The marker layer may supply its own. */
-export type LintResolver = (finding: LintFinding) => Element[]
 
 /**
  * The numbers the panel's one-line summary is made of.
@@ -114,7 +104,7 @@ export type LintResolver = (finding: LintFinding) => Element[]
  * routinely different, and a panel that reports only the total is a panel a
  * user checks against the canvas once and stops trusting.
  */
-export interface LintSummary {
+interface LintSummary {
   total: number
   errors: number
   warnings: number
@@ -261,133 +251,7 @@ async function send<T>(url: string, init: RequestInit = {}): Promise<T> {
   return (await response.json()) as T
 }
 
-/* ---------- resolving a finding to elements ---------- */
-
-/**
- * A scoping attribute a framework's compiler added, e.g. `[_ngcontent-a-c3]`.
- *
- * These are emitted per build and per component, so the hash in one is
- * meaningless to a document that was served by a different build — and a
- * selector carrying one matches nothing whenever it is even slightly stale,
- * which turns every finding in a component stylesheet into "not on this page".
- * Keyed on the leading underscore rather than on any framework's spelling,
- * because an attribute nobody would write by hand is the actual signal.
- */
-const SCOPE_ATTRIBUTE = /\[_[^\]]*\]/g
-
-/**
- * A state pseudo-class or a pseudo-element — and never a functional one.
- *
- * `.btn:hover` styles `.btn`, and a marker cannot wait for a hover that may
- * never happen, so the state has to come off before the selector is a question
- * about the document. The lookahead is what keeps `:not(...)`, `:is(...)` and
- * `:nth-child(2)` intact: a pseudo followed by `(` carries an argument that
- * usually NARROWS the match, and dropping it would mark elements the rule never
- * touched. Those are left exactly as written, and if the result does not parse
- * the query below answers nothing rather than throwing.
- */
-const STATE_PSEUDO = /::?[a-z-]+(?![a-z-(])/gi
-
-/**
- * A selector list split at its top-level commas.
- *
- * `document.querySelectorAll` takes a list natively, so this exists only for
- * the failure mode: one unparseable part throws for the whole list, and a
- * stylesheet with a single selector this browser dislikes would then have every
- * finding beside it silently unresolvable. Split, and a bad part costs only
- * itself. Depth is tracked through `(` and `[` so a comma inside `:is(a, b)` or
- * `[title="a,b"]` is not a separator.
- */
-function selectorParts(selector: string): string[] {
-  const parts: string[] = []
-  let depth = 0
-  let start = 0
-  for (let at = 0; at < selector.length; at += 1) {
-    const char = selector[at]
-    if (char === "(" || char === "[") depth += 1
-    else if (char === ")" || char === "]") depth -= 1
-    else if (char === "," && depth === 0) {
-      parts.push(selector.slice(start, at))
-      start = at + 1
-    }
-  }
-  parts.push(selector.slice(start))
-  return parts.map((part) => part.trim()).filter(Boolean)
-}
-
-/** Never throws. A selector a browser cannot parse resolves to nothing. */
-function query(selector: string): Element[] {
-  if (!selector) return []
-  try {
-    return Array.from(document.querySelectorAll(selector))
-  } catch {
-    return []
-  }
-}
-
-/**
- * The live elements a finding's selector describes, as the marker layer and the
- * "on this page" count both need them.
- *
- * Two passes, in this order, and the order is the whole subtlety. The selector
- * is tried EXACTLY as the stylesheet wrote it first, so a structural qualifier
- * that genuinely narrows the match — `:nth-child(2)`, `:not(.open)` — is
- * honoured whenever it resolves. Only when that answers nothing is the stripped
- * form tried, which is the `:hover` case and the stale-build-hash case. Doing
- * it the other way round would mark every sibling of the one element a rule
- * actually applies to, and doing only the first would leave every state rule in
- * the project reported as "not on this page".
- *
- * Chrome is excluded: this editor's own panels are in the same document, and an
- * audit of the host's stylesheet has no business pointing at them.
- */
-export function resolveLintSelector(selector: string): Element[] {
-  const found: Element[] = []
-  const seen = new Set<Element>()
-  for (const part of selectorParts(selector)) {
-    const exact = query(part)
-    const nodes = exact.length
-      ? exact
-      : query(part.replace(SCOPE_ATTRIBUTE, "").replace(STATE_PSEUDO, "").trim())
-    for (const node of nodes) {
-      if (seen.has(node) || isChrome(node)) continue
-      seen.add(node)
-      found.push(node)
-    }
-  }
-  return found
-}
-
-/**
- * A finding with no selector is real and has no element.
- *
- * The server reports `null` for a finding inside a template or an HTML file,
- * where there is no enclosing rule to take a selector from. There is nothing to
- * fall back to — a file and a line do not identify a node — so it is listed in
- * the panel, counted in the total, and excluded from the on-page figure. That
- * is the honest answer, and it is why the summary prints both numbers.
- */
-const defaultResolver: LintResolver = (finding) =>
-  finding.selector ? resolveLintSelector(finding.selector) : []
-
-let resolver: LintResolver = defaultResolver
-
-/**
- * Hands the marker layer's own resolution to the rest of the feature.
- *
- * Pass `null` to go back to the built-in one. Registering invalidates the
- * index, so a layer that installs itself after the first audit does not leave
- * the summary reporting the previous answer.
- */
-export function setLintResolver(next: LintResolver | null): void {
-  resolver = next ?? defaultResolver
-  invalidateResolution()
-  // A resolver only changes where findings point, so with none there is
-  // nothing for a listener to repaint — and the marker layer installs its
-  // resolver at boot, where that repaint was the lint panel's whole first
-  // render, spent on an audit nobody has run.
-  if (findings.length) notify()
-}
+/* ---------- the element index ---------- */
 
 let placements: LintPlacement[] | null = null
 let byElement: Map<Element, LintFinding[]> | null = null
@@ -419,7 +283,7 @@ function buildResolution(): void {
   for (const finding of visibleFindings()) {
     let elements: Element[] = []
     try {
-      elements = resolver(finding)
+      elements = resolveFinding(finding)
     } catch (error: unknown) {
       // A resolver that throws is a bug in one selector, not a reason to lose
       // every other finding's marker.
@@ -821,6 +685,5 @@ export function resetLintForTest(): void {
   fixes.clear()
   resets += 1
   setMarkerLayer("notes")
-  resolver = defaultResolver
   invalidateResolution()
 }

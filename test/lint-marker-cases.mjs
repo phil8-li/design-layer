@@ -408,7 +408,8 @@ const bundled = await build({
       export { createContext } from "./src/core/context"
       export { getState, setState } from "./src/core/store"
       export { dsLintSection } from "./src/lint/panel"
-      export { installLintMarkers, relaxSelector } from "./src/lint/markers"
+      export { installLintMarkers } from "./src/lint/markers"
+      export { relaxSelector } from "./src/lint/resolve"
       export {
         lintFindings, lintSummary, markersShown, setMarkersShown,
         runAudit, isOnThisPage, elementsForFinding, findingsFor,
