@@ -1,12 +1,13 @@
-/** Validate the host manifest and normalize its token groups for the browser. */
+/**
+ * Validate the host manifest and the `designSystem.*` config blocks, and
+ * normalize their token groups for the browser.
+ */
+
+import { isPlainObject, tokenId } from "./library-common.mjs"
 
 export const DESIGN_SYSTEM_TOKEN_GROUPS = [
   "colors", "spacing", "radii", "textStyles", "uiTextStyles", "effects", "icons", "motion",
 ]
-
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
-}
 
 function manifestError(label, requirement) {
   throw new Error(`Invalid design-system manifest: ${label} ${requirement}`)
@@ -51,11 +52,6 @@ function expectCustomProperty(value, label) {
   const name = expectString(value, label)
   if (!/^--[a-zA-Z0-9_-]+$/.test(name)) manifestError(label, "must be a CSS custom property")
   return name
-}
-
-function tokenId(category, name) {
-  const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
-  return `${category}:${slug}`
 }
 
 function tokenScope(value, label) {
@@ -111,8 +107,8 @@ function uiTextStyleCssVars(style) {
  * — so any rule that reads the unit off the magnitude is a rule that is right
  * for one host by accident.
  */
-export const TRACKING_UNITS = ["em", "px"]
-export const DEFAULT_TRACKING_UNIT = "em"
+const TRACKING_UNITS = ["em", "px"]
+const DEFAULT_TRACKING_UNIT = "em"
 
 export function normalizeTrackingUnit(value, label = "designSystem.trackingUnit") {
   if (value === undefined || value === null) return DEFAULT_TRACKING_UNIT
@@ -331,10 +327,13 @@ export function normalizeContainerBreakpoints(breakpoints, annotations = {}) {
   )
 }
 
-export function emptyDesignSystemCatalog(
-  breakpoints, annotations = {}, containerBreakpoints = {}, containerAnnotations = {},
-  responsiveMeasures = [], trackingUnit = DEFAULT_TRACKING_UNIT
-) {
+/**
+ * The host catalog with no tokens in it, keys in the order the browser reads
+ * them. The breakpoint, measure and alias slots are placeholders that
+ * `resolveDesignSystemConfig` fills for every branch once — they used to be
+ * normalized here and then again there.
+ */
+export function emptyDesignSystemCatalog(trackingUnit = DEFAULT_TRACKING_UNIT) {
   return {
     name: null,
     trackingUnit,
@@ -346,9 +345,30 @@ export function emptyDesignSystemCatalog(
     effects: [],
     icons: [],
     motion: [],
-    breakpoints: normalizeBreakpoints(breakpoints, annotations),
-    containerBreakpoints: normalizeContainerBreakpoints(containerBreakpoints, containerAnnotations),
-    responsiveMeasures,
+    breakpoints: [],
+    containerBreakpoints: [],
+    responsiveMeasures: [],
     aliases: { cssVariables: [], tailwind: [] },
   }
+}
+
+/**
+ * `designSystem.responsiveMeasures`: named formulas a design system documents
+ * for sizes that follow the viewport, each with its usage and owner.
+ */
+export function normalizeResponsiveMeasures(value) {
+  if (value === undefined || value === null) return []
+  if (!isPlainObject(value)) manifestError("designSystem.responsiveMeasures", "must be an object")
+  return Object.entries(value).map(([name, raw]) => {
+    const label = `designSystem.responsiveMeasures.${name}`
+    expectObject(raw, label)
+    return {
+      id: `responsive-measure:${name.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase()}`,
+      name,
+      category: "responsive-measure",
+      formula: expectString(raw.formula, `${label}.formula`),
+      usage: expectString(raw.usage, `${label}.usage`),
+      owner: expectString(raw.owner, `${label}.owner`),
+    }
+  })
 }
