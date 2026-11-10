@@ -163,6 +163,13 @@ check("a host with no variant system yields an empty list, not a throw", () => {
   assert.deepEqual(parseVariantDeclarations(plainSource), [])
 })
 
+// The variants reader parses with server/babel.mjs's one plugin list, the one
+// component usage uses, so a file one can read the other can too.
+check("a file with a legacy decorator and a using declaration still yields its declaration", () => {
+  const source = `@sealed\nclass Store {}\n{ using handle = open() }\n${cvaSource}`
+  assert.equal(parseVariantDeclarations(source).length, 1)
+})
+
 check("an empty recognizer list recognizes nothing, and says so quietly", () => {
   assert.deepEqual(parseVariantDeclarations(cvaSource, { recognizers: [] }), [])
   // Guard the case above from being vacuous: the same source with the shipped

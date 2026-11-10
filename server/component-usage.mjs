@@ -64,13 +64,13 @@
 import { realpathSync } from "node:fs"
 import fs from "node:fs/promises"
 import path from "node:path"
-import { createRequire } from "node:module"
 
 import { isEditableSourcePath, resolveEditableSource } from "../config.mjs"
+import { httpError as refusal } from "../runtime/http-error.mjs"
 import { scanTemplate } from "./angular-source.mjs"
+import { PLUGINS, hostParse } from "./babel.mjs"
 import { createLimiter } from "./file-io.mjs"
 import { scanJsx } from "./react-source.mjs"
-import { httpError as refusal } from "../runtime/http-error.mjs"
 
 /**
  * Guards on a directory nobody vetted, not product limits.
@@ -235,28 +235,6 @@ function declaredNames(ast) {
 }
 
 /**
- * Babel from the host project when it has one, ours otherwise.
- *
- * The same two-step `server/variants.mjs` makes, and it is duplicated here for
- * the same reason: a project pinned to a newer parser can contain syntax ours cannot
- * read, and the host's own copy is by definition able to parse the host's own
- * files. The sibling does not export its resolution, and reaching into it would
- * couple two modules that otherwise share nothing.
- */
-let ourParse = null
-function hostParser(projectRoot) {
-  try {
-    return createRequire(path.join(projectRoot, "package.json"))("@babel/parser").parse
-  } catch {
-    if (!ourParse) ourParse = createRequire(import.meta.url)("@babel/parser").parse
-    return ourParse
-  }
-}
-
-/** Every plugin a modern React file might need, since we never run the output. */
-const PLUGINS = ["jsx", "typescript", "decorators-legacy", "classProperties", "explicitResourceManagement"]
-
-/**
  * Every candidate file under the project root, bounded in both directions.
  *
  * `truncated` is the honest half of this function. It is set when the walk
@@ -341,7 +319,7 @@ export function createComponentUsage(config, options = {}) {
   const maxFiles = options.maxFiles ?? MAX_FILES
   const maxDepth = options.maxDepth ?? MAX_DEPTH
   const maxUsages = options.maxUsages ?? MAX_USAGES
-  const parse = options.parse ?? hostParser(root)
+  const parse = options.parse ?? hostParse(root)
 
   /**
    * A client-supplied defining file, made absolute and proven to be inside the

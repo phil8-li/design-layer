@@ -2,11 +2,11 @@
 
 import fs from "node:fs/promises"
 import path from "node:path"
-import { createRequire } from "node:module"
 
 import { isEditableSourcePath } from "../config.mjs"
-import { writeFileAtomicAsync } from "../runtime/state-dir.mjs"
 import { httpError as refusal } from "../runtime/http-error.mjs"
+import { writeFileAtomicAsync } from "../runtime/state-dir.mjs"
+import { PLUGINS, hostParse } from "./babel.mjs"
 import { createSerial } from "./serial.mjs"
 
 function unwrap(node) {
@@ -66,7 +66,7 @@ function serializeLiteral(value) {
 function parseObject(parse, source, exportName) {
   const ast = parse(source, {
     sourceType: "module",
-    plugins: ["typescript", "jsx"],
+    plugins: PLUGINS,
     errorRecovery: false,
   })
   const matches = []
@@ -215,13 +215,7 @@ export function createControlDefaults(config) {
     throw refusal("Configured control-default file is outside editable source roots", 403)
   }
 
-  const hostRequire = createRequire(path.join(config.projectRoot, "package.json"))
-  let parse
-  try {
-    ;({ parse } = hostRequire("@babel/parser"))
-  } catch {
-    ;({ parse } = createRequire(import.meta.url)("@babel/parser"))
-  }
+  const parse = hostParse(config.projectRoot)
 
   const serial = createSerial()
 
