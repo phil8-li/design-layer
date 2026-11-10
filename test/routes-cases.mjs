@@ -41,9 +41,9 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "de-routes-"))
 fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "routes-fixture" }))
 fs.mkdirSync(path.join(root, "src"))
 
-async function serve(overrides = {}) {
+async function serve(overrides = {}, deps = {}) {
   const config = resolveConfig({ projectRoot: root, ports: { mcp: null }, ...overrides }, { cwd: root })
-  const routes = createDesignLayerRoutes(config)
+  const routes = createDesignLayerRoutes(config, deps)
   const listener = http.createServer((request, response) => {
     if (routes.handle(request, response)) return
     response.writeHead(404).end()
@@ -194,6 +194,46 @@ await check("a control-default file outside the source roots does not stop the r
     assert.match(body.message, /outside editable source roots/, "the refusal does not say why")
   } finally {
     await bad.close()
+  }
+})
+
+console.log("\nA sign-in nobody waits for stops")
+
+await check("the sign-in window is told to stop when the panel's request goes away", async () => {
+  let seen = null
+  let aborted
+  const abortedSeen = new Promise((resolve) => (aborted = resolve))
+  const signin = {
+    available: async () => true,
+    forgetOrigin: async () => {},
+    signIn: (url, options = {}) => {
+      seen = options.signal
+      return new Promise((resolve) => {
+        options.signal?.addEventListener("abort", () => {
+          aborted(true)
+          resolve({ ok: false, reason: "stopped" })
+        })
+      })
+    },
+  }
+  const withSignin = await serve({}, { signin })
+  try {
+    const controller = new AbortController()
+    const asked = fetch(withSignin.at("/libraries/auth/signin"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://storybook.example.com/index.json" }),
+      signal: controller.signal,
+    }).catch(() => null)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.ok(seen instanceof AbortSignal, "the route passed no signal to signIn")
+    assert.equal(seen.aborted, false, "the signal fired before the panel gave up")
+    controller.abort()
+    await asked
+    const fired = await Promise.race([abortedSeen, new Promise((resolve) => setTimeout(() => resolve(false), 2000))])
+    assert.equal(fired, true, "the window kept waiting after the panel closed the request")
+  } finally {
+    await withSignin.close()
   }
 })
 

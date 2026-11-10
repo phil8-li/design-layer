@@ -158,7 +158,13 @@ function libraryRoutes({ libraries, auth, signin }, rest, req, res, url) {
       const target = String(body?.url ?? "").trim()
       if (!target) throw badRequest("Signing in needs the url that was refused")
 
-      const outcome = await signin.signIn(target)
+      // A panel that gave up (closed, or the person cancelled) closes the
+      // request; the window it opened should not wait four minutes for nobody.
+      const controller = new AbortController()
+      res.on("close", () => {
+        if (!res.writableEnded) controller.abort()
+      })
+      const outcome = await signin.signIn(target, { signal: controller.signal })
       if (!outcome.ok) {
         // Not a 500: a person closing the window, or a provider that grants no
         // reusable session, is an ordinary outcome with a sentence attached.
@@ -676,8 +682,12 @@ function controlDefaultsFor(config) {
   }
 }
 
-/** `config` is the resolved object from `config.mjs`; defaults apply without it. */
-export function createDesignLayerRoutes(config = resolveConfig()) {
+/**
+ * `config` is the resolved object from `config.mjs`; defaults apply without it.
+ * `overrides` replaces a dependency for a suite (today only `signin`, whose
+ * real one opens a browser).
+ */
+export function createDesignLayerRoutes(config = resolveConfig(), overrides = {}) {
   const prefix = config.apiPrefix
   const store = createOptionsStore({ stateDir: config.stateDir })
   const defaults = controlDefaultsFor(config)
@@ -687,7 +697,7 @@ export function createDesignLayerRoutes(config = resolveConfig()) {
   // The browser that opens a site's own sign-in. Built here beside the store it
   // fills, because the two halves of "signed in to an origin" are the session
   // the provider grants and the credential this editor then reuses.
-  const signin = createBrowserSignIn(config)
+  const signin = overrides.signin ?? createBrowserSignIn(config)
   // The library store looks a credential up per fetch, so a sign-in that
   // happens while the editor is open reaches the very next refresh.
   const libraries = createLibraryStore(
