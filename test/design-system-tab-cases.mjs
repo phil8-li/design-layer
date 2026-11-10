@@ -706,7 +706,7 @@ const bundled = await build({
       export { librariesSection } from "./src/libraries/libraries-section"
       export { dsLintSection } from "./src/lint/panel"
       export { designSystemTab } from "./src/panels/inspector/tab-design-system"
-      export { libraryList, refreshLibraries } from "./src/libraries/store"
+      export { libraryList, reloadLibrariesForTest } from "./src/libraries/store"
     `,
     resolveDir: PACKAGE_DIR,
     loader: "ts",
@@ -772,7 +772,7 @@ const context = editor.createContext(bridge, {
 server.reset()
 server.libraries = [clone(PIER), clone(BEACON)]
 server.candidates = [clone(CANDIDATE)]
-await editor.refreshLibraries(API)
+await editor.reloadLibrariesForTest(API)
 
 const libraries = editor.librariesSection(context)
 right.append(libraries.node)
@@ -1644,7 +1644,7 @@ await check("with nothing installed it draws no empty-state sentence", async () 
   const installed = clone(server.libraries)
 
   server.libraries = []
-  await editor.refreshLibraries(API)
+  await editor.reloadLibrariesForTest(API)
   await settle()
 
   assert.deepEqual(all("library"), [], "the section lists libraries this project does not have")
@@ -1657,7 +1657,7 @@ await check("with nothing installed it draws no empty-state sentence", async () 
 
   // Scaffolding: the libraries go back, so the file ends where it started.
   server.libraries = installed
-  await editor.refreshLibraries(API)
+  await editor.reloadLibrariesForTest(API)
   await settle()
   assert.equal(all("library").length, installed.length, "the borrowed libraries did not come back")
 })
@@ -2466,7 +2466,7 @@ await check("a switch whose request is out stays locked through a rebuild", asyn
   server.holds.push(hold)
   click(control("enable", target.id))
   await settle(2)
-  await editor.refreshLibraries(API)
+  await editor.reloadLibrariesForTest(API)
   await settle(2)
   const rebuilt = control("enable", target.id)
   assert.equal(rebuilt.disabled, true, "the rebuild unlocked a switch whose request is still out")
@@ -2492,7 +2492,7 @@ await check("a list that failed to load says so, and the next update loads it", 
   const warn = console.warn
   console.warn = () => {}
   try {
-    await editor.refreshLibraries(API)
+    await editor.reloadLibrariesForTest(API)
   } finally {
     console.warn = warn
   }

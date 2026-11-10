@@ -1,6 +1,7 @@
 /**
- * Thumbnails for the Assets panel, cloned out of the page we are already
- * standing in.
+ * Component thumbnails for the Design tab's instance section, cloned out of
+ * the page we are already standing in. (The Assets panel they were written for
+ * is gone; the instance section is the only consumer left.)
  *
  * WHY A CLONE IS THE HONEST PREVIEW. Figma renders a real thumbnail of every
  * component because the picture is the index: a designer scanning a library
@@ -126,8 +127,10 @@ function liveIndex(editor: EditorContext): Map<string, Element> {
 /**
  * The tags an Angular component answers to, which is the strong join.
  *
- * Same shape as `selectorsOf` in `store.ts` and for the same reason: a selector
- * is a comma-separated list, and only the element-name part of each entry is
+ * Narrower than `componentSelectors` in `store.ts`: it takes only an entry
+ * that is a bare tag, and has no snippet fallback, so `app-button[icon]`
+ * matches the instance section but finds no thumbnail here. A selector is a
+ * comma-separated list, and only the element-name part of each entry is
  * something `querySelectorAll` can be trusted with — an attribute selector
  * (`[appButton]`) or a class one would match nodes that merely USE the
  * directive rather than nodes that are the component.
@@ -228,7 +231,7 @@ function monogram(name: string): HTMLElement {
  * reduction, up is a claim about resolution the source does not have.
  *
  * The transform goes on the WRAPPER rather than on the clone, and the pairing
- * with `css/assets.ts` is the reason: the wrapper is pinned to the centre of
+ * with the thumbnail rules in the stylesheet is the reason: the wrapper is pinned to the centre of
  * the thumbnail and shrink-wraps the clone, so `translate(-50%, -50%)` resolves
  * against the clone's own size and lands its centre on the box's centre for any
  * box, square or not. Scaling the clone directly would leave the wrapper at the

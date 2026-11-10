@@ -50,7 +50,7 @@
  *     loading(g) --error, g current-->    failed(reason)
  *     loading(g) --answer, g stale-->     (ignored)
  *     ready   --loadLibraries-->          ready        (the cache answers)
- *     *       --refreshLibraries-->       loading(g+1) (the old answer goes stale)
+ *     *       --reloadLibrariesForTest--> loading(g+1) (the old answer goes stale)
  *
  * `setListState` is the one writer and `libraryListState` the one reader. The
  * generation is what lets a refresh supersede a load still in flight without
@@ -342,14 +342,16 @@ export function loadLibraries(apiBase: string): Promise<Library[]> {
 }
 
 /**
- * The same load, past the cache — the suites' reload seam.
+ * The same load, past the cache — the suites' reload seam, and named as one.
  *
  * No product surface calls it: the panel has no refresh control, and the list
  * the editor needs is loaded once and then kept current by the mutations below.
- * It stays because the list endpoint re-reads every source file, so a test that
- * changes the stub server's libraries reads them back through the real load.
+ * (It was `refreshLibraries`, with a comment promising a designer-facing
+ * refresh no UI offered.) It stays because the list endpoint re-reads every
+ * source file, so a test that changes the stub server's libraries reads them
+ * back through the real load. The server keeps its own refresh verb.
  */
-export function refreshLibraries(apiBase: string): Promise<Library[]> {
+export function reloadLibrariesForTest(apiBase: string): Promise<Library[]> {
   inFlight = null
   listState = { status: "idle" }
   return loadLibraries(apiBase)
@@ -798,10 +800,6 @@ export function libraryComponents(): LibraryComponentEntry[] {
  * sort of rule that gets left out of the copy.
  */
 export function componentSelectors(component: LibraryComponent): string[] {
-  return selectorsOf(component)
-}
-
-function selectorsOf(component: LibraryComponent): string[] {
   const opening = /^<([a-z][\w.-]*-[\w.-]*)/i.exec(component.snippet?.trim() ?? "")
   const declared = component.selector ?? (opening ? opening[1] : "")
   return declared
@@ -859,7 +857,7 @@ function componentIndex(): NonNullable<typeof indexed> {
   }
   for (const entry of libraryComponents()) {
     add(byName, entry.name.trim().toLowerCase(), entry)
-    for (const tag of new Set(selectorsOf(entry))) add(byTag, tag, entry)
+    for (const tag of new Set(componentSelectors(entry))) add(byTag, tag, entry)
   }
   return (indexed = { of: cache, byName, byTag })
 }

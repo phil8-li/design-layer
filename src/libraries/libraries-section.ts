@@ -891,7 +891,7 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
    *
    * It used to be the last child of `signInPanel`, next to the credential box,
    * which reads perfectly for the token path and was catastrophic for the other
-   * one. The panel is `hidden` whenever the "I have an access token" fold is
+   * one. The panel is `hidden` whenever the "Use an access token" fold is
    * shut, and shut is the default for every new wall — the whole design of this
    * surface is that most readers never open it. Worse than `hidden`: the drawer
    * clips the panel to a zero-height grid row and `.de-lib-signin-panel[hidden]`
@@ -1000,7 +1000,7 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
    * `.de-lib-dismiss` with the disclosure toggle — both were a quiet word
    * declining the loud thing beside them — and that was right when the loud
    * thing was on screen. It is not any more: with the fold shut, a quiet "Close"
-   * sits directly under a quiet "I have an access token" at the same weight, in
+   * sits directly under a quiet "Use an access token" at the same weight, in
    * the same colour, on the same margin, and the pair reads as two links rather
    * than as a disclosure and the only action the dialog has. A `.de-button`
    * separates them by rank, which is the true relationship.
@@ -1141,7 +1141,7 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
        *
        * `showModal()` does not focus the dialog when it has a focusable
        * descendant — it picks the first one in tree order, which here is the
-       * "I have an access token" toggle. That is the wrong landing: a screen
+       * "Use an access token" toggle. That is the wrong landing: a screen
        * reader would announce a collapsed disclosure before it had said which
        * site this is about. So `openSignIn` focuses the card itself, and a
        * `<dialog>` is not focusable on its own for an explicit `focus()` call.
@@ -1206,7 +1206,7 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
    * 800-character token to one would send them back for it at the exact moment
    * they are most likely to give up on the feature.
    *
-   * So the two ways out are both deliberate: "Not now", and Escape. Neither is
+   * So the two ways out are both deliberate: "Close", and Escape. Neither is
    * reachable by a mis-aimed click.
    */
 

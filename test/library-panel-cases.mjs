@@ -61,7 +61,7 @@
  *    completely unstyled and no test noticed.
  *
  * The merge cases drive the real store, not a mock of it: the libraries arrive
- * over the stubbed fetch and are folded in by `refreshLibraries`, and every
+ * over the stubbed fetch and are folded in by `reloadLibrariesForTest`, and every
  * enable is a PATCH whose response the store adopts. A catalog assembled from
  * rows the test injected itself would pass while wired to nothing.
  *
@@ -383,7 +383,7 @@ const bundled = await build({
   stdin: {
     contents: `
       export {
-        activeDesignSystem, libraryComponents, libraryList, refreshLibraries,
+        activeDesignSystem, libraryComponents, libraryList, reloadLibrariesForTest,
         setLibraryEnabled, subscribeToLibraries,
       } from "./src/libraries/store"
       export { instanceSection } from "./src/panels/inspector/section-instance"
@@ -417,7 +417,7 @@ const editor = await import(
 async function loadBoth() {
   server.reset()
   server.libraries = [clone(NIMBUS), clone(MERIDIAN)]
-  await editor.refreshLibraries(API)
+  await editor.reloadLibrariesForTest(API)
 }
 
 const colorIds = () =>
@@ -620,7 +620,7 @@ await check("a library text style's tracking is restated in the host's unit", as
   }
   server.reset()
   server.libraries = [clone(KIT)]
-  await editor.refreshLibraries(API)
+  await editor.reloadLibrariesForTest(API)
   await editor.setLibraryEnabled(API, KIT.id, true)
 
   const [style] = editor.tokensForProperty("text-style", editor.activeDesignSystem())
@@ -696,7 +696,7 @@ await check("roles that share size, leading and weight are told apart by family 
   }
   server.reset()
   server.libraries = [clone(KIT)]
-  await editor.refreshLibraries(API)
+  await editor.reloadLibrariesForTest(API)
   await editor.setLibraryEnabled(API, KIT.id, true)
 
   const styles = editor.tokensForProperty("text-style", editor.activeDesignSystem())
@@ -769,7 +769,7 @@ await check("library tokens paint in a page that does not declare their variable
   }
   server.reset()
   server.libraries = [clone(KIT)]
-  await editor.refreshLibraries(API)
+  await editor.reloadLibrariesForTest(API)
   await editor.setLibraryEnabled(API, KIT.id, true)
   const merged = editor.activeDesignSystem()
 
@@ -1222,7 +1222,7 @@ await check("an axis and a documented prop of the same name are one row, and the
 
 await check("a source declaration alone still draws the block, with no owner invented", async () => {
   server.reset()
-  await editor.refreshLibraries(API)
+  await editor.reloadLibrariesForTest(API)
   await editor.loadVariants(API, VARIANT_FILE)
 
   const node = editor.instanceSection(
@@ -1376,7 +1376,7 @@ await check("a refresh supersedes a load still in flight", async () => {
   server.libraries = [clone(NIMBUS)]
   const first = store.loadLibraries(API)
   server.libraries = [clone(NIMBUS), clone(MERIDIAN)]
-  const second = store.refreshLibraries(API)
+  const second = store.reloadLibrariesForTest(API)
   await Promise.all([first, second])
   assert.deepEqual(store.libraryList().map((library) => library.id), [NIMBUS.id, MERIDIAN.id])
   assert.equal(store.libraryListState().status, "ready")

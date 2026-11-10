@@ -54,7 +54,7 @@ export interface LibrarySource {
  * needed: `icons` is the SIZE scale a design system publishes, `iconDrawings`
  * is how many glyphs it ships — a library can have either, both or neither.
  */
-export interface LibraryCounts {
+interface LibraryCounts {
   colors: number
   spacing: number
   radii: number
@@ -75,7 +75,7 @@ export interface LibraryCounts {
  * would compile for exactly as long as the two definitions agreed, and would
  * then start failing at the one call site nobody thought to check.
  */
-export type LibraryToken = DesignSystemToken
+type LibraryToken = DesignSystemToken
 
 /**
  * A component a library documents: what it is called, what it takes, and what
@@ -100,11 +100,9 @@ export interface LibraryComponent {
   /** What to paste, e.g. `<Button variant="primary">Label</Button>`. */
   snippet?: string
   /**
-   * `default` is the value the source itself declares, and it is what the
-   * details popover preselects. Without it the popover opens on whichever value
-   * happened to be listed first, and "Insert instance" places a variant the
-   * component's own author did not choose — right often enough to look correct,
-   * wrong often enough to be a bug nobody reports.
+   * `default` is the value the source itself declares: the value the
+   * component's own author chose, rather than whichever happened to be listed
+   * first.
    */
   props?: Array<{ name: string; type?: string; values?: string[]; default?: string }>
   /**
@@ -113,8 +111,7 @@ export interface LibraryComponent {
    * them. All four are optional for that reason, and a consumer that needs one
    * has to cope with its absence rather than assume a scanner produced it.
    */
-  /** The folder it lives in, title-cased; "" at the library root. The Assets
-   *  panel's first navigation level lists these. */
+  /** The folder it lives in, title-cased; "" at the library root. */
   group?: string
   /** The declaring file, relative to the project root. */
   file?: string
@@ -154,7 +151,7 @@ export interface LibraryIconDrawing {
   glyph?: boolean
 }
 
-export interface LibraryCatalog {
+interface LibraryCatalog {
   name: string
   trackingUnit: "em" | "px"
   colors: LibraryToken[]
@@ -192,8 +189,9 @@ export interface Library {
    *
    * Only a `url` library carries it, because only a `url` library has something
    * to say that the counts do not: a local file's numbers are the whole story,
-   * while a remote catalog is a guess about a site's shape and the sentence is
-   * how a designer checks the guess before trusting it.
+   * while a remote catalog is a guess about a site's shape. The server sends
+   * it; the Libraries section does not draw it today (a row shows its name and
+   * its link), so it reaches a designer only through the API.
    */
   detail?: string
   /**
