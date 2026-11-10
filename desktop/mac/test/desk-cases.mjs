@@ -1367,7 +1367,7 @@ await check("go back to a new tab whose frame already shows its editor selects i
   }
 })
 
-// An editor tab replaced by another editor lost its unapplied edits, and its
+// An editor tab replaced by another editor lost its unsent edits, and its
 // own editor came back only as an offer.
 await check("go from an editor tab never replaces its editor: an app with a tab is selected, one without opens beside it", async () => {
   const d = await multiDesk({

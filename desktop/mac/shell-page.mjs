@@ -1304,7 +1304,7 @@ export function shellPage({ repoRoot, version = null }) {
       loadTab(t, url)
       active = t.id
     } else {
-      // From an editor, never in its own tab: its unapplied edits would go, and
+      // From an editor, never in its own tab: its unsent edits would go, and
       // its editor would be left with no tab. A new tab beside it.
       insertTab({ id: uid(), ...target, src: url, stale: false }, tabs.indexOf(t) + 1)
     }

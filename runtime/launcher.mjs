@@ -93,20 +93,6 @@ export function vendorBindPort(ports, port, phase = null) {
   return port
 }
 
-/**
- * Re-exported for one reader, `test/toolbar-cases.mjs`, which imports it from
- * here. The definition lives in runtime/chooser-url.mjs, where `server/apps.mjs`
- * reads it too; once that test imports it from there, this line can go.
- */
-export { chooserUrlFromEnv }
-
-/**
- * Re-exported for one reader, `test/companion-cases.mjs`. The overlay body is
- * built in runtime/overlay-responder.mjs now; once that test imports it from
- * there, this line can go.
- */
-export { readCompanionBundles } from "./overlay-responder.mjs"
-
 /** The absolute URL a `fetch` argument names, or null when it names none. */
 function requestedUrl(input) {
   const value =

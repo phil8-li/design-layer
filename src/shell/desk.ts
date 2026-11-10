@@ -58,7 +58,7 @@ export const DESK_SHOWING_MESSAGE = "designlayer-desk:showing"
  * disconnected the tab that was already showing it. The desk knows which tab
  * shows which editor: it selects that tab, or opens the URL in a new tab when
  * no tab shows it. It never replaces the sending tab, so this document and the
- * unapplied edits it holds stay. desktop/mac/shell-page.mjs spells the same
+ * unsent edits it holds stay. desktop/mac/shell-page.mjs spells the same
  * string.
  */
 const DESK_GO_MESSAGE = "designlayer-desk:go"

@@ -52,7 +52,7 @@ import {
   resolveCompanions,
   wrapCompanion,
 } from "../server/companions.mjs"
-import { readCompanionBundles } from "../runtime/launcher.mjs"
+import { readCompanionBundles } from "../runtime/overlay-responder.mjs"
 import { PACKAGE_DIR } from "./host.mjs"
 
 let passed = 0

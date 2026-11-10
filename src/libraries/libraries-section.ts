@@ -442,15 +442,17 @@ const SCHEME_WORDS: Record<LibraryCredentialScheme, string> = {
  * the hint printed two lines above it would be a trap rather than a
  * convenience, so this table and that one are written to agree.
  *
- * **HTTP Basic falls in with the token.** The wire accepts two credential
+ * **HTTP Basic falls in with the token.** This panel sends two credential
  * shapes and neither of them is `Authorization: Basic` — see
- * `LibraryCredentialScheme`, which is closed because the server refuses any
- * word it does not know rather than send a header of the caller's choosing to
- * an arbitrary host. So a Basic wall gets the token box, the server's hint says
- * what to put in it, and `basicNote` below says plainly what this editor will
- * do with it. Nothing here pretends the paste is sent as a Basic header: if the
- * site wants one, the sign-in is verified against the live URL and refused, and
- * a refusal the designer can read beats a claim they cannot check.
+ * `LibraryCredentialScheme`, which is closed to `bearer` and `cookie`. The
+ * server's store also knows `basic` (`CREDENTIAL_SCHEMES` in
+ * `server/library-auth.mjs`) and refuses any other word rather than send a
+ * header of the caller's choosing to an arbitrary host; this panel never sends
+ * it. So a Basic wall gets the token box, the server's hint says what to put in
+ * it, and `BASIC_NOTE` below says plainly what this editor will do with it.
+ * Nothing here pretends the paste is sent as a Basic header: if the site wants
+ * one, the sign-in is verified against the live URL and refused, and a refusal
+ * the designer can read beats a claim they cannot check.
  */
 function defaultScheme(wall: LibraryChallenge): LibraryCredentialScheme {
   if (wall.kind === "redirect") return "cookie"
@@ -494,9 +496,9 @@ export function librariesSection(editor: EditorContext): { node: HTMLElement; up
    * the fold is open — a switch flipped two sections up rebuilds these rows —
    * so a list that animated whenever it was built would deal itself out again
    * as punctuation for edits that have nothing to do with the scan. Same call
-   * `takeJustExpanded` makes for the inspector's disclosure groups: the arrival
-   * is asked for by the one event that earned it and consumed by the render
-   * that plays it.
+   * the inspector's disclosure groups make with `justOpened()`: the arrival is
+   * asked for by the one event that earned it and consumed by the render that
+   * plays it.
    *
    * Whether a candidate is already added is NOT kept here: it is read off the
    * library list at paint time (`installedNow`), the same set the server

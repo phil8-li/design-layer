@@ -1635,7 +1635,7 @@ await check("the wait says what it is doing, and never Switching", async () => {
 /*
  * Inside the Mac app this page is a Home tab. The vendor's socket takes one
  * client, so a Home tab that loaded an editor another tab shows disconnected
- * that tab and lost its unapplied edits. The desk knows which tab shows what.
+ * that tab and lost its unsent edits. The desk knows which tab shows what.
  */
 const DESK = "http://127.0.0.1:3454"
 const deskFrame = (sent, origin = DESK) => (window) => {

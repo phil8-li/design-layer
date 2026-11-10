@@ -73,8 +73,8 @@ const settleMs = (): number => (prefersReducedMotion() ? 0 : LEAVE_MS)
  *
  * ## It must be asked for, not inferred
  *
- * The caller checks `takeJustExpanded`, so this runs on the render that follows
- * the user pressing the toggle and on no other. Without that the group would
+ * The caller checks its disclosure's `justOpened()`, so this runs on the
+ * render that follows the user pressing the toggle and on no other. Without that the group would
  * re-open on every rebuild — that is, on every scrub commit and every keystroke
  * in a field — which is the same animation firing as punctuation for edits that
  * have nothing to do with it.

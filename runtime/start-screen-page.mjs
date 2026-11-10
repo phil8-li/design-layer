@@ -123,7 +123,7 @@ function setFace(next) {
  * INSIDE THE MAC APP THIS PAGE IS A HOME TAB, one frame among tabs that each
  * show an editor. The vendor's socket takes one client, so this frame loading
  * an editor that another tab shows would disconnect that tab and lose its
- * unapplied edits. The desk knows which tab shows what, so the page asks it to
+ * unsent edits. The desk knows which tab shows what, so the page asks it to
  * go rather than going itself. Only a loopback parent is told: the message
  * names a local editor, and no other origin has a use for it.
  */
