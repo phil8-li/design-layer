@@ -369,6 +369,28 @@ export function setMode(mode: EditorMode): void {
   })
 }
 
+/**
+ * The drilled scope, with one reader and one writer.
+ *
+ * `scope` and `selection` are two fields of this store, and they used to be
+ * cleared together by hand in three places and written in nine, each reader
+ * patching a scope the app had since unmounted on its own. `activeScope` is
+ * the reader: a detached scope reads as none. `setScope` is the writer, and
+ * `clearSelection` the one way to empty both, in one write.
+ */
+export function activeScope(): Element | null {
+  const held = state.scope
+  return held?.isConnected ? held : null
+}
+
+export function setScope(scope: Element | null): void {
+  setState({ scope })
+}
+
+export function clearSelection(): void {
+  setState({ selection: [], scope: null })
+}
+
 /** Whether a write moved the mode. The one diff every mode follower uses. */
 export function modeChanged(next: EditorState, previous: EditorState): boolean {
   return next.interactive !== previous.interactive || next.annotating !== previous.annotating

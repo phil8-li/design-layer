@@ -9,10 +9,10 @@
 import { el, isCanvasElement, isChrome } from "../core/dom"
 import { isDeepSelect } from "../core/keymap"
 import { getResolver } from "../core/resolve"
+import { activeScope, clearSelection } from "../core/store"
 import type { EditorContext } from "../core/context"
 import type { LayerElement } from "../core/types"
 import { trackPointer, type PointerTrack } from "./gesture"
-import type { ScopeAccess } from "./index"
 
 interface MarqueeController {
   /** Claims empty-canvas presses and Shift presses reserved for marquee/toggle. */
@@ -47,7 +47,7 @@ interface Sweep {
  */
 type MarqueeState = { kind: "idle" } | { kind: "pressed"; sweep: Sweep } | { kind: "sweeping"; sweep: Sweep }
 
-export function installMarquee(context: EditorContext, scope: ScopeAccess): MarqueeController {
+export function installMarquee(context: EditorContext): MarqueeController {
   const resolver = getResolver(context.bridge)
   const box = el("div", { class: "de-marquee", style: "display:none" })
   context.slots.overlay.append(box)
@@ -80,7 +80,7 @@ export function installMarquee(context: EditorContext, scope: ScopeAccess): Marq
     // been unmounted makes `layerChildren` return nothing — a marquee that
     // selects zero elements for no reason the user can see. `activeScope`
     // reads such a scope as none, so the sweep falls back to the live root.
-    const within = scope.activeScope() ?? resolver.scopeRoot()
+    const within = activeScope() ?? resolver.scopeRoot()
 
     if (!deep) return resolver.layerChildren(within).filter((node) => touched(node, l, t, r, b))
 
@@ -145,7 +145,7 @@ export function installMarquee(context: EditorContext, scope: ScopeAccess): Marq
     const { sweep } = ending
     if (ending.kind === "pressed") {
       if (sweep.additive && sweep.toggleTarget) context.select(sweep.toggleTarget, { additive: true })
-      else if (!sweep.toggleTarget) scope.clearSelection()
+      else if (!sweep.toggleTarget) clearSelection()
       return
     }
 
