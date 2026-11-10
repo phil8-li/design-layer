@@ -470,6 +470,55 @@ await check("Clear on send removes only the items the brief carried", async () =
   }
 })
 
+/*
+ * The reply re-read the outbox on the page on screen. A router's `pushState`
+ * while the send was out put another page's notes there, so nothing matched
+ * the brief: the sent page's notes kept no stamp, survived "Clear on send", and
+ * went out again as new work on the next send.
+ */
+await check("a route change while a send is out still stamps and clears the page that was sent", async () => {
+  const agent = fakeAgent(() => ({ ok: true, message: "Delivered to your coding agent — it was waiting.", outcome: "delivered", changeId: "chg-route" }))
+  const stored = (pathname) => JSON.parse(window.localStorage.getItem(`designlayer.annotations.app:${pathname}`) ?? "[]")
+  try {
+    reset()
+    window.history.pushState({}, "", "/pricing")
+    pin("on pricing")
+    await settle()
+    tab.update()
+    agent.hold()
+    press(primary())
+    await settle()
+    window.history.pushState({}, "", "/settings")
+    agent.release()
+    await settle()
+    assert.equal(ui.sendState().kind, "sent")
+    assert.equal(stored("/pricing")[0]?.sentIn, "chg-route", "the sent page's note was not stamped")
+    assert.deepEqual(stored("/settings"), [], "the stamp landed on the page on screen")
+
+    ui.updateSettings({ clearOnCopy: true })
+    window.history.pushState({}, "", "/pricing")
+    pin("second on pricing")
+    await settle()
+    tab.update()
+    agent.hold()
+    press(primary())
+    await settle()
+    window.history.pushState({}, "", "/settings")
+    agent.release()
+    await settle()
+    assert.deepEqual(stored("/pricing"), [], "Clear on send left the sent page's notes")
+    window.history.pushState({}, "", "/settings")
+    ui.undo()
+    assert.deepEqual(stored("/pricing").map((n) => n.comment), ["on pricing", "second on pricing"], "Cmd+Z did not bring them back to /pricing")
+    assert.deepEqual(stored("/settings"), [], "Cmd+Z put them on /settings")
+  } finally {
+    agent.release()
+    agent.restore()
+    ui.updateSettings({ clearOnCopy: false })
+    window.history.pushState({}, "", "/")
+  }
+})
+
 await check("an undelivered send clears nothing, stamps nothing, and adds only the clipboard line", async () => {
   const agent = fakeAgent(() => ({ ok: true, message: UNDELIVERED, outcome: "undelivered", changeId: "chg-4" }))
   try {

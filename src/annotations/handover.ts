@@ -39,9 +39,9 @@ import { requestAgent } from "../ai/transport"
 import type { AgentOutcome } from "../core/types"
 import { plural } from "../core/format"
 import { removeNotesStep } from "./actions"
-import { markEditsSent, removeEdit } from "./journal"
+import { edits, markEditsSent, removeEdit } from "./journal"
 import { buildAnnotationBrief, outboxId, outboxItems } from "./output"
-import { annotationSettings, markNotesSent } from "./store"
+import { annotationSettings, annotationsAt, markNotesSent, notesPageKey } from "./store"
 import type { OutboxItem } from "./types"
 
 type Toast = (message: ToastMessage, kind?: "info" | "error") => void
@@ -93,11 +93,14 @@ function filesInOutbox(items: OutboxItem[]): string[] {
  *
  * Notes leave as one step on the undo timeline, so Cmd+Z brings them back.
  * Edits leave like a dismissed row (`removeEdit`): their previews stay on the
- * page, and the brief that described them is with the agent.
+ * page, and the brief that described them is with the agent. `page` is the
+ * page the brief was built on (`notesPageKey`), captured before the wait, so a
+ * route change while the answer was out still clears the page that was handed
+ * over.
  */
-function clearIfAsked(items: OutboxItem[]): void {
+function clearIfAsked(items: OutboxItem[], page: string): void {
   if (!annotationSettings().clearOnCopy) return
-  removeNotesStep(items.filter((item) => item.type === "note").map(outboxId))
+  removeNotesStep(items.filter((item) => item.type === "note").map(outboxId), page)
   for (const item of items) if (item.type === "edit") removeEdit(item.edit.id)
 }
 
@@ -113,6 +116,7 @@ function clearIfAsked(items: OutboxItem[]): void {
  */
 export function copyHandover(toast: Toast, onRefused?: () => void): boolean {
   const items = outboxItems()
+  const page = notesPageKey()
   if (!items.length) {
     toast("Nothing to copy. Pin a note or make an edit first.")
     return false
@@ -125,7 +129,7 @@ export function copyHandover(toast: Toast, onRefused?: () => void): boolean {
       return
     }
     toast(`Copied ${summary}`)
-    clearIfAsked(items)
+    clearIfAsked(items, page)
   })
   return true
 }
@@ -210,6 +214,9 @@ export async function handOver(options: { apiBase: string; toast: Toast }): Prom
   const nothing: HandoverResult = { sent: false, ok: true, outcome: null, changeId: null, itemIds: [], stale: false }
   if (send.kind === "sending") return nothing
   const items = outboxItems()
+  // The page these notes are filed under. The reply can land after a router's
+  // `pushState` moved the document, and the notes to stamp are this page's.
+  const page = notesPageKey()
   if (!needsAgent(items)) {
     toast("Nothing to send")
     return nothing
@@ -267,11 +274,17 @@ export async function handOver(options: { apiBase: string; toast: Toast }): Prom
     // Only what still reads as it did in the brief: a note rewritten or an
     // edit nudged while the send was in flight is a request the agent has not
     // seen, so it stays unsent and stays on the list.
-    const carried = outboxItems().filter((item) => words.get(outboxId(item)) === itemWords(item))
+    // Notes are re-read from the page the brief was built on, not the page on
+    // screen now; edits live in one journal for the whole document.
+    const current: OutboxItem[] = [
+      ...annotationsAt(page).map((note): OutboxItem => ({ type: "note", at: 0, note })),
+      ...edits().map((edit): OutboxItem => ({ type: "edit", at: 0, edit })),
+    ]
+    const carried = current.filter((item) => words.get(outboxId(item)) === itemWords(item))
     const carriedIds = carried.map(outboxId)
-    markNotesSent(carriedIds, at, changeId)
+    markNotesSent(carriedIds, at, changeId, page)
     markEditsSent(carriedIds, at, changeId)
-    clearIfAsked(carried)
+    clearIfAsked(carried, page)
   }
   moveSend({ kind: "sent", at, outcome, changeId })
   return result
