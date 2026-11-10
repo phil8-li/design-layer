@@ -286,6 +286,9 @@ export function shellPage({ repoRoot, version = null }) {
   const tabsEl = $("tabs"), framesEl = $("frames")
   let health = null, editors = [], homeUrl = null, deskDown = false
   let tabs, active
+  // Tab id -> the editor origin its frame said it shows ("designlayer-desk:showing"),
+  // since the frame last loaded. Not saved: it is about the frame in this window.
+  const showingIn = new Map()
 
   function uid() { return Math.random().toString(36).slice(2, 9) }
   const readLocal = (k) => { try { return JSON.parse(localStorage.getItem(k)) } catch { return null } }
@@ -852,6 +855,7 @@ export function shellPage({ repoRoot, version = null }) {
   // page (src); without it the frame loads the page the tab already has.
   // "key", when given, is the editor the tab now follows.
   function loadTab(t, url, opts) {
+    showingIn.delete(t.id)
     if (url !== undefined) t.src = url
     if (t.kind === "editor") t.stale = false
     if (opts && "key" in opts) t.key = opts.key
@@ -860,6 +864,7 @@ export function shellPage({ repoRoot, version = null }) {
   }
   // Empties a background tab's frame; "src" is the page it loads once selected.
   function emptyTab(t, src) {
+    showingIn.delete(t.id)
     t.src = src
     t.stale = true
     const f = frameOf(t.id)
@@ -1242,6 +1247,7 @@ export function shellPage({ repoRoot, version = null }) {
     // One editor, one tab. Its socket takes one client, so a second tab on the
     // same editor could only ever show it disconnected.
     removeTabs((x) => x !== t && x.kind === "editor" && x.url === origin, { successor: t.id })
+    showingIn.set(t.id, origin)
     // Other windows drop their tab on it too.
     post({ t: "claimed", url: origin })
     render()
@@ -1283,7 +1289,9 @@ export function shellPage({ repoRoot, version = null }) {
       // A tab whose editor stopped still shows the refused connection, and a go
       // can arrive before the next editor list says the port is back. A tab not
       // on the running editor's key loads the page it was sent, once, here.
-      const live = e && shown.key === editorKey(e)
+      // A new tab (key null until the next list) whose frame already said it
+      // shows this editor is live too: reloading it lost the edits made in it.
+      const live = (e && shown.key === editorKey(e)) || (tabStatus(shown) === "new" && showingIn.get(shown.id) === origin)
       if (!live) loadTab(shown, url, { key: e ? editorKey(e) : null })
       select(shown.id)
       return

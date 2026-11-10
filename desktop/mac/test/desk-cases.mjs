@@ -1331,6 +1331,42 @@ await check("go onto a stopped editor's tab loads the page it was sent, even bef
   }
 })
 
+/*
+ * A tab opened by a go keeps key null until the next editor list names its
+ * editor. A switch back to it in that window (the app chooser in another tab)
+ * took it for a stopped editor's tab and reloaded it, and the edits made in it
+ * went with the document.
+ */
+await check("go back to a new tab whose frame already shows its editor selects it without a reload", async () => {
+  const d = await multiDesk({
+    tabs: [tabOn("a", SHOP)],
+    active: "a",
+    // The list does not name the 4104 editor yet, on any poll in this case.
+    lists: [[SHOP]],
+  })
+  try {
+    d.say("a", { type: "designlayer-desk:go", url: "http://localhost:4104/" }, "http://localhost:4101")
+    const fresh = Object.entries(d.srcs()).find(([, src]) => src === "http://localhost:4104/")?.[0]
+    assert.ok(fresh, "the go opened no tab")
+    d.say(fresh, { type: "designlayer-desk:showing", name: "kiosk", page: "/" }, "http://localhost:4104")
+    d.say(fresh, { type: "designlayer-desk:go", url: "http://localhost:4101/" }, "http://localhost:4104")
+    assert.equal(d.selected(), "shop")
+    d.say("a", { type: "designlayer-desk:go", url: "http://localhost:4104/#/elsewhere" }, "http://localhost:4101")
+    assert.equal(d.selected(), "kiosk")
+    assert.equal(d.frame(fresh).src, "http://localhost:4104/", "the new tab was reloaded, and its edits with it")
+
+    // A new tab whose frame never said it shows the editor (a refused
+    // connection) still loads the page it was sent.
+    d.say("a", { type: "designlayer-desk:go", url: "http://localhost:4105/" }, "http://localhost:4101")
+    const dead = Object.entries(d.srcs()).find(([, src]) => src === "http://localhost:4105/")?.[0]
+    d.say(dead, { type: "designlayer-desk:go", url: "http://localhost:4101/" }, "http://localhost:4105")
+    d.say("a", { type: "designlayer-desk:go", url: "http://localhost:4105/#/again" }, "http://localhost:4101")
+    assert.equal(d.frame(dead).src, "http://localhost:4105/#/again", "a tab that never showed its editor kept its error page")
+  } finally {
+    d.close()
+  }
+})
+
 // An editor tab replaced by another editor lost its unapplied edits, and its
 // own editor came back only as an offer.
 await check("go from an editor tab never replaces its editor: an app with a tab is selected, one without opens beside it", async () => {
