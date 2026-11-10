@@ -20,6 +20,58 @@
  * change the designer made yesterday against source that has since moved.
  */
 
+/*
+ * ## The words, in one place
+ *
+ * A change's `status` is one of `CHANGE_STATUSES`; `resolve_change` takes one
+ * of `RESOLUTIONS`. The two vocabularies meet at one point: resolution
+ * "applied" files the change as status "resolved", and "rejected" as
+ * "rejected". `list_changes` filters by status, and also takes "applied" as
+ * the alias an agent reaches for after writing it (`statusFilter`).
+ *
+ *   pending  --resolve_change applied---> resolved
+ *   pending  --resolve_change rejected--> rejected
+ *   resolved / rejected --resolve_change--> either (the last call wins)
+ *   any      --201st newer push---------> gone, remembered as "evicted"
+ *   pending  --endpoint moves away------> gone here, remembered as "moved";
+ *                                          the other process adopts it, same id
+ *
+ * The endpoint that serves this queue is in one of `ENDPOINT_STATES`:
+ *
+ *   never-bound --markEndpointListening--> listening
+ *   listening   --release----------------> draining   (parked waits end empty)
+ *   draining    --markEndpointStopped----> stopped
+ *   stopped     --markEndpointListening--> listening  (the endpoint came back)
+ *
+ * A wait asked for while draining or stopped answers at once, empty: its
+ * changes are about to belong to another process.
+ */
+
+export const CHANGE_STATUSES = Object.freeze(["pending", "resolved", "rejected"])
+export const RESOLUTIONS = Object.freeze(["applied", "rejected"])
+/** What `list_changes` accepts: a status, or "all". */
+export const STATUS_FILTERS = Object.freeze([...CHANGE_STATUSES, "all"])
+export const ENDPOINT_STATES = Object.freeze(["never-bound", "listening", "draining", "stopped"])
+
+const [PENDING, RESOLVED, REJECTED] = CHANGE_STATUSES
+
+/**
+ * The status a `list_changes` filter names, or null for a word that is none.
+ *
+ * "applied" is the word `resolve_change` takes, so an agent that just wrote it
+ * asks for it back; it means "resolved". Anything else outside the list used
+ * to answer an empty list, which reads as "nothing there" rather than "you
+ * asked wrong".
+ */
+export function statusFilter(value) {
+  if (value === undefined || value === null || value === "") return PENDING
+  if (value === "applied") return RESOLVED
+  return STATUS_FILTERS.includes(value) ? value : null
+}
+
+/** How many dropped ids are remembered, so an agent asking for one learns why. */
+const MAX_FORGOTTEN = 1000
+
 /**
  * Past this, the oldest entry is dropped rather than grown into.
  *
@@ -45,29 +97,34 @@ export function createHandoffQueue() {
   const waiters = new Set()
   /** Ends one parked wait with nothing in it; see `release`. */
   const releasers = new Set()
-  let endpointListening = false
+  /** One of `ENDPOINT_STATES`; see the table at the top of this file. */
+  let endpoint = "never-bound"
   /**
-   * Set while the endpoint is moving to another process. A wait asked for in
-   * that window answers at once, empty, rather than parking on a queue whose
-   * server is about to close under it.
-   */
-  let draining = false
-  /**
-   * How many MCP sessions are open right now.
+   * The serving endpoint's count of attached agents, a function called on each
+   * read, or null when no endpoint serves this queue.
    *
-   * Distinct from `endpointListening` in the way that actually matters to a
+   * Distinct from the endpoint being up in the way that actually matters to a
    * designer, and conflating the two is a bug this file has already paid for:
-   * the endpoint flag is set by the LAUNCHER when our own port binds, so it is
-   * true from the moment the editor starts and says nothing whatsoever about
-   * whether anybody is on the other end. A panel that read it as "connected"
-   * told every user their agent was attached before they had configured one.
+   * the port is bound from the moment the editor starts, which says nothing
+   * whatsoever about whether anybody is on the other end. A panel that read it
+   * as "connected" told every user their agent was attached before they had
+   * configured one.
    *
-   * This is the other half. The MCP server owns the truth — it issues a session
-   * id on `initialize` and drops it on DELETE — and reports the number here,
-   * because the queue is the one object both the server and the HTTP routes can
-   * already reach.
+   * The MCP server owns the truth — which sessions it has heard from lately —
+   * and hands its counter here, because the queue is the one object both the
+   * server and the HTTP routes can already reach. A function rather than a
+   * number, because whether a silent session still counts depends on when you
+   * ask.
    */
-  let attachedAgents = 0
+  let agentCounter = null
+  /** Ids no longer here, and why: "evicted" or "moved". Bounded, oldest first. */
+  const forgotten = new Map()
+
+  function forget(id, cause) {
+    forgotten.delete(id)
+    forgotten.set(id, cause)
+    if (forgotten.size > MAX_FORGOTTEN) forgotten.delete(forgotten.keys().next().value)
+  }
 
   function wake() {
     // Copied before iterating: a waiter removes itself from the set inside its
@@ -87,6 +144,7 @@ export function createHandoffQueue() {
       const oldest = entries.keys().next()
       if (oldest.done) return
       entries.delete(oldest.value)
+      forget(oldest.value, "evicted")
     }
   }
 
@@ -121,7 +179,7 @@ export function createHandoffQueue() {
     sequence += 1
     const entry = {
       id: `chg-${sequence.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      status: "pending",
+      status: PENDING,
       createdAt: new Date().toISOString(),
       resolvedAt: null,
       resolution: null,
@@ -147,6 +205,7 @@ export function createHandoffQueue() {
     return entry
   }
 
+  /** Entries with `status`, or every entry for "all" or none. */
   function list(status) {
     const all = [...entries.values()]
     if (!status || status === "all") return all
@@ -158,7 +217,7 @@ export function createHandoffQueue() {
   }
 
   function pending() {
-    return list("pending")
+    return list(PENDING)
   }
 
   /**
@@ -172,8 +231,8 @@ export function createHandoffQueue() {
     // Narrowed to the declared enum rather than stored verbatim. A model that
     // answers "partially" or mistypes "aplied" would otherwise have that word
     // read back out of `list_changes` later as if it were a real state.
-    const settled = resolution === "rejected" ? "rejected" : "applied"
-    entry.status = settled === "rejected" ? "rejected" : "resolved"
+    const settled = resolution === REJECTED ? REJECTED : "applied"
+    entry.status = settled === REJECTED ? REJECTED : RESOLVED
     entry.resolution = settled
     entry.summary = typeof summary === "string" ? summary.slice(0, 2000) : null
     entry.resolvedAt = new Date().toISOString()
@@ -194,6 +253,7 @@ export function createHandoffQueue() {
     for (const entry of incoming) {
       if (!entry || typeof entry !== "object" || typeof entry.id !== "string") continue
       entries.set(entry.id, { ...entry })
+      forgotten.delete(entry.id)
     }
     prune()
     if (incoming.length > 0) wake()
@@ -201,7 +261,18 @@ export function createHandoffQueue() {
 
   /** Drops changes another process now holds, so they are not delivered twice. */
   function remove(ids = []) {
-    for (const id of ids) entries.delete(id)
+    for (const id of ids) if (entries.delete(id)) forget(id, "moved")
+  }
+
+  /**
+   * Takes every pending change out, to hand to the process the endpoint moves
+   * to. Called after the endpoint here has closed, so a send that landed while
+   * it was closing goes too rather than staying behind where nothing serves it.
+   */
+  function handOff() {
+    const handed = pending()
+    remove(handed.map((entry) => entry.id))
+    return handed
   }
 
   /**
@@ -213,7 +284,7 @@ export function createHandoffQueue() {
    * some clients drop a server's tools after a single one.
    */
   function release() {
-    draining = true
+    endpoint = "draining"
     for (const end of [...releasers]) end()
   }
 
@@ -240,9 +311,15 @@ export function createHandoffQueue() {
    * browser — an entry claimed by an agent that then crashed would be worse,
    * because nothing would ever hand it to anyone again. It is why
    * `wait_for_change` does not advertise itself as safe to call speculatively.
+   *
+   * One call's states: drained (pending at the call, resolved at once),
+   * refused (the endpoint is draining or stopped: resolved at once, empty),
+   * parked, collecting (the first push opened the batch window), and settled
+   * by one of delivered, timed out (whatever is pending then, usually
+   * nothing), aborted, or released (empty). `finish` is the one exit.
    */
   function wait({ timeoutMs = 45_000, batchMs = 1500, signal } = {}) {
-    if (draining) return Promise.resolve([])
+    if (endpoint === "draining" || endpoint === "stopped") return Promise.resolve([])
     const drained = pending()
     if (drained.length > 0) return Promise.resolve(drained)
 
@@ -304,11 +381,9 @@ export function createHandoffQueue() {
     clear,
     adopt,
     remove,
+    handOff,
     release,
     wait,
-    get size() {
-      return entries.size
-    },
     /**
      * How many agents are parked in `wait_for_change` right now.
      *
@@ -321,51 +396,67 @@ export function createHandoffQueue() {
       return waiters.size
     },
     /**
-     * Whether the MCP endpoint actually bound.
-     *
-     * Separate from `waiting`, and the difference is the whole point. An agent
-     * can be attached and merely mid-turn, which is "queued". But if the
-     * endpoint never came up — `ports.mcp` is `null`, or a second editor
-     * session already holds the port — then nothing can EVER call
+     * The endpoint bound. Separate from `waiting`, and the difference is the
+     * whole point: an agent can be attached and merely mid-turn, which is
+     * "queued". But if the endpoint never came up — `ports.mcp` is `null`, or
+     * another process holds the port — then nothing can EVER call
      * `wait_for_change`, and telling the designer their change is on its way
      * would be a lie whose only correction went to a terminal they are not
      * looking at.
      */
     markEndpointListening() {
-      endpointListening = true
-      draining = false
+      endpoint = "listening"
     },
-    /** The endpoint closed, because it moved to another process. */
+    /** The endpoint closed, because it moved to another process or this one is ending. */
     markEndpointStopped() {
-      endpointListening = false
+      endpoint = "stopped"
+      agentCounter = null
+    },
+    /** One of `ENDPOINT_STATES`. */
+    get endpointState() {
+      return endpoint
     },
     get endpointListening() {
-      return endpointListening
+      return endpoint === "listening"
     },
     /**
-     * The MCP server reporting how many sessions it currently holds: a count,
-     * or a function that counts when called.
-     *
-     * Pushed rather than pulled because the server is created by the launcher
-     * and the routes never see it; the queue is the only thing they share. A
-     * count rather than an increment, so a server that resets cannot leave this
-     * drifting upwards forever.
+     * Why `id` is not here, when this queue knows: "evicted" (more than
+     * `MAX_ENTRIES` newer changes arrived) or "moved" (the endpoint moved to
+     * another process, which holds it under the same id). Null for an id this
+     * queue never held — mistyped, or from before a restart.
      */
-    reportAttachedAgents(count) {
-      attachedAgents = count
+    whyMissing(id) {
+      return forgotten.get(id) ?? null
     },
+    /** The serving endpoint hands over its counter; see `agentCounter`. */
+    reportAttachedAgents(counter) {
+      agentCounter = typeof counter === "function" ? counter : null
+    },
+    /**
+     * How many agents are attached. An agent parked in `wait_for_change`
+     * always counts, whatever its session bookkeeping says: a client that
+     * sends no session id is invisible to the endpoint's counter once it has
+     * been quiet for a while, and the panel then told the designer "No agent
+     * connected" while one was waiting.
+     */
     get attachedAgents() {
-      // A counter function is what the MCP server hands over, because whether
-      // a silent session still counts depends on when you ask.
-      let value = attachedAgents
-      if (typeof value === "function") {
-        try {
-          value = value()
-        } catch {
-          value = 0
-        }
+      let counted = 0
+      try {
+        counted = agentCounter ? agentCounter() : 0
+      } catch {
+        counted = 0
       }
-      return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
+      const sessions = Number.isFinite(counted) && counted > 0 ? Math.floor(counted) : 0
+      return Math.max(sessions, waiters.size)
+    },
+    /** The queue's half of an MCP status, read in one place by every process. */
+    snapshot() {
+      return {
+        listening: endpoint === "listening",
+        agents: this.attachedAgents,
+        waiting: waiters.size,
+        pending: pending().length,
+      }
     },
   }
 }

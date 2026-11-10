@@ -389,6 +389,64 @@ await check("with no endpoint listening, the reply does not promise a delivery",
   handoffQueue().clear()
 })
 
+await check("the reply names its outcome, and each outcome its own words", async () => {
+  const os = await import("node:os")
+  const fsp = await import("node:fs/promises")
+  const nodePath = await import("node:path")
+  const { createAgent } = await import("../server/agent.mjs")
+  const { handoffQueue } = await import("../server/handoff.mjs")
+
+  const root = await fsp.mkdtemp(nodePath.join(os.tmpdir(), "de-outcome-"))
+  const shared = handoffQueue()
+  shared.clear()
+  const agent = createAgent({
+    projectRoot: root,
+    stateDir: nodePath.join(root, ".local", "designlayer"),
+    host: { framework: "react" },
+  })
+  const send = (extra = {}) =>
+    agent.runAgent({ prompt: "1 note from DesignLayer", origin: "prompts", brief: "### a.tsx", ...extra })
+  try {
+    // No endpoint: nothing can pick it up. The Changes tab has already copied
+    // the brief and says so itself, so the reply must not ask for a copy.
+    const nowhere = await send({ sessionPrompt: "/goal get those done: ### a.tsx" })
+    assert.equal(nowhere.ok, true, "the brief was written; that is not a failure")
+    assert.equal(nowhere.outcome, "undelivered")
+    assert.equal(
+      nowhere.message,
+      "No agent is attached over MCP, so nothing was edited. The brief is saved to the handoff file."
+    )
+    assert.doesNotMatch(nowhere.message, /Copy the brief/)
+    assert.ok(nowhere.handoffPath)
+
+    // The endpoint is up and nobody waits yet.
+    shared.markEndpointListening()
+    const queued = await send({ sessionPrompt: "/goal get those done: ### a.tsx" })
+    assert.equal(queued.outcome, "queued")
+    assert.equal(
+      queued.message,
+      "Queued for your coding agent. It starts a new session for this the next time the agent calls wait_for_change."
+    )
+    assert.ok(queued.changeId)
+
+    // An agent is parked: the send wakes it.
+    for (const entry of shared.pending()) shared.resolve(entry.id)
+    const parked = shared.wait({ timeoutMs: 5000, batchMs: 0 })
+    const delivered = await send({ sessionPrompt: "/goal get those done: ### a.tsx" })
+    assert.equal(delivered.outcome, "delivered")
+    assert.equal(delivered.message, "Delivered to your coding agent — it was waiting and is starting a new session for this.")
+    assert.equal((await parked)[0]?.id, delivered.changeId)
+
+    // A bare POST asks for no session, so it is not told one is starting.
+    const bare = await send()
+    assert.doesNotMatch(bare.message, /new session/)
+  } finally {
+    shared.markEndpointStopped()
+    shared.clear()
+    await fsp.rm(root, { recursive: true, force: true })
+  }
+})
+
 console.log("\nMCP endpoint")
 
 const queue = createHandoffQueue()
@@ -533,7 +591,13 @@ await check("a send with a session prompt tells the agent to open a new session 
   queue.push({ origin: "prompts", prompt: "1 note from DesignLayer", brief: "### src/app/overview.html", sessionPrompt: prompt })
   const { payload } = await callTool("wait_for_change", { timeoutSeconds: 2, batchWindowSeconds: 0 })
   assert.equal(payload.changes[0].startNewSession, true)
-  assert.equal(payload.changes[0].sessionPrompt, prompt, "the prompt must reach the agent verbatim")
+  const forwarded = payload.changes[0].sessionPrompt
+  assert.ok(forwarded.startsWith(prompt), "the browser's prompt must reach the agent verbatim, first")
+  // The session that does the work is the one that knows how it went, so the
+  // prompt it opens with has to name the change it may resolve or reject.
+  const id = payload.changes[0].id
+  assert.match(forwarded.slice(prompt.length), new RegExp(`change ${id}`), "the new session is not told its change id")
+  assert.match(forwarded.slice(prompt.length), /resolve_change/, "the new session is not told how to close the change")
   assert.match(payload.next, /new chat session/i, "the agent is not told to open a session")
   assert.match(payload.next, /resolve_change/, "without a resolve the next wait opens a second session")
   drain()
@@ -542,6 +606,7 @@ await check("a send with a session prompt tells the agent to open a new session 
   queue.push({ prompt: "make it red" })
   const bare = await callTool("wait_for_change", { timeoutSeconds: 2, batchWindowSeconds: 0 })
   assert.equal(bare.payload.changes[0].startNewSession, false)
+  assert.equal(bare.payload.changes[0].sessionPrompt, null)
   assert.doesNotMatch(bare.payload.next, /new chat session/i)
   drain()
 })
@@ -726,6 +791,145 @@ await check("a terminated session stops working", async () => {
   await fetch(url, { method: "DELETE", headers: { "mcp-session-id": sid } })
   const dead = await rpc({ jsonrpc: "2.0", id: 46, method: "ping" }, { headers: { "mcp-session-id": sid } })
   assert.equal(dead.status, 404, "issuing a session id and then never enforcing it is worse than issuing none")
+})
+
+/*
+ * What an agent reads when something is off: every error names a next step,
+ * every state uses the queue's one vocabulary, and a wait that the closing
+ * endpoint cut short says so instead of claiming the seconds it was asked for.
+ */
+console.log("\nWhat the agent is told")
+
+await check("a timeout reports the seconds it actually waited, and why it ended", async () => {
+  drain()
+  const { payload } = await callTool("wait_for_change", { timeoutSeconds: 1 })
+  assert.equal(payload.timeout, true)
+  assert.equal(payload.reason, "timeout")
+  assert.equal(payload.timeoutSeconds, 1)
+  assert.ok(payload.waitedSeconds >= 0.9 && payload.waitedSeconds <= 2, `waitedSeconds ${payload.waitedSeconds}`)
+})
+
+await check("a wait the closing endpoint ends says so, and does not claim the seconds it was asked for", async () => {
+  drain()
+  const start = Date.now()
+  const parked = callTool("wait_for_change", { timeoutSeconds: 20 })
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  queue.release()
+  const { payload, body } = await parked
+  try {
+    assert.ok(since(start) < 3000, "the release did not end the wait")
+    assert.equal(payload.timeout, true, "an older client reads the same shape as before")
+    assert.ok(!body.result.isError, "calling again is the right action, so it is not an error")
+    assert.equal(payload.reason, "endpoint_closing")
+    assert.ok(payload.waitedSeconds < 3, `it reported ${payload.waitedSeconds}s for a wait of under 3`)
+    assert.equal(payload.timeoutSeconds, 20)
+    assert.match(payload.message, /again/)
+    // While draining, a new wait answers at once with the same reason.
+    const again = await callTool("wait_for_change", { timeoutSeconds: 20 })
+    assert.equal(again.payload.reason, "endpoint_closing")
+  } finally {
+    queue.markEndpointListening()
+  }
+})
+
+await check("a resolved change carries its resolution, summary and time for list_changes", async () => {
+  drain()
+  const entry = queue.push({ prompt: "make it red" })
+  const fresh = await callTool("get_change", { id: entry.id })
+  assert.equal(fresh.payload.resolution, null)
+  assert.equal(fresh.payload.summary, null)
+  await callTool("resolve_change", { id: entry.id, resolution: "rejected", summary: "that token is shared" })
+  const { payload } = await callTool("list_changes", { status: "rejected" })
+  const seen = payload.changes.find((change) => change.id === entry.id)
+  assert.equal(seen.status, "rejected")
+  assert.equal(seen.resolution, "rejected")
+  assert.equal(seen.summary, "that token is shared", "the agent cannot read back why a change was rejected")
+  assert.ok(seen.resolvedAt)
+})
+
+await check("list_changes takes applied for resolved, and refuses a status that is none", async () => {
+  drain()
+  const entry = queue.push({ prompt: "x" })
+  queue.resolve(entry.id, { resolution: "applied" })
+  const applied = await callTool("list_changes", { status: "applied" })
+  assert.ok(applied.payload.changes.some((change) => change.id === entry.id), "applied answered an empty list")
+  const wrong = await callTool("list_changes", { status: "done" })
+  assert.equal(wrong.body.result.isError, true, "an unknown status answered as if nothing were there")
+  assert.equal(wrong.payload.code, "invalid_argument")
+  assert.match(wrong.payload.error, /pending, resolved, rejected, all/)
+  assert.ok(wrong.payload.next)
+})
+
+await check("an unknown id says what the endpoint holds and what to do", async () => {
+  drain()
+  const held = queue.push({ prompt: "held" })
+  const response = await callTool("get_change", { id: "chg-typo" })
+  assert.equal(response.body.result.isError, true)
+  assert.equal(response.payload.code, "unknown_change")
+  assert.equal(response.payload.cause, "unknown")
+  assert.match(response.payload.error, /restarted/, "the restart cause is not named")
+  assert.ok(response.payload.knownIds.includes(held.id), "the ids it does hold are not listed")
+  assert.ok(response.payload.next)
+  const resolve = await callTool("resolve_change", { id: "chg-typo" })
+  assert.equal(resolve.payload.code, "unknown_change")
+  const missing = await callTool("get_change", {})
+  assert.equal(missing.payload.code, "invalid_argument")
+  assert.match(missing.payload.error, /needs an id/)
+  queue.resolve(held.id)
+})
+
+await check("an id that moved with the endpoint, or was evicted, says which", async () => {
+  const moving = createHandoffQueue()
+  const moved = moving.push({ prompt: "moves" })
+  moving.handOff()
+  assert.equal(moving.whyMissing(moved.id), "moved")
+  const crowded = createHandoffQueue()
+  const first = crowded.push({ prompt: "oldest" })
+  for (let index = 0; index < 200; index += 1) crowded.push({ prompt: `n${index}` })
+  assert.equal(crowded.get(first.id), null)
+  assert.equal(crowded.whyMissing(first.id), "evicted")
+  assert.equal(crowded.whyMissing("chg-never"), null)
+
+  drain()
+  const here = queue.push({ prompt: "moves away" })
+  queue.handOff()
+  const response = await callTool("get_change", { id: here.id })
+  assert.equal(response.payload.cause, "moved")
+  assert.match(response.payload.error, /moved with the MCP endpoint/)
+})
+
+await check("a resolution that is not one is recorded as applied, and the reply warns", async () => {
+  drain()
+  const entry = queue.push({ prompt: "x" })
+  const { payload } = await callTool("resolve_change", { id: entry.id, resolution: "reject" })
+  assert.equal(payload.ok, true)
+  assert.equal(payload.resolution, "applied")
+  assert.match(payload.warning, /not a resolution/)
+  const clean = await callTool("resolve_change", { id: entry.id, resolution: "rejected" })
+  assert.equal(clean.payload.warning, undefined)
+})
+
+await check("the tool texts use the queue's words and promise nothing the editor does not do", async () => {
+  const tools = (await rpc({ jsonrpc: "2.0", id: 50, method: "tools/list" })).body.result.tools
+  const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]))
+  assert.deepEqual(byName.list_changes.inputSchema.properties.status.enum, ["pending", "resolved", "rejected", "all"])
+  assert.deepEqual(byName.resolve_change.inputSchema.properties.resolution.enum, ["applied", "rejected"])
+  // No element is ever selected by the Changes tab, and the reply is not bare.
+  assert.doesNotMatch(byName.wait_for_change.description, /selected element/)
+  assert.doesNotMatch(byName.wait_for_change.description, /nothing else/)
+  assert.match(byName.wait_for_change.description, /endpoint_closing/)
+  // The designer does not see a rejection summary yet; the text must not say so.
+  assert.doesNotMatch(byName.resolve_change.description, /designer learns why/)
+  assert.match(byName.resolve_change.description, /does not show it to the designer yet/)
+  assert.match(byName.list_changes.description, /pending/)
+  assert.match(byName.list_changes.description, /restart/)
+})
+
+await check("an unknown tool names the four that exist", async () => {
+  const response = await callTool("frobnicate_change")
+  assert.equal(response.body.result.isError, true)
+  assert.equal(response.payload.code, "unknown_tool")
+  assert.match(response.payload.next, /wait_for_change/)
 })
 
 server.close()

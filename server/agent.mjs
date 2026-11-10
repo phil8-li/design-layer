@@ -123,7 +123,8 @@ async function writeHandoff(config, prompt, request) {
   // failure there must not cost the designer the brief already written to disk.
   // Whichever process serves MCP holds the queue — this editor, or the start
   // screen when MCP stays on between apps — and `deliver` asks the right one.
-  const { delivered, waiting, listening } = await mcpControl().deliver({
+  const sessionPrompt = typeof request?.sessionPrompt === "string" ? request.sessionPrompt : ""
+  const sent = await mcpControl().deliver({
     // "prompts" is the only surface that files these, and saying so is not a
     // formality: it tells the agent the intent is already written in `brief`
     // rather than something it has to ask about. Anything else reaching this
@@ -135,7 +136,7 @@ async function writeHandoff(config, prompt, request) {
     brief: typeof request?.brief === "string" ? request.brief : "",
     // Built by the browser, which owns the prefix. A bare POST without one
     // gets no new session: there is no outbox behind it to open one for.
-    sessionPrompt: typeof request?.sessionPrompt === "string" ? request.sessionPrompt : "",
+    sessionPrompt,
     url: request?.url ?? null,
     framework: config.host?.framework ?? "react",
     selection: request?.selection ?? null,
@@ -150,38 +151,55 @@ async function writeHandoff(config, prompt, request) {
 
   return {
     ok: true,
-    message: handoffMessage({ delivered, waiting, listening }),
+    message: handoffMessage({ ...sent, newSession: Boolean(sessionPrompt) }),
     handoffPath,
-    changeId: delivered?.id ?? null,
+    changeId: sent.changeId,
+    // What the message says, as a word a client can branch on without
+    // reading the sentence: "delivered", "queued" or "undelivered".
+    outcome: sent.outcome,
   }
 }
 
 /**
  * What the toast says, and it must not claim more than happened.
  *
- * Three states that look alike from the browser and are not:
+ * Three outcomes that look alike from the browser and are not:
  *
- *  - an agent is parked in `wait_for_change` right now, so the click has
- *    already woken it;
- *  - the endpoint is up but nothing is asking yet — real, and it will arrive;
- *  - the endpoint never bound. `ports.mcp` is `null`, or a second editor
- *    session already holds the port. Nothing will EVER call the tool, and the
- *    only warning about it went to a terminal the designer is not reading. A
- *    "sent!" here is the worst outcome in the feature: they wait for an agent
- *    that cannot hear them.
+ *  - "delivered": an agent is parked in `wait_for_change` right now, so the
+ *    click has already woken it;
+ *  - "queued": the endpoint is up but nothing is asking yet — real, and it
+ *    will arrive;
+ *  - "undelivered": nothing serves the queue. `ports.mcp` is `null`, another
+ *    process holds the port, the start screen owns it and cannot bind it, or
+ *    the start screen did not answer the relay. Nothing will EVER call the
+ *    tool for this send, and the only warning about it went to a terminal the
+ *    designer is not reading. A "sent!" here is the worst outcome in the
+ *    feature: they wait for an agent that cannot hear them.
  *
- * The first message has to say that nothing was edited, because MCP is the only
- * way out of this editor: no agent attached means the brief is sitting in a
- * file and nothing on this machine has read it.
+ * "undelivered" has to say that nothing was edited, because MCP is the only
+ * way out of this editor, and that the brief is safe in the handoff file. It
+ * does not tell the designer to copy the brief: the Changes tab has already
+ * put it on the clipboard and says so itself ("Also copied to the
+ * clipboard."). When the start screen is the one not answering, it says that
+ * rather than blaming a missing agent that may be attached and waiting.
+ *
+ * The "new session" half is said only for a send that asks for one; a bare
+ * POST carries no session prompt.
  */
-function handoffMessage({ delivered, waiting, listening }) {
-  if (delivered === null || !listening) {
-    return "Queued to the handoff file — no agent is attached over MCP, so nothing was edited. Copy the brief, or point an agent at the MCP endpoint."
+function handoffMessage({ outcome, cause, newSession }) {
+  if (outcome === "undelivered") {
+    return cause === "relay-failed"
+      ? "The start screen isn’t answering, so no agent got this and nothing was edited. The brief is saved to the handoff file."
+      : "No agent is attached over MCP, so nothing was edited. The brief is saved to the handoff file."
   }
-  if (waiting > 0) {
-    return "Delivered to your coding agent — it was waiting and is starting a new session for this."
+  if (outcome === "delivered") {
+    return newSession
+      ? "Delivered to your coding agent — it was waiting and is starting a new session for this."
+      : "Delivered to your coding agent — it was waiting."
   }
-  return "Queued for your coding agent. It starts a new session for this the next time the agent calls wait_for_change."
+  return newSession
+    ? "Queued for your coding agent. It starts a new session for this the next time the agent calls wait_for_change."
+    : "Queued for your coding agent. It picks this up the next time it calls wait_for_change."
 }
 
 /** Every distinct source file this request touches, for the agent's first read. */

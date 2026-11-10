@@ -197,7 +197,76 @@ await check("an agent that vanishes without DELETE stops being counted", async (
   await close(port, reply.session)
 })
 
+/*
+ * A client may decline to track a session id; the spec allows it. Such a
+ * client was counted only through sessions, so ten minutes after its last
+ * handshake it read as gone while it sat parked in `wait_for_change`, and the
+ * panel told the designer "No agent connected" to an agent that was waiting.
+ */
+await check("a client that sends no session id counts while it is parked in a wait", async () => {
+  const realNow = Date.now
+  const startedAt = realNow()
+  try {
+    Date.now = () => startedAt + 11 * 60 * 1000
+    assert.equal(queue.attachedAgents, 0)
+    const parked = call(port, {
+      jsonrpc: "2.0",
+      id: 7,
+      method: "tools/call",
+      params: { name: "wait_for_change", arguments: { timeoutSeconds: 1 } },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    assert.equal(queue.waiting, 1)
+    assert.equal(queue.attachedAgents, 1, "a parked agent was reported as not connected")
+    await parked
+    assert.equal(queue.attachedAgents, 0, "a header-less client was still counted after its call ended")
+  } finally {
+    Date.now = realNow
+  }
+})
+
+await check("one client re-initializing inside its session counts once", async () => {
+  const first = await call(port, {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "re", version: "1" } },
+  })
+  assert.equal(queue.attachedAgents, 1)
+  const again = await call(
+    port,
+    {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "initialize",
+      params: { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "re", version: "1" } },
+    },
+    first.session
+  )
+  assert.ok(again.session && again.session !== first.session, "a re-initialize gets a fresh id")
+  assert.equal(queue.attachedAgents, 1, "one client re-initializing was counted twice")
+  await close(port, again.session)
+  assert.equal(queue.attachedAgents, 0)
+})
+
 await new Promise((resolve) => server.close(resolve))
+
+await check("a closed endpoint stops counting its sessions", async () => {
+  const { closeEndpoint, openEndpoint } = await import("../server/mcp.mjs")
+  const moving = createHandoffQueue()
+  const bound = await openEndpoint({ queue: moving, isLocalRequest: () => true, port: 0 })
+  const at = bound.address().port
+  await call(at, {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "gone", version: "1" } },
+  })
+  assert.equal(moving.attachedAgents, 1)
+  await closeEndpoint(bound, moving)
+  assert.equal(moving.endpointState, "stopped")
+  assert.equal(moving.attachedAgents, 0, "a closed server's sessions were still reported as attached")
+})
 
 /* ==========================================================================
  * The route the panel actually reads it through
