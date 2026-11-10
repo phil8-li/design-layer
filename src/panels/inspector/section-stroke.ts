@@ -21,14 +21,26 @@
  */
 
 import { el, round } from "../../core/dom"
-import { leaveRow, revealGroup } from "../../core/leave"
+import { revealGroup } from "../../core/leave"
 import { icon } from "../../core/icons"
 import { tokens } from "../../core/tokens"
-import { alphaOf, emptyPaintSection, paintRow, toHex, withAlpha } from "./color"
+import { alphaOf, closeThen, declineOpacity, emptyPaintSection, paintRow, toHex, withAlpha } from "./color"
 import { disclosure, miniButton, numberField, propRow, selectField, trailingToggle } from "./field"
 import { styledSection } from "../../options/panel"
 import { hasBorder, hasOutline, hasRing, SIDES, svgTarget, tokenControl, tokenHints, tokenRow } from "./token-row"
-import { MIXED, isMulti, mixedNumber, mixedPaintSection, sharedValue } from "./multi"
+import {
+  MIXED,
+  computedOf,
+  isMulti,
+  mixedNumber,
+  mixedPaintSection,
+  sectionWriters,
+  selectedOf,
+  sharedValue,
+  uniformOf,
+  writeEach,
+} from "./multi"
+import { parkedPaints } from "./parked-paint"
 import type { InspectorSection } from "./index"
 
 const STYLES = ["solid", "dashed", "dotted", "double"] as const
@@ -36,8 +48,8 @@ const DEFAULT_STROKE = "#000000"
 const SIDES_EXPANDER = "stroke.sides"
 const SIDE_GLYPHS = { top: "PadTop", right: "PadRight", bottom: "PadBottom", left: "PadLeft" } as const
 
-/** Widths parked by the eye, per side, keyed by element — see the Fill section's note. */
-const parked = new Map<string, number[]>()
+/** Each layer's four widths, parked by the eye — see `parked-paint.ts`. */
+const parked = parkedPaints<number[]>("stroke")
 
 const widthsOf = (style: CSSStyleDeclaration) =>
   SIDES.map((side) => Number.parseFloat(style.getPropertyValue(`border-${side}-width`)) || 0)
@@ -47,27 +59,25 @@ const paintOf = (style: CSSStyleDeclaration): string =>
   Math.max(...widthsOf(style)) > 0 && style.borderTopStyle !== "none" ? style.borderTopColor : "none"
 
 export const strokeSection: InspectorSection = (context) => {
-  const { selection, computed, writer, invalidate } = context
+  const { selection, computed, invalidate } = context
   const element = selection.element
   const widths = widthsOf(computed)
   const width = Math.max(...widths)
   const style = computed.borderTopStyle
   const visible = width > 0 && style !== "none"
-  const stored = parked.get(selection.key)
+  const layers = selectedOf(context)
+  const stored = parked.get(selection)
   // Layers that paint different strokes get Figma's hint and a `+` that gives
   // them all one; matching strokes get the normal rows, written to all.
   const mixed = isMulti(context) && sharedValue(context, paintOf) === null
 
-  const applyStyles = (writes: Array<{ property: string; value: string }>, summary: string) => {
-    writer.applyStyles(selection, writes, summary)
-    invalidate()
-  }
+  const { commit: applyStyles, preview } = sectionWriters(context)
 
   const add = miniButton({
     label: mixed ? "Add stroke" : visible || stored ? "Stroke already set" : "Add stroke",
     glyph: icon("Plus", tokens.icon.marker),
     onClick: () => {
-      parked.delete(selection.key)
+      parked.drop(layers)
       applyStyles(
         [
           { property: "border-width", value: "1px" },
@@ -122,45 +132,42 @@ export const strokeSection: InspectorSection = (context) => {
       applyStyles([{ property: "border-color", value: withAlpha(next, alphaOf(color)) ?? next }], "Set stroke color"),
     alpha: {
       onPreview: (alpha) => {
-        const preview = withAlpha(color, alpha)
-        if (preview) element.style.setProperty("border-color", preview)
+        const next = withAlpha(color, alpha)
+        if (next) preview([{ property: "border-color", value: next }])
       },
       onCommit: (alpha) => {
         const next = withAlpha(color, alpha)
         if (next) applyStyles([{ property: "border-color", value: next }], "Set stroke opacity")
-        else context.editor.toast(`Opacity needs a plain color. ${color} is kept as written.`, "error")
+        else declineOpacity(context.editor, color)
       },
     },
     visibility: {
       onToggle: () => {
         if (visible) {
-          parked.set(selection.key, widths)
+          // Each layer parks its own widths: matching colours do not mean matching weights.
+          for (const layer of layers) parked.set(layer, widthsOf(computedOf(context, layer)))
           applyStyles([{ property: "border-width", value: "0px" }], "Hide stroke")
           return
         }
-        parked.delete(selection.key)
-        applyStyles(
-          SIDES.map((side, at) => ({ property: `border-${side}-width`, value: `${round(shown[at])}px` })),
-          "Show stroke"
-        )
+        writeEach(context, "Show stroke", (layer) => {
+          const own = parked.get(layer) ?? shown
+          return SIDES.map((side, at) => ({ property: `border-${side}-width`, value: `${round(own[at])}px` }))
+        })
+        parked.drop(layers)
+        invalidate()
       },
     },
     remove: {
       label: "Remove stroke",
       onClick: (event) => {
-        parked.delete(selection.key)
-        const row = (event.currentTarget as HTMLElement).closest(".de-prow")
-        const write = () => applyStyles([{ property: "border-width", value: "0px" }], "Remove stroke")
-        const closing = row instanceof HTMLElement ? leaveRow(row) : null
-        if (closing) void closing.then(write)
-        else write()
+        parked.drop(layers)
+        closeThen(event, () => applyStyles([{ property: "border-width", value: "0px" }], "Remove stroke"))
       },
     },
   })
 
   const sidesOpen = disclosure(SIDES_EXPANDER)
   const perSide = sidesOpen.open
-  const uniformOf = (values: number[]) => (values.every((value) => value === values[0]) ? round(values[0]) : NaN)
   const sharedWeight = isMulti(context) ? sharedValue(context, (entry) => uniformOf(widthsOf(entry))) : null
   const uniform = isMulti(context)
     ? sharedWeight === null || Number.isNaN(sharedWeight)
@@ -179,10 +186,10 @@ export const strokeSection: InspectorSection = (context) => {
     label: "W",
     title: "Stroke weight",
     value: uniform,
-    placeholder: uniform === null ? "Mixed" : undefined,
+    placeholder: uniform === null ? MIXED : undefined,
     min: 0,
     disabled: !visible,
-    onPreview: (value) => element.style.setProperty("border-width", `${round(value)}px`),
+    onPreview: (value) => preview([{ property: "border-width", value: `${round(value)}px` }]),
     onCommit: (value) => applyStyles([{ property: "border-width", value: `${round(value)}px` }], "Set stroke weight"),
   })
 
@@ -220,7 +227,7 @@ export const strokeSection: InspectorSection = (context) => {
       ...mixedNumber(sideValues[at]),
       min: 0,
       disabled: !visible,
-      onPreview: (value) => element.style.setProperty(`border-${side}-width`, `${round(value)}px`),
+      onPreview: (value) => preview([{ property: `border-${side}-width`, value: `${round(value)}px` }]),
       onCommit: (value) =>
         applyStyles([{ property: `border-${side}-width`, value: `${round(value)}px` }], `Set stroke ${side}`),
     })

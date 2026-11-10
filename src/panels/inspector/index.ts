@@ -359,6 +359,9 @@ export function installInspector(editor: EditorContext): void {
    */
   const activeTab = (): TabDefinition =>
     tabs.find((definition) => definition.id === editor.getState().inspectorTab) ?? tabs[0]
+  // A panel mounts on its first tab, as it always has; the store is told so
+  // before anything reads it, so the record and the strip start in step.
+  if (editor.getState().inspectorTab !== tabs[0].id) editor.setState({ inspectorTab: tabs[0].id })
   const buttons = new Map<string, HTMLElement>()
   const panels = new Map<string, HTMLElement>()
   /** Asks for a tab. The panes change when the store does, in `show`. */

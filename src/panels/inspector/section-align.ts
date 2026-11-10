@@ -3,11 +3,11 @@
  *
  * The obvious implementation nudges the selected box with `transform:
  * translate()`. That is wrong twice over here: `core/tailwind.ts` has no entry
- * for `transform`, so every one of those edits is silently dropped at "Apply to
- * code"; and a `translate-*` utility on an element that also uses Motion
+ * for `transform`, so the note an agent receives could name no utility for it;
+ * and a `translate-*` utility on an element that also uses Motion
  * `layout`/`layoutId` fights Motion's own transform and breaks the app's
  * shared-element morphs. Writing `justify-content`/`align-items` on the parent
- * says the same thing in a way that survives the trip to source.
+ * says the same thing in a way an agent can carry into source.
  *
  * What is left here is that write path and the parent it writes to. The buttons
  * moved into `section-position.ts`, where align, distribute and arrange are
@@ -65,38 +65,20 @@
  * not.
  */
 
-import { toSourceRef } from "../../core/bridge"
-import { elementKey } from "../../core/store"
-import type { EditorContext } from "../../core/context"
 import type { Selection } from "../../core/types"
 import type { SectionContext } from "./index"
+import { selectionFor } from "./multi"
 
 export type Place = "flex-start" | "center" | "flex-end"
 export type Axis = "horizontal" | "vertical"
 type AlignProperty = "justify-content" | "align-items"
 
 /** Computed `justify-content`/`align-items` collapsed onto the three we write. */
-function placeOf(value: string): Place | null {
+function writtenPlace(value: string): Place | null {
   if (value === "center") return "center"
   if (value === "flex-end" || value === "end" || value === "right") return "flex-end"
   if (value === "flex-start" || value === "start" || value === "left" || value === "normal") return "flex-start"
   return null
-}
-
-/**
- * The parent as a writable target. `context.describe` is private to the context
- * module, so this rebuilds the same shape from the two core helpers it uses.
- */
-function describeParent(editor: EditorContext, parent: HTMLElement): Selection {
-  const info = editor.bridge.elementInfo(parent)
-  const componentName = info?.componentName || parent.tagName.toLowerCase()
-  return {
-    element: parent,
-    tagName: parent.tagName.toLowerCase(),
-    componentName,
-    source: toSourceRef(info),
-    key: elementKey(parent, componentName, info?.lineNumber ?? 0),
-  }
 }
 
 export interface ParentAlignment {
@@ -122,11 +104,11 @@ export function parentAlignment({ editor, selection, writer }: SectionContext): 
   const parent = selection.element.parentElement
   if (!parent || parent === document.body || parent === document.documentElement) return null
 
-  const target = describeParent(editor, parent)
+  const target = selectionFor(editor, parent)
   const style = getComputedStyle(parent)
   const column = style.flexDirection.startsWith("column")
-  const justify = placeOf(style.justifyContent)
-  const align = placeOf(style.alignItems)
+  const justify = writtenPlace(style.justifyContent)
+  const align = writtenPlace(style.alignItems)
   const propertyFor = (axis: Axis): AlignProperty =>
     (axis === "horizontal") === column ? "align-items" : "justify-content"
 
@@ -207,10 +189,10 @@ export function multiAlignment({ editor, selections, writer }: SectionContext): 
     }
   }
 
-  const target = describeParent(editor, parent)
+  const target = selectionFor(editor, parent)
   const style = getComputedStyle(parent)
   const column = style.flexDirection.startsWith("column")
-  const justify = placeOf(style.justifyContent)
+  const justify = writtenPlace(style.justifyContent)
   const write = (property: string, value: string, summary: string) =>
     writer.applyStyles(target, [{ property, value }], summary)
 
@@ -230,12 +212,13 @@ export function multiAlignment({ editor, selections, writer }: SectionContext): 
      * selection again, which is the whole failure this control exists to fix;
      * a mixed set is honestly no state at all.
      *
-     * Read off the computed value, so an element that has never been touched
-     * answers with whatever it inherits from the parent's `align-items` — the
-     * same reason the single-selection strip shows "top" on an untouched row.
+     * Read off each child's computed `align-self`. An untouched item computes
+     * `auto` ("whatever the parent's `align-items` says"), which `writtenPlace`
+     * maps to no place, so a set nobody has aligned yet shows no cross-axis
+     * button pressed until one is written.
      */
     crossIsAt: (place) =>
-      picked.every((entry) => placeOf(getComputedStyle(entry.element).alignSelf) === place),
+      picked.every((entry) => writtenPlace(getComputedStyle(entry.element).alignSelf) === place),
     mainIs: () => justify,
     alignSelf: (place, summary) => {
       writer.applyStylesBatch(

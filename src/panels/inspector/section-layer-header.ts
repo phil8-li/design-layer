@@ -27,12 +27,22 @@ import { tokens } from "../../core/tokens"
 import type { Selection } from "../../core/types"
 import type { InspectorSection, SectionContext } from "./index"
 import { miniButton } from "./field"
-import { directText } from "./token-row"
+import { layerKindOf, type LayerKind as LayerRowKind } from "../layers"
 
 // Figma's More actions mark.
 const MORE_GLYPH: IconName = "DotsThree"
 
-const MEDIA = new Set(["img", "picture", "video", "canvas"])
+/** The header's word for each layer-row kind; every frame reads "Frame", whatever its layout. */
+const KIND_LABEL: Record<Exclude<LayerRowKind, "component">, string> = {
+  image: "Image",
+  vector: "Vector",
+  text: "Text",
+  "stack-horizontal": "Frame",
+  "stack-vertical": "Frame",
+  grid: "Frame",
+  frame: "Frame",
+  rectangle: "Rectangle",
+}
 
 export interface LayerKind {
   label: string
@@ -41,21 +51,20 @@ export interface LayerKind {
 }
 
 /**
- * The selection's type, by the rules the layers panel draws its marks with:
- * a component wins over what it renders as, then media, vectors, text, and a
- * box that is a Frame when it holds elements and a Rectangle when it does not.
+ * The selection's type, by the layers panel's own rule (`layerKindOf`), so the
+ * row and the header cannot name two kinds: a component wins over what it
+ * renders as, then media, vectors, a text leaf, and a box that is a Frame when
+ * it holds elements and a Rectangle when it does not.
  */
 export function layerKind(context: Pick<SectionContext, "editor" | "selection" | "selections">): LayerKind {
   const count = context.selections?.length ?? 1
   if (count > 1) return { label: `${count} selected`, component: false }
   const element = context.selection.element
   const meta = getResolver(context.editor.bridge).meta(element)
-  if (meta.isRoot && meta.info?.componentName) return { label: meta.info.componentName, component: true }
-  const tag = element.tagName.toLowerCase()
-  if (MEDIA.has(tag)) return { label: "Image", component: false }
-  if (element instanceof SVGElement) return { label: "Vector", component: false }
-  if (!element.firstElementChild && directText(element)) return { label: "Text", component: false }
-  return { label: element.firstElementChild ? "Frame" : "Rectangle", component: false }
+  const componentName = meta.isRoot ? meta.info?.componentName : undefined
+  if (componentName) return { label: componentName, component: true }
+  const kind = layerKindOf(element, false, null)
+  return { label: kind === "component" ? element.tagName.toLowerCase() : KIND_LABEL[kind], component: false }
 }
 
 function shortcutText(command: string): string {

@@ -16,7 +16,7 @@ import { tokens } from "../../core/tokens"
 import { disclosure, miniButton, numberField, propRow, trailingToggle } from "./field"
 import { styledSection } from "../../options/panel"
 import { fieldToken } from "./token-row"
-import { mixedNumber, sharedValue } from "./multi"
+import { MIXED, mixedNumber, sectionWriters, sharedValue, uniformOf } from "./multi"
 import type { InspectorSection } from "./index"
 
 /*
@@ -68,14 +68,10 @@ function cornerGlyph(turn: number): HTMLElement {
 export const appearanceSection: InspectorSection = (context) => {
   // The token helpers take the whole context; a partial rebuilt from these
   // four fields would go stale the day one of them reads another.
-  const { selection, computed, writer, invalidate } = context
-
-  const apply = (property: string, value: string) => {
-    writer.applyStyles(selection, [{ property, value }], `Set ${property}`)
-  }
-  const preview = (property: string, value: string) => {
-    selection.element.style.setProperty(property, value)
-  }
+  const { computed, invalidate } = context
+  const writers = sectionWriters(context)
+  const apply = (property: string, value: string) => writers.apply([{ property, value }], `Set ${property}`)
+  const preview = (property: string, value: string) => writers.preview([{ property, value }])
 
   /*
    * `visibility: hidden`, not `display: none`. A hidden element keeps its box,
@@ -124,7 +120,6 @@ export const appearanceSection: InspectorSection = (context) => {
     CORNERS.map((corner) => Number.parseFloat(style.getPropertyValue(`border-${corner.key}-radius`)) || 0)
   // A layer's own corners can disagree, and so can the selected layers; either
   // way the uniform field has no one number to show.
-  const uniformOf = (values: number[]) => (values.every((value) => value === values[0]) ? round(values[0]) : NaN)
   const shared = sharedValue(context, (style) => uniformOf(radiiOf(style)))
   const uniformRadius = shared === null || Number.isNaN(shared) ? null : shared
   const cornerValues = CORNERS.map((_, index) => sharedValue(context, (style) => round(radiiOf(style)[index])))
@@ -149,7 +144,7 @@ export const appearanceSection: InspectorSection = (context) => {
     label: icon("CornerRadius", tokens.icon.action),
     title: "Corner radius",
     value: uniformRadius,
-    placeholder: uniformRadius === null ? "Mixed" : undefined,
+    placeholder: uniformRadius === null ? MIXED : undefined,
     min: 0,
     token: fieldToken(context, ["corner-radius"], "Corner radius"),
     onPreview: (value) => preview("border-radius", `${round(value)}px`),

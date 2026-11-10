@@ -22,14 +22,15 @@
  */
 
 import { el, round } from "../../core/dom"
-import { leaveRow, revealGroup } from "../../core/leave"
+import { revealGroup } from "../../core/leave"
 import { icon } from "../../core/icons"
 import { tokens } from "../../core/tokens"
-import { alphaOf, emptyPaintSection, paintRow, withAlpha } from "./color"
+import { alphaOf, closeThen, emptyPaintSection, paintRow, withAlpha } from "./color"
 import { disclosure, miniButton, numberField, propRow, selectField, shiftDisclosures } from "./field"
 import { styledSection } from "../../options/panel"
 import { hasUtility, tokenRow } from "./token-row"
-import { isMulti, mixedPaintSection, selectedOf, sharedValue } from "./multi"
+import { isMulti, mixedPaintSection, sectionWriters, selectedOf, sharedValue } from "./multi"
+import { parkedPaints } from "./parked-paint"
 import type { InspectorSection } from "./index"
 
 interface Shadow {
@@ -44,8 +45,8 @@ interface Shadow {
 const EXPANDER = "effects"
 const DEFAULT_SHADOW: Shadow = { inset: false, x: 0, y: 2, blur: 8, spread: 0, color: "#00000026" }
 
-/** Effects parked by the eye, keyed by element — see the Fill section's note. */
-const parked = new Map<string, Array<{ index: number; shadow: Shadow }>>()
+/** Effect rows the eye parked, with the place each was switched off from — see `parked-paint.ts`. */
+const parked = parkedPaints<Array<{ index: number; shadow: Shadow }>>("effects")
 
 /** Splits on commas that are not inside `rgb()`/`hsl()`/`var()`. */
 function splitLayers(value: string): string[] {
@@ -102,14 +103,18 @@ export const effectsSection: InspectorSection = (context) => {
   // Re-seat the parked rows at the positions they were switched off from, so
   // hiding the middle effect of three does not shuffle the other two.
   const rows: Array<{ shadow: Shadow; hidden: boolean }> = visible.map((shadow) => ({ shadow, hidden: false }))
-  for (const entry of parked.get(selection.key) ?? []) {
+  for (const entry of parked.get(selection) ?? []) {
     rows.splice(Math.min(entry.index, rows.length), 0, { shadow: entry.shadow, hidden: true })
   }
 
+  const layers = selectedOf(context)
+  const { preview: previewAll } = sectionWriters(context)
   const commit = (next: Array<{ shadow: Shadow; hidden: boolean }>, summary: string) => {
     const held = next.map((row, index) => ({ index, shadow: row.shadow })).filter((_, index) => next[index].hidden)
-    if (held.length) parked.set(selection.key, held)
-    else parked.delete(selection.key)
+    // The layers share one shadow list here (a mixed set never reaches this),
+    // so each parks the same rows and a later single selection still finds them.
+    if (held.length) for (const layer of layers) parked.set(layer, held)
+    else parked.drop(layers)
 
     const painted = next.filter((row) => !row.hidden).map((row) => serialize(row.shadow))
     writer.applyStyles(selection, [{ property: "box-shadow", value: painted.join(", ") || "none" }], summary)
@@ -130,7 +135,7 @@ export const effectsSection: InspectorSection = (context) => {
     glyph: icon("Plus", tokens.icon.marker),
     onClick: () => {
       if (!mixed) return commit([...rows, { shadow: DEFAULT_SHADOW, hidden: false }], "Add effect")
-      for (const entry of selectedOf(context)) parked.delete(entry.key)
+      parked.drop(layers)
       commit([{ shadow: DEFAULT_SHADOW, hidden: false }], "Add effect")
     },
   })
@@ -173,10 +178,12 @@ export const effectsSection: InspectorSection = (context) => {
     const preview = (patch: Partial<Shadow>) => {
       if (row.hidden) return
       const drafted = rows.map((entry, at) => (at === index ? { ...entry, shadow: { ...entry.shadow, ...patch } } : entry))
-      selection.element.style.setProperty(
-        "box-shadow",
-        drafted.filter((entry) => !entry.hidden).map((entry) => serialize(entry.shadow)).join(", ") || "none"
-      )
+      previewAll([
+        {
+          property: "box-shadow",
+          value: drafted.filter((entry) => !entry.hidden).map((entry) => serialize(entry.shadow)).join(", ") || "none",
+        },
+      ])
     }
 
     const scalar = (key: "x" | "y" | "blur" | "spread", label: string, title: string) => {
@@ -246,18 +253,17 @@ export const effectsSection: InspectorSection = (context) => {
       label: "Remove effect",
       glyph: icon("Minus", tokens.icon.action),
       danger: true,
-      onClick: (event: Event) => {
-        // The whole effect leaves, its open settings with it.
-        const block = (event.currentTarget as HTMLElement).closest(".de-effect")
-        const write = () => {
-          // The open settings below it move up with their effects.
-          shiftDisclosures(disclosureStem, index)
-          commit(rows.filter((_, at) => at !== index), "Remove effect")
-        }
-        const closing = block instanceof HTMLElement ? leaveRow(block) : null
-        if (closing) void closing.then(write)
-        else write()
-      },
+      // The whole effect leaves, its open settings with it, and the open
+      // settings below it move up with their effects.
+      onClick: (event: Event) =>
+        closeThen(
+          event,
+          () => {
+            shiftDisclosures(disclosureStem, index)
+            commit(rows.filter((_, at) => at !== index), "Remove effect")
+          },
+          ".de-effect"
+        ),
     })
 
     const settingsBlock = open

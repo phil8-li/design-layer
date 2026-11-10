@@ -17,24 +17,21 @@
  */
 
 import { el } from "../../core/dom"
-import { leaveRow } from "../../core/leave"
 import { icon } from "../../core/icons"
 import { tokens } from "../../core/tokens"
-import { alphaOf, emptyPaintSection, paintRow, withAlpha } from "./color"
+import { alphaOf, closeThen, declineOpacity, emptyPaintSection, paintRow, withAlpha } from "./color"
 import { miniButton } from "./field"
 import { styledSection } from "../../options/panel"
 import { directText, svgTarget, tokenControl, tokenHints, tokenRow } from "./token-row"
-import { isMulti, mixedPaintSection, selectedOf, sharedValue } from "./multi"
+import { computedOf, isMulti, mixedPaintSection, sectionWriters, selectedOf, sharedValue, writeEach } from "./multi"
+import { parkedPaints } from "./parked-paint"
 import type { InspectorSection } from "./index"
 
 const DEFAULT_FILL = "#d9d9d9"
 
-/**
- * Colours parked by the eye, keyed by element (and `:text` for the text row).
- * Panel-level, not DOM-level: the inspector is rebuilt on every write, and the
- * point of the eye is that the value survives being switched off.
- */
-const parked = new Map<string, string>()
+/** Colours the eye parked, per layer: the background and the text colour apart. */
+const parkedFill = parkedPaints<string>("fill")
+const parkedText = parkedPaints<string>("text")
 
 function isPainted(color: string): boolean {
   return color !== "transparent" && alphaOf(color) > 0
@@ -43,28 +40,16 @@ function isPainted(color: string): boolean {
 /** One spelling for "paints nothing", so transparent and a zero-alpha colour agree. */
 const paintOf = (color: string): string => (isPainted(color) ? color : "none")
 
-/** Closes the row the `−` sits in before the rebuild that drops it. */
-function closeThen(event: Event, write: () => void): void {
-  const row = (event.currentTarget as HTMLElement).closest(".de-prow")
-  const closing = row instanceof HTMLElement ? leaveRow(row) : null
-  if (closing) void closing.then(write)
-  else write()
-}
-
 export const fillSection: InspectorSection = (context) => {
   const { selection, computed, writer, invalidate } = context
   const element = selection.element
-
-  const write = (property: string, value: string, summary: string) => {
-    writer.applyStyles(selection, [{ property, value }], summary)
-    invalidate()
-  }
-  const declined = (value: string) =>
-    context.editor.toast(`Opacity needs a plain color. ${value} is kept as written.`, "error")
+  const layers = selectedOf(context)
+  const { commit, preview } = sectionWriters(context)
+  const write = (property: string, value: string, summary: string) => commit([{ property, value }], summary)
 
   const background = computed.backgroundColor
   const painted = isPainted(background)
-  const storedFill = parked.get(selection.key)
+  const storedFill = parkedFill.get(selection)
   const hasFill = painted || storedFill !== undefined
 
   /*
@@ -82,10 +67,8 @@ export const fillSection: InspectorSection = (context) => {
     label: hasFill && !mixed ? "Fill already set" : "Add fill",
     glyph: icon("Plus", tokens.icon.marker),
     onClick: () => {
-      for (const entry of selectedOf(context)) {
-        parked.delete(entry.key)
-        if (textMixed) parked.delete(`${entry.key}:text`)
-      }
+      parkedFill.drop(layers)
+      if (textMixed) parkedText.drop(layers)
       // A text colour cannot be removed, so replacing mixed ones settles on the
       // primary's rather than inventing one.
       const writes = [
@@ -125,35 +108,40 @@ export const fillSection: InspectorSection = (context) => {
         onColor: (next) => {
           // The well hands back an opaque hex; keep the alpha the row already had.
           const color = withAlpha(next, alphaOf(value)) ?? next
-          parked.delete(selection.key)
+          parkedFill.drop(layers)
           write("background-color", color, "Set fill")
         },
         alpha: {
           onPreview: (alpha) => {
-            const preview = withAlpha(value, alpha)
-            if (preview) element.style.setProperty("background-color", preview)
+            const next = withAlpha(value, alpha)
+            if (next) preview([{ property: "background-color", value: next }])
           },
           onCommit: (alpha) => {
             const next = withAlpha(value, alpha)
             if (next) write("background-color", next, "Set fill opacity")
-            else declined(value)
+            else declineOpacity(context.editor, value)
           },
         },
         visibility: {
           onToggle: () => {
             if (painted) {
-              parked.set(selection.key, value)
+              // Each layer parks its own colour, so Show gives each its own back.
+              for (const layer of layers) parkedFill.set(layer, computedOf(context, layer).backgroundColor)
               write("background-color", "transparent", "Hide fill")
               return
             }
-            parked.delete(selection.key)
-            write("background-color", withAlpha(value, alphaOf(value)) ?? value, "Show fill")
+            const own = (layer: typeof selection) => parkedFill.get(layer) ?? value
+            writeEach(context, "Show fill", (layer) => [
+              { property: "background-color", value: withAlpha(own(layer), alphaOf(own(layer))) ?? own(layer) },
+            ])
+            parkedFill.drop(layers)
+            invalidate()
           },
         },
         remove: {
           label: "Remove fill",
           onClick: (event) => {
-            parked.delete(selection.key)
+            parkedFill.drop(layers)
             closeThen(event, () => write("background-color", "transparent", "Remove fill"))
           },
         },
@@ -171,10 +159,9 @@ export const fillSection: InspectorSection = (context) => {
    * one. The eye parks it as `transparent`, which is what Figma's eye does.
    */
   if (directText(element) && allText) {
-    const textKey = `${selection.key}:text`
     const textColor = computed.color
     const shown = isPainted(textColor)
-    const storedText = parked.get(textKey)
+    const storedText = parkedText.get(selection)
     const value = shown || storedText === undefined ? textColor : storedText
     const evidence = shown || storedText === undefined ? {} : { inlineValue: "", computedValue: value }
     rows.push(
@@ -188,29 +175,33 @@ export const fillSection: InspectorSection = (context) => {
         hexId: "type.color",
         onColor: (next) => {
           const color = withAlpha(next, alphaOf(value)) ?? next
-          parked.delete(textKey)
+          parkedText.drop(layers)
           write("color", color, "Set text color")
         },
         alpha: {
           onPreview: (alpha) => {
-            const preview = withAlpha(value, alpha)
-            if (preview) element.style.setProperty("color", preview)
+            const next = withAlpha(value, alpha)
+            if (next) preview([{ property: "color", value: next }])
           },
           onCommit: (alpha) => {
             const next = withAlpha(value, alpha)
             if (next) write("color", next, "Set text opacity")
-            else declined(value)
+            else declineOpacity(context.editor, value)
           },
         },
         visibility: {
           onToggle: () => {
             if (storedText === undefined) {
-              parked.set(textKey, value)
+              for (const layer of layers) parkedText.set(layer, computedOf(context, layer).color)
               write("color", "transparent", "Hide text color")
               return
             }
-            parked.delete(textKey)
-            write("color", withAlpha(value, alphaOf(value)) ?? value, "Show text color")
+            const own = (layer: typeof selection) => parkedText.get(layer) ?? value
+            writeEach(context, "Show text color", (layer) => [
+              { property: "color", value: withAlpha(own(layer), alphaOf(own(layer))) ?? own(layer) },
+            ])
+            parkedText.drop(layers)
+            invalidate()
           },
         },
         remove: null,

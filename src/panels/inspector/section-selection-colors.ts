@@ -33,18 +33,17 @@ import {
   type DesignTokenProperty,
 } from "../../core/design-system"
 import { el } from "../../core/dom"
-import { toSourceRef } from "../../core/bridge"
-import { elementKey } from "../../core/store"
 import { icon } from "../../core/icons"
 import { tokens } from "../../core/tokens"
 import { activeDesignSystem } from "../../libraries/store"
 import type { LayerElement, Selection } from "../../core/types"
 import type { StyleBatchEdit } from "../../core/writer"
-import { alphaOf, paintRow, toHex, withAlpha } from "./color"
+import { alphaOf, declineOpacity, paintRow, toHex, withAlpha } from "./color"
 import { miniButton, section } from "./field"
 import { directText, SIDES } from "./token-row"
 import { tokenField, type TokenChoice } from "./token-picker"
 import type { InspectorSection, SectionContext } from "./index"
+import { selectionFor } from "./multi"
 
 const TITLE = "Selection colors"
 /** Elements read per render. A page section can hold thousands; the panel rebuilds on every commit. */
@@ -121,7 +120,8 @@ function paintsOf(element: LayerElement): Array<[string, string]> {
   return out
 }
 
-function isChrome(element: Element): boolean {
+/** A chrome ROOT (the attribute itself), unlike `core/dom.ts`'s `isChrome`, which asks about ancestors too. */
+function isChromeRoot(element: Element): boolean {
   return element.hasAttribute("data-designlayer")
 }
 
@@ -134,7 +134,7 @@ export function collectSelectionColors(roots: LayerElement[]): ColorGroup[] {
   const seen = new Set<Element>()
   let budget = WALK_LIMIT
   const visit = (element: LayerElement) => {
-    if (budget <= 0 || seen.has(element) || isChrome(element)) return
+    if (budget <= 0 || seen.has(element) || isChromeRoot(element)) return
     seen.add(element)
     budget -= 1
     for (const [property, value] of paintsOf(element)) {
@@ -164,16 +164,7 @@ function axisOf(property: string): DesignTokenProperty {
 
 function describe(context: SectionContext, element: LayerElement): Selection {
   const picked = (context.selections ?? [context.selection]).find((entry) => entry.element === element)
-  if (picked) return picked
-  const info = context.editor.bridge?.elementInfo(element) ?? null
-  const componentName = info?.componentName || element.tagName.toLowerCase()
-  return {
-    element,
-    tagName: element.tagName.toLowerCase(),
-    componentName,
-    source: toSourceRef(info),
-    key: elementKey(element, componentName, info?.lineNumber ?? 0),
-  }
+  return picked ?? selectionFor(context.editor, element)
 }
 
 /** One batch, one element per entry, each with every property it paints in this group. */
@@ -314,7 +305,7 @@ function colorRow(context: SectionContext, group: ColorGroup, index: number): HT
       onCommit: (next) => {
         const color = withAlpha(group.value, next)
         if (color) commit("Set selection color opacity", () => color)
-        else context.editor.toast(`Opacity needs a plain color. ${group.value} is kept as written.`, "error")
+        else declineOpacity(context.editor, group.value)
       },
     },
     remove: null,

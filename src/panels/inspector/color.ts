@@ -7,11 +7,13 @@
  */
 
 import { clamp, el, round } from "../../core/dom"
+import { leaveRow } from "../../core/leave"
 import { icon } from "../../core/icons"
 import { tokens } from "../../core/tokens"
 import { optionsStore } from "../../options/store"
 import { styledSection } from "../../options/panel"
 import type { StyleScope } from "../../options/scopes"
+import type { EditorContext } from "../../core/context"
 import { emptySection, miniButton, numberField, propRow } from "./field"
 import type { SectionContext } from "./index"
 
@@ -151,6 +153,26 @@ function swatch(value: string, label: string, onCommit: (hex: string) => void, s
 }
 
 /* ---------- paint rows: Fill, Stroke and Effects share these ---------- */
+
+/**
+ * The refusal when an opacity cannot be written without inventing a colour
+ * (`withAlpha` returned null). One sentence for every paint row.
+ */
+export function declineOpacity(editor: Pick<EditorContext, "toast">, value: string): void {
+  editor.toast(`Opacity needs a plain color. ${value} is kept as written.`, "error")
+}
+
+/**
+ * Plays the row a `−` sits in out, then writes: the write rebuilds the panel
+ * without the row, so the exit has to run on the row while it still exists.
+ * `selector` names the block that leaves (an effect takes its open settings).
+ */
+export function closeThen(event: Event, write: () => void, selector = ".de-prow"): void {
+  const row = (event.currentTarget as HTMLElement).closest(selector)
+  const closing = row instanceof HTMLElement ? leaveRow(row) : null
+  if (closing) void closing.then(write)
+  else write()
+}
 
 /**
  * The same colour at a different alpha, as the shortest string that round-trips,

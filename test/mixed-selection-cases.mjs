@@ -245,21 +245,15 @@ await check("a write aimed elsewhere and a section's own batch pass through once
   assert.equal(view.calls[1].edits.length, 1, "a section's own batch was fanned out again")
 })
 
-await check("class writes reach every layer, through a class batch when the writer has one", () => {
+// No writer has a class batch (`core/writer.ts` batches styles only), so the
+// fan-out loops: one class write per layer.
+await check("class writes reach every layer", () => {
   const view = scene([{}, {}])
   view.context.writer.applyClasses(view.selections[0], { remove: [], add: ["rounded-lg"] }, "Apply")
   assert.deepEqual(
     view.calls.map((call) => call.selection.element.dataset.index),
     ["0", "1"]
   )
-  const batches = []
-  const writer = surface.fanOutWriter(
-    { applyStyles() {}, applyStylesBatch() {}, applyClasses() {}, applyClassesBatch: (edits) => batches.push(edits) },
-    view.selections
-  )
-  writer.applyClasses(view.selections[0], { remove: [], add: ["p-2"] }, "Apply")
-  assert.equal(batches.length, 1)
-  assert.equal(batches[0].length, 2)
 })
 
 await check("one selected layer keeps the writer it was given", () => {
@@ -412,6 +406,29 @@ await check("stroke weight and style read Mixed when the strokes share a colour"
   assert.deepEqual(batch.edits[1].writes, [{ property: "border-width", value: "2px" }])
 })
 
+await check("a scrub previews on every selected layer, not the primary alone", async () => {
+  // jsdom has no pointer capture; stub it the way a browser behaves.
+  let captured = null
+  window.Element.prototype.setPointerCapture = function capture() { captured = this }
+  window.Element.prototype.hasPointerCapture = function has() { return captured === this }
+  window.Element.prototype.releasePointerCapture = function release() { captured = null }
+  surface.setExpanded(surface.RADIUS_EXPANDER, false)
+  const view = scene([{}, {}]).mount(surface.appearanceSection)
+  const label = view.field("appearance.opacity").closest(".de-field").querySelector(".de-field-label")
+  label.dispatchEvent(new window.PointerEvent("pointerdown", { bubbles: true, clientX: 0, pointerId: 1 }))
+  label.dispatchEvent(new window.PointerEvent("pointermove", { bubbles: true, clientX: -40, pointerId: 1 }))
+  await new Promise((resolve) => window.requestAnimationFrame(() => setTimeout(resolve, 0)))
+  assert.deepEqual(
+    view.elements.map((element) => element.style.opacity),
+    ["0.6", "0.6"],
+    "the preview moved only the primary while the commit will write every layer"
+  )
+  label.dispatchEvent(new window.PointerEvent("pointerup", { bubbles: true, clientX: -40, pointerId: 1 }))
+  const [batch] = view.batches()
+  assert.deepEqual(targets(batch), ["0", "1"])
+  assert.deepEqual(batch.edits[1].writes, [{ property: "opacity", value: "0.6" }])
+})
+
 /* ---------- paints ---------- */
 
 console.log("\nMixed paints")
@@ -465,6 +482,53 @@ await check("different strokes show the hint, and + strokes every layer", () => 
   const written = Object.fromEntries(batch.edits[1].writes.map((w) => [w.property, w.value]))
   assert.equal(written["border-width"], "1px")
   assert.equal(written["border-style"], "solid", "a layer with no stroke style would stay invisible")
+})
+
+/*
+ * The eye parks per layer. It parked the primary's widths only and Show wrote
+ * them to every layer, so a 1px and a 4px stroke with one colour both came
+ * back at 1px, and the agent got a note to change the second layer's border.
+ */
+await check("Hide then Show stroke gives each layer its own widths back", () => {
+  const border = (width) => ({
+    borderTopWidth: width,
+    borderRightWidth: width,
+    borderBottomWidth: width,
+    borderLeftWidth: width,
+    borderTopStyle: "solid",
+    borderTopColor: "rgb(0, 0, 0)",
+  })
+  const view = scene([{ style: border("1px") }, { style: border("4px") }]).mount(surface.strokeSection)
+  click(view.label("Hide stroke color"))
+  const [hide] = view.batches()
+  assert.deepEqual(targets(hide), ["0", "1"])
+  assert.deepEqual(hide.edits[1].writes, [{ property: "border-width", value: "0px" }])
+
+  // What the hide wrote, as the next render reads it.
+  for (const element of view.elements) Object.assign(fixtures.get(element), border("0px"))
+  view.calls.length = 0
+  view.context.computed = getComputedStyle(view.elements[0])
+  view.rebuild()
+  click(view.label("Show stroke color"))
+  const [show] = view.batches()
+  assert.ok(show, "Show wrote nothing")
+  assert.equal(show.summary, "Show stroke")
+  const widths = (edit) => edit.writes.map((write) => write.value)
+  assert.deepEqual(widths(show.edits[0]), ["1px", "1px", "1px", "1px"])
+  assert.deepEqual(widths(show.edits[1]), ["4px", "4px", "4px", "4px"], "the second layer came back at the primary's width")
+})
+
+await check("a hidden fill is still hidden, with its own colour, when the other layer is selected alone", () => {
+  const paint = { backgroundColor: "rgb(74, 92, 250)" }
+  const view = scene([{ style: { ...paint } }, { style: { ...paint } }]).mount(surface.fillSection)
+  click(view.label("Hide fill color"))
+  for (const element of view.elements) fixtures.get(element).backgroundColor = "rgba(0, 0, 0, 0)"
+  // The second layer on its own, as a new single selection.
+  view.context.selection = view.selections[1]
+  view.context.selections = [view.selections[1]]
+  view.context.computed = getComputedStyle(view.elements[1])
+  view.rebuild()
+  assert.ok(view.label("Show fill color"), "the second layer lost its parked fill")
 })
 
 await check("different effects show the hint, and + gives every layer one shadow", () => {

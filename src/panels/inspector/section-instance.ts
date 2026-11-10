@@ -37,10 +37,10 @@
  *
  * ## What a documented prop can write, and why this section chose what it did
  *
- * A source-declared AXIS is writable and always was: choosing an option swaps
- * the classes that option contributes, `updateClass` lands those on disk, and
- * the note under the rows says it writes the classes and not the prop. None of
- * that changes here.
+ * A source-declared AXIS can be edited: choosing an option previews the class
+ * swap that option contributes and files it as a note for the agent, like every
+ * Design edit since the editor stopped writing to source. The note under the
+ * rows says the change is to the classes, not to the prop.
  *
  * A LIBRARY-documented prop is the open question, and it was investigated on
  * both lanes rather than assumed:
@@ -92,6 +92,7 @@ import {
   type VariantDeclaration,
 } from "../../core/variants"
 import { el } from "../../core/dom"
+import { MIXED } from "./multi"
 import { icon } from "../../core/icons"
 import { tokens } from "../../core/tokens"
 import { componentPreview } from "../../libraries/preview"
@@ -112,7 +113,8 @@ import type { InspectorSection, SectionContext } from "./index"
  * than a list you can see all of, and a fifteen-option one is worse without it.
  */
 const PICKER_THRESHOLD = 6
-const MIXED = ""
+/** The option id that means "no one option": a mixed instance. Shown as `MIXED`. */
+const NO_OPTION = ""
 
 /** The header thumbnail, on the row rung: a picture the size of a panel row. */
 const THUMBNAIL = tokens.size.rowHeight
@@ -140,7 +142,7 @@ interface Choice {
  * panel where one of them is a select and the other is something else would be
  * telling the designer about this module's plumbing.
  *
- * `selected === null` is MIXED, and Mixed is offered as a row only while the
+ * `selected === null` is NO_OPTION, and Mixed is offered as a row only while the
  * instance is actually mixed: it is a reading of the element, never a state you
  * can choose to put it into.
  */
@@ -160,7 +162,7 @@ function oneOfField(options: {
     return tokenField({
       id: options.id,
       title: options.label,
-      selectedId: options.selected ?? MIXED,
+      selectedId: options.selected ?? NO_OPTION,
       choices: options.choices.map(
         (choice): TokenChoice => ({
           id: choice.value,
@@ -172,7 +174,7 @@ function oneOfField(options: {
           disabled: choice.disabled,
         })
       ),
-      fallback: { preview: { kind: "none" }, text: "Mixed" },
+      fallback: { preview: { kind: "none" }, text: MIXED },
       onCommit: commit,
     })
   }
@@ -180,9 +182,9 @@ function oneOfField(options: {
   return selectField({
     id: options.id,
     label: options.label,
-    value: options.selected ?? MIXED,
+    value: options.selected ?? NO_OPTION,
     options: [
-      ...(options.selected === null ? [{ value: MIXED, label: "Mixed" }] : []),
+      ...(options.selected === null ? [{ value: NO_OPTION, label: MIXED }] : []),
       ...options.choices.map((choice) => ({
         value: choice.value,
         label: choice.detail ? `${choice.value} (${choice.detail})` : choice.value,
@@ -666,7 +668,7 @@ export const instanceSection: InspectorSection = (context) => {
   if (declaration) {
     body.push(
       el("div", { class: "de-variant-note" }, [
-        `Picking an option writes its classes, not the ${declaration.name || "component"} prop.`,
+        `Picking an option previews its classes, not the ${declaration.name || "component"} prop, and goes to Changes.`,
       ])
     )
   }
@@ -690,7 +692,7 @@ export const instanceSection: InspectorSection = (context) => {
     body.push(
       el("div", { class: "de-variant-note" }, [
         previewable
-          ? `Props preview${hostTag ? ` on ${hostTag}` : ""} and go to Changes. They are not written to the file.${
+          ? `Props preview${hostTag ? ` on ${hostTag}` : ""} and go to Changes.${
               stated ? " The rest are documented only." : ""
             }`
           : `Documented by ${match.libraryName}. Read-only: ${

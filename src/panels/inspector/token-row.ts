@@ -78,13 +78,11 @@ import {
   type DesignTokenProperty,
 } from "../../core/design-system"
 import { el } from "../../core/dom"
-import { toSourceRef } from "../../core/bridge"
-import { elementKey } from "../../core/store"
 import { activeDesignSystem } from "../../libraries/store"
-import type { LayerElement, Selection } from "../../core/types"
+import type { Selection } from "../../core/types"
 import { group, type FieldToken } from "./field"
 import { toggleTokenList, tokenField, type TokenChoice, type TokenPreview } from "./token-picker"
-import { computedOf, selectedOf } from "./multi"
+import { MIXED, computedOf, selectedOf, selectionFor } from "./multi"
 import type { SectionContext } from "./index"
 
 export const SIDES = ["top", "right", "bottom", "left"] as const
@@ -169,18 +167,6 @@ export function laysOutChildren(computed: CSSStyleDeclaration): boolean {
   return /^(inline-)?(flex|grid)$/.test(computed.display)
 }
 
-function describeElement(context: SectionContext, element: LayerElement): Selection {
-  const info = context.editor.bridge.elementInfo(element)
-  const componentName = info?.componentName || element.tagName.toLowerCase()
-  return {
-    element,
-    tagName: element.tagName.toLowerCase(),
-    componentName,
-    source: toSourceRef(info),
-    key: elementKey(element, componentName, info?.lineNumber ?? 0),
-  }
-}
-
 /**
  * An icon-only host edits its `<svg>`: `fill` and `stroke` paint nothing on the
  * `<button>` around a glyph. Selecting the icon directly is the other way in,
@@ -192,7 +178,7 @@ export function iconTarget(context: SectionContext): Selection | null {
   if (element.tagName === "IMG" || element.getAttribute("role") === "img") return selection
   const children = Array.from(element.children)
   const svg = children.length === 1 && children[0] instanceof SVGSVGElement ? children[0] : null
-  return svg && !directText(element) ? describeElement(context, svg) : null
+  return svg && !directText(element) ? selectionFor(context.editor, svg) : null
 }
 
 /** `fill`/`stroke` paint nothing on an HTML box, so those rows need a real SVG. */
@@ -375,7 +361,7 @@ function build(context: SectionContext, spec: RowSpec, hidePreview = false): Bui
       preview: valuePreview(spec),
       text:
         reportedValue(spec) === "mixed"
-          ? "Mixed"
+          ? MIXED
           : plainValue(spec.property, reportedValue(spec)) || "—",
     },
     onCommit: (id) => {
@@ -385,9 +371,9 @@ function build(context: SectionContext, spec: RowSpec, hidePreview = false): Bui
       context.writer.applyStyles(spec.target, neededWrites(styles, spec.target), `Apply ${tokenDisplayName(token)}`)
       context.invalidate()
     },
-    // The one declaration this axis owns, written straight. The Tailwind layer
-    // already carries an off-scale value through as an arbitrary class, so this
-    // reaches source the same way a token does rather than staying a preview.
+    // The one declaration this axis owns, written straight. It becomes a note
+    // like a token pick does, and the brief carries an off-scale value as an
+    // arbitrary class the same way.
     custom: NO_RAW_FORM.has(spec.property)
       ? undefined
       : {

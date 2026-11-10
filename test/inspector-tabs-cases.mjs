@@ -342,6 +342,33 @@ await check("the strip and the store agree, in both directions", () => {
   assert.equal(context.getState().inspectorTab, "design")
 })
 
+/*
+ * The store is the ONLY record. The panel kept its own copy of the active tab
+ * beside the store's, synced by a guarded write, and an id that named no tab
+ * hid every pane. The panes now follow the store, and an unknown id reads as
+ * Design.
+ */
+await check("an id that names no tab shows Design rather than an empty panel", () => {
+  context.setState({ inspectorTab: "prototype" })
+  assert.equal(tabNamed("Design").getAttribute("aria-selected"), "true")
+  assert.equal(paneFor("Design").hidden, false, "every pane was hidden")
+  assert.equal(paneFor("Changes").hidden, true)
+  context.setState({ inspectorTab: "design" })
+})
+
+await check("a click on the tab already showing re-reads it and writes nothing", () => {
+  click(tabNamed("Changes"))
+  let writes = 0
+  const stop = context.subscribe((next, previous) => {
+    if (next.inspectorTab !== previous.inspectorTab) writes += 1
+  })
+  click(tabNamed("Changes"))
+  stop()
+  assert.equal(writes, 0)
+  assert.equal(paneFor("Changes").hidden, false)
+  click(tabNamed("Design"))
+})
+
 // ── The outbox, and the copy button in its new home ────────────────────────
 
 console.log("\nThe Changes tab")

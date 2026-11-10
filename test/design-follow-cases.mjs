@@ -108,6 +108,9 @@ const bundled = await build({
     contents: `
       export { createContext } from "./src/core/context"
       export { installInspector } from "./src/panels/inspector/index"
+      export { editCount } from "./src/annotations/journal"
+      export { tokenField } from "./src/panels/inspector/token-picker"
+      export { numberField, textField } from "./src/panels/inspector/field"
     `,
     resolveDir: PACKAGE_DIR,
     loader: "ts",
@@ -320,6 +323,198 @@ await check("a change while the panel is closed is there when it opens", async (
   context.setState({ inspectorOpen: true })
   await frames()
   assert.equal(W(), "180")
+})
+
+console.log("\nThe panel is inert while nobody can see it")
+
+/*
+ * The editor is hidden or the panel closed: nothing on the tab can be seen, so
+ * an app animating the selected box must cost no layout reads. `showing()`
+ * answered only "is Design the tab", and the check read every tracked box per
+ * frame through both states.
+ */
+await check("a hidden editor or a closed panel reads no layout of the selection", async () => {
+  context.select(side)
+  await frames()
+  for (const [state, reopen] of [
+    [{ chromeHidden: true }, { chromeHidden: false }],
+    [{ inspectorOpen: false }, { inspectorOpen: true }],
+  ]) {
+    context.setState(state)
+    await frames()
+    let reads = 0
+    const box = window.Element.prototype.getBoundingClientRect
+    window.Element.prototype.getBoundingClientRect = function counted() {
+      if (this === side) reads += 1
+      return box.call(this)
+    }
+    try {
+      for (let frame = 0; frame < 10; frame += 1) {
+        side.style.width = `${300 + frame}px`
+        await frames(1)
+      }
+    } finally {
+      window.Element.prototype.getBoundingClientRect = box
+    }
+    assert.equal(reads, 0, `${JSON.stringify(state)}: ${reads} layout reads over 10 frames`)
+    context.setState(reopen)
+    await frames()
+    assert.equal(W(), "309", `${JSON.stringify(reopen)}: the change made while away never landed`)
+  }
+})
+
+console.log("\nA field's gesture always ends")
+
+// jsdom has no pointer capture; stub it the way a browser behaves (a removed
+// element loses its capture).
+let captured = null
+window.Element.prototype.setPointerCapture = function capture() { captured = this }
+window.Element.prototype.hasPointerCapture = function has() { return captured === this && this.isConnected }
+window.Element.prototype.releasePointerCapture = function release() { captured = null }
+
+/*
+ * The census's `scrub-strand` scenario. A rebuild during a label scrub
+ * detached the label that listened for the pointerup: the preview stayed on
+ * the page, no note was filed, and the preview log's MutationObserver on the
+ * whole document was never released.
+ */
+await check("a rebuild in the middle of a scrub commits it, files its note and lets go", async () => {
+  let watching = 0
+  const Observer = window.MutationObserver
+  class Counted extends Observer {
+    observe(target, options) {
+      if (target === window.document.documentElement && options?.attributeFilter?.includes("style")) {
+        watching += 1
+        this.counted = true
+      }
+      return super.observe(target, options)
+    }
+    disconnect() {
+      if (this.counted) watching -= 1
+      this.counted = false
+      return super.disconnect()
+    }
+  }
+  globalThis.MutationObserver = window.MutationObserver = Counted
+  try {
+    side.style.width = "260px"
+    context.select(side)
+    await frames()
+    const label = widthField().closest(".de-field").querySelector(".de-field-label")
+    const notes = editor.editCount()
+    label.dispatchEvent(new window.PointerEvent("pointerdown", { bubbles: true, clientX: 0, pointerId: 7 }))
+    label.dispatchEvent(new window.PointerEvent("pointermove", { bubbles: true, clientX: 40, pointerId: 7 }))
+    await frames()
+    assert.equal(side.style.width, "300px", "the scrub drew no preview")
+    // Anything that rebuilds the tab mid-gesture: a refresh, option sets, a selection by keyboard.
+    context.refresh()
+    await frames()
+    assert.equal(label.isConnected, false)
+    window.document.body.dispatchEvent(new window.PointerEvent("pointerup", { bubbles: true, clientX: 40, pointerId: 7 }))
+    await frames()
+    assert.equal(side.style.width, "300px", "the page lost what the scrub showed")
+    assert.equal(editor.editCount(), notes + 1, "the scrub left a preview with no note behind it")
+    assert.equal(watching, 0, "the preview log still watches the whole document")
+    assert.equal(label.classList.contains("de-field-label--scrubbing"), false)
+    assert.equal(W(), "300")
+  } finally {
+    globalThis.MutationObserver = window.MutationObserver = Observer
+  }
+})
+
+await check("invalid text reverts on Enter and on leaving the field", () => {
+  const commits = []
+  const field = editor.numberField({ id: "probe", label: "W", value: 120, onCommit: (value) => commits.push(value) })
+  right.append(field)
+  const input = field.querySelector("input")
+  input.focus()
+  input.value = "12px +"
+  input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+  assert.equal(input.value, "120", "the garbage stayed in the field")
+  input.value = "(("
+  input.blur()
+  assert.equal(input.value, "120")
+  input.focus()
+  input.value = "(100+40)/2"
+  input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+  assert.deepEqual(commits, [70])
+  assert.equal(input.value, "70")
+  // Escape now goes back to the value just committed, not the one it was built with.
+  input.value = "5"
+  input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
+  assert.equal(input.value, "70")
+  field.remove()
+})
+
+await check("a text field commits once on Enter, and Escape puts the committed text back", () => {
+  const commits = []
+  const field = editor.textField({ id: "probe.text", label: "", title: "Font family", value: "Inter", onCommit: (v) => commits.push(v) })
+  right.append(field)
+  const input = field.querySelector("input")
+  input.focus()
+  input.value = "Geist"
+  input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+  // What a browser fires when Enter's blur leaves a changed value behind.
+  input.dispatchEvent(new window.Event("change", { bubbles: true }))
+  assert.deepEqual(commits, ["Geist"], "Enter and its own blur both committed")
+  input.focus()
+  input.value = "Comic"
+  input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
+  assert.equal(input.value, "Geist")
+  assert.deepEqual(commits, ["Geist"])
+  field.remove()
+})
+
+console.log("\nThe token list belongs to the field on screen")
+
+const tokenProbe = (tag, commits) =>
+  editor.tokenField({
+    id: "probe.token",
+    title: "Fill",
+    selectedId: "",
+    choices: [{ id: "a", group: "G", leaf: "a", name: "G/a", preview: { kind: "none" }, detail: "", disabled: false }],
+    fallback: { preview: { kind: "none" }, text: "#fff" },
+    onCommit: (id) => commits.push(`${tag}:${id}`),
+  })
+
+/* The census's `picker-stale` scenario: the list outlived its field and a row wrote through the old closure. */
+await check("a list whose field was replaced writes nothing and closes", async () => {
+  const commits = []
+  const first = tokenProbe("old", commits)
+  right.append(first)
+  first.click()
+  const row = window.document.querySelector(".de-token-popover .de-token-row")
+  assert.ok(row, "the list did not open")
+  first.replaceWith(tokenProbe("new", commits))
+  row.click()
+  assert.deepEqual(commits, [], "a pick reached the field the panel had replaced")
+  await Promise.resolve()
+  assert.equal(window.document.querySelector(".de-token-popover"), null, "the orphaned list is still open")
+  right.querySelector('[data-de-field="probe.token"]')?.remove()
+})
+
+await check("a rebuild of the Design tab closes a list opened from it", async () => {
+  const commits = []
+  context.select(side)
+  await frames()
+  const field = tokenProbe("design", commits)
+  right.querySelector("#de-tabpanel-design > div").append(field)
+  field.click()
+  assert.ok(window.document.querySelector(".de-token-popover"))
+  context.refresh()
+  await frames()
+  assert.equal(window.document.querySelector(".de-token-popover"), null)
+})
+
+await check("a window resize closes the list, as a scroll does", () => {
+  const field = tokenProbe("resize", [])
+  right.append(field)
+  field.click()
+  assert.ok(window.document.querySelector(".de-token-popover"))
+  window.dispatchEvent(new window.Event("resize"))
+  assert.equal(window.document.querySelector(".de-token-popover"), null)
+  assert.equal(field.getAttribute("aria-expanded"), "false")
+  field.remove()
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)
