@@ -14,9 +14,10 @@
  *     24. What the eye reads as "how big is the mark".
  *
  * "Before" comes from git, never from a copy kept by hand: `--before=<rev>`
- * names any revision, and the default is the newest commit whose
- * `src/core/icons.ts` is not Phosphor — the set this sheet was built to compare
- * against. "After" is the working tree.
+ * names any revision, and the default is HEAD, so an uncommitted change to the
+ * set is compared with the last commit. (The default used to be the newest
+ * pre-Phosphor revision; this repository's history starts after that swap, so
+ * that search always failed.) "After" is the working tree.
  *
  *   node tools/icon-sticker-sheet.mjs                 # write .demos/icons/index.html
  *   node tools/icon-sticker-sheet.mjs --before=<rev>
@@ -39,15 +40,8 @@ const RAMP = [12, 14, 16, 18, 20, 24]
 
 const git = (...argv) => execFileSync("git", argv, { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
 
-function defaultBefore() {
-  for (const rev of ["HEAD", ...git("log", "--format=%H", "--", SOURCE).split("\n").filter(Boolean)]) {
-    if (!/phosphor/i.test(git("show", `${rev}:${SOURCE}`).slice(0, 2000))) return rev
-  }
-  throw new Error(`no revision of ${SOURCE} predates Phosphor; pass --before=<rev>`)
-}
-
 const beforeArg = process.argv.find((arg) => arg.startsWith("--before="))
-const beforeRev = beforeArg ? beforeArg.slice("--before=".length) : defaultBefore()
+const beforeRev = beforeArg ? beforeArg.slice("--before=".length) : "HEAD"
 const beforeLabel = git("log", "-1", "--format=%h %s", beforeRev).trim()
 
 /** One revision's `icons.ts`, bundled to a script that sets a global. */

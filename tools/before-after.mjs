@@ -60,6 +60,9 @@ const VIEWPORT = { width: 900, height: 1000 }
  * which is what actually changed.
  */
 const SURFACE_FILES = ["runtime/start-screen-page.mjs", "runtime/start-screen-style.mjs"]
+// Read by the page at import time in newer revisions and absent from older ones,
+// so it is copied when the revision has it and skipped when it does not.
+const OPTIONAL_FILES = ["runtime/favicon.svg"]
 
 function git(...argv) {
   return execFileSync("git", argv, { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
@@ -80,6 +83,16 @@ function checkoutSurface(rev) {
     const target = path.join(dir, file)
     fs.mkdirSync(path.dirname(target), { recursive: true })
     fs.writeFileSync(target, git("show", `${rev}:${file}`))
+  }
+  for (const file of OPTIONAL_FILES) {
+    let text
+    try {
+      text = execFileSync("git", ["show", `${rev}:${file}`], { cwd: ROOT, stdio: ["ignore", "pipe", "ignore"] })
+    } catch {
+      continue
+    }
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true })
+    fs.writeFileSync(path.join(dir, file), text)
   }
   // The token bundle, symlinked from the working tree. See SURFACE_FILES.
   fs.mkdirSync(path.join(dir, "dist"), { recursive: true })
@@ -342,7 +355,7 @@ const PROBE = `(() => {
     "a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]"
   )].filter((node) => visible(node) && node.tabIndex >= 0)
   const live = [...document.querySelectorAll("[aria-live], [role=status], [role=alert]")]
-  // `.lede` for revisions before the app name became the face's `.title`.
+  // \`.lede\` for revisions before the app name became the face's \`.title\`.
   const said = [...document.querySelectorAll(".note, .error, .lede, .title")]
     .filter((node) => visible(node) && node.textContent.trim() !== "")
     .map((node) => node.textContent.trim())

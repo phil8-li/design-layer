@@ -39,11 +39,12 @@ const EVENTS = [
   {
     group: "Handoff to the agent",
     items: [
-      { event: "Copy notes and edits (Changes tab Copy, or the shortcut)", message: "Copied 2 notes and 1 edit", kind: "info", source: "src/annotations/handover.ts", find: "toast(`Copied ${outboxSummary(items)}`)" },
+      { event: "Copy notes and edits (Changes tab Copy, or the shortcut)", message: "Copied 2 notes and 1 edit", kind: "info", source: "src/annotations/handover.ts", find: "toast(`Copied ${summary}`)" },
       { event: "Copy with nothing in the outbox", message: "Nothing to copy. Pin a note or make an edit first.", kind: "info", source: "src/annotations/handover.ts", find: "Nothing to copy. Pin a note or make an edit first." },
       { event: "Send to agent, agent was waiting", message: "Delivered to your coding agent — it was waiting and is starting a new session for this.", kind: "info", source: "server/agent.mjs", find: "Delivered to your coding agent" },
       { event: "Send to agent, agent attached but busy", message: "Queued for your coding agent. It starts a new session for this the next time the agent calls wait_for_change.", kind: "info", source: "server/agent.mjs", find: "Queued for your coding agent." },
-      { event: "Send to agent, no agent attached", message: "Queued to the handoff file — no agent is attached over MCP, so nothing was edited. Copy the brief, or point an agent at the MCP endpoint.", kind: "info", source: "server/agent.mjs", find: "Queued to the handoff file" },
+      { event: "Send to agent, no agent attached", message: "No agent is attached over MCP, so nothing was edited. The brief is saved to the handoff file.", kind: "info", source: "server/agent.mjs", find: "No agent is attached over MCP, so nothing was edited." },
+      { event: "Send to agent, start screen not answering", message: "The start screen isn’t answering, so no agent got this and nothing was edited. The brief is saved to the handoff file.", kind: "info", source: "server/agent.mjs", find: "The start screen isn’t answering" },
       { event: "Send with nothing left for the agent", message: "Nothing to send", kind: "info", source: "src/annotations/handover.ts", find: 'toast("Nothing to send")' },
       { event: "Send, server unreachable", message: "Could not reach the agent. Check that designlayer is running, then send again (Failed to fetch).", kind: "error", source: "src/ai/transport.ts", find: "Could not reach the agent. Check" },
       { event: "Send, agent route answers with an error", message: "The agent route returned an error (500). Check the designlayer terminal, then send again.", kind: "error", source: "src/ai/transport.ts", find: "The agent route returned an error (" },
@@ -54,27 +55,14 @@ const EVENTS = [
   {
     group: "Clipboard",
     items: [
-      { event: "Copy from the Code tab", message: "Copied JSX", kind: "info", source: "src/panels/inspector/tab-code.ts", find: "`Copied ${label}`" },
       { event: "Copy a source path", message: "Source path copied", kind: "info", source: "src/panels/inspector/section-classes.ts", find: '"Source path copied"' },
       { event: "Copy a library snippet", message: "Copied the Button snippet", kind: "info", source: "src/libraries/snippet.ts", find: "`Copied the ${name} snippet`" },
       { event: "Any copy refused by both the Clipboard API and the copy command", message: "Could not copy to the clipboard. Try again", kind: "error", source: "src/core/clipboard.ts", find: "Could not copy to the clipboard. Try again" },
     ],
   },
   {
-    group: "Writes to source",
+    group: "Writes to source (the two explicit writes: a lint fix and a saved control default)",
     items: [
-      { event: "Apply to code (React)", message: "Applying 3 changes…", kind: "info", source: "src/core/apply.ts", find: "`Applying ${plural(operations.length" },
-      { event: "Apply to code, some properties have no utility", message: { title: "Applying 3 changes…", description: "Cannot be written to code: transform." }, kind: "error", source: "src/core/apply.ts", find: "Cannot be written to code: ${lost" },
-      { event: "Apply to code (Angular), all written", message: { title: "Wrote 3 changes", description: "src/app/card.component.html" }, kind: "info", source: "src/core/apply.ts", find: "title: `Wrote ${plural(result.applied.length" },
-      { event: "Apply to code (Angular), some refused", message: { title: "Wrote 2, skipped 1", description: "No unique <div>. Queued in Changes." }, kind: "error", source: "src/core/apply.ts", find: ". Queued in Changes.`" },
-      { event: "Apply to code, no source files found", message: { title: "Source files not found", description: "Send these changes to your agent instead." }, kind: "error", source: "src/core/apply.ts", find: 'title: "Source files not found"' },
-      { event: "Apply to code, server error", message: "Could not write the changes. Check the designlayer terminal, then try again", kind: "error", source: "src/core/apply.ts", find: "Could not write the changes. Check the designlayer terminal, then try again" },
-      { event: "Apply a canvas delete to code", message: { title: "Deleted 2 elements", description: "src/components/Card.tsx" }, kind: "info", source: "src/core/apply.ts", find: "title: `Deleted ${plural(count" },
-      { event: "Apply a canvas delete, server error", message: "Could not delete in code. Check the designlayer terminal, then try again", kind: "error", source: "src/core/apply.ts", find: "Could not delete in code." },
-      { event: "Insert a library component", message: "Inserting Button…", kind: "info", source: "src/libraries/insert.ts", find: "`Inserting ${component.name}…`" },
-      { event: "Insert finished", message: "Inserted Button. It appears when the page reloads", kind: "info", source: "src/libraries/insert.ts", find: "It appears when the page reloads`" },
-      { event: "Insert with no container selected", message: "Nowhere to place Button. Select a container first", kind: "error", source: "src/libraries/insert.ts", find: "Select a container first`" },
-      { event: "Insert refused by the server", message: { title: "Could not insert Button", description: "The server wrote nothing." }, kind: "error", source: "src/libraries/insert.ts", find: "title: `Could not insert ${component.name}`" },
       { event: "Lint: fix findings", message: "Fixed 3 of 3", kind: "info", source: "src/lint/panel.ts", find: "`Fixed ${result.fixed.length} of ${ids.length}`" },
       { event: "Lint: some fixes failed", message: { title: "Fixed 2, 1 failed", description: "The line moved. Run Audit again to refresh." }, kind: "error", source: "src/lint/panel.ts", find: "Run Audit again to refresh." },
       { event: "Lint: audit failed", message: "Audit failed. Check the designlayer terminal, then try again.", kind: "error", source: "src/lint/panel.ts", find: "Audit failed. Check the designlayer terminal, then try again." },
@@ -82,7 +70,7 @@ const EVENTS = [
       { event: "Control: save as source default", message: "Updated source default for Radius", kind: "info", source: "src/panels/controls.ts", find: "`Updated source default for ${control.label}`" },
       { event: "Control: delete the saved default", message: "Deleted the saved default for Radius", kind: "info", source: "src/panels/controls.ts", find: "`Deleted the saved default for ${control.label}`" },
       { event: "Control: default not saved", message: { title: "Default not saved", description: "Radius is set here, but its default was not saved to code. Try again." }, kind: "error", source: "src/panels/controls.ts", find: 'title: "Default not saved"' },
-      { event: "Control: value rejected by the app", message: "Radius rejected “Huge”. Try another choice.", kind: "error", source: "src/panels/controls.ts", find: "Try another choice." },
+      { event: "Control: value rejected by the app", message: "Radius rejected “Huge”. Try another value.", kind: "error", source: "src/panels/controls.ts", find: "Try another value." },
       { event: "Style option: save failed", message: "Could not save this style. Try again.", kind: "error", source: "src/options/store.ts", find: "Could not save this style. Try again." },
     ],
   },
@@ -91,8 +79,7 @@ const EVENTS = [
     items: [
       { event: "Drag or nudge, nothing reaches source", message: "Move: preview only (transform)", kind: "error", source: "src/core/writer.ts", find: "preview only (${dropped.join" },
       { event: "Style edit, part of it cannot reach source", message: "Set spacing: gap is preview only", kind: "error", source: "src/core/writer.ts", find: "${dropped.join(\", \")} is preview only`" },
-      { event: "Opacity on a non-plain color", message: "Opacity needs a plain color. var(--brand) is kept as written.", kind: "error", source: "src/panels/inspector/section-fill.ts", find: "Opacity needs a plain color." },
-      { event: "Remove a queued edit, queue not cleared", message: { title: "Still queued", description: "Removed from the list, but Apply to code will still write it." }, kind: "error", source: "src/panels/inspector/tab-annotations.ts", find: 'title: "Still queued"' },
+      { event: "Opacity on a non-plain color", message: "Opacity needs a plain color. var(--brand) is kept as written.", kind: "error", source: "src/panels/inspector/color.ts", find: "Opacity needs a plain color." },
     ],
   },
   {
@@ -330,13 +317,13 @@ function fire({ message, kind, action, vendor }) {
 const VARIANTS = {
   info: () => notify("Copied 2 notes and 1 edit"),
   infoBody: () => notify("Nothing to copy. Pin a note or make an edit first."),
-  error: () => notify("Could not write the changes. Check the designlayer terminal, then try again", "error"),
+  error: () => notify("Audit failed. Check the designlayer terminal, then try again.", "error"),
   errorWrap: () => notify("The agent route returned an error (500). Check the designlayer terminal, then send again.", "error"),
   action: () => notify("Deleted the note on Card", "info", undo("Undo")),
-  long: () => notify("Queued to the handoff file — no agent is attached over MCP, so nothing was edited. Copy the brief, or point an agent at the MCP endpoint."),
+  long: () => notify("No agent is attached over MCP, so nothing was edited. The brief is saved to the handoff file."),
   stack: () => {
-    notify("Applying 3 changes…")
-    notify("Copied JSX")
+    notify("Source path copied")
+    notify("Copied the Button snippet")
     notify("Set spacing: gap is preview only", "error")
     notify("Deleted 3 notes", "info", undo("Undo"))
   },

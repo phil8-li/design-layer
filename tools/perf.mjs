@@ -563,6 +563,8 @@ async function main() {
   if (wants("overlay")) await measureOverlay(proxyUrl)
   if (wants("api")) await measureApi(tmpDir, ports)
   HOST_DIR = tmpDir
+  // The Changes tab offers Send to agent only after an agent's handshake.
+  if (wants("send") || wants("toast")) await attachAgent(proxyUrl)
   await measureBrowser(proxyUrl, ports)
   if (wants("screen")) await measureStartScreen(ports)
   return 0
@@ -875,8 +877,8 @@ async function measureBrowser(proxyUrl, ports) {
       await page.goto(proxyUrl, { waitUntil: "commit" })
       await waitReady(page)
       await sleep(800)
-      first.push(await toastAfterApply(page, "20"))
-      later.push(await toastAfterApply(page, "18"))
+      first.push(await toastAfterSend(page, "20"))
+      later.push(await toastAfterSend(page, "18"))
       await context.close()
     }
     record("toast.firstShown", first)
@@ -1009,9 +1011,9 @@ async function interactionFlows(page, cdp) {
   }
   /**
    * Selects an element and returns the inspector's font-size field, trying
-   * again from a reset chrome if the field does not show: an Apply rewrites
-   * the host's source, and a click that lands while the app is hot-reloading
-   * can select a node that is about to be replaced.
+   * again from a reset chrome if the field does not show: a click that lands
+   * while the app is hot-reloading can select a node that is about to be
+   * replaced.
    */
   const selectForEdit = async (selector) => {
     for (let attempt = 0; ; attempt++) {
@@ -1219,8 +1221,16 @@ async function interactionFlows(page, cdp) {
       record("hide.toggleOn", show)
     },
 
-    async apply() {
-      const file = path.join(HOST_DIR, "src", "Card.jsx")
+    async send() {
+      /*
+       * Every Design-panel edit is a note, and Send to agent is the one step
+       * that leaves the editor with it. No agent is attached to this run's MCP
+       * port, so the server writes the brief to the handoff file: the click to
+       * that file is the editor's whole handoff path (Changes tab, POST
+       * /agent, brief, file), and the toast that follows is timed by `toast`.
+       */
+      const requests = path.join(HOST_DIR, ".local", "designlayer", "requests")
+      const count = () => (fs.existsSync(requests) ? fs.readdirSync(requests).length : 0)
       const written = []
       const settled = []
       const panels = []
@@ -1230,35 +1240,30 @@ async function interactionFlows(page, cdp) {
         await input.press("Enter")
         await sleep(300)
         await page.locator('.de-panel--right .de-tab:text-is("Changes")').click()
-        // "Send to agent" when a note is pending too; it writes the edits all the same.
-        const button = page.locator('.de-panel--right button:visible').filter({ hasText: /^\s*(Apply to code|Send to agent)\s*$/ }).first()
+        const button = page.locator('.de-panel--right button:visible').filter({ hasText: /^\s*Send to agent\s*$/ }).first()
         await button.waitFor({ state: "visible", timeout: 5000 })
         await sleep(200)
-        if (process.env.PERF_DEBUG && r === 0) {
-          console.log(`    button "${(await button.textContent()).trim()}", ledger: ${await page.evaluate(() => document.querySelector(".de-panel--right .de-tabpanel:not([hidden])")?.innerText.slice(0, 300).replace(/\s+/g, " "))}`)
-        }
-        const before = fs.statSync(file).mtimeMs
+        const before = count()
         await resetInput(page)
         const t = performance.now()
         await button.click()
         let wroteAt = null
         while (performance.now() - t < 10000) {
-          if (fs.statSync(file).mtimeMs !== before) { wroteAt = performance.now(); break }
+          if (count() !== before) { wroteAt = performance.now(); break }
           await sleep(1)
         }
-        // The click's own time (in the page) against the file's own mtime, both
-        // on the wall clock: what the editor took, without the harness's click
-        // dispatch or its polling in it.
+        // The click's own time (in the page) against the harness's wall clock:
+        // what the editor and server took, without the click dispatch in it.
         const clickedAt = await page.evaluate(() => performance.timeOrigin + window.__perf.inputs[window.__perf.inputs.length - 1])
-        written.push(wroteAt === null ? NaN : fs.statSync(file).mtimeMs - clickedAt)
+        written.push(wroteAt === null ? NaN : performance.timeOrigin + wroteAt - clickedAt)
         panels.push((await settleAfterInput(page, 400, 10000, "panels")).latency)
         settled.push((await settleAfterInput(page, 400, 10000)).latency)
         await page.locator('.de-panel--right .de-tab:text-is("Design")').click()
         await resetChrome()
       }
-      record("apply.clickToFileWritten", written)
-      record("apply.clickToPanelsSettled", panels)
-      record("apply.clickToSettled", settled)
+      record("send.clickToHandoffWritten", written)
+      record("send.clickToPanelsSettled", panels)
+      record("send.clickToSettled", settled)
     },
 
     async undo() {
@@ -1485,11 +1490,37 @@ async function closeBoard(page, phase = 0) {
 }
 
 /**
- * Edits a card's font size and applies it, timing the click to the toast card
- * it raises. The toaster renders into a shadow root, which the probe's
+ * Completes one MCP handshake as a stand-in agent, so the Changes tab offers
+ * Send to agent. The session is never closed: the editor latches "an agent
+ * was here" per page load, and every page this run opens has to see one.
+ */
+async function attachAgent(proxyUrl) {
+  const statusUrl = new URL("/__designlayer/mcp/status", proxyUrl).href
+  const until = performance.now() + 15000
+  while (performance.now() < until) {
+    const status = await fetch(statusUrl).then((r) => r.json()).catch(() => null)
+    if (status?.url && status.listening) {
+      const reply = await fetch(status.url, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: 1, method: "initialize",
+          params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "perf", version: "1" } },
+        }),
+      })
+      if (reply.ok && reply.headers.get("mcp-session-id")) return
+    }
+    await sleep(200)
+  }
+  throw new Error("no MCP endpoint took a handshake, so Send to agent never shows")
+}
+
+/**
+ * Edits a card's font size and sends the note to the agent, timing the click
+ * to the toast card the send raises. The toaster renders into a shadow root, which the probe's
  * document-wide observer cannot see, so it is watched on its own.
  */
-async function toastAfterApply(page, size) {
+async function toastAfterSend(page, size) {
   const box = await page.locator('[data-testid="card-4"] h3').first().boundingBox()
   await page.mouse.click(box.x + box.width / 2, box.y + Math.min(box.height / 2, 12))
   await sleep(400)
@@ -1499,7 +1530,7 @@ async function toastAfterApply(page, size) {
   await input.press("Enter")
   await sleep(300)
   await page.locator('.de-panel--right .de-tab:text-is("Changes")').click({ timeout: 5000 })
-  const button = page.locator('.de-panel--right button:visible').filter({ hasText: /^\s*(Apply to code|Send to agent)\s*$/ }).first()
+  const button = page.locator('.de-panel--right button:visible').filter({ hasText: /^\s*Send to agent\s*$/ }).first()
   await button.waitFor({ state: "visible", timeout: 5000 })
   await sleep(300)
   await page.evaluate(() => {
@@ -1656,7 +1687,7 @@ const CONTEXT = new Set([
   "board.openAnimationEnd", // the 560ms enter animation, by design
   // Four boots of the host app; board.framesReadyOverHost is the target.
   "board.framesReady",
-  "apply.clickToSettled", // ends with the host's own hot reload re-rendering
+  "send.clickToSettled", // ends with the panels settling after the toast
   "overlay.bytesDecoded", // the script stays readable; its parse is overlayEval
   "api.libraries", "api.libraries.first", "api.options", "api.options.first",
   "api.icons", "api.icons.first", "api.mcpStatus", "api.mcpStatus.first",
