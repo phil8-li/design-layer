@@ -146,6 +146,9 @@ function nearestProjectRoot(start) {
   }
 }
 
+/** The project a process with working directory `cwd` runs from, or null. */
+const projectRootOfCwd = (cwd) => nearestProjectRoot(isDirectory(cwd) ? cwd : path.dirname(cwd))
+
 /**
  * Runs `lsof` and resolves its stdout, or null if it is missing, slow or denied.
  *
@@ -170,6 +173,19 @@ function lsof(args) {
     )
     child.stdin?.end()
   })
+}
+
+/**
+ * `lsof -F` output as `{ pid, name }` pairs. `-Fpn` is the machine-readable
+ * form: one field per line, a `p` line opening each process, and an `n` line
+ * per file it has open (a socket's address, a working directory's path).
+ */
+function* lsofNames(output) {
+  let pid = null
+  for (const line of output.split("\n")) {
+    if (line.startsWith("p")) pid = line.slice(1).trim()
+    else if (line.startsWith("n") && pid !== null) yield { pid, name: line.slice(1).trim() }
+  }
 }
 
 /** The pids listening on `port`, lowest first, as `lsof` lists them. */
@@ -229,16 +245,12 @@ async function listenerTableFromLsof() {
   const output = await lsof(["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"])
   if (output === null) return null
   const table = new Map()
-  let pid = null
-  for (const line of output.split("\n")) {
-    if (line.startsWith("p")) pid = line.slice(1).trim()
-    else if (line.startsWith("n") && pid !== null) {
-      const port = Number(line.slice(line.lastIndexOf(":") + 1))
-      if (!Number.isInteger(port)) continue
-      const pids = table.get(port) ?? []
-      if (!pids.includes(pid)) pids.push(pid)
-      table.set(port, pids)
-    }
+  for (const { pid, name } of lsofNames(output)) {
+    const port = Number(name.slice(name.lastIndexOf(":") + 1))
+    if (!Number.isInteger(port)) continue
+    const pids = table.get(port) ?? []
+    if (!pids.includes(pid)) pids.push(pid)
+    table.set(port, pids)
   }
   for (const pids of table.values()) pids.sort((a, b) => a - b)
   return table
@@ -255,16 +267,12 @@ async function listenerTableFromLsof() {
  * read as a relative path. So the field only counts when it is absolute.
  */
 async function cwdsFromLsof(pids) {
-  // `-Fpn` is the machine-readable form: one field per line, a `p` line
-  // opening each process and its cwd on the line tagged `n`.
+  // Every pid lsof answered for is in the map, null until its cwd line counts.
+  const output = (await lsof(["-a", "-p", pids.join(","), "-d", "cwd", "-Fpn"])) ?? ""
   const cwds = new Map()
-  let pid = null
-  for (const line of (await lsof(["-a", "-p", pids.join(","), "-d", "cwd", "-Fpn"]))?.split("\n") ?? []) {
-    if (line.startsWith("p")) cwds.set((pid = line.slice(1).trim()), null)
-    else if (line.startsWith("n") && pid !== null && cwds.get(pid) === null) {
-      const cwd = line.slice(1).trim()
-      cwds.set(pid, path.isAbsolute(cwd) ? cwd : null)
-    }
+  for (const line of output.split("\n")) if (line.startsWith("p")) cwds.set(line.slice(1).trim(), null)
+  for (const { pid, name } of lsofNames(output)) {
+    if (cwds.get(pid) === null) cwds.set(pid, path.isAbsolute(name) ? name : null)
   }
   return cwds
 }
@@ -348,7 +356,7 @@ function editableProjectOn(port, { table, cwds }) {
   const pid = table?.get(port)?.find((candidate) => cwds.get(candidate))
   const cwd = pid === undefined ? null : cwds.get(pid)
   if (!cwd) return false
-  const root = nearestProjectRoot(isDirectory(cwd) ? cwd : path.dirname(cwd))
+  const root = projectRootOfCwd(cwd)
   if (!root || path.resolve(root) === OWN_ROOT) return false
   const project = describeProject(root)
   return project.hasReact || project.framework === "angular"
@@ -384,7 +392,7 @@ async function projectRootsForPorts(ports, known = lookAhead(ports)) {
   ports.forEach((port, index) => {
     const pid = candidates[index].find((candidate) => cwds.has(candidate))
     const cwd = pid === undefined ? null : cwds.get(pid)
-    if (cwd) roots.set(port, nearestProjectRoot(isDirectory(cwd) ? cwd : path.dirname(cwd)))
+    if (cwd) roots.set(port, projectRootOfCwd(cwd))
   })
   return roots
 }

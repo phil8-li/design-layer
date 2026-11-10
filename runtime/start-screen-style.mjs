@@ -23,23 +23,20 @@ try {
   throw new Error("designlayer: the token bundle is missing — run `npm run build` in the package")
 }
 
-const { color, radius, shadow, font, type, ease, easeReveal, duration, cornerShape } = tokens
+const { color, radius, shadow, font, type, ease, duration, cornerShape } = tokens
 
 export function startScreenStyle() {
   return `
 :root {
   color-scheme: dark;
   --bg: ${color.bg};
-  --bg-raised: ${color.bgRaised};
   --bg-sunken: ${color.bgSunken};
   --border: ${color.border};
-  --border-strong: ${color.borderStrong};
   --border-interactive: ${color.borderInteractive};
   --text: ${color.text};
   --text-muted: ${color.textMuted};
   --text-dim: ${color.textDim};
   --accent: ${color.accent};
-  --accent-soft: ${color.accentSoft};
   /*
    * The TEXT rung of the accent fill: the button carries a word, so it owes
    * 4.5:1 rather than the 3:1 a glyph owes. With the kit's indigo one rung
@@ -54,7 +51,6 @@ export function startScreenStyle() {
   --row-selected: ${color.rowSelected};
   --danger: ${color.danger};
   --bg-hover: ${color.bgHover};
-  --segment-selected: ${color.segmentSelected};
   /*
    * The kit's radius ladder, by role. Fields and the buttons beside them
    * share ONE corner, 12 — the same proportion the editor's 8px controls keep
@@ -71,7 +67,6 @@ export function startScreenStyle() {
   --font: ${font.ui};
   --mono: ${font.mono};
   --ease: ${ease};
-  --ease-reveal: ${easeReveal};
   /* The kit's hover tween, for every wash, press and colour change. Out of the
      same bundle as the chrome, so this page and the editor it is about to open
      keep one clock. */
@@ -411,7 +406,6 @@ form { display: contents; }
 }
 .note { color: var(--text-muted); }
 .error { color: var(--danger); }
-code { font-family: var(--mono); color: var(--text); }
 
 /*
  * ONE BOX, TWICE — and they were two different boxes before this pass.

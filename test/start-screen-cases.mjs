@@ -15,9 +15,7 @@
  *    proxies whatever it is pointed at, so a non-loopback target, a folder with
  *    no package.json, and a project with no React are all rejected BEFORE the
  *    launch, with a sentence the page can show;
- *  - `ready` means the proxy this process started is up. A stale endpoint file
- *    from a previous run parses perfectly and would redirect the browser to a
- *    dead port, so the pid is what the check is really on;
+ *  - `ready` means the editor this screen started said its proxy is up, by id;
  *  - the screen outlives every editor it starts. It used to latch shut on the
  *    first press, which is what made the whole command a one-way door: the only
  *    way to design a second app was to kill the process. A second choice being
@@ -419,40 +417,27 @@ await check("the folder panel's route is gone, not merely unanswered", async () 
   assert.doesNotMatch(startScreenPage(), /api\/browse/)
 })
 
-await check("status stays false until an endpoint file says otherwise", async () => {
+await check("status stays false until the editor says it is up", async () => {
   const { body } = await json(`${screen.url}/api/status`)
   assert.equal(body.ready, false)
-})
-
-await check("a stale endpoint file from another run is not ready", async () => {
-  const file = path.join(fixture("state"), "endpoint.json")
-  fs.writeFileSync(file, JSON.stringify({ pid: process.pid + 1, proxyPort: 4312 }))
-  screen.reportEndpointFile(file)
-  const { body } = await json(`${screen.url}/api/status`)
-  assert.equal(body.ready, false)
-})
-
-await check("this run's endpoint file flips it to ready, with the proxy URL", async () => {
-  const file = path.join(fixture("state"), "endpoint.json")
-  fs.writeFileSync(file, JSON.stringify({ pid: process.pid, proxyPort: 4312, wsPort: 4313 }))
-  screen.reportEndpointFile(file)
-  const { body } = await json(`${screen.url}/api/status`)
-  assert.equal(body.ready, true)
-  assert.equal(body.url, "http://localhost:4312")
 })
 
 /*
- * The launcher runs in this same process, so the endpoint file was never the
- * fact — only a way of carrying it, and one that fails whenever the project
- * folder refuses to be written to. When it does, the proxy is up, the page is
- * still polling, and "Starting the editor…" stays on screen forever.
+ * The endpoint file was never the fact — only a way of carrying it, and one
+ * that fails whenever the project folder refuses to be written to. When it
+ * did, the proxy was up, the page was still polling, and "Starting the
+ * editor…" stayed on screen forever. The supervisor says it in memory, by id.
  */
 await check("the proxy being up is not a file the project folder has to accept", async () => {
   const deaf = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {} })
   try {
-    // No endpoint file was ever reported: the write it would have come from failed.
     assert.equal((await json(`${deaf.url}/api/status`)).body.ready, false)
-    deaf.reportReady("http://localhost:4344")
+    const { body: started } = await json(`${deaf.url}/api/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: `http://127.0.0.1:${app.port}`, projectRoot: project, devScript: null }),
+    })
+    deaf.reportReady("http://localhost:4344", null, started.id)
     const { body } = await json(`${deaf.url}/api/status`)
     assert.equal(body.ready, true)
     assert.equal(body.url, "http://localhost:4344")
@@ -461,7 +446,7 @@ await check("the proxy being up is not a file the project folder has to accept",
   }
 })
 
-await check("a valid choice resolves the handoff the CLI is waiting on", async () => {
+await check("a valid choice reaches the supervisor's queue", async () => {
   const response = await start({
     url: `http://127.0.0.1:${app.port}`,
     projectRoot: project,
@@ -471,8 +456,8 @@ await check("a valid choice resolves the handoff the CLI is waiting on", async (
   assert.equal(response.body.ok, true)
 
   const choice = await Promise.race([
-    screen.chosen,
-    new Promise((_, reject) => setTimeout(() => reject(new Error("chosen never resolved")), 2000)),
+    screen.nextChoice(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("the choice never arrived")), 2000)),
   ])
   assert.equal(choice.appPort, app.port)
   assert.equal(choice.projectRoot, project)
@@ -522,7 +507,8 @@ await check("a second choice is accepted once the first editor is up", async () 
   try {
     const first = screen.nextChoice()
     assert.equal((await press(app.port)).status, 200)
-    assert.equal((await first).appPort, app.port)
+    const firstChoice = await first
+    assert.equal(firstChoice.appPort, app.port)
 
     // The supervisor's loop: ask again the moment the child is spawned, then
     // report the URL it answered with.
@@ -531,7 +517,7 @@ await check("a second choice is accepted once the first editor is up", async () 
       appUrl: `http://127.0.0.1:${app.port}`,
       projectRoot: project,
       packageName: "fixture-app",
-    })
+    }, firstChoice.id)
 
     assert.equal((await press(second.port)).status, 200)
     const choice = await Promise.race([
@@ -539,8 +525,6 @@ await check("a second choice is accepted once the first editor is up", async () 
       new Promise((_, reject) => setTimeout(() => reject(new Error("the second choice never arrived")), 2000)),
     ])
     assert.equal(choice.appPort, second.port)
-    // `chosen` is still the first choice, for the callers that only ever want one.
-    assert.equal((await screen.chosen).appPort, app.port)
   } finally {
     screen.close()
     second.close()
@@ -560,15 +544,22 @@ await check("status says what is being edited, and answers for the newest choice
     const idle = (await json(`${screen.url}/api/status`)).body
     assert.deepEqual(idle, { ready: false, editing: null, stopped: null, editors: [] })
 
+    const second = await pageServer("Second")
+    const first = await json(`${screen.url}/api/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: `http://127.0.0.1:${second.port}`, projectRoot: project, devScript: null }),
+    })
+    second.close()
     screen.reportReady("http://127.0.0.1:3456", {
-      appUrl: "http://127.0.0.1:3000",
+      appUrl: `http://127.0.0.1:${second.port}`,
       projectRoot: project,
       packageName: "fixture-app",
-    })
+    }, first.body.id)
     const running = (await json(`${screen.url}/api/status`)).body
     assert.equal(running.ready, true)
     assert.equal(running.url, "http://localhost:3456")
-    assert.equal(running.editing.appUrl, "http://127.0.0.1:3000")
+    assert.equal(running.editing.appUrl, `http://127.0.0.1:${second.port}`)
     assert.equal(running.editing.packageName, "fixture-app")
     assert.equal(running.editing.projectRoot, project)
     assert.equal(running.stopped, null)
@@ -594,12 +585,18 @@ await check("status says what is being edited, and answers for the newest choice
 await check("an editor that stops clears readiness and leaves a sentence behind", async () => {
   const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {} })
   try {
+    const { body: started } = await json(`${screen.url}/api/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: `http://127.0.0.1:${app.port}`, projectRoot: project, devScript: null }),
+    })
+    await screen.nextChoice()
     screen.reportReady("http://127.0.0.1:3456", {
-      appUrl: "http://127.0.0.1:3000",
+      appUrl: `http://127.0.0.1:${app.port}`,
       projectRoot: project,
       packageName: "fixture-app",
-    })
-    screen.reportStopped("The editor for fixture-app stopped with code 1.")
+    }, started.id)
+    screen.reportStopped("The editor for fixture-app stopped with code 1.", started.id)
     const { body } = await json(`${screen.url}/api/status`)
     assert.equal(body.ready, false)
     assert.equal(body.url, undefined)
@@ -635,31 +632,33 @@ await check("an editor that stops clears readiness and leaves a sentence behind"
  * needs the port free cannot run there, and says so instead of failing.
  */
 await check("the screen prefers one port, and steps aside when it is taken", async () => {
+  // 3455 is the default, and it is not this suite's to bind: the person's own
+  // start screen holds it while the suite runs. The behavior is the same for
+  // any preferred port, so the OS hands one out for the test.
+  assert.equal(PREFERRED_START_SCREEN_PORT, 3455)
+  const preferredPort = await freePort()
   const squatter = http.createServer()
-  const ours = await new Promise((resolve) => {
-    squatter.once("error", () => resolve(false))
-    squatter.listen(PREFERRED_START_SCREEN_PORT, "127.0.0.1", () => resolve(true))
-  })
-
-  const moved = await createStartScreen({ host: "127.0.0.1", log: () => {} })
-  const movedPort = Number(new URL(moved.url).port)
-  moved.close()
-  assert.notEqual(movedPort, PREFERRED_START_SCREEN_PORT)
-  assert.ok(movedPort > 0)
-
-  if (!ours) {
-    console.log(
-      `       skip (something outside the suite holds ${PREFERRED_START_SCREEN_PORT}, ` +
-        "so it cannot be claimed back here)"
-    )
-    return
+  await new Promise((resolve) => squatter.listen(preferredPort, "127.0.0.1", resolve))
+  try {
+    const moved = await createStartScreen({ host: "127.0.0.1", preferredPort, log: () => {} })
+    const movedPort = Number(new URL(moved.url).port)
+    moved.close()
+    assert.notEqual(movedPort, preferredPort)
+    assert.ok(movedPort > 0)
+  } finally {
+    await new Promise((resolve) => squatter.close(resolve))
   }
 
-  await new Promise((resolve) => squatter.close(resolve))
-  const preferred = await createStartScreen({ host: "127.0.0.1", log: () => {} })
+  const preferred = await createStartScreen({ host: "127.0.0.1", preferredPort, log: () => {} })
   const port = Number(new URL(preferred.url).port)
   preferred.close()
-  assert.equal(port, PREFERRED_START_SCREEN_PORT)
+  assert.equal(port, preferredPort)
+
+  // A port asked for by name is refused when taken, not moved.
+  const named = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {} })
+  const taken = Number(new URL(named.url).port)
+  await assert.rejects(createStartScreen({ host: "127.0.0.1", port: taken, preferredPort, log: () => {} }), /EADDRINUSE/)
+  named.close()
 })
 
 console.log("\nWhat an app is called")
@@ -744,22 +743,28 @@ async function withScreen(run) {
       body: JSON.stringify({ url, projectRoot: project, devScript: null }),
     })
   const status = async () => (await json(`${screen.url}/api/status`)).body
+  // The supervisor's side: take the choice the press made, say its proxy is up.
+  const ready = async (url, current = null) => {
+    const choice = await screen.nextChoice()
+    screen.reportReady(url, current, choice.id)
+    return choice
+  }
   try {
-    await run({ screen, press, status })
+    await run({ screen, press, status, ready })
   } finally {
     screen.close()
   }
 }
 
 await check("the page the address named is the page the browser is sent to", async () => {
-  await withScreen(async ({ screen, press, status }) => {
+  await withScreen(async ({ press, status, ready }) => {
     assert.equal((await press(`http://127.0.0.1:${app.port}/ds`)).status, 200)
-    screen.reportReady("http://127.0.0.1:3456", { appUrl: `http://127.0.0.1:${app.port}` })
+    const choice = await ready("http://127.0.0.1:3456", { appUrl: `http://127.0.0.1:${app.port}` })
     assert.equal((await status()).url, "http://localhost:3456/ds")
     // The app is still the whole app. Only the browser's destination differs,
     // so what the launcher was handed has to be the origin, unchanged.
-    assert.equal((await screen.chosen).appUrl, `http://127.0.0.1:${app.port}`)
-    assert.equal((await screen.chosen).appPort, app.port)
+    assert.equal(choice.appUrl, `http://127.0.0.1:${app.port}`)
+    assert.equal(choice.appPort, app.port)
   })
 })
 
@@ -767,9 +772,9 @@ await check("the page the address named is the page the browser is sent to", asy
 // the tests alike compare it as a string.
 await check("a choice with no page reports exactly the URL it always did", async () => {
   for (const typed of [`http://127.0.0.1:${app.port}`, `http://127.0.0.1:${app.port}/`]) {
-    await withScreen(async ({ screen, press, status }) => {
+    await withScreen(async ({ press, status, ready }) => {
       assert.equal((await press(typed)).status, 200)
-      screen.reportReady("http://127.0.0.1:3456")
+      await ready("http://127.0.0.1:3456")
       assert.equal((await status()).url, "http://localhost:3456")
     })
   }
@@ -778,15 +783,15 @@ await check("a choice with no page reports exactly the URL it always did", async
 // A query string is how a page says which of itself to show, and so is a
 // fragment: an app with a hash router keeps its whole page there.
 await check("the query string and the fragment are both part of the page", async () => {
-  await withScreen(async ({ screen, press, status }) => {
+  await withScreen(async ({ press, status, ready }) => {
     assert.equal((await press(`http://127.0.0.1:${app.port}/ds?theme=dark#row-4`)).status, 200)
-    screen.reportReady("http://127.0.0.1:3456")
+    await ready("http://127.0.0.1:3456")
     assert.equal((await status()).url, "http://localhost:3456/ds?theme=dark#row-4")
   })
-  await withScreen(async ({ screen, press, status }) => {
+  await withScreen(async ({ press, status, ready }) => {
     const page = "/#/dev-tools/playground?app=demo&view=agent"
     assert.equal((await press(`http://127.0.0.1:${app.port}${page}`)).status, 200)
-    screen.reportReady("http://127.0.0.1:3456")
+    await ready("http://127.0.0.1:3456")
     assert.equal((await status()).url, `http://localhost:3456${page}`)
   })
 })
@@ -800,12 +805,12 @@ await check("the query string and the fragment are both part of the page", async
  */
 await check("the browser is always sent to the editor on localhost", async () => {
   for (const typed of [`http://localhost:${app.port}/#/home`, `http://127.0.0.1:${app.port}/#/home`]) {
-    await withScreen(async ({ screen, press, status }) => {
+    await withScreen(async ({ press, status, ready }) => {
       assert.equal((await press(typed)).status, 200)
-      screen.reportReady("http://127.0.0.1:3456")
+      const choice = await ready("http://127.0.0.1:3456")
       assert.equal((await status()).url, "http://localhost:3456/#/home")
       // The proxy is still aimed at the address that was typed.
-      assert.equal((await screen.chosen).appUrl, new URL(typed).origin)
+      assert.equal(choice.appUrl, new URL(typed).origin)
     })
   }
 })
@@ -822,32 +827,20 @@ await check("a bare address opens the page that app was last used on", async () 
   try {
     const { rememberPage } = await import("../runtime/last-pages.mjs")
     rememberPage({ port: app.port, projectRoot: project, page: "/#/agents/a1?view=agent" })
-    await withScreen(async ({ screen, press, status }) => {
+    await withScreen(async ({ press, status, ready }) => {
       assert.equal((await press(`http://127.0.0.1:${app.port}`)).status, 200)
-      screen.reportReady("http://127.0.0.1:3456")
+      await ready("http://127.0.0.1:3456")
       assert.equal((await status()).url, "http://localhost:3456/#/agents/a1?view=agent")
     })
     // A typed page is still the page.
-    await withScreen(async ({ screen, press, status }) => {
+    await withScreen(async ({ press, status, ready }) => {
       assert.equal((await press(`http://127.0.0.1:${app.port}/#/settings`)).status, 200)
-      screen.reportReady("http://127.0.0.1:3456")
+      await ready("http://127.0.0.1:3456")
       assert.equal((await status()).url, "http://localhost:3456/#/settings")
     })
   } finally {
     process.env.HOME = before
   }
-})
-
-// The endpoint file is the other way readiness arrives, on the runs where the
-// launcher is a separate process. It names a port, never a page.
-await check("the page is on the end of the endpoint file's URL too", async () => {
-  await withScreen(async ({ screen, press, status }) => {
-    const file = path.join(fixture("state"), "endpoint.json")
-    fs.writeFileSync(file, JSON.stringify({ pid: process.pid, proxyPort: 4312 }))
-    screen.reportEndpointFile(file)
-    assert.equal((await press(`http://127.0.0.1:${app.port}/ds`)).status, 200)
-    assert.equal((await status()).url, "http://localhost:4312/ds")
-  })
 })
 
 /*
@@ -860,12 +853,11 @@ await check("the same app pressed again keeps its editor and its page", async ()
   const before = process.env.HOME
   process.env.HOME = fixture("home")
   try {
-    await withScreen(async ({ screen, press, status }) => {
+    await withScreen(async ({ press, status, ready }) => {
       await press(`http://127.0.0.1:${app.port}/ds`)
-      screen.reportReady("http://127.0.0.1:3456")
+      await ready("http://127.0.0.1:3456")
       assert.equal((await status()).url, "http://localhost:3456/ds")
 
-      screen.nextChoice()
       const again = await press(`http://127.0.0.1:${app.port}`)
       assert.equal(again.body.existing, true)
       assert.equal((await status()).ready, true)
@@ -877,13 +869,17 @@ await check("the same app pressed again keeps its editor and its page", async ()
 })
 
 await check("a page does not outlive the editor it belonged to", async () => {
-  await withScreen(async ({ screen, press, status }) => {
+  await withScreen(async ({ screen, press, status, ready }) => {
     await press(`http://127.0.0.1:${app.port}/ds`)
-    screen.reportReady("http://127.0.0.1:3456")
-    screen.reportStopped("The editor for fixture-app stopped with code 1.")
+    const first = await ready("http://127.0.0.1:3456")
+    screen.reportStopped("The editor for fixture-app stopped with code 1.", first.id)
+    assert.equal((await status()).ready, false)
+    // A late "ready" from the editor that stopped brings nothing back.
+    screen.reportReady("http://127.0.0.1:3456", null, first.id)
     assert.equal((await status()).ready, false)
     // Whatever comes up next is not the app that asked for /ds.
-    screen.reportReady("http://127.0.0.1:3456")
+    await press(`http://127.0.0.1:${app.port}`)
+    await ready("http://127.0.0.1:3456")
     assert.equal((await status()).url, "http://localhost:3456")
   })
 })
@@ -1435,17 +1431,6 @@ await check("an editor that is already up is one question with its answers", asy
     assert.equal($("current").hidden, true)
     assert.equal($("choose-title").hidden, false)
     assert.equal($("form").hidden, false)
-  } finally {
-    dom.window.close()
-  }
-})
-
-// A server without the list still reports its one editor in `editing`.
-await check("a status with no editor list still offers its one editor", async () => {
-  const legacy = { ready: true, url: "http://localhost:3456/", stopped: null, editing: { packageName: "shop-web", appUrl: "http://127.0.0.1:3000" } }
-  const dom = await mountPage([], {}, {}, { "/api/status": () => legacy })
-  try {
-    assert.equal(shownWords(dom).join(" "), "Continue editing shop-web? 127.0.0.1:3000 Continue Open another app")
   } finally {
     dom.window.close()
   }
@@ -2206,7 +2191,7 @@ await check("losing contact stops the screen promising progress", async () => {
       if (url.pathname === "/api/project") {
         return { ok: true, status: 200, json: async () => ({ project: projectSaid(KNOWN) }) }
       }
-      if (url.pathname === "/api/start") return { ok: true, status: 200, json: async () => ({ ok: true }) }
+      if (url.pathname === "/api/start") return { ok: true, status: 200, json: async () => ({ ok: true, id: "e9", existing: false, replaced: null, url: null }) }
       if (url.pathname === "/api/update") return { ok: false, status: 404, json: async () => ({}) }
       // The editor never answers again once the start has been accepted.
       asked += 1
@@ -2255,20 +2240,159 @@ await check("the tab shows DesignLayer's icon, inline like the style", async () 
 
 console.log("\nUpdates")
 
-/** An updater as the screen sees one (runtime/updater.mjs `createUpdater`). */
-function fakeUpdater(status) {
-  const calls = []
-  return {
-    calls,
-    status: () => status,
-    check: async () => (calls.push("check"), status),
-    apply: async () => {
-      calls.push("apply")
-      status = { ...status, state: "updated", updatedTo: "bbbbbbb" }
-      return status
-    },
+/*
+ * The real updater (runtime/updater.mjs) over a clone whose git and build
+ * commands are answered by a fake, `delay` ms each. The screen is driven with
+ * the real thing because the fakes it used to be driven with (an `apply` that
+ * jumped straight to "updated", a route that answered "updating" at once) kept
+ * a contract the real updater broke, and hid that the press showed nothing.
+ */
+const { createUpdater } = await import("../runtime/updater.mjs")
+function realUpdater({ delay = 20 } = {}) {
+  const root = fixture("install")
+  fs.mkdirSync(path.join(root, ".git"))
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "designlayer", version: "1.0.0", repository: "https://github.com/o/n.git" }))
+  const tip = "b".repeat(40)
+  const run = async (_cmd, args) => {
+    await new Promise((resolve) => setTimeout(resolve, delay))
+    const a = args.join(" ")
+    const stdout = a.startsWith("rev-list") ? "5\t0" : a.startsWith("log") ? `${tip}\x1fTokens show their source\x1f2026-01-01` : a.startsWith("symbolic-ref") ? "main"
+      : a.startsWith("diff") ? "src/x.ts" : a.startsWith("rev-parse") ? tip : ""
+    return { code: 0, stdout, stderr: "" }
   }
+  return createUpdater({ root, run, intervalMs: 1e9 })
 }
+const postJson = (url, body = {}) => fetch(url, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } })
+const until = async (test, what, ms = 3000) => {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    if (await test()) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(`timed out waiting for ${what}`)
+}
+
+await check("the screen serves the update status, and runs the update then the restart", async () => {
+  const updater = realUpdater()
+  await updater.check()
+  const restarts = []
+  const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {}, updater, onRestart: (resume) => restarts.push(resume) })
+  const dir = fixture("update-resume")
+  try {
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "shop", scripts: { dev: "vite" }, dependencies: { react: "19" } }))
+    const got = await fetch(`${screen.url}/api/update`).then((r) => r.json())
+    assert.equal(got.state, "available")
+    assert.equal(got.openEditors, 0)
+
+    // A form post from any loopback page must not start an update.
+    const form = await fetch(`${screen.url}/api/update/apply`, { method: "POST", body: "x", headers: { "content-type": "text/plain" } })
+    assert.equal(form.status, 415)
+    assert.equal(updater.status().state, "available")
+
+    screen.resume([{ url: "http://127.0.0.1:5173/cart", projectRoot: dir, devScript: "dev" }, { url: "nonsense", projectRoot: dir }])
+    const choice = await screen.nextChoice()
+    assert.equal(choice.appPort, 5173)
+    assert.equal(choice.devScript, "dev")
+
+    const started = await postJson(`${screen.url}/api/update/apply`)
+    assert.equal(started.status, 202)
+    const answer = await started.json()
+    assert.equal(answer.openEditors, 1)
+    await until(() => restarts.length === 1, "the restart")
+    assert.deepEqual(restarts, [[{ url: "http://127.0.0.1:5173/cart", projectRoot: dir, devScript: "dev" }]], "the open editor is handed to the restart")
+  } finally {
+    screen.close()
+  }
+})
+
+// U1: the 202 carried the state from before the press, the next poll said
+// "checking", and the page read both as nothing to show.
+await check("the answer to Update, and every poll after it, say updating", async () => {
+  const updater = realUpdater({ delay: 30 })
+  await updater.check()
+  const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {}, updater, onRestart: () => {} })
+  try {
+    const answer = await (await postJson(`${screen.url}/api/update/apply`)).json()
+    assert.equal(answer.state, "updating")
+    assert.equal(answer.step, "Starting the update")
+    const states = []
+    while (updater.status().state === "updating") {
+      states.push((await fetch(`${screen.url}/api/update`).then((r) => r.json())).state)
+      await new Promise((resolve) => setTimeout(resolve, 15))
+    }
+    assert.ok(states.length > 2, `polled ${states.length} times`)
+    assert.deepEqual([...new Set(states)].filter((state) => state !== "updated"), ["updating"])
+  } finally {
+    screen.close()
+  }
+})
+
+// U2: each press attached its own restart, so two tabs (or a second press)
+// restarted twice: two resume files, two replacement supervisors.
+await check("two presses, from two tabs, are one update and one restart", async () => {
+  const updater = realUpdater()
+  await updater.check()
+  let restarts = 0
+  const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {}, updater, onRestart: () => (restarts += 1) })
+  try {
+    const [a, b] = await Promise.all([postJson(`${screen.url}/api/update/apply`), postJson(`${screen.url}/api/update/apply`)])
+    assert.deepEqual([a.status, b.status], [202, 202])
+    await until(() => restarts > 0, "the restart")
+    await postJson(`${screen.url}/api/update/apply`)
+    await new Promise((resolve) => setTimeout(resolve, 900))
+    assert.equal(restarts, 1)
+  } finally {
+    screen.close()
+  }
+})
+
+// R1: the restart's promise was dropped, so a throw in saving the resume file
+// (or stopping the editors) was an unhandled rejection that ended the
+// supervisor and every editor with it.
+await check("a restart that throws is a sentence on the page, not a crash", async () => {
+  for (const onRestart of [
+    () => {
+      throw new Error("EACCES: permission denied, mkdir '/Users/me/.local/state'")
+    },
+    async () => {
+      throw new Error("EACCES: permission denied, mkdir '/Users/me/.local/state'")
+    },
+  ]) {
+    const unhandled = []
+    const listen = (reason) => unhandled.push(reason)
+    process.on("unhandledRejection", listen)
+    const updater = realUpdater()
+    await updater.check()
+    const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {}, updater, onRestart })
+    try {
+      await postJson(`${screen.url}/api/update/apply`)
+      await until(() => updater.status().state === "error", "the failed restart")
+      const status = await fetch(`${screen.url}/api/update`).then((r) => r.json())
+      assert.equal(status.failed, "update")
+      assert.equal(status.error, "DesignLayer updated, but could not restart. EACCES: permission denied, mkdir '/Users/me/.local/state'")
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      assert.deepEqual(unhandled, [])
+    } finally {
+      process.off("unhandledRejection", listen)
+      screen.close()
+    }
+  }
+})
+
+await check("a screen started without an updater says so", async () => {
+  const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {} })
+  try {
+    assert.deepEqual(await fetch(`${screen.url}/api/update`).then((r) => r.json()), { state: "off" })
+    const apply = await fetch(`${screen.url}/api/update/apply`, { method: "POST", body: "{}", headers: { "content-type": "application/json" } })
+    assert.equal(apply.status, 404)
+    // Nothing asked the server to check on demand, and nothing does now.
+    const check = await fetch(`${screen.url}/api/update/check`, { method: "POST", body: "{}", headers: { "content-type": "application/json" } })
+    assert.equal(check.status, 404)
+  } finally {
+    screen.close()
+  }
+})
+
 const AVAILABLE = {
   state: "available",
   kind: "git",
@@ -2286,49 +2410,6 @@ const AVAILABLE = {
   error: null,
   failed: null,
 }
-
-await check("the screen serves the update status, and runs the update then the restart", async () => {
-  const updater = fakeUpdater(AVAILABLE)
-  const restarts = []
-  const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {}, updater, onRestart: (resume) => restarts.push(resume) })
-  const dir = fixture("update-resume")
-  try {
-    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "shop", scripts: { dev: "vite" }, dependencies: { react: "19" } }))
-    const got = await fetch(`${screen.url}/api/update`).then((r) => r.json())
-    assert.equal(got.state, "available")
-    assert.equal(got.openEditors, 0)
-
-    // A form post from any loopback page must not start an update.
-    const form = await fetch(`${screen.url}/api/update/apply`, { method: "POST", body: "x", headers: { "content-type": "text/plain" } })
-    assert.equal(form.status, 415)
-    assert.deepEqual(updater.calls, [])
-
-    screen.resume([{ url: "http://127.0.0.1:5173/cart", projectRoot: dir, devScript: "dev" }, { url: "nonsense", projectRoot: dir }])
-    const choice = await screen.nextChoice()
-    assert.equal(choice.appPort, 5173)
-    assert.equal(choice.devScript, "dev")
-
-    const started = await fetch(`${screen.url}/api/update/apply`, { method: "POST", body: "{}", headers: { "content-type": "application/json" } })
-    assert.equal(started.status, 202)
-    assert.equal((await started.json()).openEditors, 1)
-    await new Promise((resolve) => setTimeout(resolve, 800))
-    assert.deepEqual(updater.calls, ["apply"])
-    assert.deepEqual(restarts, [[{ url: "http://127.0.0.1:5173/cart", projectRoot: dir, devScript: "dev" }]], "the open editor is handed to the restart")
-  } finally {
-    screen.close()
-  }
-})
-
-await check("a screen started without an updater says so", async () => {
-  const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {} })
-  try {
-    assert.deepEqual(await fetch(`${screen.url}/api/update`).then((r) => r.json()), { state: "off" })
-    const apply = await fetch(`${screen.url}/api/update/apply`, { method: "POST", body: "{}", headers: { "content-type": "application/json" } })
-    assert.equal(apply.status, 404)
-  } finally {
-    screen.close()
-  }
-})
 
 const updateText = (dom) => {
   const $ = (id) => dom.window.document.getElementById(id)
@@ -2381,6 +2462,12 @@ await check("a checkout that cannot update itself says why, with no button", asy
   }
 })
 
+/*
+ * What the real server answers, in order (see "the answer to Update, and every
+ * poll after it, say updating" above): the 202 already says "updating", each
+ * poll names its step, then "updated", then nothing while it restarts, then a
+ * server on another commit.
+ */
 await check("pressing Update follows the update through the restart, then reloads", async () => {
   let phase = { ...AVAILABLE, openEditors: 0 }
   let down = false
@@ -2389,7 +2476,7 @@ await check("pressing Update follows the update through the restart, then reload
       if (down) throw new TypeError("Failed to fetch")
       return phase
     },
-    "/api/update/apply": () => (phase = { ...AVAILABLE, state: "updating", step: "Installing dependencies", openEditors: 0 }),
+    "/api/update/apply": () => (phase = { ...AVAILABLE, state: "updating", step: "Starting the update", openEditors: 0 }),
   })
   try {
     assert.match(updateText(dom).note, /^Restarts DesignLayer\. It takes about a minute\.$/)
@@ -2398,10 +2485,14 @@ await check("pressing Update follows the update through the restart, then reload
     assert.deepEqual(dom.requests.filter((r) => r.path === "/api/update/apply").map((r) => r.method), ["POST"])
     let shown = updateText(dom)
     assert.equal(shown.title, "Updating DesignLayer")
-    assert.equal(shown.note, "Installing dependencies…")
+    assert.equal(shown.note, "Starting the update…")
     assert.equal(shown.button, null)
 
-    phase = { ...phase, state: "updated" }
+    phase = { ...phase, step: "Installing dependencies" }
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    assert.equal(updateText(dom).note, "Installing dependencies…")
+
+    phase = { ...phase, state: "updated", step: null }
     await new Promise((resolve) => setTimeout(resolve, 1100))
     down = true
     await new Promise((resolve) => setTimeout(resolve, 1100))
@@ -2419,6 +2510,46 @@ await check("pressing Update follows the update through the restart, then reload
   }
 })
 
+/*
+ * B1: "checking" read as nothing to show, so a press that met a check still
+ * answering (or the old server's answer from before the press) hid the banner,
+ * stopped the follow-up polls, and re-enabled the button for a second press.
+ */
+await check("from the press on, a check still answering reads as updating, and the button stays pressed", async () => {
+  let phase = { ...AVAILABLE, openEditors: 0 }
+  const dom = await mountPage([], {}, {}, {
+    "/api/update": () => phase,
+    // The answer from before the press, as a server that said it late did.
+    "/api/update/apply": () => ({ ...AVAILABLE, openEditors: 0 }),
+  })
+  const polls = () => dom.requests.filter((r) => r.path === "/api/update").length
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    $("update-apply").click()
+    phase = { ...AVAILABLE, state: "checking", openEditors: 0 }
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    let shown = updateText(dom)
+    assert.equal(shown.shown, true, "the banner went away")
+    assert.equal(shown.title, "Updating DesignLayer")
+    assert.equal(shown.note, "Updating…")
+    const before = polls()
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    assert.ok(polls() > before, "the page stopped following the update")
+    assert.equal($("update-apply").disabled, true)
+
+    // A failure ends it: the sentence, and a button that works.
+    const error = "The update did not finish. npm ci failed: ENOTFOUND registry.npmjs.org"
+    phase = { ...AVAILABLE, state: "error", failed: "update", error, openEditors: 0 }
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    shown = updateText(dom)
+    assert.equal(shown.error, error)
+    assert.equal(shown.button, "Try again")
+    assert.equal($("update-apply").disabled, false)
+  } finally {
+    dom.window.close()
+  }
+})
+
 await check("a failed update says what failed and offers to try again", async () => {
   const error = "The update did not finish. npm ci failed: ENOTFOUND registry.npmjs.org"
   const dom = await mountPage([], {}, {}, { "/api/update": () => ({ ...AVAILABLE, state: "error", failed: "update", error, openEditors: 0 }) })
@@ -2426,6 +2557,198 @@ await check("a failed update says what failed and offers to try again", async ()
     const shown = updateText(dom)
     assert.equal(shown.error, error)
     assert.equal(shown.button, "Try again")
+  } finally {
+    dom.window.close()
+  }
+})
+
+console.log("\nOne editor per app, through Stop")
+
+/*
+ * S1: Stop forgot the editor at once, so Start for the same app before the old
+ * process exited replaced nothing: the supervisor started a second editor
+ * beside the one still on its way out, moved it to a new pair of ports, and
+ * remembered that pair as the app's own.
+ */
+await check("Start after Stop for one app waits for the old editor to exit, on the same ports", async () => {
+  const { runEditors } = await import("../cli.mjs")
+  const { EventEmitter } = await import("node:events")
+  const screen = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {} })
+  const children = []
+  let release = () => {}
+  const supervisor = runEditors(screen, {
+    log: () => {},
+    allocatePorts: async ({ taken }) => {
+      for (let proxyPort = 3456; ; proxyPort += 2) if (!taken.includes(proxyPort)) return { proxyPort, wsPort: proxyPort + 1 }
+    },
+    spawnEditor: (argv) => {
+      const child = new EventEmitter()
+      child.argv = argv
+      child.alive = true
+      // Exits when the test says, the way a dev server takes its time.
+      child.kill = () => {
+        release = () => {
+          if (!child.alive) return
+          child.alive = false
+          child.emit("exit", null, "SIGTERM")
+        }
+      }
+      children.push(child)
+      return child
+    },
+  })
+  const press = () => postJson(`${screen.url}/api/start`, { url: `http://127.0.0.1:${app.port}`, projectRoot: project, devScript: null }).then((r) => r.json())
+  try {
+    const first = await press()
+    await until(() => children.length === 1, "the first editor")
+    children[0].emit("message", { type: "ready", url: "http://127.0.0.1:3456" })
+    await postJson(`${screen.url}/api/stop`, { id: first.id })
+    const second = await press()
+    assert.equal(second.existing, false)
+    assert.equal(second.replaced, first.id, "the new editor does not wait for the one stopping")
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.equal(children.length, 1, "two editors ran at once")
+    // The stopping one is out of every list, and a tab polling it is told why.
+    const status = await fetch(`${screen.url}/api/status`).then((r) => r.json())
+    assert.deepEqual(status.editors.map((editor) => editor.id), [second.id])
+    assert.match((await fetch(`${screen.url}/api/status?id=${first.id}`).then((r) => r.json())).stopped, /was stopped/)
+    release()
+    await until(() => children.length === 2, "the second editor")
+    const portOf = (argv) => Number(argv[argv.indexOf("--proxy-port") + 1])
+    assert.equal(portOf(children[1].argv), 3456, "the app moved to another pair of ports")
+  } finally {
+    release()
+    for (const child of children) child.kill = () => {}
+    supervisor.killAll()
+    screen.close()
+    await supervisor.done
+  }
+})
+
+console.log("\nThe page's own state")
+
+/*
+ * F1: a row's folder answer was adopted whenever it landed. Clicking row A,
+ * then row B, with A's answer slower, left B's address beside A's folder, and
+ * Start then proxied B while it edited A.
+ */
+await check("the folder always belongs to the row that is checked, whatever order the answers land in", async () => {
+  const ALPHA = "/p/alpha"
+  const BETA = "/p/beta"
+  const rows = [
+    { port: 3000, url: "http://127.0.0.1:3000", title: "Alpha", projectRoot: ALPHA, packageName: "alpha" },
+    { port: 3001, url: "http://127.0.0.1:3001", title: "Beta", projectRoot: BETA, packageName: "beta" },
+  ]
+  const dom = await mountPage(rows, {}, {}, {
+    "/api/project": async (url) => {
+      const dir = url.searchParams.get("path")
+      await new Promise((resolve) => setTimeout(resolve, dir === ALPHA ? 150 : 5))
+      return { project: projectSaid(dir) }
+    },
+  })
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const $ = (id) => dom.window.document.getElementById(id)
+    const [alpha, beta] = [...$("apps").children]
+    alpha.click()
+    await new Promise((resolve) => setTimeout(resolve, 1))
+    beta.click()
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.equal($("url").value, "http://127.0.0.1:3001")
+    assert.equal($("folder-path").value, BETA)
+    assert.equal(beta.getAttribute("aria-checked"), "true")
+  } finally {
+    dom.window.close()
+  }
+})
+
+// And a click before the screen's own pick lands is the person's choice.
+await check("a row clicked before the screen's own pick lands keeps its folder, and no note claims the pick", async () => {
+  const ALPHA = "/p/alpha"
+  const BETA = "/p/beta"
+  const rows = [
+    { port: 3000, url: "http://127.0.0.1:3000", title: "Alpha", projectRoot: ALPHA, packageName: "alpha" },
+    { port: 3001, url: "http://127.0.0.1:3001", title: "Beta", projectRoot: BETA, packageName: "beta" },
+  ]
+  const dom = await mountPage(rows, {}, {}, {
+    "/api/project": async (url) => {
+      const dir = url.searchParams.get("path")
+      await new Promise((resolve) => setTimeout(resolve, dir === ALPHA ? 200 : 5))
+      return { project: projectSaid(dir) }
+    },
+  })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    $("apps").children[1].click()
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.equal($("folder-path").value, BETA)
+    assert.equal($("url").value, "http://127.0.0.1:3001")
+    assert.equal($("apps-note").textContent, "")
+  } finally {
+    dom.window.close()
+  }
+})
+
+// P2: the press was only marked busy after the folder lookup it awaits, so a
+// second press in that gap started the app twice.
+await check("two presses while the folder is still being looked up start once", async () => {
+  const dom = await mountPage([], {}, { 3000: projectSaid(KNOWN) }, {
+    "/api/app-folder": async (url) => {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      return { project: projectSaid(KNOWN) }
+    },
+    "/api/start": () => ({ ok: true, id: "e9", existing: false, replaced: null, url: null }),
+    "/api/status": (url) => (url.searchParams.get("id") ? { ready: false, editing: null, stopped: null } : { ready: false, editing: null, stopped: null, editors: [] }),
+  })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    $("url").value = "http://127.0.0.1:3000"
+    $("form").dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }))
+    $("form").dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }))
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    assert.equal(dom.requests.filter((request) => request.path === "/api/start").length, 1)
+    assert.equal($("waiting-stop").hidden, false, "the wait treated its own start as an editor already running")
+  } finally {
+    dom.window.close()
+  }
+})
+
+// P1: the lost-contact look was only ever added, so it stayed after the editor
+// answered again, and came back on the next wait.
+await check("an answer after lost contact clears it, and the next wait starts clean", async () => {
+  let down = true
+  const dom = await mountPage(ROWS, { [KNOWN]: projectSaid(KNOWN) }, {}, {
+    "/api/start": () => ({ ok: true, id: "e9", existing: false, replaced: null, url: null }),
+    "/api/status": (url) => {
+      if (url.searchParams.get("id")) {
+        if (down) throw new TypeError("Failed to fetch")
+        return { ready: false, editing: null, stopped: null }
+      }
+      return { ready: false, editing: null, stopped: null, editors: [] }
+    },
+  })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    await pressStart(dom, 1800)
+    assert.equal(dom.window.document.querySelector("main").dataset.face, "lost")
+    assert.ok($("progress").classList.contains("progress--stalled"))
+    down = false
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    assert.equal(dom.window.document.querySelector("main").dataset.face, "waiting")
+    assert.equal($("progress").classList.contains("progress--stalled"), false)
+    assert.equal($("progress-text").textContent, "Starting the editor…")
+    assert.equal($("stopped").hidden, true)
+
+    // Lost again, then Back, then a new Start: that wait is not lost.
+    down = true
+    await new Promise((resolve) => setTimeout(resolve, 1700))
+    assert.equal(dom.window.document.querySelector("main").dataset.face, "lost")
+    $("waiting-back").click()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    down = false
+    await pressStart(dom, 100)
+    assert.equal(dom.window.document.querySelector("main").dataset.face, "waiting")
+    assert.equal($("progress").classList.contains("progress--stalled"), false)
   } finally {
     dom.window.close()
   }
