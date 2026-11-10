@@ -14,12 +14,16 @@
  * host integrations belong in designlayer.config.mjs.
  */
 
-export interface DockedPanelConfig {
+/*
+ * The browser half of `chrome.dockedPanel`: the shell writes the offset. The
+ * width property is the vendor patch's (`runtime/vendor-patch.mjs` reads it
+ * from the server config), so the overlay neither reads nor carries it.
+ */
+interface DockedPanelConfig {
   offsetVar: string
-  widthVar: string
 }
 
-export interface TailwindConfig {
+interface TailwindConfig {
   colorWords: string[]
   fontSizes: string[]
   fontFamilies: string[]
@@ -80,7 +84,7 @@ export interface DesignSystemToken {
   libraryName?: string
 }
 
-export interface DesignSystemAlias {
+interface DesignSystemAlias {
   name: string
   tokenIds: string[]
   ambiguous: boolean
@@ -91,7 +95,7 @@ export interface TailwindTokenAlias extends DesignSystemAlias {
   cssVar: string
 }
 
-export interface ResponsiveMeasure {
+interface ResponsiveMeasure {
   id: string
   name: string
   category: "responsive-measure"
@@ -177,7 +181,7 @@ export interface DesignLayerConfig {
  * package.json is the other way round. Neither is a path — see the prelude in
  * config.mjs for why the host's folder does not travel.
  */
-export interface AppConfig {
+interface AppConfig {
   url: string | null
   name: string | null
 }
@@ -195,7 +199,7 @@ export interface AppConfig {
  * Tailwind and an Angular app with it both exist, and it is this — not the
  * framework — that decides whether a utility class is worth offering.
  */
-export interface HostConfig {
+interface HostConfig {
   framework: "react" | "angular"
   tailwind: boolean
 }
@@ -205,7 +209,7 @@ export interface HostConfig {
  * itself with, and whether the loopback route has drawings to serve. The
  * drawings themselves are fetched, not injected — see `icon-set.ts`.
  */
-export interface IconSetConfig {
+interface IconSetConfig {
   attribute: string
   available: boolean
 }
@@ -259,7 +263,6 @@ const FALLBACK: DesignLayerConfig = {
     trustedSelector: "",
     dockedPanel: {
       offsetVar: "--designlayer-docked-panel-offset",
-      widthVar: "--designlayer-docked-panel-width",
     },
   },
   tailwind: {
@@ -450,7 +453,6 @@ function read(): DesignLayerConfig {
           : FALLBACK.chrome.trustedSelector,
       dockedPanel: {
         offsetVar: str(panel.offsetVar, FALLBACK.chrome.dockedPanel.offsetVar),
-        widthVar: str(panel.widthVar, FALLBACK.chrome.dockedPanel.widthVar),
       },
     },
     tailwind: {

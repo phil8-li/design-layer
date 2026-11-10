@@ -46,7 +46,7 @@
  */
 
 /** What a caller holds between emptying a container and refilling it. */
-export interface ScrollHold {
+interface ScrollHold {
   /** Restores the scroller, and drops the height pin. Safe to call once. */
   release(): void
 }

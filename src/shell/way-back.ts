@@ -28,9 +28,8 @@
  */
 
 import { runCommand } from "../core/commands"
-import { readLoopbackOrigin } from "../core/config"
 import { everywhereShortcut } from "../core/keymap"
-import { DESK_KEY_MESSAGE } from "./desk"
+import { DESK_KEY_MESSAGE, isDeskOrigin } from "./desk"
 
 /**
  * One function for every window it listens in, which is what keeps a window
@@ -102,13 +101,13 @@ function listen(win: Window): void {
 /**
  * A key the Mac app's shell heard and handed over.
  *
- * Only from the window this one is framed in, and only from a loopback page,
- * which the desk is. The press is rebuilt as an event so the keymap matches it
+ * Only from the window this one is framed in, and only from the desk's origin
+ * (`isDeskOrigin`). The press is rebuilt as an event so the keymap matches it
  * exactly as it would a key typed here.
  */
 function onMessage(event: MessageEvent): void {
   if (window.parent === window || event.source !== window.parent) return
-  if (readLoopbackOrigin(event.origin) === null) return
+  if (!isDeskOrigin(event.origin)) return
   const data: unknown = event.data
   if (typeof data !== "object" || data === null) return
   const key = data as Record<string, unknown>

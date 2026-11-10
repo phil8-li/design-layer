@@ -117,7 +117,7 @@ interface QueryPatch {
   original: string
 }
 
-export interface AppViewport {
+interface AppViewport {
   /**
    * Re-read the app's stylesheets. Called for you when one arrives or changes;
    * exposed because a test should not have to wait for a MutationObserver.

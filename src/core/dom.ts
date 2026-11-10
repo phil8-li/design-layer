@@ -31,6 +31,13 @@ export const CHROME_ATTR = "data-designlayer"
 export const DELETED_ATTRIBUTE = "data-de-deleted"
 
 /**
+ * Our own shell and the vendor root: structural, in every host. Also the
+ * "editor tree" that `core/host-readiness.ts` skips when it looks for the
+ * app's claim.
+ */
+export const EDITOR_ROOT_SELECTOR = `[${CHROME_ATTR}], #react-rewrite-root`
+
+/**
  * Our own shell and the vendor root are structural — they exist in every host —
  * so they stay literal. Everything else the host wants excluded (its dev GUI,
  * its debug bars) arrives from `chrome.trustedSelectors` in the config.
@@ -39,11 +46,7 @@ export const DELETED_ATTRIBUTE = "data-de-deleted"
  * joining: a trailing comma is not a valid selector, and `closest()` would then
  * throw on every hit-test rather than once at startup.
  */
-const CHROME_SELECTOR = [
-  `[${CHROME_ATTR}]`,
-  "#react-rewrite-root",
-  config.chrome.trustedSelector,
-]
+const CHROME_SELECTOR = [EDITOR_ROOT_SELECTOR, config.chrome.trustedSelector]
   .filter((part) => part.length > 0)
   .join(",")
 

@@ -183,6 +183,26 @@ await check("standing the editor down takes both halves with it", () => {
 })
 
 /*
+ * A second install starts as the first did. Teardown removed the attribute
+ * but kept the module's `keyboard` flag, so after a keyboard session the new
+ * install said "pointer" while the flag said keyboard, and the next Tab was a
+ * no-op: no ring for the first keyboard focus (B-boot-state-14).
+ */
+await check("a re-installed editor hears the first Tab again", () => {
+  const first = installFocusModality()
+  press("Tab")
+  first()
+  const again = installFocusModality()
+  assert.equal(modality(), "pointer")
+  try {
+    press("Tab")
+    assert.equal(modality(), "keyboard", "the first Tab after a re-install was swallowed")
+  } finally {
+    again()
+  }
+})
+
+/*
  * The stylesheets are the other half of the contract, and the cheaper half to
  * break: `:focus` paints the ring for a click no matter what the focus call
  * asked for, so one bare rule would reopen this bug on one control and nowhere

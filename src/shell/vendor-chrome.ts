@@ -9,10 +9,9 @@
  * WHERE: the chrome is mounted into `#react-rewrite-root`'s open shadow root,
  * and a shadow boundary blocks selectors, not stacking. A rule in the document
  * cannot reach it at any specificity, so the stylesheet has to be appended
- * INSIDE the root. The `#react-rewrite-root .toolbar` copy of the same list
- * that `css/base.ts` puts in the document matches nothing in this vendor build;
- * it is left there because it costs nothing, but it is not what does the work,
- * and a fix that only edits that list will not change what is on screen.
+ * INSIDE the root. (A document-level `#react-rewrite-root .toolbar` copy of
+ * the list once sat in `css/base.ts`; the vendor appends its chrome only to
+ * the shadow root, so it matched nothing and was deleted.)
  *
  * WHEN: the root is attached by the vendor, whose bundle is concatenated ahead
  * of ours and whose mount lands a frame or two after boot. Injecting from
@@ -51,7 +50,7 @@ const STYLE_ID = "designlayer-vendor-suppression"
 
 type ShadowFactory = (init: ShadowRootInit) => ShadowRoot
 
-export interface VendorChromeOptions {
+interface VendorChromeOptions {
   /**
    * Called with the vendor's shadow root, as soon as there is one.
    *
