@@ -11,21 +11,23 @@ all its paths resolve against the directory holding it.
 
 The settings most likely to matter:
 
-- **`tailwind.version`** — on Tailwind v4, set `4` and
-  `spacingScale: "v4-linear"`, or the editor writes arbitrary values for
-  spacing tokens that do exist in your build.
+- **`tailwind.spacingScale`** — on Tailwind v4, set `"v4-linear"`, or the
+  brief suggests arbitrary values for spacing tokens that do exist in your
+  build.
 - **`tailwind.breakpoints`** — the responsive prefixes the inspector offers;
   the default is Tailwind's `sm` through `2xl` scale.
 - **`tailwind.containerBreakpoints`** — the separate container-query scale.
   It is empty by default because container variants are host-dependent.
-- **`tailwind.colorWords`** — your palette stems, so `bg-brand-500` is written
-  as a class rather than as an arbitrary colour.
+- **`tailwind.colorWords`** — your palette stems, so the brief suggests
+  `bg-brand-500` rather than an arbitrary colour.
 - **`designSystem.manifest`** — the canonical token catalog displayed beside
   the selected element. Add `designSystem.cssSources` to map authored CSS and
   Tailwind aliases back to those tokens.
 - **`icons`** — your icon set, so a selected `<svg>` names itself and the
   inspector can offer the other drawings as variants.
-- **`source.roots`** — the directories the agent may edit.
+- **`source.roots`** — the directories DesignLayer may read and write for the
+  browser (lint fixes, saved control defaults). Empty means the project root.
+  It does not limit your coding agent.
 
 ## Design-system catalog
 
@@ -206,9 +208,8 @@ the browser prelude, because it is path data measured in hundreds of kilobytes
 and most sessions never open the panel. Only the attribute and a boolean cross
 into the browser at load.
 
-A swap redraws the glyph in place and says "preview only" every time: the source
-writer speaks in classes and text, and the JSX still names the component it
-always did. Width, height, and class are left alone — size and colour belong to
+A swap redraws the glyph in place and becomes a note for the agent: the JSX
+still names the component it always did. Width, height, and class are left alone — size and colour belong to
 the call site that placed the icon, not to the drawing.
 
 ## Responsive metadata
@@ -267,7 +268,7 @@ your stylesheet reads them to make room.
 ```css
 /* only if you set chrome.dockedPanel */
 .my-dev-panel {
-  right: calc(var(--designlayer-dev-panel-offset, 0px) + 1rem);
+  right: calc(var(--designlayer-docked-panel-offset, 0px) + 1rem);
 }
 ```
 
@@ -345,8 +346,8 @@ tools end up on the correct side of it whichever one the person reached for.
 
 A companion that paints over the editor needs a z-index above `.de-root`
 (2147483000) and above the surfaces the editor raises over itself: the note
-layer at 2147483100, the pickers and menus through 2147483300, and the toast at
-2147483646. Going to the very top is only safe if your full-viewport layers are
+layer at 2147483100, the pickers and menus through 2147483250, tooltips at
+2147483500, and the toast at 2147483646. Going to the very top is only safe if your full-viewport layers are
 `pointer-events: none` — one that takes the pointer up there puts an invisible
 sheet over the editor and the app both.
 
