@@ -355,12 +355,13 @@ const NO_TARGET_NOTE =
  * why), so it comes from the server: every sign-in answer, and the status GET
  * on a server that reports it, carries `budgetMs`, the longest an answer can
  * take, and the deadline is that plus a margin for the loopback. Until a
- * server has said, `WAITING_DEADLINE_MS` stands in; it is longer than the
- * budget the server states today.
+ * server has said, `WAITING_DEADLINE_MS` stands in: the budget the server
+ * states today (`answerBudget()` in `server/library-signin.mjs`, 395 s) plus
+ * the same margin.
  */
 const WAITING_NUDGE_MS = 20_000
-const WAITING_DEADLINE_MS = 390_000
 const DEADLINE_MARGIN_MS = 15_000
+const WAITING_DEADLINE_MS = 395_000 + DEADLINE_MARGIN_MS
 
 /**
  * What the window sign-in answers with, taken off the call rather than written

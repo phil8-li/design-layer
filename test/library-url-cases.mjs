@@ -666,6 +666,27 @@ await checkAsync("each way a fetch ends is named, and a bad redirect is not call
   assert.equal((await fetchLibraryUrl(STORYBOOK_URL, offline({ [STORYBOOK_URL]: html(LOGIN_PAGE) }))).outcome, "walled")
 })
 
+// The sign-in's verification passes the run's signal, so a Cancel ends the
+// fetch at once instead of after the whole timeout.
+await checkAsync("a caller's signal ends the fetch early", async () => {
+  const stop = new AbortController()
+  const started = Date.now()
+  const pending = fetchLibraryUrl("https://example.com/tokens.json", {
+    signal: stop.signal,
+    timeoutMs: 30_000,
+    runHelper: noHelper,
+    fetchImpl: (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => reject(init.signal.reason))
+      }),
+  })
+  setTimeout(() => stop.abort(), 20)
+  const result = await pending
+  assert.equal(result.ok, false)
+  assert.equal(result.outcome, "timeout")
+  assert.ok(Date.now() - started < 5_000, "the fetch ran on to its own timeout")
+})
+
 await checkAsync("only http and https are ever fetched, whatever the caller passes", async () => {
   let asked = 0
   const result = await fetchLibraryUrl("data:text/html,<p>hi</p>", {

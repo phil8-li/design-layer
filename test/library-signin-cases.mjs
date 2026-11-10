@@ -969,6 +969,7 @@ await check("a sign-in that completes after Cancel is not stored", async () => {
     const press = new AbortController()
     const saved = []
     let probed
+    let probeSignal = null
     const probing = new Promise((resolve) => {
       probed = resolve
     })
@@ -977,7 +978,8 @@ await check("a sign-in that completes after Cancel is not stored", async () => {
         signin,
         // The verification fetch is in flight when the person presses Cancel,
         // and the site then says yes.
-        probe: async () => {
+        probe: async (_url, options) => {
+          probeSignal = options.signal
           probed()
           await new Promise((resolve) => setTimeout(resolve, 200))
           return { ok: true, sso: false, status: 200 }
@@ -991,7 +993,9 @@ await check("a sign-in that completes after Cancel is not stored", async () => {
       { signal: press.signal }
     )
     await probing
+    assert.equal(probeSignal?.aborted, false, "the verification fetch was given no signal to stop on")
     press.abort()
+    assert.equal(probeSignal.aborted, true, "Cancel left the verification fetch running")
     assert.equal((await answer).code, "cancelled")
     await new Promise((resolve) => setTimeout(resolve, 400))
     assert.deepEqual(saved, [], "a credential was stored after the person cancelled")

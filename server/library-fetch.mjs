@@ -338,6 +338,12 @@ export async function fetchLibraryUrl(url, options = {}) {
      * module by the number of probes.
      */
     credential = null,
+    /*
+     * Ends the fetch early when the caller gives up: the sign-in route passes
+     * the run's signal, so a Cancel stops the verification instead of holding
+     * the profile in `verifying` for the whole timeout.
+     */
+    signal = null,
   } = options
   // Checked here as well as by every caller that builds a URL, because the
   // sign-in route passes on what the panel sent: `fetch` accepts `data:` URLs.
@@ -371,7 +377,7 @@ export async function fetchLibraryUrl(url, options = {}) {
          * origin and come back.
          */
         headers: { accept: ACCEPT, ...(originOf(target) === credentialOrigin ? authHeaders : {}) },
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       })
     } catch (error) {
       return unreachable(error, target)
@@ -426,6 +432,7 @@ export async function fetchLibraryUrl(url, options = {}) {
     })
   }
 
+  if (signal?.aborted) return unreachable(signal.reason, url)
   const rescued = await throughHelper(String(url), { runHelper, timeoutMs, fetchCommand, helperGate })
   if (rescued) {
     return settle("rescued", {

@@ -1089,7 +1089,7 @@ export function completeSignIn({ signin, probe, save }, url, { signal } = {}) {
     signal,
     confirm: async (cookie, { signal: run }) => {
       const credential = { scheme: "cookie", value: cookie }
-      const result = await probe(target, { credential })
+      const result = await probe(target, { credential, signal: run })
       if (run?.aborted) return CANCELLED
       if (result.sso || !result.ok) {
         return {
