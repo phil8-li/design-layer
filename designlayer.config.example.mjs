@@ -187,10 +187,9 @@ const config = {
   },
 
   tailwind: {
-    // 3 uses Tailwind's discrete spacing table. 4 resolves every multiple of
-    // `spacingBase`, so set `spacingScale: "v4-linear"` there to stop the
+    // "v3-default" is Tailwind 3's discrete spacing table. Tailwind 4 resolves
+    // every multiple of `spacingBase`, so set "v4-linear" there to stop the
     // editor writing arbitrary values for tokens that now exist.
-    version: 3,
     spacingScale: "v3-default",
     spacingBase: 4,
     breakpoints: { sm: 640, md: 768, lg: 1024, xl: 1280, "2xl": 1536 },

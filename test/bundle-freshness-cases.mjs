@@ -21,7 +21,12 @@ import path from "node:path"
 import { spawnSync } from "node:child_process"
 
 import { PACKAGE_DIR } from "./host.mjs"
-import * as launcher from "../runtime/launcher.mjs"
+import { ensureCurrentChromeBundle } from "../runtime/bundle-stamp.mjs"
+import { readChromeBundle } from "../runtime/overlay-responder.mjs"
+
+// What the launcher calls before it boots the vendor, and what the overlay
+// responder reads; both used to live in runtime/launcher.mjs.
+const launcher = { ensureCurrentChromeBundle, readChromeBundle }
 
 let passed = 0
 let failed = 0

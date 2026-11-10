@@ -22,40 +22,26 @@ import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
 
-import { registryDir } from "./editor-registry.mjs"
+import { listEditors } from "./editor-registry.mjs"
+import { realRoot, stateRoot, writeFileAtomic } from "./state-dir.mjs"
 
-export const FIRST_PROXY_PORT = 3456
-const MAX_ENTRIES = 200
+const FIRST_PROXY_PORT = 3456
+const MAX_REMEMBERED_APPS = 200
 // Far past any session's worth of editors, and short of the ports above it
 // that other tools are known to claim.
 const MAX_PAIRS = 200
 
 export function portsFile() {
-  return path.join(path.dirname(registryDir()), "ports.json")
-}
-
-/*
- * One project has many spellings: a symlinked folder, a trailing slash, a
- * relative path. The supervisor, the start screen and each editor's config all
- * name the root their own way, so the key is the real folder or none of them
- * would find what another wrote. A folder that cannot be resolved (gone, or
- * one macOS will not stat) keeps its resolved spelling.
- */
-export function realRoot(projectRoot) {
-  if (typeof projectRoot !== "string" || projectRoot.length === 0) return ""
-  try {
-    return fs.realpathSync(projectRoot)
-  } catch {
-    return path.resolve(projectRoot)
-  }
+  return path.join(stateRoot(), "ports.json")
 }
 
 function keyFor(projectRoot, appPort) {
   return `${realRoot(projectRoot)}|${appPort}`
 }
 
-// The key as it was written before roots were resolved, still read so a pair
-// remembered then is not lost.
+// The key as it was written before roots were resolved (see `realRoot`), still
+// read so a pair remembered then is not lost. Time-boxed legacy: it can go once
+// no install from before real-path keys is left.
 function rawKeyFor(projectRoot, appPort) {
   return `${projectRoot ?? ""}|${appPort}`
 }
@@ -63,6 +49,8 @@ function rawKeyFor(projectRoot, appPort) {
 function validPort(port) {
   return Number.isInteger(port) && port > 0 && port < 65536
 }
+
+const samePair = (a, b) => a?.proxyPort === b?.proxyPort && a?.wsPort === b?.wsPort
 
 function readAll() {
   try {
@@ -73,19 +61,25 @@ function readAll() {
   }
 }
 
-function writeAll(all) {
-  const file = portsFile()
-  const temp = `${file}.${process.pid}.tmp`
+/**
+ * Remembers `pair` for one app. The file is read again here rather than
+ * reused from the start of `allocatePorts`: the port probes in between take
+ * milliseconds, and a second supervisor (the desk's start screen beside a
+ * terminal `designlayer`) writing in that time would otherwise lose its pair to
+ * this write. Read, change one key, rename: the window is this function.
+ */
+function remember(key, rawKey, pair) {
+  const all = readAll()
+  delete all[rawKey]
+  delete all[key]
+  all[key] = pair
+  // Insertion order is last use, so the cap drops the apps unused longest.
+  const keys = Object.keys(all)
+  for (const old of keys.slice(0, Math.max(0, keys.length - MAX_REMEMBERED_APPS))) delete all[old]
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(temp, `${JSON.stringify(all, null, 2)}\n`, "utf8")
-    fs.renameSync(temp, file)
+    writeFileAtomic(portsFile(), `${JSON.stringify(all, null, 2)}\n`)
   } catch {
-    try {
-      fs.rmSync(temp, { force: true })
-    } catch {
-      /* nothing else to try */
-    }
+    // A file that cannot be written costs the memory, not the launch.
   }
 }
 
@@ -131,6 +125,13 @@ export function rememberedPorts({ projectRoot, appPort }) {
  * was given before, then the scan. An explicit flag beats memory because it is
  * what the person typed for this run; the supervisor marks only its first
  * editor `explicit`, so later apps keep their remembered origins.
+ *
+ * The pair handed out is remembered as the app's, with two exceptions. A
+ * remembered pair that an editor still holds — one in `taken`, or this same
+ * app's editor in the registry (an editor of it that is still shutting down,
+ * or one started from another terminal) — stays remembered: this run borrows
+ * another pair, and the app's origin, with its notes, is there for the next
+ * run. And a pair that is not free at all (nothing was) is never written down.
  */
 export async function allocatePorts({ projectRoot = null, appPort = null, taken = [], preferred = null, explicit = false } = {}) {
   const busy = new Set(taken.filter(validPort))
@@ -148,6 +149,7 @@ export async function allocatePorts({ projectRoot = null, appPort = null, taken 
   const remembered = rememberedPorts({ projectRoot, appPort })
   if (!chosen && remembered && (await usable(remembered))) chosen = remembered
 
+  let free = chosen !== null
   if (!chosen) {
     const others = new Set()
     for (const [other, pair] of Object.entries(all)) {
@@ -179,17 +181,23 @@ export async function allocatePorts({ projectRoot = null, appPort = null, taken 
         }
       }
     }
+    free = chosen !== null
     // Nothing free at all. The child's own port check then fails with a
     // sentence, which says more than anything this function could.
     chosen ??= candidates[0] ?? { proxyPort: FIRST_PROXY_PORT, wsPort: FIRST_PROXY_PORT + 1 }
   }
 
-  delete all[rawKey]
-  delete all[key]
-  all[key] = chosen
-  // Insertion order is last use, so the cap drops the apps unused longest.
-  const keys = Object.keys(all)
-  for (const old of keys.slice(0, Math.max(0, keys.length - MAX_ENTRIES))) delete all[old]
-  writeAll(all)
+  const keepsMemory =
+    remembered !== null && !samePair(chosen, remembered) && heldByAnEditor(remembered, busy, projectRoot, appPort)
+  if (free && !keepsMemory) remember(key, rawKey, chosen)
   return { proxyPort: chosen.proxyPort, wsPort: chosen.wsPort }
+}
+
+/** Whether a live editor holds `pair`: one of the caller's own, or this app's in the registry. */
+function heldByAnEditor(pair, busy, projectRoot, appPort) {
+  if (busy.has(pair.proxyPort) || busy.has(pair.wsPort)) return true
+  const root = realRoot(projectRoot)
+  return listEditors().some(
+    (editor) => editor.proxyPort === pair.proxyPort && editor.appPort === appPort && realRoot(editor.projectRoot) === root
+  )
 }

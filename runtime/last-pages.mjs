@@ -29,24 +29,27 @@ import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 
-import { registryDir } from "./editor-registry.mjs"
-import { realRoot } from "./editor-ports.mjs"
+import { realRoot, stateRoot, writeFileAtomic } from "./state-dir.mjs"
 
-const MAX_ENTRIES = 200
+const MAX_REMEMBERED_PAGES = 200
 const MAX_PAGE_LENGTH = 4096
 
-/** The pre-split file every app's page used to share. Read, never written. */
+/**
+ * The pre-split file every app's page used to share. Read, never written.
+ * Time-boxed legacy, like the raw keys below: both can go once no install from
+ * before per-key files and real-path keys is left.
+ */
 export function pagesFile() {
-  return path.join(path.dirname(registryDir()), "pages.json")
+  return path.join(stateRoot(), "pages.json")
 }
 
 /** One file per app from here on. See the top of this file. */
 export function pagesDir() {
-  return path.join(path.dirname(registryDir()), "pages")
+  return path.join(stateRoot(), "pages")
 }
 
 // The real folder, so every spelling of one project's root finds one entry.
-// See `realRoot` in editor-ports.mjs.
+// See `realRoot` in state-dir.mjs.
 function keyFor(port, projectRoot) {
   return Number.isInteger(port) && port > 0 ? `${realRoot(projectRoot)}|${port}` : null
 }
@@ -79,7 +82,7 @@ function prune(dir) {
   } catch {
     return
   }
-  if (names.length <= MAX_ENTRIES) return
+  if (names.length <= MAX_REMEMBERED_PAGES) return
   const dated = names.map((name) => {
     try {
       return { name, at: fs.statSync(path.join(dir, name)).mtimeMs }
@@ -88,7 +91,7 @@ function prune(dir) {
     }
   })
   dated.sort((a, b) => a.at - b.at)
-  for (const { name } of dated.slice(0, dated.length - MAX_ENTRIES)) {
+  for (const { name } of dated.slice(0, dated.length - MAX_REMEMBERED_PAGES)) {
     try {
       fs.rmSync(path.join(dir, name), { force: true })
     } catch {
@@ -106,20 +109,11 @@ export function rememberPage({ port, projectRoot, page }) {
   const key = keyFor(port, projectRoot)
   if (!key || !isPage(page)) return
   const file = fileFor(key)
-  // Unique per write, not just per process: one editor can report twice
-  // before the first write is renamed.
-  const temp = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(temp, `${JSON.stringify({ key, page })}\n`, "utf8")
-    fs.renameSync(temp, file)
+    writeFileAtomic(file, `${JSON.stringify({ key, page })}\n`)
     prune(path.dirname(file))
   } catch {
-    try {
-      fs.rmSync(temp, { force: true })
-    } catch {
-      /* nothing else to try */
-    }
+    // Never throws: see the top of this file.
   }
 }
 

@@ -31,7 +31,7 @@ import {
   readChromeBundle,
   readCompanionBundles,
   TOASTER_PATH,
-} from "../runtime/launcher.mjs"
+} from "../runtime/overlay-responder.mjs"
 
 let passed = 0
 let failed = 0

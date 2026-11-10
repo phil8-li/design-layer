@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * `designlayer [appPort] [--config <path>] [--proxy-port N] [--ws-port N]`
+ * `designlayer [appPort] [options]` — the flags are in `USAGE` below, which is
+ * also what `--help` prints and what docs/using.md quotes.
  *
  * Every flag is consumed here. The vendored CLI parses `process.argv` at module
  * scope with commander and aborts on anything it does not declare, so argv is
@@ -23,6 +24,8 @@ import { fileURLToPath } from "node:url"
 
 import { appName } from "./runtime/app-name.mjs"
 import { findConfigFile } from "./runtime/config-file.mjs"
+import { onExit, signalForExitCode } from "./runtime/exit-hooks.mjs"
+import { realRoot } from "./runtime/state-dir.mjs"
 
 /*
  * Sixteen file-system threads instead of libuv's four, unless the person
@@ -39,7 +42,7 @@ process.env.UV_THREADPOOL_SIZE ??= "16"
 // the start screen answers its first page in the time Node takes to bind a
 // port plus a few milliseconds — config.mjs alone was more than that.
 
-const USAGE = `Usage: designlayer [appPort] [options]
+export const USAGE = `Usage: designlayer [appPort] [options]
 
   (no arguments)          Open the start screen: pick a running app and its folder
   appPort                 Dev server port (default: config app.port, else framework detection)
@@ -52,7 +55,8 @@ const USAGE = `Usage: designlayer [appPort] [options]
   --proxy-port <n>        Port for the editing proxy the browser loads
   --ws-port <n>           Port for the source-edit WebSocket
   --host <host>           Dev server host (default: 127.0.0.1)
-  --open / --no-open      Open the editing URL on start (default: no)
+  --open / --no-open      Open the editing URL on start (default: no; the start screen opens)
+  --verbose               Pass the vendored CLI's verbose logging through
   --verify                Check the vendor patch still applies, then exit
   --check-update          Say whether a newer DesignLayer is on GitHub, then exit
   --update                Update this copy of DesignLayer to the latest, then exit
@@ -62,17 +66,6 @@ const USAGE = `Usage: designlayer [appPort] [options]
 
 /** This file, as the supervisor has to name it when it re-runs it as a child. */
 const CLI_PATH = fileURLToPath(import.meta.url)
-
-/**
- * The port `--dev` falls back to when nothing else names one.
- *
- * The last resort, not the answer. `config.app.devPort` knows the host's
- * framework and reads an Angular project's own `angular.json`, and that is what
- * `main` reaches for first; a dev server still has to be told a port before it
- * can be asked which one it took, so a guess is unavoidable — this is only the
- * guess for a config object that carries no framework at all.
- */
-const DEFAULT_APP_PORT = 3000
 
 /** How long a child asked to stop gets before SIGKILL. See `runEditors`. */
 const STOP_GRACE_MS = 5000
@@ -97,18 +90,29 @@ export function parseArgs(argv) {
       index += 1
       return value
     }
+    // A port flag takes a port. `Number("abc")` is NaN, which a direct run
+    // reported in Node's words from the bind and the supervisor dropped
+    // without a word. The start screen also takes 0, "any free port".
+    const port = (lowest = 1) => {
+      const value = next()
+      const number = Number(value)
+      if (!/^\d+$/.test(value) || number < lowest || number > 65535) {
+        throw new Error(`${arg} needs a port number from ${lowest} to 65535 (got ${value})`)
+      }
+      return number
+    }
 
     if (arg === "--config") options.configPath = next()
     else if (arg === "--project-root") options.projectRoot = next()
-    else if (arg === "--start-screen-port") options.startScreenPort = Number(next())
+    else if (arg === "--start-screen-port") options.startScreenPort = port(0)
     else if (arg === "--dev") options.dev = true
     // Naming the script is asking for it to be run, so it implies the flag.
     else if (arg === "--dev-script") {
       options.devScript = next()
       options.dev = true
     }
-    else if (arg === "--proxy-port") options.proxyPort = Number(next())
-    else if (arg === "--ws-port") options.wsPort = Number(next())
+    else if (arg === "--proxy-port") options.proxyPort = port()
+    else if (arg === "--ws-port") options.wsPort = port()
     else if (arg === "--host") options.host = next()
     else if (arg === "--no-open") options.open = false
     else if (arg === "--open") options.open = true
@@ -253,7 +257,7 @@ export async function main(argv = process.argv.slice(2)) {
   const appPort =
     options.appPort ??
     config.app.port ??
-    (options.dev ? config.app.devPort ?? DEFAULT_APP_PORT : null)
+    (options.dev ? config.app.devPort : null)
   const devScript = options.dev ? options.devScript ?? config.app.devScript : null
 
   // The app probe below starts now, beside the port checks: it is a loopback
@@ -295,7 +299,9 @@ export async function main(argv = process.argv.slice(2)) {
       portFlag: config.app.devPortFlag,
       hostFlag: config.app.devHostFlag,
     })
-    if (app.started) holdUntilExit(app.stop)
+    // A server it started is stopped when this process exits: registered by
+    // `ensureAppRunning` the moment it spawned, so Ctrl+C or a Stop during a
+    // slow first compile takes it down too.
     // `ensureAppRunning` reports the address it found or reached — a script
     // that ignored the host flag, or that had none, may still have gone to the
     // other one, and an app it attached to rather than started is wherever the
@@ -377,13 +383,13 @@ async function supervise(options) {
     updater,
     onRestart: (resume) => restartAfterUpdate({ screen, editors, resume, updates }),
   })
-  holdUntilExit(screen.close)
+  onExit(screen.close)
 
   const { allocatePorts } = await import("./runtime/editor-ports.mjs")
   editors = runEditors(screen, { options, allocatePorts })
   // Ctrl+C here is Ctrl+C for every editor too. Each child is a process of its
   // own, so nothing takes them down on the way out unless this line does.
-  holdUntilExit(editors.killAll)
+  onExit(editors.killAll)
 
   console.log(`[designlayer] open ${screen.url} to choose an app`)
   // The editors the restart that started this process stopped, back on the
@@ -417,7 +423,7 @@ async function restartAfterUpdate({ screen, editors, resume, updates }) {
   await editors?.stopAll()
   const argv = process.argv.slice(2).filter((arg) => arg !== "--open" && arg !== "--no-open")
   const child = spawn(process.execPath, [CLI_PATH, ...argv, "--no-open"], { stdio: "inherit", env: process.env })
-  holdUntilExit(() => child.kill("SIGTERM"))
+  onExit(() => child.kill("SIGTERM"))
   child.once("exit", (code, signal) => process.exit(signal ? 1 : (code ?? 0)))
 }
 
@@ -459,60 +465,110 @@ async function updateFromTerminal(options) {
  * its own, on its own proxy and socket ports, and a child ends only when:
  * Stop asks for it (`screen.nextStop()`), it exits by itself, a choice
  * replaces it (`choice.replaces`: same app port, another folder), or the
- * supervisor exits (`killAll`).
+ * supervisor exits (`killAll`) or restarts (`stopAll`).
+ *
+ * One record per editor id, keyed by the screen's id, moved only by
+ * `transition`:
+ *
+ *   (none)     --choice arrives-->                     allocating
+ *   (none)     --stop arrives before its choice-->     exited   (the choice is dropped when it comes)
+ *   allocating --stop, stopAll or killAll-->           exited   (never spawned)
+ *   allocating --ports found, still wanted-->          running  (the --proxy-port pair is spent here)
+ *   running    --stop, replaced, stopAll, killAll-->   stopping (SIGTERM; SIGKILL after the grace)
+ *   running    --exits, or fails to spawn-->           exited   (the reason goes to the screen)
+ *   stopping   --exits-->                              exited   (silently: the screen holds the reason)
+ *
+ * An exited record stays, so a late stop for it is a no-op rather than a
+ * cancellation waiting for a choice that will never come. Ids are never
+ * reused, and a record is a few fields.
  *
  * Choices are handled one at a time, so two arriving together cannot be given
- * the same ports before either child has bound them.
+ * the same ports before either child has bound them. A choice for an app whose
+ * previous editor is still `stopping` (Stop, then Start again before the old
+ * process exited) waits for that exit, so the app gets its remembered ports
+ * back instead of a second pair while the first is still held.
  */
 export function runEditors(
   screen,
   { options = {}, spawnEditor = spawnChild, allocatePorts, log = console.log, stopGraceMs = STOP_GRACE_MS } = {}
 ) {
-  const running = new Map()
-  const cancelled = new Set()
+  const editors = new Map()
   // The flag pair beats the first editor's remembered pair, and only the
-  // first's. See `allocatePorts`.
+  // first's: spent when an editor first reaches `running`. See `allocatePorts`.
   let flagsSpent = false
+  // Set by stopAll and killAll: the supervisor is going away, so a choice
+  // still finding its ports must not spawn a child after everything stopped.
+  let closing = false
+
+  function transition(record, next, fields = {}) {
+    if (!EDITOR_TRANSITIONS[record.state].includes(next)) return false
+    Object.assign(record, fields, { state: next })
+    return true
+  }
 
   /*
    * An exit asked for is not news: the screen already holds the reason, or
    * the replacement already took the editor's place.
    *
-   * Every later start waits on this, so a child that ignores SIGTERM (a stuck
-   * dev server, a busy event loop) would hold every app behind it. It gets a
-   * few seconds to close its servers, then SIGKILL.
+   * Every later start of the same app waits on this, so a child that ignores
+   * SIGTERM (a stuck dev server, a busy event loop) would hold that app
+   * behind it. It gets a few seconds to close its servers, then SIGKILL.
    */
-  async function stop(entry) {
-    entry.quiet = true
-    entry.child.kill("SIGTERM")
-    const escalate = setTimeout(() => entry.child.kill("SIGKILL"), stopGraceMs)
-    try {
-      await entry.exited
-    } finally {
-      clearTimeout(escalate)
+  function stop(record) {
+    if (record.state === "allocating") transition(record, "exited")
+    if (transition(record, "stopping")) {
+      record.child.kill("SIGTERM")
+      const escalate = setTimeout(() => record.child.kill("SIGKILL"), stopGraceMs)
+      record.gone.then(() => clearTimeout(escalate))
     }
+    return record.gone ?? Promise.resolve()
+  }
+
+  /** Ports held or about to be bound by this supervisor's editors. */
+  function takenPorts() {
+    return [...editors.values()]
+      .filter((record) => record.ports && (record.state === "running" || record.state === "stopping"))
+      .flatMap((record) => [record.ports.proxyPort, record.ports.wsPort])
   }
 
   async function start(choice) {
-    // Stopped or replaced from the screen while still in the queue.
-    if (cancelled.delete(choice.id)) return
-    const displaced = choice.replaces ? running.get(choice.replaces) : null
+    // A record already there was stopped or replaced while still queued.
+    if (editors.has(choice.id) || closing) return
+    const record = { id: choice.id, state: "allocating", app: appKey(choice) }
+    editors.set(choice.id, record)
+
+    const displaced = choice.replaces ? editors.get(choice.replaces) : null
     // Waiting frees the app's old ports and its source writes before the
     // replacement comes up.
     if (displaced) await stop(displaced)
-    const taken = [...running.values()].flatMap((entry) => [entry.ports.proxyPort, entry.ports.wsPort])
+    for (const other of [...editors.values()]) {
+      if (other !== record && other.state === "stopping" && other.app === record.app) await other.gone
+    }
+    if (record.state !== "allocating" || closing) return void transition(record, "exited")
+
     const preferred = options.proxyPort
       ? { proxyPort: options.proxyPort, wsPort: options.wsPort ?? options.proxyPort + 1 }
       : null
     const explicit = preferred !== null && !flagsSpent
+    const ports = await allocatePorts({ projectRoot: choice.projectRoot, appPort: choice.appPort, taken: takenPorts(), preferred, explicit })
+    // Stopped from the screen, or the supervisor closing, before it ever had
+    // a process.
+    if (record.state !== "allocating" || closing) return void transition(record, "exited")
+
+    const { child, exited } = startEditor(options, choice, screen, { ports, spawnEditor, log })
+    transition(record, "running", { child, ports })
     flagsSpent = true
-    const ports = await allocatePorts({ projectRoot: choice.projectRoot, appPort: choice.appPort, taken, preferred, explicit })
-    // Stopped from the screen before it ever had a process.
-    if (cancelled.delete(choice.id)) return
-    const entry = startEditor(options, choice, screen, { ports, spawnEditor, log })
-    running.set(choice.id, entry)
-    entry.exited.then(() => {
-      if (running.get(choice.id) === entry) running.delete(choice.id)
+    record.gone = exited.then((reason) => {
+      const asked = record.state === "stopping"
+      transition(record, "exited", { child: null })
+      // A child that dies on its own — a crash, a port clash, a project the
+      // vendor refuses — must not take the supervisor with it. The chooser is
+      // still up, so it is where the explanation goes and where the next
+      // attempt starts.
+      if (!asked) {
+        screen.reportStopped(reason, choice.id)
+        log(`[designlayer] ${reason}`)
+      }
     })
   }
 
@@ -528,6 +584,8 @@ export function runEditors(
       try {
         await start(choice)
       } catch (error) {
+        const record = editors.get(choice.id)
+        if (record) transition(record, "exited")
         screen.reportStopped(
           `The editor for ${appName(choice)} could not start (${error.message}). Pick an app below to try again.`,
           choice.id
@@ -544,27 +602,46 @@ export function runEditors(
       } catch {
         return
       }
-      const entry = running.get(request.id)
-      if (entry) void stop(entry)
-      else cancelled.add(request.id)
+      const record = editors.get(request.id)
+      if (record) void stop(record)
+      // Still in the screen's queue: its choice finds this and is dropped.
+      else editors.set(request.id, { id: request.id, state: "exited", app: null })
     }
   }
 
   return {
-    running,
     done: Promise.all([choiceLoop(), stopLoop()]).then(() => {}),
-    /** Stops every editor and waits for each to exit. */
+    /** The state of one editor id, or null for an id this supervisor has not seen. */
+    stateOf(id) {
+      return editors.get(id)?.state ?? null
+    },
+    /** Stops every editor and waits for each to exit; nothing starts after. */
     stopAll() {
-      return Promise.all([...running.values()].map(stop))
+      closing = true
+      return Promise.all([...editors.values()].map(stop)).then(() => {})
     },
     /** Synchronous, because it runs from the process's `exit` handler. */
     killAll() {
-      for (const entry of running.values()) {
-        entry.quiet = true
-        entry.child.kill("SIGTERM")
+      closing = true
+      for (const record of editors.values()) {
+        if (record.state === "allocating") transition(record, "exited")
+        if (transition(record, "stopping")) record.child.kill("SIGTERM")
       }
     },
   }
+}
+
+/** Which state an editor record may move to from each state. See `runEditors`. */
+const EDITOR_TRANSITIONS = Object.freeze({
+  allocating: ["running", "exited"],
+  running: ["stopping", "exited"],
+  stopping: ["exited"],
+  exited: [],
+})
+
+/** One app, whatever spelling of its folder a choice used. */
+function appKey(choice) {
+  return `${realRoot(choice.projectRoot)}|${choice.appPort}`
 }
 
 /** The argv that turns this command into the single-app child of a supervisor. */
@@ -599,8 +676,11 @@ export function childArgv(options, choice, ports = {}) {
  * where the reader most needs telling that the screen in front of them still
  * works, because the other two are things they did on purpose and this is not.
  */
-function farewell(choice, code, signal) {
+function farewell(choice, code, exitSignal) {
   const name = appName(choice)
+  // A child that ran its exit hooks exits 128 + the signal's number rather
+  // than by the signal itself (runtime/exit-hooks.mjs); it was still stopped.
+  const signal = exitSignal ?? signalForExitCode(code)
   if (signal) return `The editor for ${name} was stopped (${signal}). Choose an app to start again.`
   if (code === 0) return `The editor for ${name} closed. Choose an app to start again.`
   return (
@@ -621,6 +701,12 @@ function spawnChild(argv, env) {
   })
 }
 
+/**
+ * Spawns one app's editor and wires its messages to the screen. Returns the
+ * child and a promise of the sentence that describes how it ended; whether
+ * that sentence is shown is the caller's decision (an exit it asked for is
+ * not news).
+ */
 function startEditor(options, choice, screen, { ports, spawnEditor = spawnChild, log = console.log } = {}) {
   const child = spawnEditor(childArgv(options, choice, ports), {
     ...process.env,
@@ -628,7 +714,6 @@ function startEditor(options, choice, screen, { ports, spawnEditor = spawnChild,
     ...(screen.mcpToken ? { DESIGNLAYER_MCP_TOKEN: screen.mcpToken } : {}),
   })
 
-  const running = { child, ports, quiet: false }
   child.on("message", (message) => {
     if (message?.type !== "ready") return
     screen.reportReady(
@@ -644,56 +729,23 @@ function startEditor(options, choice, screen, { ports, spawnEditor = spawnChild,
     log(`[designlayer] editing ${appName(choice)} at ${message.url} — ${screen.url} to open another app`)
   })
 
-  // A child that dies on its own — a crash, a port clash, a project the vendor
-  // refuses — must not take the supervisor with it. The chooser is still up, so
-  // it is where the explanation goes and where the next attempt starts.
-  running.exited = new Promise((resolve) => {
+  const exited = new Promise((resolve) => {
     let settled = false
-    const report = (reason) => {
+    const settle = (reason) => {
       if (settled) return
       settled = true
-      if (!running.quiet) {
-        screen.reportStopped(reason, choice.id)
-        log(`[designlayer] ${reason}`)
-      }
-      resolve()
+      resolve(reason)
     }
-    child.once("exit", (code, signal) => report(farewell(choice, code, signal)))
+    child.once("exit", (code, signal) => settle(farewell(choice, code, signal)))
     // A spawn that fails outright (EAGAIN, EMFILE, ENOMEM under load) emits
     // `error` and may never emit `exit`; with no listener the event throws and
-    // takes the supervisor down — the one outcome the comment above rules out.
+    // takes the supervisor down.
     child.once("error", (error) => {
       const name = appName(choice)
-      report(`The editor for ${name} could not start (${error.message}). Pick an app below to try again.`)
+      settle(`The editor for ${name} could not start (${error.message}). Pick an app below to try again.`)
     })
   })
-  return running
-}
-
-/**
- * Whatever this process started is this process's to take down with it: a dev
- * server it spawned, a start screen it bound.
- *
- * The SIGINT listener lands before the vendor's, which means Ctrl+C exits here
- * and the vendor never closes its two servers — a cost of nothing, since the
- * process is going away and the sockets go with it. Not exiting instead would
- * be worse: a signal with a listener stops terminating by default, so Ctrl+C
- * during a slow first compile would do nothing at all.
- */
-const cleanups = []
-function holdUntilExit(stop) {
-  if (cleanups.length === 0) {
-    // One pass over the list on the way out, rather than a listener per caller:
-    // the first signal handler to call `process.exit` is the only one that runs,
-    // so the cleanup cannot live in the signal handlers themselves.
-    process.once("exit", () => {
-      for (const cleanup of cleanups) cleanup()
-    })
-    for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
-      process.once(signal, () => process.exit(code))
-    }
-  }
-  cleanups.push(stop)
+  return { child, exited }
 }
 
 /** npm exposes package bins through a symlink in `node_modules/.bin`. Compare

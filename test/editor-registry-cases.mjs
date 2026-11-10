@@ -300,9 +300,37 @@ await check("publishing replaces the entry whole and leaves no temp file behind"
   } finally {
     fs.renameSync = realRename
   }
-  assert.deepEqual(renamed, [[`3456.json.${process.pid}.tmp`, "3456.json"]])
+  assert.equal(renamed.length, 1)
+  // Named for this process and this write (runtime/state-dir.mjs), and not
+  // ending in `.json`, so no reader ever parses it.
+  assert.match(renamed[0][0], new RegExp(`^3456\\.json\\.${process.pid}\\.[0-9a-f]{8}\\.tmp$`))
+  assert.equal(renamed[0][1], "3456.json")
   assert.deepEqual(entries(), ["3456.json"])
   assert.deepEqual(listEditors().map((entry) => entry.proxyPort), [3456])
+})
+
+/*
+ * An editor publishes twice: when its proxy binds, and again when its MCP
+ * endpoint does. The list is ordered by when each editor was opened, so the
+ * second publish must not restamp it — it moved the editor to the end of every
+ * chooser the moment its MCP endpoint came up.
+ */
+await check("publishing again keeps the editor's first start time, and its place in the list", async () => {
+  sandbox("republish")
+  publishEditor(published({ proxyPort: 3470 }))
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  publishEditor(published({ proxyPort: 3472 }))
+  const first = JSON.parse(fs.readFileSync(path.join(registryDir(), "3470.json"), "utf8")).startedAt
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  publishEditor(published({ proxyPort: 3470, mcpPort: 5747 }))
+  const again = JSON.parse(fs.readFileSync(path.join(registryDir(), "3470.json"), "utf8"))
+  assert.equal(again.startedAt, first)
+  assert.equal(again.mcpPort, 5747)
+  assert.deepEqual(listEditors().map((entry) => entry.proxyPort), [3470, 3472])
+  // A withdrawn port that comes back is a new editor, with a new time.
+  withdrawEditor(3470)
+  publishEditor(published({ proxyPort: 3470 }))
+  assert.deepEqual(listEditors().map((entry) => entry.proxyPort), [3472, 3470])
 })
 
 /*
