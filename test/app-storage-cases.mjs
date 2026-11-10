@@ -210,7 +210,7 @@ console.log("\nThe page")
 const { build } = await import("esbuild")
 const bundled = await build({
   stdin: {
-    contents: `export { writeScoped, dropScoped, readScoped, flushScoped, hydrateScoped, isSyncedKey } from "./src/core/app-scope"`,
+    contents: `export { writeStored, dropScoped, readStored, flushScoped, hydrateScoped, isSyncedKey } from "./src/core/app-scope"`,
     resolveDir: PACKAGE_DIR,
     loader: "ts",
   },
@@ -257,7 +257,7 @@ const meta = (window) => JSON.parse(window.localStorage.getItem("designlayer.sto
 await check("a write lands in localStorage at once and on the server after the debounce", async () => {
   clearStore()
   use(newOrigin)
-  scope.writeScoped(NOTES, "[\"n1\"]")
+  scope.writeStored(NOTES, "[\"n1\"]")
   assert.equal(newOrigin.localStorage.getItem(NOTES), "[\"n1\"]", "the local write was not synchronous")
   assert.equal(serverValue(NOTES), null, "sent before the debounce")
   await new Promise((resolve) => setTimeout(resolve, 400))
@@ -268,7 +268,7 @@ await check("a write lands in localStorage at once and on the server after the d
 
 await check("the running-apps cache stays in the page", async () => {
   requests = []
-  scope.writeScoped("designlayer.running-apps", "{}")
+  scope.writeStored("designlayer.running-apps", "{}")
   await scope.flushScoped()
   assert.equal(requests.length, 0)
   assert.equal(scope.isSyncedKey("designlayer.running-apps"), false)
@@ -287,7 +287,7 @@ await check("another origin hydrates notes written elsewhere, and applies remova
   clearStore()
   const other = origin("http://localhost:3460/pricing")
   use(newOrigin)
-  scope.writeScoped(NOTES, "[\"shared\"]")
+  scope.writeStored(NOTES, "[\"shared\"]")
   await scope.flushScoped()
   use(other)
   await scope.hydrateScoped()
@@ -330,7 +330,7 @@ await check("notes saved on an old origin before this version reach the server a
   await scope.hydrateScoped()
   assert.equal(fresh.localStorage.getItem(legacyKey), JSON.stringify([{ id: "old-1" }]))
   // Any later edit outranks the migrated copy.
-  scope.writeScoped(legacyKey, "[]")
+  scope.writeStored(legacyKey, "[]")
   await scope.flushScoped()
   use(oldOrigin)
   await scope.hydrateScoped()
@@ -370,7 +370,7 @@ await check("a server that is down costs nothing but the copy", async () => {
   fetchMode = "down"
   try {
     await scope.hydrateScoped()
-    scope.writeScoped("designlayer.annotations.app:/down", "local")
+    scope.writeStored("designlayer.annotations.app:/down", "local")
     await scope.flushScoped()
     assert.equal(newOrigin.localStorage.getItem("designlayer.annotations.app:/down"), "local")
   } finally {

@@ -112,7 +112,7 @@
  */
 
 import { unsentEditCount } from "../annotations/journal"
-import { readScoped, writeScoped } from "../core/app-scope"
+import { readStored, writeStored } from "../core/app-scope"
 import { config } from "../core/config"
 import { el } from "../core/dom"
 import { focusControl } from "../core/focus"
@@ -1464,7 +1464,7 @@ export function installAppChooser(
   const CACHE_KEY = "designlayer.running-apps"
 
   const readCache = (): AppsResponse | null => {
-    const raw = readScoped(CACHE_KEY)
+    const raw = readStored(CACHE_KEY)
     if (!raw) return null
     try {
       const parsed = JSON.parse(raw) as AppsResponse
@@ -1484,7 +1484,7 @@ export function installAppChooser(
    */
   const writeCache = (payload: AppsResponse | null): void => {
     if (payload === null || typeof payload.error === "string") return
-    writeScoped(CACHE_KEY, JSON.stringify(payload))
+    writeStored(CACHE_KEY, JSON.stringify(payload))
   }
 
   /**
