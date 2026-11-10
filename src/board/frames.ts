@@ -4,9 +4,23 @@
  * Every loaded frame is a whole second copy of the user's app — its bundle, its
  * data fetches, its timers — so loading sixteen at once would stall the very
  * dev server the live page is talking to. Frames therefore load ONE AT A TIME,
- * the current page first and then outward from the middle of the view, and no
- * more than eight hold a document at once. Past that, the frame farthest from
- * view is sent back to about:blank and shows its placeholder again.
+ * in the order the board asks for (the current page first, then the frames on
+ * screen, then the rest; see `scheduleFrames` in ./index), and no more than
+ * eight hold a document at once. Past that, the frame farthest from view is
+ * sent back to about:blank and shows its placeholder again.
+ *
+ * One frame's status, moved only by `setStatus`:
+ *
+ *   idle    --picked by the queue-->         loading
+ *   loading --its page fires load-->         loaded
+ *   loading --no load in LOAD_TIMEOUT_MS-->  failed   (blanked, placeholder stays)
+ *   loading --holdFresh, nothing committed--> idle
+ *   loaded  --over the budget-->             evicted
+ *   loaded | loading | failed --release grace ends--> idle
+ *
+ * A failed frame does not count against the budget and is not retried while
+ * the board stays open: a page that never fires `load` would otherwise hold
+ * the queue for another 15 seconds every time. The next opening tries again.
  *
  * Frames are never moved in the DOM once built. Re-inserting an iframe throws
  * its document away and reloads it, which would undo the whole point of keeping
@@ -74,11 +88,11 @@ export function cleanFrameDocument(iframe: HTMLIFrameElement, extraSelector = ""
 }
 
 /** Documents alive at once, the current page included. */
-export const MAX_LOADED_FRAMES = 8
+const MAX_LOADED_FRAMES = 8
 /** A page that never fires `load` must not hold the queue forever. */
 const LOAD_TIMEOUT_MS = 15000
 
-export type FrameStatus = "idle" | "loading" | "loaded" | "evicted"
+type FrameStatus = "idle" | "loading" | "loaded" | "failed" | "evicted"
 
 export interface FrameView {
   path: string
@@ -91,7 +105,7 @@ export interface FrameView {
   setFile(file: string | undefined): void
 }
 
-export interface FramePool {
+interface FramePool {
   get(path: string): FrameView | undefined
   /** The view for a page, built on first ask. */
   ensure(page: PageEntry): FrameView
@@ -114,8 +128,10 @@ export interface FramePool {
   destroy(): void
 }
 
-export interface FramePoolOptions {
+interface FramePoolOptions {
   max?: number
+  /** Test seam: how long a load may take before the frame is failed. */
+  loadTimeoutMs?: number
   /** Extra selectors to hide inside every frame — the host's dev chrome and the companions'. */
   hideSelector?: string
   onLoad?(view: FrameView): void
@@ -131,7 +147,9 @@ export function createFramePool(options: FramePoolOptions = {}): FramePool {
   let desired: string[] = []
   let idleTimer = 0
 
-  const statusText = (status: FrameStatus) => (status === "evicted" ? "Zoom in to load" : "Loading…")
+  const loadTimeout = options.loadTimeoutMs ?? LOAD_TIMEOUT_MS
+  const statusText = (status: FrameStatus) =>
+    status === "evicted" ? "Zoom in to load" : status === "failed" ? "Did not load" : "Loading…"
 
   const setStatus = (view: FrameView & { statusLine: HTMLElement }, status: FrameStatus) => {
     view.status = status
@@ -172,7 +190,23 @@ export function createFramePool(options: FramePoolOptions = {}): FramePool {
     view.startedAt = performance.now()
     view.before = view.iframe.contentDocument
     view.iframe.setAttribute("src", path)
-    view.timer = setTimeout(() => finish(path), LOAD_TIMEOUT_MS) as unknown as number
+    view.timer = setTimeout(() => fail(path), loadTimeout) as unknown as number
+  }
+
+  /*
+   * A page that never fired `load`. It used to be marked loaded, which hid the
+   * placeholder over an empty frame and spent one of the eight documents on
+   * it. Blanked instead, so whatever it was doing stops, and its placeholder
+   * says it did not load.
+   */
+  const fail = (path: string) => {
+    const view = views.get(path)
+    if (!view || view.status !== "loading") return
+    if (loading === path) loading = null
+    view.iframe.setAttribute("src", "about:blank")
+    view.title = ""
+    setStatus(view, "failed")
+    pump()
   }
 
   const evict = (path: string) => {
@@ -195,7 +229,10 @@ export function createFramePool(options: FramePoolOptions = {}): FramePool {
       if (view.status === "idle") view.statusLine.textContent = statusText(wanted.includes(view.path) ? "idle" : "evicted")
     }
     if (loading) return
-    const next = wanted.find((path) => views.get(path)!.status !== "loaded")
+    const next = wanted.find((path) => {
+      const status = views.get(path)!.status
+      return status !== "loaded" && status !== "failed"
+    })
     if (!next) return
     const live = loaded()
     if (live.length >= max) {
@@ -301,19 +338,25 @@ export function createFramePool(options: FramePoolOptions = {}): FramePool {
     },
 
     /*
-     * A closed board's frames are still running apps behind `display: none`:
-     * each one keeps its timers and fetches, and re-runs every hot update the
-     * editor's own writes trigger. Kept for a while so a quick reopen is
-     * instant, then dropped. Back to "idle", not "evicted", so a reopen shows
-     * the same "Loading…" placeholders a first opening does.
+     * A closed board's frames are still running apps behind
+     * `content-visibility: hidden`: each one keeps its timers and fetches, and
+     * re-runs every hot update the editor's own writes trigger. Kept for a
+     * while so a quick reopen is instant, then dropped. Back to "idle", not
+     * "evicted", so a reopen shows the same "Loading…" placeholders a first
+     * opening does.
+     *
+     * The queue stops at once, though: the load in flight finishes, and nothing
+     * new starts. Clearing it only when the grace ended let every `load` start
+     * the next frame, so a closed board booted more copies of the app for 30
+     * seconds and then blanked them all.
      */
     release(ms) {
       clearTimeout(idleTimer)
+      desired = []
       idleTimer = setTimeout(() => {
-        desired = []
         loading = null
         for (const view of views.values()) {
-          if (view.status !== "loaded" && view.status !== "loading") continue
+          if (view.status !== "loaded" && view.status !== "loading" && view.status !== "failed") continue
           clearTimeout(view.timer)
           view.iframe.setAttribute("src", "about:blank")
           view.title = ""

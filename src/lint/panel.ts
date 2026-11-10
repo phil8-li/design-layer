@@ -70,9 +70,10 @@
  *
  * ## What lives where
  *
- * Nothing about the canvas is decided here. The panel writes `markersShown` in
- * the store and the marker layer reads it; the two layers' mutual exclusion is
- * the marker layer's business, driven by that one boolean. Row and badge light
+ * Nothing about the canvas is decided here. The panel's toggle writes the one
+ * `MarkerLayer` value (through `setMarkersShown`) and the marker layer reads
+ * it; the store relays a change from either side, so the toggle's label always
+ * follows the canvas. Row and badge light
  * each other up through `designlayer:lint-hover` and its mirror, the same
  * window-event seam the annotation layer uses, for the same reason: neither
  * surface should have to import the other to exist.
@@ -85,14 +86,16 @@ import { icon } from "../core/icons"
 import { tokens } from "../core/tokens"
 import { section, setSectionHint } from "../panels/inspector/field"
 import type { EditorContext } from "../core/context"
-import type { LayerElement } from "../core/types"
 import {
+  LINT_HOVER_EVENT as HOVER_EVENT,
+  LINT_MARKER_HOVER_EVENT as MARKER_HOVER_EVENT,
   elementsForFinding,
   fixFindings,
   ignoreFindings,
   ignoredFindings,
   lintError,
   lintFindings,
+  lintFixState,
   lintResolutionEpoch,
   lintRanAt,
   lintRunState,
@@ -104,6 +107,7 @@ import {
   isOnThisPage,
   markersShown,
   runAudit,
+  selectableElement,
   setMarkersShown,
   subscribeToLint,
   unignoreFindings,
@@ -111,20 +115,6 @@ import {
 } from "./store"
 import { displayLiteral, hintFor, ruleTitle, swatchFor } from "./plain"
 import { formatCount, plural } from "../core/format"
-
-/**
- * The two halves of the row/badge hover pair, named exactly as the marker
- * contract names them.
- *
- * `designlayer:lint-hover`        panel  -> canvas  `{ id: string | null }`
- * `designlayer:lint-marker-hover` canvas -> panel   `{ id: string | null }`
- *
- * `null` is a value in the pair rather than a second event, because the two
- * halves have to be handled by one code path — a listener that only ever hears
- * "now this one" is how a highlight gets stuck on a row nobody is pointing at.
- */
-const HOVER_EVENT = "designlayer:lint-hover"
-const MARKER_HOVER_EVENT = "designlayer:lint-marker-hover"
 
 /** The row the canvas is pointing at. The look belongs to `css/lint.ts`. */
 const ROW_ACTIVE = "de-lint-row--active"
@@ -170,13 +160,6 @@ function basename(finding: LintFinding): string {
 /** Basename and line, as one string — for accessible names and toasts. */
 function where(finding: LintFinding): string {
   return `${basename(finding)}:${finding.line}`
-}
-
-/** Only these two can be selected on the canvas; anything else is listed only. */
-function selectable(element: Element): LayerElement | null {
-  if (element instanceof HTMLElement) return element
-  if (element instanceof SVGSVGElement) return element
-  return null
 }
 
 function announceHover(id: string | null): void {
@@ -306,7 +289,13 @@ export function dsLintSection(editor: EditorContext): { node: HTMLElement; updat
     })
   }
 
-  function fix(ids: string[]): void {
+  /*
+   * A press sends only the findings not already being fixed: their Fix is
+   * disabled and Fix all leaves them out, but a keyboard repeat can land
+   * before the repaint does.
+   */
+  function fix(requested: string[]): void {
+    const ids = requested.filter((id) => lintFixState(id).kind !== "fixing")
     if (!ids.length) return
     void fixFindings(editor.apiBase, ids)
       .then((result) => {
@@ -379,7 +368,7 @@ export function dsLintSection(editor: EditorContext): { node: HTMLElement; updat
     const element =
       elementsForFinding(finding.id)
         .filter((node) => node.isConnected)
-        .map(selectable)
+        .map(selectableElement)
         .find(Boolean) ?? null
     if (!element) {
       editor.toast(
@@ -538,6 +527,9 @@ export function dsLintSection(editor: EditorContext): { node: HTMLElement; updat
               "aria-label": `Fix ${finding.rule} at ${where(finding)}`,
               title: `Replace ${finding.snippet} with ${finding.fix.replacement}`,
               "data-de-lint": "fix",
+              // Disabled while its request is in flight, so one finding is
+              // never in two fixes. See `LintFixState`.
+              disabled: lintFixState(finding.id).kind === "fixing",
               onclick: (event: Event) => {
                 event.stopPropagation()
                 fix([finding.id])
@@ -618,11 +610,14 @@ export function dsLintSection(editor: EditorContext): { node: HTMLElement; updat
   /** The ticked findings that can actually be written, and what to call them. */
   function fixTarget(findings: readonly LintFinding[]): { ids: string[]; label: string } {
     const fixable = findings.filter((finding) => finding.fix !== null)
+    // The label counts what the reader sees; the ids leave out a finding whose
+    // fix is already in flight, so the button greys out when nothing is left.
+    const ready = (finding: LintFinding) => lintFixState(finding.id).kind !== "fixing"
     if (!checked.size) {
-      return { ids: fixable.map((finding) => finding.id), label: `Fix all (${fixable.length})` }
+      return { ids: fixable.filter(ready).map((finding) => finding.id), label: `Fix all (${fixable.length})` }
     }
     return {
-      ids: fixable.filter((finding) => checked.has(finding.id)).map((finding) => finding.id),
+      ids: fixable.filter((finding) => checked.has(finding.id) && ready(finding)).map((finding) => finding.id),
       // The count is what is TICKED, not what is fixable within it: the user
       // ticked three things and the button has to be about those three. Whether
       // all three can be written is the disabled state's job, not the label's.

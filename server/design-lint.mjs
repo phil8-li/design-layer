@@ -761,6 +761,26 @@ const CHILD_RUNNERS = {
  * ---------------------------------------------------------------------- */
 
 /**
+ * A queue that runs each task after the one before it has settled.
+ *
+ * The ignore store and the fix route both read a file, decide, and write it
+ * back. Two of those interleaved is a lost update: both read the old text and
+ * the second write drops the first one's change. Running them one at a time is
+ * the whole fix, and a failed task must not wedge the queue behind it.
+ */
+function serialQueue() {
+  let queue = Promise.resolve()
+  return function serial(task) {
+    const run = queue.then(task, task)
+    queue = run.then(
+      () => undefined,
+      () => undefined
+    )
+    return run
+  }
+}
+
+/**
  * The finding ids the user has dismissed.
  *
  * One JSON file under the host's state directory, written atomically through
@@ -774,16 +794,7 @@ const CHILD_RUNNERS = {
 function createIgnoreStore({ stateDir }) {
   const storeDir = path.resolve(stateDir)
   const ignoreFile = path.join(storeDir, "lint-ignored.json")
-  let queue = Promise.resolve()
-
-  function serial(task) {
-    const run = queue.then(task, task)
-    queue = run.then(
-      () => undefined,
-      () => undefined
-    )
-    return run
-  }
+  const serial = serialQueue()
 
   async function readFileIds() {
     let parsed
@@ -820,7 +831,12 @@ function createIgnoreStore({ stateDir }) {
     add(ids) {
       return serial(async () => {
         const current = await readFileIds()
-        const merged = [...new Set([...current, ...ids])].slice(0, MAX_FINDINGS)
+        // At the cap the OLDEST dismissals go, never the one just made. This
+        // kept the first 5000 and answered 200 without the new id, so Ignore
+        // looked like it worked and the row came back on the next run. An old
+        // id is also the likeliest to name a finding that no longer exists.
+        const fresh = new Set(ids)
+        const merged = [...current.filter((id) => !fresh.has(id)), ...fresh].slice(-MAX_FINDINGS)
         await writeFileIds(merged)
         return merged
       })
@@ -1098,6 +1114,10 @@ export function createDesignLint(config) {
    */
   /** finding id -> the checker that reported it; see `audit` and `fix`. */
   const toolOfFinding = new Map()
+  /** Every write to source goes through here, one at a time. See `fix`. */
+  const writes = serialQueue()
+  /** Audit runs in flight, by requested checker set. See `run`. */
+  const runsInFlight = new Map()
 
   async function audit(requested) {
     const tools = await describeTools()
@@ -1161,7 +1181,16 @@ export function createDesignLint(config) {
         }
         requested = [...new Set(body.tools)]
       }
-      return audit(requested)
+      // Two Audit presses (or two panels) while one run is going share it:
+      // each run spawns a child per checker, and a second set reading the same
+      // files answers nothing the first will not. A fix never shares a run,
+      // because it needs positions read after the previous fix wrote.
+      const key = requested === null ? "*" : [...requested].sort().join(",")
+      const running = runsInFlight.get(key)
+      if (running) return running
+      const started = audit(requested).finally(() => runsInFlight.delete(key))
+      runsInFlight.set(key, started)
+      return started
     },
 
     /**
@@ -1181,90 +1210,16 @@ export function createDesignLint(config) {
      * writing anyway would cut a replacement into the middle of whatever is
      * there now. That is reported as a failure with a reason, which is a row
      * the user can re-audit and fix; a corrupted stylesheet is not.
+     *
+     * Every fix runs through one queue, re-audit included. Two fixes in one
+     * file that overlapped both read the old text, and the second write put
+     * back what the first had replaced while both answered "fixed". Queued, the
+     * second one audits the file the first one wrote, so an id lands in
+     * `fixed` only when its edit is in the file.
      */
     async fix(body = {}) {
       const ids = readIds(body)
-      const owners = new Set(ids.map((id) => toolOfFinding.get(id)))
-      const { findings } = await audit(owners.has(undefined) ? null : [...owners])
-      const known = new Map(findings.map((finding) => [finding.id, finding]))
-
-      const fixed = []
-      const failed = []
-      const byFile = new Map()
-
-      for (const id of ids) {
-        const finding = known.get(id)
-        if (!finding) {
-          failed.push({ id, reason: "This finding is no longer reported. Run Audit again." })
-          continue
-        }
-        if (!finding.fix) {
-          failed.push({ id, reason: "This finding names no single replacement, so it cannot be applied for you." })
-          continue
-        }
-        const list = byFile.get(finding.file)
-        if (list) list.push(finding)
-        else byFile.set(finding.file, [finding])
-      }
-
-      for (const [relative, list] of byFile) {
-        const absolute = path.join(projectRoot, relative)
-        const text = await readTextIfPresent(absolute)
-        if (text === null) {
-          for (const finding of list) {
-            failed.push({ id: finding.id, reason: `${relative} could not be read.` })
-          }
-          continue
-        }
-
-        const starts = lineStarts(text)
-        const edits = []
-        const applied = []
-        for (const finding of list) {
-          const start = offsetAt(starts, text, finding.line, finding.column)
-          const end = offsetAt(starts, text, finding.endLine, finding.endColumn)
-          if (start < 0 || end <= start || text.slice(start, end) !== finding.snippet) {
-            failed.push({
-              id: finding.id,
-              reason: `${relative} changed since it was checked, so this was not written.`,
-            })
-            continue
-          }
-          edits.push({ start, end, text: finding.fix.replacement, id: finding.id })
-        }
-
-        // Two findings covering the same bytes cannot both be written, and
-        // `applyEdits` refuses the whole file over it. Resolving it here means
-        // the first one lands and the second is reported, rather than an
-        // overlap costing every other fix in the file.
-        edits.sort((a, b) => a.start - b.start || a.end - b.end)
-        const clear = []
-        let previousEnd = -1
-        for (const edit of edits) {
-          if (edit.start < previousEnd) {
-            failed.push({
-              id: edit.id,
-              reason: "This overlaps another fix in the same place. Apply them one at a time.",
-            })
-            continue
-          }
-          previousEnd = edit.end
-          clear.push(edit)
-          applied.push(edit.id)
-        }
-        if (clear.length === 0) continue
-
-        try {
-          await fs.writeFile(absolute, applyEdits(text, clear), "utf8")
-          fixed.push(...applied)
-        } catch (error) {
-          for (const id of applied) {
-            failed.push({ id, reason: `${relative} could not be written: ${error?.message ?? "unknown error"}` })
-          }
-        }
-      }
-
-      return { fixed, failed }
+      return writes(() => fixNow(ids))
     },
 
     async ignore(body = {}) {
@@ -1278,6 +1233,91 @@ export function createDesignLint(config) {
     async ignored() {
       return { ignored: await ignores.read() }
     },
+  }
+
+  /** One fix, alone in the write queue. See `fix`. */
+  async function fixNow(ids) {
+    const owners = new Set(ids.map((id) => toolOfFinding.get(id)))
+    const { findings } = await audit(owners.has(undefined) ? null : [...owners])
+    const known = new Map(findings.map((finding) => [finding.id, finding]))
+
+    const fixed = []
+    const failed = []
+    const byFile = new Map()
+
+    for (const id of ids) {
+      const finding = known.get(id)
+      if (!finding) {
+        failed.push({ id, reason: "This finding is no longer reported. Run Audit again." })
+        continue
+      }
+      if (!finding.fix) {
+        failed.push({ id, reason: "This finding names no single replacement, so it cannot be applied for you." })
+        continue
+      }
+      const list = byFile.get(finding.file)
+      if (list) list.push(finding)
+      else byFile.set(finding.file, [finding])
+    }
+
+    for (const [relative, list] of byFile) {
+      const absolute = path.join(projectRoot, relative)
+      const text = await readTextIfPresent(absolute)
+      if (text === null) {
+        for (const finding of list) {
+          failed.push({ id: finding.id, reason: `${relative} could not be read.` })
+        }
+        continue
+      }
+
+      const starts = lineStarts(text)
+      const edits = []
+      const applied = []
+      for (const finding of list) {
+        const start = offsetAt(starts, text, finding.line, finding.column)
+        const end = offsetAt(starts, text, finding.endLine, finding.endColumn)
+        if (start < 0 || end <= start || text.slice(start, end) !== finding.snippet) {
+          failed.push({
+            id: finding.id,
+            reason: `${relative} changed since it was checked, so this was not written.`,
+          })
+          continue
+        }
+        edits.push({ start, end, text: finding.fix.replacement, id: finding.id })
+      }
+
+      // Two findings covering the same bytes cannot both be written, and
+      // `applyEdits` refuses the whole file over it. Resolving it here means
+      // the first one lands and the second is reported, rather than an
+      // overlap costing every other fix in the file.
+      edits.sort((a, b) => a.start - b.start || a.end - b.end)
+      const clear = []
+      let previousEnd = -1
+      for (const edit of edits) {
+        if (edit.start < previousEnd) {
+          failed.push({
+            id: edit.id,
+            reason: "This overlaps another fix in the same place. Apply them one at a time.",
+          })
+          continue
+        }
+        previousEnd = edit.end
+        clear.push(edit)
+        applied.push(edit.id)
+      }
+      if (clear.length === 0) continue
+
+      try {
+        await fs.writeFile(absolute, applyEdits(text, clear), "utf8")
+        fixed.push(...applied)
+      } catch (error) {
+        for (const id of applied) {
+          failed.push({ id, reason: `${relative} could not be written: ${error?.message ?? "unknown error"}` })
+        }
+      }
+    }
+
+    return { fixed, failed }
   }
 }
 

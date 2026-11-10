@@ -41,7 +41,7 @@
 import { CHROME_ATTR } from "../core/dom"
 import { hashBase, normalizePath, normalizeRoute } from "./pages"
 
-export type NavigateStrategy = "router" | "popstate" | "hash" | "assign"
+type NavigateStrategy = "router" | "popstate" | "hash" | "assign"
 
 export interface NavigateWindow {
   next?: { router?: { push?: (path: string) => unknown } }
@@ -59,7 +59,7 @@ export interface NavigateWindow {
   PopStateEvent?: typeof PopStateEvent
 }
 
-export interface NavigateEnv {
+interface NavigateEnv {
   window: NavigateWindow
   /** Resolves on the next frame. */
   frame?: () => Promise<void>
@@ -70,8 +70,8 @@ export interface NavigateEnv {
   popstateTimeoutMs?: number
 }
 
-export const NAVIGATE_TIMEOUT_MS = 2500
-export const POPSTATE_TIMEOUT_MS = 1200
+const NAVIGATE_TIMEOUT_MS = 2500
+const POPSTATE_TIMEOUT_MS = 1200
 
 const nextFrame = (): Promise<void> =>
   new Promise((resolve) => requestAnimationFrame(() => resolve()))

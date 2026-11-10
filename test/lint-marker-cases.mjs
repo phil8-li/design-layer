@@ -325,11 +325,29 @@ const server = {
   findings: FINDINGS,
   ignored: [],
   calls: [],
+  /** Route -> a promise the answer waits on, so a case can hold a request open. */
+  gates: {},
+  /** Replaces the /lint/fix answer, for a server that refuses. */
+  fixReply: null,
   reset() {
     server.findings = FINDINGS
     server.ignored = []
     server.calls = []
+    server.gates = {}
+    server.fixReply = null
   },
+}
+
+/** A request held open until the case lets it go. */
+function gate(route) {
+  let open
+  server.gates[route] = new Promise((resolve) => {
+    open = resolve
+  })
+  return () => {
+    delete server.gates[route]
+    open()
+  }
 }
 
 const clone = (value) => JSON.parse(JSON.stringify(value))
@@ -340,6 +358,9 @@ async function serve(input, init = {}) {
   const rest = url.pathname.slice(API.length)
   const body = init.body ? JSON.parse(init.body) : null
   server.calls.push({ method, path: rest, body })
+  const held = server.gates[rest]
+  // The answer is built after the gate opens, from what the server holds then.
+  if (held) await held
 
   const reply = (payload) => ({ ok: true, status: 200, json: async () => payload })
 
@@ -356,6 +377,7 @@ async function serve(input, init = {}) {
   }
   if (rest === "/lint/fix" && method === "POST") {
     const ids = body?.ids ?? []
+    if (server.fixReply) return reply(server.fixReply(ids))
     return reply({ fixed: ids, failed: [] })
   }
   if (rest === "/lint/ignore") {
@@ -386,11 +408,12 @@ const bundled = await build({
       export { createContext } from "./src/core/context"
       export { getState, setState } from "./src/core/store"
       export { dsLintSection } from "./src/lint/panel"
-      export { installLintMarkers, relaxSelector } from "./src/lint/markers"
+      export { installLintMarkers } from "./src/lint/markers"
+      export { relaxSelector } from "./src/lint/resolve"
       export {
         lintFindings, lintSummary, markersShown, setMarkersShown,
         runAudit, isOnThisPage, elementsForFinding, findingsFor,
-        resetLintForTest,
+        resetLintForTest, lintFixState, fixFindings,
       } from "./src/lint/store"
       export { installAnnotations } from "./src/annotations/canvas"
       export {
@@ -1199,6 +1222,167 @@ await check("on an untouched editor the group is Audit alone", async () => {
     /Running Tokens \(Stylelint\)/,
     "the fresh section cannot say which checkers it would use"
   )
+})
+
+
+// ── One fix at a time, and the page moving under the index ─────────────────
+
+console.log("\nA fix in flight, a run overtaken, and the page changing")
+
+/** A fresh audit of the stock five findings, everything else cleared. */
+async function freshAudit() {
+  editor.resetLintForTest()
+  server.reset()
+  await editor.runAudit(API)
+  panel.update()
+  await settle()
+}
+
+const fixButton = (id) => row(id)?.querySelector('[data-de-lint="fix"]') ?? null
+
+await check("a fix in flight disables its Fix and leaves Fix all", async () => {
+  await freshAudit()
+  const release = gate("/lint/fix")
+  click(fixButton("card-bg"))
+  await settle(2)
+  assert.equal(editor.lintFixState("card-bg").kind, "fixing")
+  assert.equal(fixButton("card-bg").disabled, true, "the Fix of a finding being fixed can be pressed again")
+  assert.equal(fixButton("action-radius").disabled, false, "a fix in flight disabled another row's Fix")
+
+  // Fix all now covers only the finding that is not in flight.
+  click(one("fix-all"))
+  await settle(2)
+  const sent = server.calls.filter((call) => call.path === "/lint/fix").map((call) => call.body.ids)
+  assert.deepEqual(sent, [["card-bg"], ["action-radius"]], `fix requests sent: ${JSON.stringify(sent)}`)
+
+  release()
+  await settle()
+  assert.equal(editor.lintFixState("card-bg").kind, "fixed")
+  assert.equal(row("card-bg"), null, "a written fix left its row")
+})
+
+await check("a fix the server did not write stays on the list as failed", async () => {
+  await freshAudit()
+  server.fixReply = (ids) => ({
+    fixed: [],
+    failed: ids.map((id) => ({ id, reason: "src/styles/card.css changed since it was checked, so this was not written." })),
+  })
+  toasts.length = 0
+  click(fixButton("card-bg"))
+  await settle()
+  const state = editor.lintFixState("card-bg")
+  assert.equal(state.kind, "failed", `the refused fix is ${state.kind}`)
+  assert.match(state.reason, /changed since it was checked/)
+  assert.ok(row("card-bg"), "a refused fix took its row away")
+  assert.equal(fixButton("card-bg").disabled, false, "a refused fix cannot be tried again")
+  assert.equal(toasts.at(-1)?.[1], "error", "a refused fix raised no error toast")
+})
+
+await check("a fix that lands during an audit is not undone by its late result", async () => {
+  await freshAudit()
+  // The run reads the file before the fix writes it, so its answer still
+  // lists the fixed finding.
+  const release = gate("/lint/run")
+  const run = editor.runAudit(API)
+  await settle(2)
+  await editor.fixFindings(API, ["card-bg"])
+  assert.ok(!editor.lintFindings().some((entry) => entry.id === "card-bg"))
+  release()
+  await run
+  panel.update()
+  await settle()
+  assert.equal(
+    editor.lintFindings().some((entry) => entry.id === "card-bg"),
+    false,
+    "the run that started before the fix brought the fixed row back"
+  )
+  assert.equal(row("card-bg"), null)
+  // The next run starts after the fix, so its answer is the truth again.
+  await editor.runAudit(API)
+  assert.ok(editor.lintFindings().some((entry) => entry.id === "card-bg"), "a later run is filtered too")
+})
+
+await check("the marker toggle follows the canvas when annotation mode takes it", async () => {
+  await freshAudit()
+  assert.match(one("hide-markers").textContent, /Hide markers/)
+  context.setState({ annotating: true })
+  await settle()
+  panel.update()
+  await settle()
+  assert.equal(editor.markerLayer(), "notes")
+  assert.match(one("hide-markers").textContent, /Show markers/, "the toggle still offers to hide markers that are gone")
+  assert.equal(one("hide-markers").getAttribute("aria-pressed"), "true")
+  context.setState({ annotating: false })
+  await settle()
+  click(one("hide-markers"))
+  await settle()
+  assert.equal(editor.markerLayer(), "audit", "pressing the toggle did not show the markers")
+})
+
+await check("a badge on the second element of a finding selects that element", async () => {
+  const main = $("main")
+  const chips = [0, 1].map(() => {
+    const node = window.document.createElement("span")
+    node.className = "chip"
+    main.append(node)
+    return node
+  })
+  // Two badges at one spot would be indistinguishable; each chip has its own box.
+  const box = window.Element.prototype.getBoundingClientRect
+  window.Element.prototype.getBoundingClientRect = function at() {
+    const shift = chips.indexOf(this) + 1
+    const left = 12 + shift * 240
+    return { x: left, y: 24, left, top: 24, right: left + 200, bottom: 124, width: 200, height: 100 }
+  }
+  const picked = []
+  const select = context.select
+  try {
+    editor.resetLintForTest()
+    server.reset()
+    server.findings = [finding("chips", { selector: ".chip", severity: "warning" })]
+    await editor.runAudit(API)
+    await settle()
+    const chipBadges = badges().filter((node) => node.getAttribute("data-de-lint-id") === "chips")
+    assert.equal(chipBadges.length, 2)
+    context.select = (node) => picked.push(node)
+    click(chipBadges[1])
+    assert.equal(picked[0], chips[1], "the second chip's badge selected the first chip")
+  } finally {
+    context.select = select
+    window.Element.prototype.getBoundingClientRect = box
+    for (const node of chips) node.remove()
+  }
+})
+
+await check("an element that renders after the audit gets its badge without a re-run", async () => {
+  editor.resetLintForTest()
+  server.reset()
+  server.findings = [...FINDINGS, finding("later", { selector: ".later", severity: "warning" })]
+  await editor.runAudit(API)
+  panel.update()
+  await settle()
+  const onPage = editor.lintSummary().onPage
+  assert.equal(badgeFor("later"), null)
+
+  const later = window.document.createElement("div")
+  later.className = "later"
+  $("main").append(later)
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  panel.update()
+  await settle()
+  try {
+    assert.deepEqual(editor.findingsFor(later).map((entry) => entry.id), ["later"])
+    assert.equal(editor.lintSummary().onPage, onPage + 1, "the on-page count did not follow the page")
+    assert.ok(badgeFor("later"), "the new element has no badge")
+    assert.ok(row("later") && !row("later").querySelector(".de-lint-offpage"), "the row still says off page")
+  } finally {
+    later.remove()
+  }
+  // And it goes when the element does.
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  await settle()
+  assert.equal(editor.lintSummary().onPage, onPage, "a removed element still counts as on this page")
+  assert.equal(badgeFor("later"), null)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

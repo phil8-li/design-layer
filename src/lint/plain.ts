@@ -178,7 +178,7 @@ export function hintFor(finding: LintFinding): string | null {
  * any of six. A whitespace run collapses first — a multi-line `rgba(\n 0,\n 0…)`
  * sliced straight out of a stylesheet is otherwise three lines of chip.
  */
-export function shortLiteral(text: string, max = 34): string {
+function shortLiteral(text: string, max = 34): string {
   const flat = text.replace(/\s+/g, " ").trim()
   if (flat.length <= max) return flat
   const head = Math.ceil((max - 1) / 2)
