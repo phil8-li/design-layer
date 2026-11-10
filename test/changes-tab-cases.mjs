@@ -72,7 +72,9 @@ const bundled = await build({
       export { createWriter } from "./src/core/writer"
       export { createContext } from "./src/core/context"
       export { annotationsTab } from "./src/panels/inspector/tab-annotations"
-      export { addAnnotation, resetAnnotationsForTest } from "./src/annotations/store"
+      export { addAnnotation, annotations, resetAnnotationsForTest, updateSettings } from "./src/annotations/store"
+      export { buildAnnotationBrief } from "./src/annotations/output"
+      export { sendState, resetSendForTest } from "./src/annotations/handover"
       export {
         isEditQueued,
         recordEdit,
@@ -388,6 +390,206 @@ await check("an unwritable edit alone makes the button send", async () => {
   tab.update()
   assert.equal(primary().textContent.trim(), "Send to agent")
   assert.equal(primary().disabled, false)
+})
+
+
+console.log("\nThe send, as one value")
+
+/*
+ * The send is a machine in `handover.ts` (idle, sending, sent, failed). These
+ * cases drive it through a fake `/agent` route that answers each outcome the
+ * server can give, plus a reply from a server that predates `outcome`.
+ */
+function fakeAgent(replyFor) {
+  const real = globalThis.fetch
+  const posted = []
+  let release = null
+  let held = false
+  globalThis.fetch = async (input, init) => {
+    if (!String(input).endsWith("/agent")) return real(input, init)
+    posted.push(JSON.parse(init.body))
+    if (held) await new Promise((resolve) => (release = resolve))
+    const body = replyFor(posted.length)
+    return { ok: body.ok !== false, status: body.ok === false ? 500 : 200, json: async () => body }
+  }
+  return {
+    posted,
+    hold: () => (held = true),
+    release: () => {
+      held = false
+      release?.()
+    },
+    restore: () => (globalThis.fetch = real),
+  }
+}
+const UNDELIVERED = "No agent is attached over MCP, so nothing was edited. The brief is saved to the handoff file."
+const comments = () => ui.annotations().map((note) => note.comment)
+
+await check("a queued send stamps every item, and the button then has nothing new to send", async () => {
+  const agent = fakeAgent(() => ({ ok: true, message: "Queued for your coding agent.", outcome: "queued", changeId: "chg-1" }))
+  try {
+    reset()
+    pin("First")
+    await settle()
+    tab.update()
+    press(primary())
+    await settle()
+    assert.equal(ui.sendState().kind, "sent")
+    const [note] = ui.annotations()
+    assert.ok(note.sentAt, "the sent note carries no sentAt")
+    assert.equal(note.sentIn, "chg-1")
+    assert.equal(primary().textContent.trim(), "Nothing new to send")
+    assert.equal(primary().disabled, true, "a second press would send the same work again")
+    press(primary())
+    await settle()
+    assert.equal(agent.posted.length, 1, "the disabled button still posted")
+
+    pin("Second")
+    await settle()
+    assert.equal(primary().textContent.trim(), "Send to agent", "a new note did not bring Send back")
+    assert.equal(primary().disabled, false)
+    const brief = ui.buildAnnotationBrief()
+    assert.match(brief, /\*\*Earlier changes:\*\* chg-1/, "the header does not name the earlier change")
+    assert.match(brief, /### 1\. [^\n]*\n(?:[^\n]*\n)*?\*\*Sent before:\*\* in change chg-1/, "the sent item is not marked")
+    assert.equal((brief.match(/\*\*Sent before:\*\*/g) ?? []).length, 2, "the lead plus one marked item")
+  } finally {
+    agent.restore()
+  }
+})
+
+await check("the button is disabled while a send is out, and a second press posts nothing", async () => {
+  const agent = fakeAgent(() => ({ ok: true, message: "Delivered to your coding agent — it was waiting.", outcome: "delivered", changeId: "chg-2" }))
+  try {
+    reset()
+    pin("Once")
+    await settle()
+    tab.update()
+    agent.hold()
+    press(primary())
+    await settle()
+    assert.equal(ui.sendState().kind, "sending")
+    assert.equal(primary().textContent.trim(), "Sending…")
+    assert.equal(primary().disabled, true)
+    press(primary())
+    await settle()
+    assert.equal(agent.posted.length, 1, "a press during the send posted again")
+    agent.release()
+    await settle()
+    assert.equal(ui.sendState().kind, "sent")
+    assert.equal(ui.annotations()[0].sentIn, "chg-2", "a delivered send did not stamp the note")
+  } finally {
+    agent.release()
+    agent.restore()
+  }
+})
+
+await check("Clear on send removes only the items the brief carried", async () => {
+  const agent = fakeAgent(() => ({ ok: true, message: "Queued for your coding agent.", outcome: "queued", changeId: "chg-3" }))
+  try {
+    reset()
+    ui.updateSettings({ clearOnCopy: true })
+    pin("first")
+    await settle()
+    tab.update()
+    agent.hold()
+    press(primary())
+    await settle()
+    pin("pinned during send")
+    agent.release()
+    await settle()
+    assert.ok(!agent.posted[0].brief.includes("pinned during send"))
+    assert.deepEqual(comments(), ["pinned during send"], "a note the brief never carried was cleared")
+    assert.equal(ui.annotations()[0].sentAt, undefined, "a note the agent never saw is stamped sent")
+    // The clear is one step on the undo timeline.
+    ui.undo()
+    assert.deepEqual(comments().sort(), ["first", "pinned during send"], "Cmd+Z did not bring the cleared note back")
+  } finally {
+    agent.release()
+    agent.restore()
+    ui.updateSettings({ clearOnCopy: false })
+  }
+})
+
+await check("an undelivered send clears nothing, stamps nothing, and adds only the clipboard line", async () => {
+  const agent = fakeAgent(() => ({ ok: true, message: UNDELIVERED, outcome: "undelivered", changeId: "chg-4" }))
+  try {
+    reset()
+    ui.updateSettings({ clearOnCopy: true })
+    pin("Still here")
+    await settle()
+    tab.update()
+    press(primary())
+    await settle()
+    assert.deepEqual(comments(), ["Still here"], "a send that reached nobody cleared the list")
+    assert.equal(ui.annotations()[0].sentAt, undefined, "a send that reached nobody stamped the note")
+    assert.equal(toasts.at(-1)[0], `${UNDELIVERED} Also copied to the clipboard.`)
+    assert.doesNotMatch(toasts.at(-1)[0], /Copy the brief/)
+    assert.equal(primary().textContent.trim(), "Send to agent")
+    assert.equal(primary().disabled, false, "the list cannot be sent again once an agent attaches")
+  } finally {
+    agent.restore()
+    ui.updateSettings({ clearOnCopy: false })
+  }
+})
+
+await check("a reply from a server without outcome reads as queued", async () => {
+  const agent = fakeAgent(() => ({ ok: true, message: "Queued for your coding agent." }))
+  try {
+    reset()
+    pin("Older server")
+    await settle()
+    tab.update()
+    press(primary())
+    await settle()
+    const state = ui.sendState()
+    assert.equal(state.kind, "sent")
+    assert.equal(state.outcome, "queued")
+    assert.ok(ui.annotations()[0].sentAt)
+  } finally {
+    agent.restore()
+  }
+})
+
+await check("a refused send fails, keeps the list, and the button comes back", async () => {
+  const agent = fakeAgent(() => ({ ok: false, message: "Could not reach the agent route." }))
+  try {
+    reset()
+    pin("Retry me")
+    await settle()
+    tab.update()
+    press(primary())
+    await settle()
+    assert.equal(ui.sendState().kind, "failed")
+    assert.equal(ui.annotations()[0].sentAt, undefined)
+    assert.equal(primary().disabled, false)
+  } finally {
+    agent.restore()
+  }
+})
+
+await check("a completion for a send that was superseded is ignored", async () => {
+  const agent = fakeAgent(() => ({ ok: true, message: "Queued for your coding agent.", outcome: "queued", changeId: "chg-5" }))
+  try {
+    reset()
+    ui.updateSettings({ clearOnCopy: true })
+    pin("Stale")
+    await settle()
+    tab.update()
+    toasts.length = 0
+    agent.hold()
+    press(primary())
+    await settle()
+    ui.resetSendForTest()
+    agent.release()
+    await settle()
+    assert.deepEqual(comments(), ["Stale"], "a stale reply cleared the list")
+    assert.equal(ui.annotations()[0].sentAt, undefined, "a stale reply stamped the note")
+    assert.deepEqual(toasts, [], "a stale reply spoke")
+  } finally {
+    agent.release()
+    agent.restore()
+    ui.updateSettings({ clearOnCopy: false })
+  }
 })
 
 console.log("\nMCP")

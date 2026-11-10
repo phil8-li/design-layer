@@ -25,8 +25,8 @@ import { record, undoStep, type HistoryStep } from "../core/history"
 import {
   addAnnotation,
   annotations,
-  clearAnnotations,
   removeAnnotation,
+  removeAnnotations,
   restoreAnnotation,
   updateAnnotation,
 } from "./store"
@@ -47,16 +47,22 @@ export function pinNote(input: Parameters<typeof addAnnotation>[0]): AnnotationR
   return note
 }
 
-/** Rewrite a note's words. A rewrite to the same words is not a step. */
+/**
+ * Rewrite a note's words. A rewrite to the same words is not a step.
+ *
+ * New words are a new request, so a rewrite takes the note's "sent" stamp off,
+ * and undo puts it back with the old words.
+ */
 export function rewriteNote(id: string, comment: string): void {
   const before = annotations().find((note) => note.id === id)
   if (!before || before.comment === comment) return
-  const previous = before.comment
-  updateAnnotation(id, { comment })
+  const previous = { comment: before.comment, sentAt: before.sentAt, sentIn: before.sentIn }
+  const next = { comment, sentAt: undefined, sentIn: undefined }
+  updateAnnotation(id, next)
   record({
     label: "Edit note",
-    undo: () => updateAnnotation(id, { comment: previous }),
-    redo: () => updateAnnotation(id, { comment }),
+    undo: () => updateAnnotation(id, previous),
+    redo: () => updateAnnotation(id, next),
   })
 }
 
@@ -85,7 +91,8 @@ export function deleteNote(
 
 /**
  * Delete every note, as ONE step — Cmd+Z brings the whole set back, in order.
- * Returns how many went.
+ * Returns how many went. Production calls `clearNotesStep`; `history-cases`
+ * still pins this one.
  */
 export function clearNotes(): number {
   return clearNotesStep()?.count ?? 0
@@ -93,9 +100,17 @@ export function clearNotes(): number {
 
 /** `clearNotes`, handing back the step too so a toast can offer it back. */
 export function clearNotesStep(): { count: number; step: HistoryStep } | null {
-  const taken = annotations().map((note, index) => ({ note, index }))
+  return removeNotesStep(annotations().map((note) => note.id))
+}
+
+/**
+ * Delete the named notes as ONE step, in their order. "Clear on copy or send"
+ * comes through here with the ids the brief carried, so a note pinned while the
+ * send was in flight stays, and Cmd+Z brings the cleared ones back.
+ */
+export function removeNotesStep(ids: Iterable<string>): { count: number; step: HistoryStep } | null {
+  const taken = removeAnnotations(ids)
   if (!taken.length) return null
-  clearAnnotations()
   const step = record({
     label: taken.length === 1 ? "Delete note" : `Delete ${taken.length} notes`,
     undo: () => {

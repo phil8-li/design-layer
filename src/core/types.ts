@@ -102,17 +102,6 @@ export interface ElementOptionSet {
   options: ElementOption[]
 }
 
-/** Layers-panel node projected from the React fiber tree. */
-export interface LayerNode {
-  id: string
-  element: LayerElement
-  name: string
-  tagName: string
-  isComponent: boolean
-  depth: number
-  children: LayerNode[]
-}
-
 /**
  * What the editor hands its coding agent.
  *
@@ -165,14 +154,27 @@ export interface AgentRequest {
   files?: string[]
 }
 
+/**
+ * Where a send went, as a word to branch on rather than a sentence to read.
+ *
+ * - "delivered": an agent was parked in `wait_for_change` and has it now;
+ * - "queued": the MCP endpoint is up and the change waits for an agent;
+ * - "undelivered": nothing serves the queue, so no agent will ever get it.
+ *   The brief is only in the handoff file (and on the clipboard).
+ *
+ * Optional because an older editor server does not send it; `requestAgent`
+ * reads a missing one as "queued", which is what that server's `ok` meant.
+ */
+export type AgentOutcome = "delivered" | "queued" | "undelivered"
+
 export interface AgentResponse {
   ok: boolean
-  /** Human-readable result shown in the AI panel. */
+  /** Human-readable result, shown in a toast. */
   message: string
-  /** Where the request was handed off, when no API key is configured. */
+  /** The brief's copy on disk, relative to the project root. */
   handoffPath?: string
-  /** Files the agent edited, when it applied changes directly. */
-  filesChanged?: string[]
   /** The queue id an attached coding agent sees, when one was created. */
   changeId?: string | null
+  /** Set on every ok reply; see `AgentOutcome`. */
+  outcome?: AgentOutcome
 }

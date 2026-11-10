@@ -27,7 +27,6 @@
  */
 export type AnnotationKind = "element" | "region" | "text"
 
-/** Where an annotation lives in its own lifecycle. */
 /*
  * A note had a status — open or resolved — and it no longer does.
  *
@@ -141,6 +140,17 @@ export interface AnnotationRecord {
   /** The exact words, for a `text` annotation. */
   selectedText: string | null
   /**
+   * When a send that reached the agent queue carried this item, and the change
+   * id the agent saw it under. Unset until then, and unset again by a rewrite,
+   * because new words are a new request.
+   *
+   * Recorded so a second send does not hand the agent the same work as if it
+   * were new: the brief marks the item "Sent before", and the Send button has
+   * nothing new to offer once every item carries it.
+   */
+  sentAt?: string
+  sentIn?: string | null
+  /**
    * The live node, for painting only, and never persisted.
    *
    * Held so the marker can follow an element that moves — a sticky header, an
@@ -189,6 +199,9 @@ export interface EditRecord {
    * Reporting them alike is how an agent ends up undoing the designer's work.
    */
   written: boolean
+  /** As on `AnnotationRecord`: set by a send that reached the queue, unset by a later change to the row. */
+  sentAt?: string
+  sentIn?: string | null
 }
 
 /**

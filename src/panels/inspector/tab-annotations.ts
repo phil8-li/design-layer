@@ -44,7 +44,7 @@ import {
 } from "../../annotations/store"
 import { onEditsChange } from "../../annotations/journal"
 import { clearNotesStep, deleteNote, undoNoteStep } from "../../annotations/actions"
-import { copyHandover, handOver, needsAgent } from "../../annotations/handover"
+import { copyHandover, handOver, hasUnsent, needsAgent, onSendChange, sendState } from "../../annotations/handover"
 import { COPY_REFUSED, copyText } from "../../core/clipboard"
 import { onComponentUsageChange, sharedComponentWarning } from "../../core/component-usage"
 import { withdrawEdit } from "../../core/withdraw"
@@ -273,9 +273,10 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
    * writes nothing to source. There was an "Apply to code" mode here that let
    * the editor's codemod write the edits it could spell; it is gone, because
    * the agent writes code that fits the project and the codemod did not.
+   *
+   * The button paints from `sendState()` (the machine is in `handover.ts`)
+   * and from whether anything on the list is new since the last send.
    */
-  let sending = false
-
   const primaryButton = el("button", {
     class: "de-button de-button--primary",
     type: "button",
@@ -298,38 +299,43 @@ export function annotationsTab(editor: EditorContext): InspectorTab {
    */
   let agentReady = false
 
-  /** Can the button send right now? */
+  /** Can the button send right now? Only when something on the list is new. */
   function canSend(): boolean {
-    return agentReady && needsAgent()
+    return agentReady && sendState().kind !== "sending" && hasUnsent()
   }
 
   function paintPrimary(): void {
+    const sending = sendState().kind === "sending"
     // With no agent connected there is nobody to send to, so the button leaves
     // rather than sitting disabled beside Copy, which still works.
     primaryButton.hidden = !sending && !agentReady
-    primaryButton.disabled = sending || !canSend()
+    primaryButton.disabled = !canSend()
     primaryButton.title = "Send every note and edit to your agent"
-    setPrimaryLabel(sending ? "Sending…" : "Send to agent")
+    // Every item already went out: a second press would hand the agent the
+    // same work as if it were new. The disabled button says so; a new note or
+    // a changed row brings "Send to agent" back.
+    setPrimaryLabel(sending ? "Sending…" : needsAgent() && !hasUnsent() ? "Nothing new to send" : "Send to agent")
   }
 
   /**
-   * Disabled while in flight, so a second click cannot write or post the same
-   * work twice while the first round trip is outstanding.
+   * One press, one send: `handOver` refuses while a send is out, and the
+   * button is disabled for as long as the state says "sending".
    */
   async function finish(): Promise<void> {
-    if (sending || !canSend()) return
-    sending = true
-    paintPrimary()
-    try {
-      await handOver({
-        apiBase: editor.apiBase,
-        toast: (message, kind) => editor.toast(message, kind),
-      })
-    } finally {
-      sending = false
-      render()
+    if (!canSend()) return
+    const result = await handOver({
+      apiBase: editor.apiBase,
+      toast: (message, kind) => editor.toast(message, kind),
+    })
+    // A send that reached the route changes what the MCP section reports (a
+    // change waiting, an agent working on it), so it looks again now rather
+    // than on the next throttled render.
+    if (result.sent && !result.stale) {
+      mcpCheckedAt = 0
+      refreshMcpSoon()
     }
   }
+  onSendChange(() => paintPrimary())
 
   /* ---------- footer actions ---------- */
 

@@ -405,6 +405,22 @@ export function removeAnnotation(id: string): { note: AnnotationRecord; index: n
 }
 
 /**
+ * `removeAnnotation` for several ids at once, with one write and one announce.
+ * Hands back each note with the index it had, oldest first, so restoring them
+ * in that order puts every one back where it was.
+ */
+export function removeAnnotations(ids: Iterable<string>): Array<{ note: AnnotationRecord; index: number }> {
+  load()
+  const wanted = new Set(ids)
+  const taken = notes.map((note, index) => ({ note, index })).filter(({ note }) => wanted.has(note.id))
+  if (!taken.length) return taken
+  notes = notes.filter((note) => !wanted.has(note.id))
+  persist()
+  announce()
+  return taken
+}
+
+/**
  * Puts a deleted note back where it was.
  *
  * The inverse of `removeAnnotation`, and deliberately NOT "add it again".
@@ -423,6 +439,20 @@ export function restoreAnnotation(note: AnnotationRecord, index: number): void {
   if (notes.some((existing) => existing.id === note.id)) return
   const at = Math.max(0, Math.min(index, notes.length))
   notes = [...notes.slice(0, at), note, ...notes.slice(at)]
+  persist()
+  announce()
+}
+
+/**
+ * A send that reached the agent queue carried these notes. Not a step on the
+ * undo timeline: it records what happened outside the editor, which Cmd+Z
+ * cannot take back.
+ */
+export function markNotesSent(ids: Iterable<string>, at: string, changeId: string | null): void {
+  load()
+  const wanted = new Set(ids)
+  if (!notes.some((note) => wanted.has(note.id))) return
+  notes = notes.map((note) => (wanted.has(note.id) ? { ...note, sentAt: at, sentIn: changeId } : note))
   persist()
   announce()
 }

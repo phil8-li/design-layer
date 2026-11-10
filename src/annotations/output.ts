@@ -733,6 +733,8 @@ interface BriefItem {
   phrase: string | null
   /** An edit's `**Instructions:**` bullets; empty for a note. */
   instructions: string[]
+  /** Set when an earlier send that reached the agent queue carried this item. */
+  sent: { changeId: string | null } | null
 }
 
 /*
@@ -746,6 +748,21 @@ interface BriefItem {
  */
 const EDITS_LEAD =
   "Items with a **Change:** line are edits the designer made in the browser with DesignLayer. None of them is in the source yet. Make each one in code, as its **Instructions:** say."
+
+/*
+ * An item an earlier send carried is marked, because a send after the first
+ * one carries every item still on the list. Unmarked, a "Bring it forward one
+ * place" applied twice moves two places and a delete applied twice deletes a
+ * sibling. These lines appear only when such an item is in the brief.
+ */
+const EDITS_LEAD_AFTER_SEND =
+  "Items with a **Change:** line are edits the designer made in the browser with DesignLayer. Unless an item is marked **Sent before:**, it is not in the source yet. Make each one in code, as its **Instructions:** say."
+const SENT_LEAD =
+  "Items marked **Sent before:** went to an agent in an earlier change and may already be in the source. Check the code first, and do not make a move or a delete again if it is already done."
+
+function sentLine(sent: { changeId: string | null }): string {
+  return `**Sent before:** ${sent.changeId ? `in change ${sent.changeId}` : "yes"}, so check the code before you make it`
+}
 
 function noteItem(note: AnnotationRecord): BriefItem {
   const { target } = note
@@ -765,6 +782,7 @@ function noteItem(note: AnnotationRecord): BriefItem {
     body: note.comment.trim() || "(no comment)",
     phrase: null,
     instructions: [],
+    sent: note.sentAt ? { changeId: note.sentIn ?? null } : null,
   }
 }
 
@@ -784,6 +802,7 @@ function editItem(edit: EditRecord): BriefItem {
     body: editNoteText(edit),
     phrase: exactPhrase(edit),
     instructions: editInstructions(edit),
+    sent: edit.sentAt ? { changeId: edit.sentIn ?? null } : null,
   }
 }
 
@@ -813,7 +832,8 @@ function renderItem(index: number, item: BriefItem, detail: OutputDetail): strin
       ? ` (re: "${selectedText.slice(0, 30)}${selectedText.length > 30 ? "..." : ""}")`
       : ""
     const exact = item.phrase ? ` — ${item.phrase}` : ""
-    return [`${index}. **${item.name}**${source ? ` (${source})` : ""}: ${item.body}${quote}${exact}`]
+    const sent = item.sent ? ` (sent before${item.sent.changeId ? ` in ${item.sent.changeId}` : ""})` : ""
+    return [`${index}. **${item.name}**${source ? ` (${source})` : ""}: ${item.body}${quote}${exact}${sent}`]
   }
 
   const lines = [`### ${index}. ${item.name}`]
@@ -861,6 +881,7 @@ function renderItem(index: number, item: BriefItem, detail: OutputDetail): strin
     if (detail === "detailed" && context) lines.push(`**Context:** ${context}`)
   }
 
+  if (item.sent) lines.push(sentLine(item.sent))
   lines.push(`**${item.field}:** ${item.body}`)
   if (item.instructions.length) lines.push("**Instructions:**", ...item.instructions.map((line) => `- ${line}`))
   lines.push("")
@@ -896,8 +917,14 @@ export function buildAnnotationBrief(items: OutboxItem[] = outboxItems()): strin
   const lines: string[] = [`## Page Feedback: ${pageLabel()}`, `**App:** ${appLabel()}`]
   if (detail === "forensic") lines.push(...environmentBlock())
   else if (detail !== "compact") lines.push(`**Viewport:** ${viewportLabel()}`)
+  // The changes an earlier send went out as, so an agent can look them up
+  // with `get_change` before it repeats one.
+  const earlier = [...new Set(briefItems.map((item) => item.sent?.changeId).filter((id): id is string => Boolean(id)))]
+  if (earlier.length) lines.push(`**Earlier changes:** ${earlier.join(", ")}`)
   lines.push("")
-  if (briefItems.some((item) => item.field === "Change")) lines.push(EDITS_LEAD, "")
+  const anySent = briefItems.some((item) => item.sent)
+  if (briefItems.some((item) => item.field === "Change")) lines.push(anySent ? EDITS_LEAD_AFTER_SEND : EDITS_LEAD, "")
+  if (anySent) lines.push(SENT_LEAD, "")
 
   briefItems.forEach((item, index) => lines.push(...renderItem(index + 1, item, detail)))
 
