@@ -289,11 +289,12 @@ export function classifyWall(response, url = "") {
 /**
  * The header a stored credential becomes.
  *
- * Two schemes because the two available routes produce different things: a
- * minted ID token is an `Authorization: Bearer`, and a browser session is a
- * `Cookie`. Nothing else is accepted — a scheme this does not know would be
- * sent as a header name of the caller's choosing, which is a header-injection
- * hole in a process that talks to arbitrary hosts.
+ * Three schemes because the routes in produce different things: a minted ID
+ * token is an `Authorization: Bearer`, a site that challenged for Basic gets
+ * `Authorization: Basic`, and a browser session is a `Cookie`. Nothing else is
+ * accepted — a scheme this does not know would be sent as a header name of the
+ * caller's choosing, which is a header-injection hole in a process that talks
+ * to arbitrary hosts.
  */
 export function credentialHeaders(credential) {
   if (!credential || typeof credential !== "object") return {}
@@ -324,6 +325,22 @@ export function credentialHeaders(credential) {
 
 /**
  * The credential store, one per editor process.
+ *
+ * A stored row has a lifecycle the file does not show, so here it is:
+ *
+ *   absent --verified paste or window sign-in--> stored
+ *   stored --saved again--> stored (replaced)
+ *   stored --the site expires the session--> stale
+ *   stale --verified paste or window sign-in--> stored
+ *   stored | stale --forget--> absent
+ *
+ * `stale` has no mark in the file and no event: nothing here stores or checks
+ * an expiry, because the provider owns that decision. It is found by the next
+ * fetch that hits the wall again with the credential attached — an add, a
+ * re-paste or a refresh answers the challenge as it would for a site never
+ * signed in to, and the row in `libraries.json` keeps its catalog
+ * (`applyFetched` in `libraries.mjs`). So an origin `listOrigins` reports can
+ * still be refused.
  *
  * Mirrors `createLibraryStore`'s shape — a factory over `config.stateDir`, a
  * serialized write queue, temp-file-and-rename — because the two files live
@@ -419,7 +436,7 @@ export function createAuthStore(config = {}) {
       const origin = originOf(url)
       if (!origin) throw new Error("A credential needs a http:// or https:// URL to belong to")
       if (!CREDENTIAL_SCHEMES.includes(scheme)) {
-        throw new Error(`"${scheme}" is not a credential kind. Use bearer or cookie.`)
+        throw new Error(`"${scheme}" is not a credential kind. Use bearer, basic or cookie.`)
       }
       const trimmed = String(value ?? "").trim()
       if (!trimmed) throw new Error("That credential is empty")

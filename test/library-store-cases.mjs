@@ -240,6 +240,23 @@ await withProject("adding the same path twice is one library, not two", async ({
   assert.equal((await store.list()).libraries.length, 1)
 })
 
+await withProject("a deep path is added once and stays added", async ({ store, write, stateFile }) => {
+  // Under the 400-character path ceiling, over the 200-character id ceiling:
+  // the row used to be written and then dropped by every read of the file.
+  const dirs = Array.from({ length: 5 }, (_, i) => `design-system-folder-${"x".repeat(25)}${i}`)
+  const relative = [...dirs, "tokens.css"].join("/")
+  await write(relative, ":root { --brand: #ff0000; --ink: #000000; --gap: 4px; --pad: 8px; }")
+  const { library } = await store.add({ path: relative })
+  assert.ok(library.id.length <= 200, `the id is ${library.id.length} characters`)
+  assert.deepEqual(
+    (await store.list()).libraries.map((row) => row.id),
+    [library.id],
+    "the library vanished on the next read"
+  )
+  assert.equal((await store.add({ path: relative })).library.id, library.id)
+  assert.equal(JSON.parse(await fs.readFile(stateFile, "utf8")).libraries.length, 1)
+})
+
 await withProject("a name is the system's own, or the file's, title-cased", async ({ store }) => {
   // The manifest names itself, and the name it chose wins over the filename.
   assert.equal((await store.add({ path: "design/meridian.json" })).library.name, "Meridian")

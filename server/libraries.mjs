@@ -417,8 +417,7 @@ async function resolveSource(projectRoot, value) {
  * inside it the way `server/options-store.mjs` serialises option sets: two
  * panels adding a library at once must not both read the same file and clobber
  * each other's row.
- */
-/**
+ *
  * `urlOptions` is the injection seam for everything `library-url.mjs` does over
  * the network — `{ fetchImpl, runHelper, timeoutMs }`. It is a second parameter
  * rather than a config key because it is not a thing a project configures: it
@@ -593,7 +592,7 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
     return kept
   }
 
-  /** `kind\0absolute\0name` -> `{ mtimeMs, size, catalog }`; see `readCatalog`. */
+  /** `kind\0absolute\0name` -> `{ stamp, imports, catalog }`; see `readCatalog` and `stampOf`. */
   const parsedCatalogs = new Map()
 
   /**
@@ -720,18 +719,14 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
     if (pending) return pending
     const run = fetchUrlCatalog(entry.source.path, entry.name)
       .then((fresh) => {
+        // A wall or an error keeps the row (see `applyFetched`), so there is
+        // nothing to write — and nobody to hand a challenge to from a list.
         if (fresh.auth || fresh.error) return
         return serial(async () => {
           const entries = await readEntries()
           const index = entries.findIndex((row) => row.id === entry.id)
           if (index === -1) return
-          entries[index] = {
-            ...entries[index],
-            catalog: fresh.catalog,
-            detail: fresh.detail,
-            error: "",
-            reader: CATALOG_READER_VERSION,
-          }
+          entries[index] = applyFetched(entries[index], fresh)
           await writeEntries(entries)
         })
       })
@@ -741,16 +736,57 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
   }
 
   /**
-   * A URL's library id: the same slug every other source gets, cut to the
-   * ceiling `LIBRARY_ID_PATTERN` enforces.
+   * The one rule for what a re-fetch of a URL row writes, shared by the three
+   * paths that re-read one: a re-paste (`addUrl`), a refresh (`update`) and
+   * the re-read of rows cached by older rules (`reread`). They used to have
+   * three rules for one event, and the refresh's was the one that lost data:
+   * behind an expired sign-in it wrote the walled shape — no catalog, the
+   * "Needs sign-in" sentence — and the next `list()` swept the row out of the
+   * file, name, switch and all.
+   *
+   *   wall   the row is kept as it was; the caller throws the challenge
+   *          (`refuseWall`), so the panel's sign-in is the way back
+   *   error  the row is kept as it was, catalog included: a flaky connection
+   *          must not cost the tokens that worked a moment ago
+   *   ok     the catalog and its detail are replaced, the error cleared, and
+   *          the row stamped with the current reading rules
+   *
+   * Answers the row to store, which is `entry` itself when nothing changes.
+   */
+  function applyFetched(entry, fresh) {
+    if (fresh.auth || fresh.error) return entry
+    return {
+      ...entry,
+      catalog: fresh.catalog,
+      detail: fresh.detail,
+      error: "",
+      reader: CATALOG_READER_VERSION,
+    }
+  }
+
+  /** A fetch that hit a sign-in wall, thrown the way the panel offers a sign-in for. */
+  function refuseWall(fresh, url) {
+    if (!fresh.auth) return
+    const error = badRequest(fresh.error)
+    error.auth = { ...fresh.auth, url }
+    throw error
+  }
+
+  /**
+   * A library id: the same slug every source gets, cut to the ceiling
+   * `LIBRARY_ID_PATTERN` enforces.
    *
    * The cut is where a hash becomes necessary. Two deep links into one
    * documentation site share a long prefix, so a plain truncation would give
    * them the same id — and `add` answers an id it already holds by returning
    * the EXISTING library, so the second paste would silently hand the designer
    * the first one back and look like it worked.
+   *
+   * Paths go through it too. `MAX_PATH` allows 400 characters and the id
+   * pattern 200, so a deep path used to be stored and then dropped by
+   * `normalizeEntry` on every read: added, gone, added again.
    */
-  function urlLibraryId(target) {
+  function fittedLibraryId(target) {
     const full = libraryId(target)
     if (full.length <= MAX_ID) return full
     const digest = createHash("sha1").update(target).digest("hex").slice(0, 8)
@@ -780,7 +816,7 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
     // Normalized so that the same page pasted twice — once with a trailing
     // slash, once without — is one library rather than two.
     const target = new URL(requested).toString()
-    const id = urlLibraryId(target)
+    const id = fittedLibraryId(target)
 
     /*
      * PASTING A LINK THAT IS ALREADY INSTALLED RE-READS IT, where this used to
@@ -811,58 +847,42 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
     const installed = (await serial(readEntries)).find(
       (entry) => entry.id === id || entry.source.path === target
     )
-    if (installed) {
-      const fresh = await fetchUrlCatalog(target, installed.name)
-      // A wall is reported exactly as it is on a first add: the credential has
-      // expired, and the panel's sign-in is the way back to a reading.
-      if (fresh.auth) {
-        const error = badRequest(fresh.error)
-        error.auth = { ...fresh.auth, url: target }
-        throw error
-      }
-      if (fresh.error) return { library: await loadLibrary(installed) }
-      return serial(async () => {
-        const entries = await readEntries()
-        const index = entries.findIndex((entry) => entry.id === installed.id)
-        if (index === -1) return { library: await loadLibrary(installed) }
-        const entry = {
-          ...entries[index],
-          catalog: fresh.catalog,
-          detail: fresh.detail,
-          error: "",
-          reader: CATALOG_READER_VERSION,
-        }
-        entries[index] = entry
-        await writeEntries(entries)
-        return { library: await loadLibrary(entry) }
-      })
-    }
 
     // Outside the queue on purpose: `serial` keeps two panels from clobbering
     // each other's row, and holding it across somebody else's network latency
     // would block every `list()` the panel makes while this is in flight.
-    const fetched = await fetchUrlCatalog(target, name)
+    const fetched = await fetchUrlCatalog(target, installed ? installed.name : name)
 
     /*
-     * Refused, with the challenge attached so the panel can offer a way in.
+     * Refused, with the challenge attached so the panel can offer a way in —
+     * on a first add and on a re-paste alike: for a row already installed the
+     * credential has expired, and the panel's sign-in is the way back to a
+     * reading. The row itself is untouched (see `applyFetched`).
      *
      * Thrown BEFORE the queue is taken: there is nothing to write, and holding
      * the write lock to decline would block every `list()` a panel makes for
      * the length of somebody else's failed sign-in.
      */
-    if (fetched.auth) {
-      const error = badRequest(fetched.error)
-      error.auth = { ...fetched.auth, url: target }
-      throw error
-    }
+    refuseWall(fetched, target)
 
     return serial(async () => {
       const entries = await readEntries()
-      // Checked twice: once above to skip a pointless fetch, and again here
-      // because the fetch is where a second panel gets its chance to add the
-      // same URL.
-      const already = entries.find((entry) => entry.id === id || entry.source.path === target)
-      if (already) return { library: await loadLibrary(already) }
+      /*
+       * Looked up again inside the queue, because the fetch is where a second
+       * panel gets its chance to add the same URL — or to remove it. A row that
+       * is still here is re-read by the shared rule; one removed meanwhile is
+       * installed afresh below rather than handed back as a ghost the panel
+       * would adopt.
+       */
+      const index = entries.findIndex((entry) => entry.id === id || entry.source.path === target)
+      if (index !== -1) {
+        const entry = applyFetched(entries[index], fetched)
+        if (entry !== entries[index]) {
+          entries[index] = entry
+          await writeEntries(entries)
+        }
+        return { library: await loadLibrary(entry) }
+      }
       if (entries.length >= MAX_LIBRARIES) {
         throw badRequest(
           `This project already has ${MAX_LIBRARIES} libraries. Remove one before adding another.`
@@ -1151,12 +1171,13 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
       /*
        * A stored URL library that is behind a sign-in wall is swept, not shown.
        *
-       * `addUrl` refuses to create one, so in a store written by this version
-       * there are none — but a store written before the wall was refused still
-       * holds them, and so does one whose credential has since been forgotten
-       * or expired. The rule the designer was promised is that an
-       * unauthenticated library does not appear, and a rule that only holds for
-       * rows added after the upgrade is not the rule.
+       * Nothing in this version writes one: `addUrl` refuses a wall, and every
+       * re-fetch keeps the row it had when it meets one (`applyFetched`). But a
+       * store written before the wall was refused still holds them, and so does
+       * one an older refresh rewrote behind an expired sign-in. The rule the
+       * designer was promised is that an unauthenticated library does not
+       * appear, and a rule that only holds for rows added after the upgrade is
+       * not the rule.
        *
        * Swept from the FILE as well as from the answer, so the next add of the
        * same URL is a clean install rather than a collision with a ghost that
@@ -1219,7 +1240,7 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
 
       let id
       try {
-        id = libraryId(source.relative)
+        id = fittedLibraryId(source.relative)
       } catch {
         throw badRequest(`"${source.relative}" cannot be named as a library`)
       }
@@ -1277,6 +1298,10 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
      * re-parses on every `list()`, so asking one to refresh is asking for what
      * it is already doing — and answering with a no-op rather than an error
      * keeps the panel from having to know which kind it is looking at.
+     *
+     * A refresh follows the re-paste's rule (`applyFetched`): behind a wall it
+     * answers the challenge as a 400 and changes nothing; on an error it keeps
+     * the catalog and says what went wrong in the answer's `error`.
      */
     async update(id, changes = {}) {
       // The fetch is outside the queue for the reason `addUrl` gives: a refresh
@@ -1286,6 +1311,7 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
         const current = (await serial(readEntries)).find((entry) => entry.id === id)
         if (current?.source.kind === URL_SOURCE_KIND) {
           refreshed = await fetchUrlCatalog(current.source.path, current.name)
+          refuseWall(refreshed, current.source.path)
         }
       }
 
@@ -1298,16 +1324,14 @@ export function createLibraryStore(config, urlOptions = {}, authStore = null) {
         if (typeof changes?.enabled === "boolean") entry.enabled = changes.enabled
         const renamed = typeof changes?.name === "string" ? changes.name.trim() : ""
         if (renamed) entry.name = renamed.slice(0, MAX_NAME)
-        if (refreshed) {
-          entry.catalog = refreshed.catalog
-          entry.detail = refreshed.detail
-          entry.error = refreshed.error
-          entry.reader = CATALOG_READER_VERSION
-        }
+        const stored = refreshed ? applyFetched(entry, refreshed) : entry
 
-        entries[index] = entry
+        entries[index] = stored
         await writeEntries(entries)
-        return { library: await loadLibrary(entry) }
+        const library = await loadLibrary(stored)
+        // The row kept its catalog; the answer still says the refresh failed.
+        if (refreshed?.error) library.error = refreshed.error
+        return { library }
       })
     },
 
