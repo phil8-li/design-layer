@@ -1,5 +1,6 @@
 /**
- * The Code tab's generator: a selected element written back out as source.
+ * A selected element written back out as source, for "copy as code" in the
+ * layer header and the layer menu.
  *
  * There is no file-read route in this editor, so nothing here opens a file.
  * Every view is derived from the live element, which makes this the one
@@ -7,11 +8,10 @@
  * Design-panel edits previewed on the page, which are notes for a coding agent
  * and are in no source file yet.
  *
- * Output is a TOKEN LIST, not a string. The panel needs the code tinted, and
- * tinting a finished string means re-parsing it with regexes — which is how a
- * class value containing `<` or a text node containing a quote ends up
- * mis-coloured. The generator already knows what every character it emits is,
- * so it says so once, here, and the panel only picks a class per token.
+ * Output is a TOKEN LIST, not a string, each token naming what it is. The Code
+ * tab that tinted it is gone; the copy surfaces join it with `codeText`, and
+ * the kinds stay because tinting a finished string would mean re-parsing it
+ * with regexes, which is how a class value containing `<` ends up mis-read.
  *
  * Deliberately NOT taking a computed style. `getComputedStyle` returns three
  * hundred resolved properties, none of which anyone wrote; the style ATTRIBUTE
@@ -23,7 +23,7 @@ import { config } from "./config"
 import { isAuthoredAttribute } from "./element-target"
 import type { Selection } from "./types"
 
-/** The five tints `css/code.ts` declares, plus `plain` — indentation and text. */
+/** Five kinds of source text, plus `plain` — indentation and text. */
 export type CodeTokenKind = "tag" | "attribute" | "string" | "number" | "punctuation" | "plain"
 
 interface CodeToken {

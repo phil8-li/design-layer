@@ -137,11 +137,6 @@ check("every colour role is a reference, so one stylesheet can carry two themes"
       `color.${role} is "${value}", which a run-time theme cannot move`
     )
   }
-  // The syntax tints are themed for the same reason: their only ground is
-  // `bgSunken`, and `bgSunken` moves.
-  for (const [role, value] of Object.entries(chrome.tokens.code)) {
-    assert.match(value, /^var\(--de-code-[a-z0-9-]+, .+\)$/, `code.${role} is "${value}"`)
-  }
   // The shadows keep their geometry and theme only the tint: an offset and a
   // blur are not a colour, and a theme must not be able to move them.
   assert.match(chrome.tokens.shadow.float, /^0 18px 56px var\(--de-shadow-cast-soft, /)
@@ -171,7 +166,7 @@ check("both themes define exactly the properties the tokens reference", () => {
 
   // Every reference in the tokens really is one of them — the derivation from
   // camelCase to `--de-group-kebab` is the one typo here that produces no error.
-  for (const group of ["color", "code"]) {
+  for (const group of ["color"]) {
     for (const [role, value] of Object.entries(chrome.tokens[group])) {
       const property = value.slice(4, value.indexOf(","))
       assert.ok(referenced.has(property), `${group}.${role} references unknown ${property}`)

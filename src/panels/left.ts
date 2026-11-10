@@ -9,9 +9,9 @@
  * ## Where Code went
  *
  * This strip carried a Code tab between the two — the selected element written
- * back out as JSX, HTML or Tailwind classes. It was removed, and nothing in
- * this panel mounts it; the ⌥ keys below are positional, so the two tabs left
- * kept their keys.
+ * back out as JSX, HTML or Tailwind classes. It was removed with its view; the
+ * layer header and the layer menu copy the same code. The ⌥ keys below are
+ * positional, so the two tabs left kept their keys.
  *
  * ## Which tab is showing
  *

@@ -399,7 +399,6 @@ const bundled = await build({
       export { shellCss } from "./src/core/css"
       export { optionsCss } from "./src/core/css/options"
       export { librariesCss } from "./src/core/css/libraries"
-      export { insertCss } from "./src/core/css/insert"
     `,
     resolveDir: PACKAGE_DIR,
     loader: "ts",
@@ -1278,8 +1277,8 @@ await check("the tab strip scrolls rather than clipping a tab a narrow panel can
  * error in any file — it is simply absent. So each sheet is checked for
  * MEMBERSHIP of `shellCss` by name, and for the relative order the modules' own
  * comments say their cascade depends on: libraries after options because it
- * borrows that sheet's vocabulary, and insert after it because it is canvas
- * chrome that lands a component on the page.
+ * borrows that sheet's vocabulary. The insert sheet that followed it went with
+ * the component insert, which no surface reached.
  *
  * `assetsCss` itself is no longer one of them. The browser it styled — the
  * component grid, the cards, the details popover — was deleted rather than
@@ -1288,7 +1287,7 @@ await check("the tab strip scrolls rather than clipping a tab a narrow panel can
  * its membership here would make the file's removal fail a suite that is about
  * whether LIVE sheets are wired up.
  */
-await check("both library stylesheets ship, in the order their cascade needs", () => {
+await check("the library stylesheet ships, after the sheet its cascade needs", () => {
   // `options` is the anchor rather than a third entry: nothing below it may be
   // lifted ahead of it, and it is not this feature's sheet to move.
   let previous = editor.shellCss.indexOf(editor.optionsCss)
@@ -1296,7 +1295,6 @@ await check("both library stylesheets ship, in the order their cascade needs", (
 
   for (const [name, sheet, prefix] of [
     ["librariesCss", editor.librariesCss, /\.de-lib-/],
-    ["insertCss", editor.insertCss, /\.de-insert-/],
   ]) {
     assert.ok(sheet.length > 0, `${name} is empty`)
     const at = editor.shellCss.indexOf(sheet)

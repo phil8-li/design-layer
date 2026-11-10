@@ -586,10 +586,7 @@ html.designlayer-inspecting svg {
 .de-opt-chip,
 .de-pad-cell::before,
 .de-layer-drop,
-.de-mcp-state,
-/* The insert line: a 2px rule under a 4px radius is a pill. Its outline
-   variant is a box around an empty container, and keeps the squircle. */
-.de-insert-indicator:not(.de-insert-indicator--outline) {
+.de-mcp-state {
   corner-shape: round;
 }
 /*
