@@ -223,7 +223,7 @@ function connect() {
     const socket = new WebSocket(WS_URL)
     const timer = setTimeout(() => {
       socket.terminate()
-      reject(new Error(`no engine on ${WS_URL} — start it with \`npm run design\``))
+      reject(new Error(`no engine on ${WS_URL} — start it with \`node cli.mjs --dev\``))
     }, 4000)
     socket.on("open", () => {
       clearTimeout(timer)
@@ -554,7 +554,7 @@ async function serverGuardCases() {
     .then((response) => response.ok)
     .catch(() => false)
   if (!reachable) {
-    console.log(`  skip (proxy not serving ${API} — start \`npm run design\`)`)
+    console.log(`  skip (proxy not serving ${API} — start \`node cli.mjs --dev\`)`)
     return
   }
 
