@@ -419,6 +419,48 @@ await check("a rebuild in the middle of a scrub commits it, files its note and l
   }
 })
 
+/*
+ * Every segmented control's chip holds a ResizeObserver on its items, and
+ * `TravellingSurface.destroy()` had no caller: each Design rebuild left the
+ * previous build's observers live on nodes the panel had thrown away.
+ */
+await check("a rebuild stops the observers of the segmented chips it throws away", async () => {
+  const live = new Set()
+  let made = 0
+  globalThis.ResizeObserver = window.ResizeObserver = class {
+    constructor() {
+      made += 1
+    }
+    observe() {
+      live.add(this)
+    }
+    unobserve() {}
+    disconnect() {
+      live.delete(this)
+    }
+  }
+  try {
+    side.style.display = "flex"
+    context.select(card)
+    await frames()
+    context.select(side)
+    await frames()
+    const before = made
+    const settled = live.size
+    assert.ok(right.querySelector(".de-iseg"), "the tab shows no segmented control to measure")
+    for (let i = 0; i < 3; i += 1) {
+      context.refresh()
+      await frames()
+    }
+    assert.ok(made > before, "the rebuilds made no chips")
+    assert.equal(live.size, settled, "each rebuild left its chips' observers running")
+  } finally {
+    delete globalThis.ResizeObserver
+    delete window.ResizeObserver
+    side.style.display = ""
+  }
+})
+
 await check("invalid text reverts on Enter and on leaving the field", () => {
   const commits = []
   const field = editor.numberField({ id: "probe", label: "W", value: 120, onCommit: (value) => commits.push(value) })

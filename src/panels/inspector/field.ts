@@ -404,6 +404,26 @@ export function finishScrubs(root: Node): void {
 }
 
 /**
+ * Every segmented control's travelling chip, by the control it moves in. Each
+ * holds a `ResizeObserver` on its items, and the panel rebuilds every section
+ * on every commit, so a chip nobody stopped kept observing nodes the panel had
+ * thrown away.
+ */
+const liveThumbs = new Map<HTMLElement, TravellingSurface>()
+
+/**
+ * Stops the chip of every segmented control inside `root`. `index.ts` calls
+ * it beside `finishScrubs`, before it clears or replaces a section.
+ */
+export function releaseSurfaces(root: Node): void {
+  for (const [node, thumb] of [...liveThumbs]) {
+    if (!root.contains(node)) continue
+    thumb.destroy()
+    liveThumbs.delete(node)
+  }
+}
+
+/**
  * Figma-style scrubbable number input: drag the label, or type a value.
  *
  * One gesture at a time, and `committed` is the only record of the value the
@@ -776,6 +796,7 @@ export function iconSegmented(options: {
    * pressed it.
    */
   const thumb = installIconSegmentThumb(node)
+  liveThumbs.set(node, thumb)
   const was = segmentedWas.get(options.label)
   segmentedWas.set(options.label, options.value)
   const pressed = justSegmented === options.label

@@ -139,8 +139,13 @@ function installTravellingSurface(
   // observer re-deliver for all of it, so every tab switch measured twice.
   const observed = new WeakSet<Element>()
 
+  // Set by `destroy`: a placement the control queued for its next frame
+  // (`placeThumb`) must not re-arm the observer it disconnected.
+  let destroyed = false
+
   return {
     track(selected) {
+      if (destroyed) return
       tracked = selected ?? null
       if (observer) {
         for (const item of container.querySelectorAll(options.itemSelector)) {
@@ -152,6 +157,7 @@ function installTravellingSurface(
       placeSoon(read)
     },
     destroy() {
+      destroyed = true
       observer?.disconnect()
       queuedReads.delete(read)
     },

@@ -79,7 +79,7 @@ import { classesSection } from "./section-classes"
 import { formatCount } from "../../core/format"
 import { fanOutWriter } from "./multi"
 import { followSelection } from "./follow"
-import { finishScrubs } from "./field"
+import { finishScrubs, releaseSurfaces } from "./field"
 import { closeTokenPicker } from "./token-picker"
 
 /** The contract every inspector tab keeps, Design included. */
@@ -579,11 +579,13 @@ export function installInspector(editor: EditorContext): void {
 
   /**
    * Ends the person's gestures on nodes about to leave: a label scrub commits,
-   * and the token list closes if the field that opened it is among them.
+   * and the token list closes if the field that opened it is among them. The
+   * segmented chips there stop observing too.
    */
   function endGestures(leaving: HTMLElement): void {
     finishScrubs(leaving)
     closeTokenPicker(leaving)
+    releaseSurfaces(leaving)
   }
 
   function render(): void {
