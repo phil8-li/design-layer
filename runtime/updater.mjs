@@ -17,9 +17,52 @@
  *   install, installs and builds it there, checks it, and only then swaps the
  *   folders. A failure at any step leaves the running copy as it was.
  *
- * Restarting is the caller's part (cli.mjs `supervise`): the files on disk
- * change here, and every running process keeps the code it loaded until it is
- * restarted. `restartDesk` and the resume file are the pieces it needs.
+ * THE UPDATER'S STATE (`createUpdater`). One value, moved only by `set()`;
+ * `status().state` is its name on the wire, which the page, the desk's title
+ * bar and `designlayer --update` all read:
+ *
+ *   idle --start(), 3 s later--> checking
+ *   idle|current|available|blocked|unsupported|error --check()--> checking
+ *   checking --check answered--> current | available | blocked | unsupported
+ *   checking --check threw--> error (during: "check"; the last check is kept)
+ *   any but updating|updated --apply()--> updating ("Starting the update")
+ *     ...at once, before anything is awaited, so the answer to the press and
+ *     every poll after it say "updating". A check in flight is let finish and
+ *     its answer dropped.
+ *   updating --main has nothing new--> current
+ *   updating --this copy cannot update (blocked, offline)--> error (during: "update")
+ *   updating --each step--> updating (step says which)
+ *   updating --the new files are in place--> updated ("restarting": the files
+ *     are new, and only a restart runs them)
+ *   updating --a step threw--> error (during: "update"; the copy is as it was)
+ *   updated --restartFailed(reason)--> error (during: "update")
+ *   error after a restart that failed --apply()--> updated (the restart again)
+ *   updating|updated, or files already updated --check()--> unchanged
+ *
+ * Wire names, for the union the cleanup names: "current" is up to date,
+ * "updated" is restarting, "error" is failed (with `failed` saying during
+ * what, and `error` the sentence).
+ *
+ * RESTART AND RESUME. Restarting is the caller's part: the files on disk change
+ * here, and every running process keeps the code it loaded until it is
+ * restarted. The start screen subscribes once (`onChange`) and calls its
+ * `onRestart` on each entry into "updated"; cli.mjs `restartAfterUpdate` is
+ * that callback.
+ *
+ *   running --entry into "updated"--> saveResume(open editors) -> resume.json
+ *   resume.json is saved by the supervisor that ran the update, and taken (read
+ *     and deleted) by the next supervisor to boot, within 5 minutes; older is
+ *     some other run's and dropped.
+ *   desk runs from this copy (deskRunsFrom) --> restartDesk(): launchd stops
+ *     the desk's whole process group, the start screen with it, and starts it
+ *     again from the new files. A start screen the desk started waits for that.
+ *   any other start screen --> closes, stops its editors, and runs the new
+ *     cli.mjs in its place on the same terminal.
+ *   saveResume or stopping the editors throws --> restartFailed(reason): the
+ *     state says why, instead of an unhandled rejection ending the supervisor.
+ *
+ * One resume.json per machine: two supervisors on one copy (a terminal and the
+ * desk) share it, and whichever boots first takes the editors.
  */
 
 import { execFile, execFileSync, spawn } from "node:child_process"
@@ -30,13 +73,13 @@ import { Readable } from "node:stream"
 import { pipeline } from "node:stream/promises"
 import { fileURLToPath } from "node:url"
 
-import { DESK_LABEL, deskPlistPath } from "./mac-desk.mjs"
+import { DESK_LABEL, readDeskPlist } from "./mac-desk.mjs"
 import { SOURCE_STAMP, copyPayload } from "./payload.mjs"
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 
 /** Every six hours, and once a few seconds after start. */
-export const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 const FIRST_CHECK_DELAY_MS = 3000
 /** A resume file older than this is from some other run, not the restart that wrote it. */
 const RESUME_MAX_AGE_MS = 5 * 60 * 1000
@@ -195,9 +238,13 @@ async function gitApply({ root, repo, run, progress }) {
     }
   } catch (error) {
     // Back to the commit that worked. --keep refuses to touch a file with
-    // local changes, and the check refused a checkout with any.
-    await run("git", ["reset", "--keep", before], { cwd: root })
-    await run(process.execPath, ["build.mjs"], { cwd: root, timeoutMs: 5 * 60_000 })
+    // local changes, and the check refused a checkout with any. A rollback
+    // that fails says so: the copy is then NOT as it was, and the sentence is
+    // the only place anyone learns it.
+    const reset = await run("git", ["reset", "--keep", before], { cwd: root })
+    if (reset.code !== 0) throw fail(`${error.message}. Going back to ${shortCommit(before)} failed too`, reset.stderr || reset.stdout)
+    const rebuilt = await run(process.execPath, ["build.mjs"], { cwd: root, timeoutMs: 5 * 60_000 })
+    if (rebuilt.code !== 0) throw fail(`${error.message}. Rebuilding ${shortCommit(before)} failed too`, rebuilt.stderr || rebuilt.stdout)
     throw error
   }
   return git(["rev-parse", "HEAD"])
@@ -254,7 +301,7 @@ async function packageCheck({ root, repo, fetchImpl }) {
 }
 
 /** The production `download`: a URL to a file, streamed. */
-export async function downloadFile(url, file, fetchImpl = fetch) {
+async function downloadFile(url, file, fetchImpl = fetch) {
   const response = await fetchImpl(url, { headers: { "user-agent": "designlayer-updater" } })
   if (!response.ok || !response.body) throw new Error(`Download failed: ${response.status} for ${url}`)
   await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(file))
@@ -317,14 +364,16 @@ async function packageApply({ root, repo, run, download, commit, date, progress 
 
 /**
  * One owner for this copy's update state. The start screen serves it, the
- * desk relays it, and `designlayer --update` drives it from a terminal.
+ * desk relays it, and `designlayer --update` drives it from a terminal. The
+ * machine is in the header of this file.
  *
  * `status()` is always safe to call and never touches the network. Its
  * `state` is one of: "idle" (not checked yet), "checking", "current",
  * "available", "blocked" (behind, but this copy cannot update itself; `reason`
  * says why), "unsupported" (no way to tell, `reason` says why), "updating"
  * (`step` says which), "updated" (the files are new; a restart runs them), or
- * "error" (`error` says what failed; the last check is kept).
+ * "error" (`error` says what failed, `failed` whether the check or the update;
+ * the last check is kept).
  */
 export function createUpdater({
   root = ROOT,
@@ -339,27 +388,37 @@ export function createUpdater({
   const kind = installKind(root)
   // The commit this process loaded, which an update on disk does not change.
   const running = currentCommit(root)
-  let check = null
-  let state = "idle"
-  let step = null
-  let error = null
-  // Which of the two failed, for a page that shows a failed update but not a
-  // failed check: a laptop offline is not news.
-  let failed = null
+  /*
+   * The state, one of the header's, with what each carries:
+   *   { kind: "idle" | "checking", check }
+   *   { kind: "current" | "available" | "blocked" | "unsupported", check }
+   *   { kind: "updating", check, step }
+   *   { kind: "updated", check, to }
+   *   { kind: "error", check, during: "check" | "update", error }
+   * `check` is the last check that answered, or null.
+   */
+  let state = { kind: "idle", check: null }
   let checkedAt = null
+  // The commit this process put on disk, once it has: from then on only a
+  // restart changes anything, whatever a later check would say.
+  let installed = null
+  // Bumped by every check and every apply, so a check that answers after an
+  // apply began is dropped rather than written over "updating".
+  let generation = 0
   let checking = null
   let applying = null
   let timer = null
-  let updatedTo = null
 
   const listeners = new Set()
-  const changed = () => {
+  function set(next) {
+    state = next
     for (const listener of listeners) listener(status())
   }
 
   function status() {
+    const check = state.check
     return {
-      state,
+      state: state.kind,
       kind,
       version: packageVersion(root),
       running,
@@ -369,11 +428,13 @@ export function createUpdater({
       behind: check?.behind ?? null,
       changes: check?.changes ?? [],
       reason: check?.reason ?? null,
-      step,
-      error,
-      failed,
+      step: state.kind === "updating" ? state.step : null,
+      error: state.kind === "error" ? state.error : null,
+      // Which of the two failed, for a page that shows a failed update but not
+      // a failed check: a laptop offline is not news.
+      failed: state.kind === "error" ? state.during : null,
       checkedAt,
-      updatedTo: shortCommit(updatedTo),
+      updatedTo: shortCommit(installed),
     }
   }
 
@@ -386,24 +447,21 @@ export function createUpdater({
 
   function checkNow() {
     // An update in progress or done owns the state until the restart.
-    if (state === "updating" || state === "updated") return Promise.resolve(status())
-    checking ??= (async () => {
-      state = "checking"
-      error = null
-      failed = null
-      changed()
+    if (state.kind === "updating" || state.kind === "updated" || installed) return Promise.resolve(status())
+    if (checking) return checking
+    const token = ++generation
+    set({ kind: "checking", check: state.check })
+    checking = (async () => {
       try {
-        check = await runCheck()
-        state = check.state
+        const check = await runCheck()
+        if (token !== generation) return status()
         checkedAt = new Date(now()).toISOString()
-        if (state === "available") log(`[designlayer] an update is available: ${check.behind ?? "new"} change${check.behind === 1 ? "" : "s"} on ${repo.branch}`)
+        set({ kind: check.state, check })
+        if (check.state === "available") log(`[designlayer] an update is available: ${check.behind ?? "new"} change${check.behind === 1 ? "" : "s"} on ${repo.branch}`)
       } catch (failure) {
-        state = "error"
-        failed = "check"
-        error = `Could not check for updates. ${failure.message}`
+        if (token === generation) set({ kind: "error", check: state.check, during: "check", error: `Could not check for updates. ${failure.message}` })
       } finally {
         checking = null
-        changed()
       }
       return status()
     })()
@@ -411,39 +469,45 @@ export function createUpdater({
   }
 
   function apply() {
-    applying ??= (async () => {
+    if (applying) return applying
+    if (state.kind === "updated") return Promise.resolve(status())
+    // The files are already new and only the restart failed: try it again.
+    if (installed) {
+      set({ kind: "updated", check: state.check, to: installed })
+      return Promise.resolve(status())
+    }
+    ++generation
+    set({ kind: "updating", check: state.check, step: "Starting the update" })
+    log("[designlayer] update: starting the update…")
+    applying = (async () => {
       try {
+        // Let a check in flight finish first: two fetches into one clone race
+        // for its refs. Its answer is dropped (the generation moved on).
         await checking
-        await checkNow()
-        if (state !== "available") {
-          if (state === "current") return status()
-          throw new Error(check?.reason ?? error ?? "No update is available.")
+        const check = await runCheck()
+        checkedAt = new Date(now()).toISOString()
+        if (check.state === "current") {
+          set({ kind: "current", check })
+          return status()
         }
-        state = "updating"
-        error = null
-        failed = null
-        const progress = (text) => {
-          step = text
-          log(`[designlayer] update: ${text.toLowerCase()}…`)
-          changed()
+        if (check.state !== "available") throw new Error(check.reason ?? "No update is available.")
+        const progress = (step) => {
+          set({ kind: "updating", check, step })
+          log(`[designlayer] update: ${step.toLowerCase()}…`)
         }
-        progress("Starting the update")
-        updatedTo =
+        const to =
           kind === "git"
             ? await gitApply({ root, repo, run, progress })
             : await packageApply({ root, repo, run, download, commit: check.latest.commit, date: check.latest.date, progress })
-        state = "updated"
-        step = null
-        log(`[designlayer] updated to ${shortCommit(updatedTo)}; restart to run it`)
+        installed = to
+        set({ kind: "updated", check, to })
+        log(`[designlayer] updated to ${shortCommit(to)}; restart to run it`)
       } catch (failure) {
-        state = "error"
-        step = null
-        failed = "update"
-        error = `The update did not finish. ${failure.message}`
+        const error = `The update did not finish. ${failure.message}`
+        set({ kind: "error", check: state.check, during: "update", error })
         log(`[designlayer] ${error}`)
       } finally {
         applying = null
-        changed()
       }
       return status()
     })()
@@ -454,7 +518,18 @@ export function createUpdater({
     status,
     check: checkNow,
     apply,
-    /** Called with the status each time it changes. Returns the unsubscribe. */
+    /**
+     * The restart after "updated" did not happen (`reason` says why). The
+     * state leaves "updated" for an error that says so, rather than reading
+     * "Restarting" forever; `apply()` then tries the restart again.
+     */
+    restartFailed(reason) {
+      if (state.kind !== "updated") return
+      const error = `DesignLayer updated, but could not restart. ${reason}`
+      set({ kind: "error", check: state.check, during: "update", error })
+      log(`[designlayer] ${error}`)
+    },
+    /** Called with the status on every transition. Returns the unsubscribe. */
     onChange(listener) {
       listeners.add(listener)
       return () => listeners.delete(listener)
@@ -482,19 +557,11 @@ export function createUpdater({
  * folder it runs in (desktop/mac/launch-agent.mjs), and an update to that
  * folder is an update to the app.
  */
-export function deskRunsFrom(root = ROOT, { platform = process.platform, home = os.homedir() } = {}) {
-  if (platform !== "darwin") return false
-  let plist
-  try {
-    plist = fs.readFileSync(deskPlistPath(home), "utf8")
-  } catch {
-    return false
-  }
-  const dir = /<key>WorkingDirectory<\/key>\s*<string>([^<]+)<\/string>/.exec(plist)?.[1]
+export function deskRunsFrom(root = ROOT, where = {}) {
+  const dir = readDeskPlist(where)?.workingDirectory
   if (!dir) return false
-  const unescape = (value) => value.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&amp;/g, "&")
   try {
-    return fs.realpathSync(unescape(dir)) === fs.realpathSync(root)
+    return fs.realpathSync(dir) === fs.realpathSync(root)
   } catch {
     return false
   }
@@ -514,7 +581,7 @@ export function restartDesk({ spawnImpl = spawn } = {}) {
   child.unref?.()
 }
 
-export function resumeFile(home = os.homedir()) {
+function resumeFile(home = os.homedir()) {
   return path.join(home, ".local", "state", "designlayer", "resume.json")
 }
 

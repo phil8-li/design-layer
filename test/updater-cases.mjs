@@ -301,6 +301,119 @@ await check("a download that fails its check leaves the running copy as it was",
   assert.deepEqual(fs.readdirSync(path.dirname(root)), ["app"])
 })
 
+// ── The state machine (the header of runtime/updater.mjs) ─────────────────
+
+/*
+ * A clone as the updater sees one, with every git and build command answered
+ * by a fake: what each command says, after `delay` ms, and which commands fail.
+ * Real git above proves the commands; these cases prove the order of states.
+ */
+function fakeClone({ delay = 20, fail = {} } = {}) {
+  const root = path.join(TMP, `fake-${++counter}`)
+  fs.mkdirSync(path.join(root, ".git"), { recursive: true })
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify(MANIFEST))
+  const calls = []
+  const tip = "d".repeat(40)
+  const run = async (cmd, args) => {
+    const line = [path.basename(cmd), ...args].join(" ")
+    calls.push(line)
+    await new Promise((resolve) => setTimeout(resolve, delay))
+    for (const [prefix, stderr] of Object.entries(fail)) {
+      if (line.startsWith(prefix)) return { code: 1, stdout: "", stderr }
+    }
+    const a = args.join(" ")
+    const stdout = a.startsWith("rev-list") ? "1\t0" : a.startsWith("log") ? `${tip}\x1fNewest change\x1f2026-01-01` : a.startsWith("symbolic-ref") ? "main"
+      : a.startsWith("diff") ? "src/x.ts" : a.startsWith("rev-parse") ? tip : ""
+    return { code: 0, stdout, stderr: "" }
+  }
+  return { root, run, calls, tip }
+}
+
+// The press used to answer with the state from before it (U1): apply() ran a
+// check first and only then said "updating", so the 202 said "available", the
+// next poll said "checking", and the page stopped following the update.
+await check("apply says updating at once, before anything is awaited", async () => {
+  const { root, run } = fakeClone()
+  const updater = createUpdater({ root, run })
+  await updater.check()
+  const pending = updater.apply()
+  assert.equal(updater.status().state, "updating")
+  assert.equal(updater.status().step, "Starting the update")
+  const done = await pending
+  assert.equal(done.state, "updated", done.error)
+})
+
+await check("a check still running when apply starts cannot write over updating", async () => {
+  const { root, run, calls } = fakeClone({ delay: 40 })
+  const updater = createUpdater({ root, run })
+  const seen = []
+  updater.onChange((s) => seen.push(s.state))
+  const checking = updater.check()
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  const applying = updater.apply()
+  assert.equal(updater.status().state, "updating")
+  await checking
+  assert.equal(updater.status().state, "updating", "the check's answer replaced updating")
+  assert.equal((await applying).state, "updated")
+  assert.deepEqual([...new Set(seen)], ["checking", "updating", "updated"])
+  // One fetch at a time into the clone: the apply's own waits for the check's.
+  const fetches = calls.filter((line) => line.startsWith("git fetch"))
+  assert.equal(fetches.length, 2)
+})
+
+await check("two presses are one update", async () => {
+  const { root, run, calls } = fakeClone()
+  const updater = createUpdater({ root, run })
+  const [a, b] = [updater.apply(), updater.apply()]
+  assert.equal(a, b)
+  await a
+  assert.equal(calls.filter((line) => line.startsWith("git merge")).length, 1)
+  // And a press after it is done is still the same update, waiting on its restart.
+  assert.equal((await updater.apply()).state, "updated")
+  assert.equal(calls.filter((line) => line.startsWith("git merge")).length, 1)
+})
+
+await check("apply with nothing new on main ends up to date, not updating", async () => {
+  const { root, run } = fakeClone()
+  const current = async (cmd, args, options) => (args[0] === "rev-list" ? { code: 0, stdout: "0\t0", stderr: "" } : run(cmd, args, options))
+  const updater = createUpdater({ root, run: current })
+  const done = await updater.apply()
+  assert.equal(done.state, "current")
+  assert.equal(done.error, null)
+})
+
+// U4 and R1: "updated" had no way out, so a restart that never came read
+// "Restarting DesignLayer" forever.
+await check("a restart that fails leaves updated for a sentence, and the next press restarts again", async () => {
+  const { root, run, calls } = fakeClone()
+  const updater = createUpdater({ root, run })
+  const seen = []
+  updater.onChange((s) => seen.push(s.state))
+  await updater.apply()
+  updater.restartFailed("EACCES: permission denied, mkdir '/Users/me/.local/state'")
+  const failedRestart = updater.status()
+  assert.equal(failedRestart.state, "error")
+  assert.equal(failedRestart.failed, "update")
+  assert.match(failedRestart.error, /^DesignLayer updated, but could not restart\. EACCES/)
+  // The files on disk are new: a check cannot call this copy up to date.
+  assert.equal((await updater.check()).state, "error")
+  const merges = calls.filter((line) => line.startsWith("git merge")).length
+  assert.equal((await updater.apply()).state, "updated")
+  assert.equal(calls.filter((line) => line.startsWith("git merge")).length, merges, "the update ran a second time")
+  assert.deepEqual(seen.slice(-2), ["error", "updated"])
+  // Outside "updated" it is not a restart that failed, and says nothing.
+  const idle = createUpdater({ root, run })
+  idle.restartFailed("nope")
+  assert.equal(idle.status().state, "idle")
+})
+
+await check("a rollback that fails says the copy is not as it was", async () => {
+  const { root, run } = fakeClone({ fail: { [`${path.basename(process.execPath)} build.mjs`]: "build exploded", "git reset": "local changes" } })
+  const done = await createUpdater({ root, run }).apply()
+  assert.equal(done.state, "error")
+  assert.match(done.error, /The build failed: build exploded\. Going back to d{7} failed too: local changes/)
+})
+
 // ── Restart pieces ─────────────────────────────────────────────────────────
 
 await check("the resume list survives one restart, once, and only while fresh", () => {
