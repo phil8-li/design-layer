@@ -16,38 +16,16 @@
  * every helper here treats an absent list as "just the primary".
  */
 
-import { toSourceRef } from "../../core/bridge"
 import { el, round } from "../../core/dom"
-import { elementKey } from "../../core/store"
-import type { EditorContext } from "../../core/context"
 import { styledSection } from "../../options/panel"
 import type { StyleScope } from "../../options/scopes"
-import type { LayerElement, Selection } from "../../core/types"
+import type { Selection } from "../../core/types"
 import type { ClassWrite, StyleWrite, Writer } from "../../core/writer"
 import { propRow } from "./field"
 import type { SectionContext } from "./index"
 
 /** Figma's placeholder for a field whose layers disagree. */
 export const MIXED = "Mixed"
-
-/**
- * An element as the writer addresses it, for one that is not itself selected:
- * the parent an align writes to, an icon button's `<svg>`, a child whose
- * colour Selection colors rewrites. The same record `core/context.ts` builds
- * for a selection, whose own `describe` is private to it.
- */
-export function selectionFor(editor: Pick<EditorContext, "bridge">, element: LayerElement): Selection {
-  // Optional: the section suites hand over an editor without a bridge.
-  const info = editor.bridge?.elementInfo(element) ?? null
-  const componentName = info?.componentName || element.tagName.toLowerCase()
-  return {
-    element,
-    tagName: element.tagName.toLowerCase(),
-    componentName,
-    source: toSourceRef(info),
-    key: elementKey(element, componentName, info?.lineNumber ?? 0),
-  }
-}
 
 /** Everything selected, primary first, never empty. */
 export function selectedOf(context: Pick<SectionContext, "selection" | "selections">): Selection[] {

@@ -82,7 +82,8 @@ import { activeDesignSystem } from "../../libraries/store"
 import type { Selection } from "../../core/types"
 import { group, type FieldToken } from "./field"
 import { toggleTokenList, tokenField, type TokenChoice, type TokenPreview } from "./token-picker"
-import { MIXED, computedOf, selectedOf, selectionFor } from "./multi"
+import { selectionFor } from "../../core/context"
+import { MIXED, computedOf, selectedOf } from "./multi"
 import type { SectionContext } from "./index"
 
 export const SIDES = ["top", "right", "bottom", "left"] as const
