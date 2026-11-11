@@ -62,7 +62,7 @@
     "esbuild": "^0.28.1",
     "motion": "^14.0.0",
     "motion-panels": "^0.6.1",
-    "react": "^19.3.0",
+    "react": "^19.3.1",
     "react-dom": "^19.3.0",
     "react-rewrite-cli": "0.1.1",
     "sonner": "^2.0.8",
