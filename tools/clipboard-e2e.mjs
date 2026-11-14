@@ -314,14 +314,16 @@ const SURFACES = {
     await field.press("Enter")
     await editorTab(frame, /^Changes/).click()
     await frame.locator('button[title="Copy all notes and edits"]').click()
-    return (text) => text.startsWith("## Page Feedback") && text.includes(NOTE)
+    const expectedUrl = appPort ? `**URL:** http://localhost:${appPort}` : "**URL:** http://localhost"
+    return (text) => text.startsWith("## Page Feedback") && text.includes(expectedUrl) && text.includes(NOTE)
   },
   async chord(frame, page) {
     // Keys reach the focused frame only, so focus one of the editor's own
     // controls first, the way any click on its chrome does.
     await editorTab(frame, /^Changes/).click()
     await page.keyboard.press("Meta+Alt+KeyC")
-    return (text) => text.startsWith("## Page Feedback") && text.includes(NOTE)
+    const expectedUrl = appPort ? `**URL:** http://localhost:${appPort}` : "**URL:** http://localhost"
+    return (text) => text.startsWith("## Page Feedback") && text.includes(expectedUrl) && text.includes(NOTE)
   },
 }
 

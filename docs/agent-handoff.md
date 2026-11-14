@@ -137,7 +137,10 @@ makes every note in code.
   `undelivered`: nothing is marked sent and the list stays.
 - **One copy.** **Copy** in the tab and the copy shortcut write the same brief.
 
-The copied or sent brief says more than the row. An edit note carries the
+The copied or sent brief says more than the row. Its header names the page, the
+app and `**URL:**` with the app's `http://localhost:<port>` address (rather
+than DesignLayer's proxy port), so an agent knows which running localhost
+instance the notes belong to. An edit note carries the
 row's sentence as `**Change:**` (in place of `**Feedback:**`), then an
 `**Instructions:**` list for the agent: the exact CSS declaration and its
 current value, the Tailwind class to write in place of the current one (on a

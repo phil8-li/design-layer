@@ -1039,13 +1039,16 @@ check("the four detail levels mean four different things", () => {
   // that says it is compact and is not.
   assert.ok(!briefs.compact.includes("**Location:**"), "compact printed the location")
   assert.ok(!briefs.compact.includes("**Viewport:**"), "compact printed the viewport")
+  assert.ok(briefs.compact.includes("**URL:** http://localhost/"), "compact lost the localhost URL")
   assert.match(briefs.compact, /^1\. \*\*button "Save"\*\* \(src\/components\/card\.tsx:42:1\): /m)
 
   assert.ok(briefs.standard.includes("**Location:**"), "standard lost the location")
   assert.ok(briefs.standard.includes("**Source:**"), "standard lost the source line")
+  assert.ok(briefs.standard.includes("**URL:** http://localhost/"), "standard lost the localhost URL")
   assert.ok(briefs.standard.includes("**Viewport:**"), "standard lost the viewport")
   assert.ok(!briefs.standard.includes("**Classes:**"), "standard leaked the classes")
 
+  assert.ok(briefs.detailed.includes("**URL:** http://localhost/"), "detailed lost the localhost URL")
   assert.ok(briefs.detailed.includes("**Classes:** btn, px-4"), "detailed lost the classes")
   assert.ok(briefs.detailed.includes("**Position:** 10px, 20px (120×40px)"), "detailed lost the box")
   assert.ok(briefs.detailed.includes("**Context:**"), "detailed lost the nearby text")
@@ -1053,6 +1056,7 @@ check("the four detail levels mean four different things", () => {
 
   assert.ok(briefs.forensic.includes("**Environment:**"), "forensic lost the environment block")
   assert.ok(briefs.forensic.includes("- Viewport:"), "forensic lost the viewport")
+  assert.ok(briefs.forensic.includes("- URL: http://localhost/"), "forensic lost the localhost URL")
   assert.ok(briefs.forensic.includes("**Full DOM Path:**"), "forensic lost the DOM path")
   assert.ok(briefs.forensic.includes("**Computed Styles:**"), "forensic lost the computed styles")
   assert.ok(briefs.forensic.includes("**Annotation at:**"), "forensic lost the pin's place")
@@ -1119,6 +1123,7 @@ check("a note reads exactly as Agentation would copy it", () => {
     [
       "## Page Feedback: /",
       "**App:** app on localhost",
+      "**URL:** http://localhost/",
       `**Viewport:** ${window.innerWidth}×${window.innerHeight}`,
       "",
       '### 1. button "Save"',
@@ -1140,10 +1145,42 @@ check("compact is Agentation's one line per note, and says nothing else", () => 
     [
       "## Page Feedback: /",
       "**App:** app on localhost",
+      "**URL:** http://localhost/",
       "",
       '1. **button "Save"** (src/components/card.tsx:42:1): Too loud',
     ].join("\n")
   )
+})
+
+check("the brief captures the app's own localhost address rather than the editor proxy's", () => {
+  reset()
+  switchApps()
+  dom.reconfigure({ url: "http://localhost:3456/pricing?plan=pro#faq" })
+  try {
+    noteOn(shop, saveButton, "First running instance")
+    noteOn(docs, lede, "Second running instance")
+    for (const detail of ["compact", "standard", "detailed"]) {
+      shop.updateSettings({ outputDetail: detail })
+      docs.updateSettings({ outputDetail: detail })
+      const shopBrief = shop.buildAnnotationBrief()
+      const docsBrief = docs.buildAnnotationBrief()
+      assert.match(shopBrief, /^\*\*App:\*\* shop-web$/m)
+      assert.match(shopBrief, /^\*\*URL:\*\* http:\/\/localhost:3000\/pricing\?plan=pro#faq$/m)
+      assert.ok(!shopBrief.includes("3456"), `${detail} printed the proxy port instead of the app's localhost`)
+      assert.ok(!shopBrief.includes("127.0.0.1"), `${detail} printed 127.0.0.1 instead of localhost`)
+      assert.match(docsBrief, /^\*\*App:\*\* docs-site$/m)
+      assert.match(docsBrief, /^\*\*URL:\*\* http:\/\/localhost:4200\/pricing\?plan=pro#faq$/m)
+    }
+    shop.updateSettings({ outputDetail: "forensic" })
+    const forensic = shop.buildAnnotationBrief()
+    assert.match(forensic, /^- URL: http:\/\/localhost:3000\/pricing\?plan=pro#faq$/m)
+    assert.ok(!forensic.includes("**URL:**"), "forensic printed the URL twice")
+    assert.ok(!forensic.includes("3456"), "forensic printed the proxy port instead of the app's localhost")
+  } finally {
+    dom.reconfigure({ url: "http://localhost/" })
+    reset()
+    switchApps()
+  }
 })
 
 check("elements are named and located the way Agentation names them", () => {
@@ -1252,6 +1289,7 @@ check("forensic opens with Agentation's environment block and rule", () => {
     /^## Page Feedback: \/\n\*\*App:\*\* app on localhost\n\n\*\*Environment:\*\*\n- Viewport: \d+×\d+\n- URL: http:\/\/localhost\/\n- User Agent: .+\n- Timestamp: .+\n- Device Pixel Ratio: \d+(\.\d+)?\n\n---\n\nItems with a \*\*Change:\*\* line are edits [^\n]+\n\n### 1\. button "Save"\n\*\*Full DOM Path:\*\* body > main#app > section\.panel > div\.row > button\.btn\n/
   )
   assert.ok(!brief.includes("**Viewport:**"), "forensic printed the viewport twice")
+  assert.ok(!brief.includes("**URL:**"), "forensic printed the URL twice")
 })
 
 check("a note stored before names were captured still gets a heading and location", () => {

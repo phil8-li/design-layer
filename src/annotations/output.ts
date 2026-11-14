@@ -659,10 +659,52 @@ function targetName(target: AnnotationTarget): string {
 
 /**
  * The page the notes are on: path, query and hash, like Agentation's header.
- * Never the origin — the agent already knows which dev server it is in.
  */
 function pageLabel(): string {
   return `${window.location.pathname}${window.location.search}${window.location.hash}`
+}
+
+/**
+ * A loopback URL's origin on `localhost`, so `http://127.0.0.1:3051` and
+ * `http://[::1]:3051` both print as `http://localhost:3051`.
+ *
+ * `config.app.url` arrives on `127.0.0.1` so it matches the app chooser's rows,
+ * while dev servers and local auth bypasses treat `localhost` as the browser
+ * host — the same normalization the Mac app's tab tooltip and the start screen
+ * make.
+ */
+function localhostOrigin(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  try {
+    const url = new URL(raw)
+    const host = url.hostname.replace(/^\[|\]$/g, "")
+    if (host === "127.0.0.1" || host === "::1") url.hostname = "localhost"
+    return url.origin
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The app's own localhost origin (`http://localhost:3051`) rather than the
+ * editor proxy's (`http://localhost:3494`), so an agent with several dev
+ * servers running knows which localhost instance the note came from. Falls back
+ * to the document's origin when no app URL was injected.
+ */
+function appOrigin(): string {
+  return localhostOrigin(config.app.url) ?? localhostOrigin(window.location.origin) ?? window.location.origin
+}
+
+function pageUrl(): string {
+  return `${appOrigin()}${pageLabel()}`
+}
+
+function appHost(): string {
+  try {
+    return new URL(appOrigin()).host
+  } catch {
+    return window.location.host
+  }
 }
 
 /**
@@ -674,7 +716,7 @@ function pageLabel(): string {
  */
 function appLabel(): string {
   const name = (config.app.name ?? "").replace(/[\r\n\t]+/g, " ").trim()
-  const label = name || `app on ${window.location.host}`
+  const label = name || `app on ${appHost()}`
   return label.replace(/[\\`*_[\]<>]/g, "\\$&")
 }
 
@@ -692,7 +734,7 @@ function environmentBlock(): string[] {
     "",
     "**Environment:**",
     `- Viewport: ${viewportLabel()}`,
-    `- URL: ${window.location.href}`,
+    `- URL: ${pageUrl()}`,
     `- User Agent: ${navigator.userAgent}`,
     `- Timestamp: ${new Date().toISOString()}`,
     `- Device Pixel Ratio: ${window.devicePixelRatio}`,
@@ -927,7 +969,10 @@ export function buildAnnotationBrief(items: OutboxItem[] = outboxItems()): strin
 
   const lines: string[] = [`## Page Feedback: ${pageLabel()}`, `**App:** ${appLabel()}`]
   if (detail === "forensic") lines.push(...environmentBlock())
-  else if (detail !== "compact") lines.push(`**Viewport:** ${viewportLabel()}`)
+  else {
+    lines.push(`**URL:** ${pageUrl()}`)
+    if (detail !== "compact") lines.push(`**Viewport:** ${viewportLabel()}`)
+  }
   // The changes an earlier send went out as, so an agent can look them up
   // with `get_change` before it repeats one.
   const earlier = [...new Set(briefItems.map((item) => item.sent?.changeId).filter((id): id is string => Boolean(id)))]
