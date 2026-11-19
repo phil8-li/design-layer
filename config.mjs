@@ -31,6 +31,7 @@ import {
   TAILWIND_CONFIG_FILES,
   VITE_CONFIG_FILES,
   hasRootFile,
+  isPlainHtmlProject,
   manifestDependencies,
   packageNameOf,
   readManifest,
@@ -144,7 +145,8 @@ export const DEFAULT_CONFIG = {
     themeNamespaces: [...DEFAULT_THEME_NAMESPACES],
   },
   source: { roots: [], extensions: [".tsx", ".jsx", ".ts", ".js", ".mts", ".mjs"] },
-  // Which UI framework the host app is written in, and whether it compiles
+  // Which UI framework the host app is written in ("react", "angular", or
+  // "html" for plain pages), and whether it compiles
   // Tailwind. "auto"/null mean "work it out from the project", which is what
   // every host should leave them as: both are properties of the project, not
   // things a config file should have to restate.
@@ -257,7 +259,7 @@ function resolveLevaConfig(value, projectRoot) {
   })
 }
 
-const HOST_FRAMEWORKS = new Set(["react", "angular"])
+const HOST_FRAMEWORKS = new Set(["react", "angular", "html"])
 
 /**
  * What the host's dev server is, and what it takes to start one on a chosen
@@ -333,16 +335,18 @@ export function detectTailwind(projectRoot) {
  * Which framework the app under the overlay is written in.
  *
  * Detected from the dependency that decides it, not from a config file that
- * happens to sit beside one. `react` is the fallback rather than a third
- * "unknown" state, because every path this value gates already behaved as if
- * the host were React — an unrecognised project keeps that behaviour instead of
- * acquiring a new failure mode.
+ * happens to sit beside one. `html` is a folder of pages with neither React nor
+ * Angular, such as a prototype a static server serves. `react` is the fallback
+ * rather than an "unknown" state, because every path this value gates already
+ * behaved as if the host were React — an unrecognised project keeps that
+ * behaviour instead of acquiring a new failure mode.
  */
 export function resolveHostFramework(projectRoot, configured = "auto") {
   if (HOST_FRAMEWORKS.has(configured)) return configured
   if (configured !== "auto" && configured !== undefined && configured !== null) {
-    throw new Error(`host.framework must be "auto", "react" or "angular" (got ${configured})`)
+    throw new Error(`host.framework must be "auto", "react", "angular" or "html" (got ${configured})`)
   }
+  if (isPlainHtmlProject(projectRoot)) return "html"
   return DEV_SERVERS[detectDevServer(projectRoot)].framework
 }
 
@@ -355,7 +359,7 @@ export function resolveHostFramework(projectRoot, configured = "auto") {
  * so a host that narrowed it deliberately keeps exactly what it asked for.
  */
 function hostSourceExtensions(extensions, framework, overridden) {
-  if (framework !== "angular" || overridden) return extensions
+  if (framework === "react" || overridden) return extensions
   return [...new Set([...extensions, ".html", ".css", ".scss"])]
 }
 

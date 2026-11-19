@@ -20,6 +20,7 @@ import { isLoopbackHost } from "./chooser-url.mjs"
 import { httpError as badRequest } from "./http-error.mjs"
 
 import { isDirectory } from "./local-apps.mjs"
+import { hasHtmlPage } from "./project-facts.mjs"
 
 // The one loopback rule, re-exported for the start screen, which guarded its
 // routes with a private copy of it.
@@ -164,17 +165,21 @@ export function resolveProject(raw) {
 
   if (!isDirectory(projectRoot)) throw badRequest(`${value} is a file, not a project folder. Pick the folder that contains it.`)
 
-  let text
+  // A folder of pages that a static server serves usually has no package.json.
+  const htmlPage = hasHtmlPage(projectRoot)
+  let text = null
   try {
     text = fs.readFileSync(path.join(projectRoot, "package.json"), "utf8")
   } catch {
-    throw badRequest(`No package.json in ${projectRoot}. Pick the folder that contains it.`)
+    if (!htmlPage) throw badRequest(`No package.json or HTML page in ${projectRoot}. Pick the folder that holds one.`)
   }
-  let manifest
-  try {
-    manifest = JSON.parse(text)
-  } catch {
-    throw badRequest(`The package.json in ${projectRoot} is not valid JSON. Fix the file, then try again.`)
+  let manifest = {}
+  if (text !== null) {
+    try {
+      manifest = JSON.parse(text)
+    } catch {
+      throw badRequest(`The package.json in ${projectRoot} is not valid JSON. Fix the file, then try again.`)
+    }
   }
 
   const dependencies = { ...manifest.dependencies, ...manifest.devDependencies }
@@ -186,14 +191,15 @@ export function resolveProject(raw) {
    * editor had just learned to edit. Every other entry point had been taught
    * about Angular; this one had not, and it is the one a designer uses.
    *
-   * The two dependencies are the same signals `resolveHostFramework` reads, and
-   * they are checked here rather than delegated because this must fail as a
-   * sentence on the page. Refusing later, inside the child process, reaches the
-   * terminal that nobody running the start screen is looking at.
+   * The signals are the ones `resolveHostFramework` reads — the two
+   * dependencies, and for a plain HTML project a page at the top of the folder
+   * — and they are checked here rather than delegated because this must fail
+   * as a sentence on the page. Refusing later, inside the child process,
+   * reaches the terminal that nobody running the start screen is looking at.
    */
-  if (typeof dependencies.react !== "string" && typeof dependencies["@angular/core"] !== "string") {
+  if (typeof dependencies.react !== "string" && typeof dependencies["@angular/core"] !== "string" && !htmlPage) {
     throw badRequest(
-      `${name} does not use React or Angular, the two frameworks the editor supports.`
+      `${name} is not a React, Angular or plain HTML project, the three kinds the editor supports.`
     )
   }
 

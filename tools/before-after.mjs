@@ -179,6 +179,7 @@ const STATES = [
       hasReact: false,
       devScripts: [],
       framework: null,
+      hostFramework: null,
     },
     drive: `
       const url = document.getElementById("url")
@@ -260,6 +261,7 @@ function stubFetch(state) {
     hasReact: true,
     devScripts: ["dev"],
     framework: "nextjs",
+    hostFramework: "react",
   }
   return `
     const APPS = ${JSON.stringify(state.apps === "fail" ? [] : state.apps)}

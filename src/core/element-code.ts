@@ -48,23 +48,24 @@ const REACT_CODE_VIEWS: ReadonlyArray<{ id: CodeView; label: string }> = [
 ]
 
 /**
- * An Angular host is offered two, and HTML is first.
+ * An Angular host, or a plain HTML page, is offered two, and HTML is first.
  *
  * JSX is not a dialect an Angular element can be spelled in — the tab drew
  * `className=` and `_nghost-ng-c3309602102` for a component whose template says
- * `class=`, which is a view of a file that does not exist. Dropping it also
- * makes HTML the default, because the default is the first entry.
+ * `class=`, which is a view of a file that does not exist. A static page is
+ * written in HTML outright. Dropping JSX also makes HTML the default, because
+ * the default is the first entry.
  *
  * The class list survives either way; only its NAME follows Tailwind, which is
  * a different question from the framework and answered separately.
  */
-const ANGULAR_CODE_VIEWS: ReadonlyArray<{ id: CodeView; label: string }> = [
+const MARKUP_CODE_VIEWS: ReadonlyArray<{ id: CodeView; label: string }> = [
   { id: "html", label: "HTML" },
   { id: "classes", label: "Classes" },
 ]
 
 function codeViews(): ReadonlyArray<{ id: CodeView; label: string }> {
-  const views = config.host.framework === "angular" ? ANGULAR_CODE_VIEWS : REACT_CODE_VIEWS
+  const views = config.host.framework === "react" ? REACT_CODE_VIEWS : MARKUP_CODE_VIEWS
   if (config.host.tailwind) return views
   // Calling the class list "Tailwind classes" in a project with no Tailwind
   // names a technology the designer would then go looking for.

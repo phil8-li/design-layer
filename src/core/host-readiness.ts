@@ -148,9 +148,20 @@ function afterTwoPaints(resolve: () => void): void {
  *
  * The bounded fallback keeps the editor available if a framework changes its
  * private marker; by then the document has long since finished loading.
+ *
+ * A plain HTML page has no framework to wait for: asked React's question, it
+ * waited out the whole timeout on every load. Its markup is the page, so the
+ * editor mounts once the document is parsed and the page's deferred scripts
+ * have run.
  */
 export function whenHostHydrated(timeoutMs = DEFAULT_TIMEOUT_MS): Promise<void> {
   const framework = config.host.framework
+  if (framework === "html") {
+    return new Promise((resolve) => {
+      if (document.readyState !== "loading") resolve()
+      else document.addEventListener("DOMContentLoaded", () => resolve(), { once: true })
+    })
+  }
   const slow = framework === "angular" || hasServerMarkup()
   return new Promise((resolve) => {
     let observer: MutationObserver | null = null

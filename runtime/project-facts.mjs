@@ -62,3 +62,30 @@ export function packageNameOf(projectRoot) {
 export function hasRootFile(projectRoot, names) {
   return names.some((name) => fs.existsSync(path.join(projectRoot, name)))
 }
+
+const HTML_PAGE = /\.html?$/i
+
+/**
+ * Whether the folder has an HTML page at its top level. Listed rather than
+ * stat'ed name by name: a folder macOS guards can refuse `stat` and still list.
+ */
+export function hasHtmlPage(projectRoot) {
+  try {
+    return fs
+      .readdirSync(projectRoot, { withFileTypes: true })
+      .some((entry) => !entry.isDirectory() && HTML_PAGE.test(entry.name))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * A project the editor opens as plain HTML: an HTML page at its top level, and
+ * neither React nor Angular among its dependencies. A folder of pages served by
+ * a static server usually has no package.json at all, which is why the page
+ * and not the manifest is the test.
+ */
+export function isPlainHtmlProject(projectRoot, manifest = readManifest(projectRoot)) {
+  const dependencies = manifestDependencies(manifest)
+  return !dependencies.react && !dependencies["@angular/core"] && hasHtmlPage(projectRoot)
+}

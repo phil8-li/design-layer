@@ -8,6 +8,7 @@
  */
 
 import { isAngularHost, owningComponentName, resolveAngularSource } from "./angular"
+import { config } from "./config"
 import { notify, type ToastAction, type ToastKind, type ToastMessage } from "./toast"
 import type { SourceRef } from "./types"
 
@@ -350,6 +351,8 @@ async function resolve(bridge: RewriteBridge, element: Element): Promise<SourceR
   // the whole answer, and reaching the React path first would only cost a
   // round trip to learn that.
   if (isAngularHost()) return resolveAngularSource(element)
+  // A plain HTML page has no component on either path: no fiber, no template.
+  if (config.host.framework === "html") return null
 
   let info: RewriteElementInfo | null = null
   try {

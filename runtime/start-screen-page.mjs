@@ -69,6 +69,9 @@ let addressTyping = 0
 // Who put the folder in the field: the address it was looked up for, or null
 // when the user typed it. Only a looked-up folder follows the address.
 let rootFor = null
+// The port of a typed address that is up although the list does not show it,
+// such as a static server whose root is not a page. It needs no dev script.
+let upFor = null
 // The latest folder lookup. Each lookup takes the next number, and an answer
 // whose number is no longer the latest is dropped: clicking row A then row B,
 // A's slower answer used to land last and put A's folder beside B's address.
@@ -250,6 +253,23 @@ const matchedApp = () => {
 }
 
 /*
+ * Whether the typed app is already up: a listed row, or an address the folder
+ * lookup found answering. Neither needs a dev script, so the hint, the script
+ * picker and the press all ask this one question.
+ */
+const isUp = (app) => app !== null || (upFor !== null && upFor === portOf(el.url.value.trim()))
+
+/** The path of a typed address that names a file page (\`.html\`, or a folder's "/"), or null. */
+function filePageOf(value) {
+  try {
+    const url = new URL(/^[a-z]+:\\/\\//i.test(value) ? value : "http://" + value)
+    return url.pathname !== "/" && /(\\/|\\.html?)$/i.test(url.pathname) ? url.pathname : null
+  } catch {
+    return null
+  }
+}
+
+/*
  * A row's label, with the server's fallback caught before it stutters.
  *
  * \`scanLocalApps\` labels an untitled dev server with its own address — an
@@ -333,16 +353,16 @@ const NO_DEV_SCRIPT = "No dev script in that folder. Start the app yourself, the
 function hintFor(app) {
   if (el.url.value.trim() === "" || !root) return ""
 
-  const { name, hasPackageJson, hasReact, framework } = root.info
+  const { name, hasPackageJson, hostFramework } = root.info
   // Both facts below arrive with the folder, a full round-trip before the press
   // that used to be the first place either of them was mentioned. The best
   // error message is the one the screen answers before it is earned.
-  if (!hasPackageJson) return "No package.json in that folder. Pick the one with node_modules beside it."
-  if (!hasReact && framework !== "angular") {
-    return name + " does not use React or Angular, the two frameworks the editor supports."
+  if (!hasPackageJson && hostFramework !== "html") return "No package.json or HTML page in that folder. Pick the folder that holds one."
+  if (!hostFramework) {
+    return name + " is not a React, Angular or plain HTML project, the three kinds the editor supports."
   }
   // An app already up needs no script, so a missing one is not a problem yet.
-  if (app) return ""
+  if (isUp(app)) return ""
   if (!devScript) return NO_DEV_SCRIPT
   return "Runs npm run " + devScript + ", then opens the editor."
 }
@@ -364,7 +384,7 @@ function render() {
   // The field is never written from here — it is the one control the user types
   // into, and render() runs on every keystroke.
   const scripts = root ? root.info.devScripts : []
-  el.scriptRow.hidden = app !== null || scripts.length < 2
+  el.scriptRow.hidden = isUp(app) || scripts.length < 2
   // One label, always. It used to flip between "Start designing" and
   // "Start app & designing" as the user typed — a button that changes identity
   // under the hand reaching for it, and an unparallel construction besides.
@@ -624,21 +644,28 @@ async function chooseApp(app) {
  * on its own at boot, so typing or pasting the address of a different app left
  * THAT row's folder in the field: Start then proxied the typed app and wrote
  * its edits into the other project. A folder the user typed is theirs and stays.
+ *
+ * An address that names a file page is looked up by that page, even on a
+ * listed port: one static server can serve many folders on one port, and
+ * only the page says which of them this is.
  */
 async function followAddress() {
   const typed = el.url.value.trim()
   const port = portOf(typed)
-  if (port === null || port === rootFor) return
+  const page = filePageOf(typed)
+  const key = page === null ? port : port + page
+  if (port === null || key === rootFor) return
   if (rootFor === null && el.path.value.trim() !== "") return
   const app = matchedApp()
-  if (app) return chooseApp(app)
+  if (app && page === null) return chooseApp(app)
   const token = nextLookup()
   const data = await askServer("/api/app-folder?url=" + encodeURIComponent(typed), el.folderError)
   // Typed on while that was in flight; the later keystroke owns the field.
   if (!data || token !== lookup || el.url.value.trim() !== typed) return
-  rootFor = port
+  rootFor = key
+  upFor = data.running ? port : null
   if (data.project) adoptProject(token, data.project)
-  else forgetProject({ port, url: "http://127.0.0.1:" + port, title: "" })
+  else forgetProject(app ?? { port, url: "http://127.0.0.1:" + port, title: "" })
   render()
 }
 
@@ -952,13 +979,14 @@ async function submit() {
     return
   }
   const app = matchedApp()
-  if (!app && !devScript) {
+  const up = isUp(app)
+  if (!up && !devScript) {
     el.path.focus()
     fail(el.submitError, el.path, NO_DEV_SCRIPT)
     return
   }
 
-  const script = app ? null : devScript
+  const script = up ? null : devScript
   busy = true
   render()
 

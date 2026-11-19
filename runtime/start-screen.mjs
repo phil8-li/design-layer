@@ -31,10 +31,17 @@ import { createRequire } from "node:module"
 import path from "node:path"
 
 import { appName } from "./app-name.mjs"
+import { LOOPBACK_ADDRESSES, probePort } from "./dev-server.mjs"
 import { listEditors } from "./editor-registry.mjs"
-import { lastPage } from "./last-pages.mjs"
+import { lastPage, rememberedPages, rememberPage } from "./last-pages.mjs"
 import { isLocalRequest } from "./loopback.mjs"
-import { DEFAULT_SCAN_PORTS, describeProject, projectRootForPort, scanLocalApps } from "./local-apps.mjs"
+import {
+  DEFAULT_SCAN_PORTS,
+  describeProject,
+  projectRootForPage,
+  projectRootForPort,
+  scanLocalApps,
+} from "./local-apps.mjs"
 import {
   badRequest,
   inBrowser,
@@ -46,6 +53,7 @@ import {
   resolveDevScript,
   resolveProject,
 } from "./start-choice.mjs"
+import { isPlainHtmlProject } from "./project-facts.mjs"
 import { startScreenPage } from "./start-screen-page.mjs"
 
 /*
@@ -407,28 +415,77 @@ export async function createStartScreen({
    */
   let lastScan = null
   let scanning = null
+  function readRegistry() {
+    try {
+      return listEditors()
+    } catch {
+      // A registry that cannot be read costs the filter or editor badge, never the list.
+      return []
+    }
+  }
   /*
    * The scan looks at every listening port, so it has to be told which ones are
    * the editor's own. An editor runs from the folder of the project it edits,
    * and its proxy serves that project's pages: without this, each editor would
    * be listed as one more copy of the app it is editing.
    */
-  function ownProcesses() {
-    let editors = []
-    try {
-      editors = listEditors()
-    } catch {
-      // A registry that cannot be read costs the filter, never the scan.
-    }
+  function ownProcesses(editors) {
     const ports = editors.flatMap((entry) => [entry.proxyPort, entry.wsPort]).filter(Number.isInteger)
     if (server.listening) ports.push(server.address().port)
     return { pids: [process.pid, ...editors.map((entry) => entry.pid)], ports }
   }
+  /*
+   * App ports that already have a live editor. Included alongside the fixed
+   * list so a running prototype being edited on a custom port is still probed
+   * when the OS refuses `lsof -d cwd` on its dev server.
+   */
+  function knownAppPorts(editors) {
+    return [
+      ...new Set(
+        [...liveRecords(), ...editors.filter((entry) => !startedPorts.has(entry.proxyPort))]
+          .map((entry) => entry.appPort)
+          .filter((port) => Number.isInteger(port) && port > 0)
+      ),
+    ]
+  }
+  function projectFromEditor(app, registry) {
+    if (app.projectRoot) return app
+    const owner =
+      liveRecords().find((record) => record.appPort === app.port && record.projectRoot) ??
+      registry.find((entry) => entry.appPort === app.port && !startedPorts.has(entry.proxyPort) && entry.projectRoot)
+    if (!owner) return app
+    return {
+      ...app,
+      projectRoot: owner.projectRoot,
+      packageName: owner.packageName ?? describeProject(owner.projectRoot).packageName,
+    }
+  }
+  /*
+   * Pages of apps opened before, newest first: the live editors' own, then
+   * every page an editor has reported (runtime/last-pages.mjs). The scan asks
+   * for them to list an app whose server it cannot otherwise recognise, such
+   * as a static server that answers `/` with plain text.
+   */
+  function rememberedApps() {
+    const live = liveRecords()
+      .filter((record) => record.path)
+      .map((record) => ({ port: record.appPort, projectRoot: record.projectRoot, page: record.path }))
+    return [...live, ...rememberedPages()]
+  }
   function scanApps() {
-    if (lastScan && Date.now() - lastScan.at < SCAN_REUSE_MS) return Promise.resolve(lastScan.apps)
-    scanning ??= scanLocalApps({ ports: DEFAULT_SCAN_PORTS, discover: ownProcesses() })
+    const editors = readRegistry()
+    const extraPorts = knownAppPorts(editors)
+    if (
+      lastScan &&
+      Date.now() - lastScan.at < SCAN_REUSE_MS &&
+      extraPorts.every((port) => lastScan.ports.has(port))
+    ) {
+      return Promise.resolve(lastScan.apps)
+    }
+    const scanPorts = [...new Set([...DEFAULT_SCAN_PORTS, ...extraPorts])]
+    scanning ??= scanLocalApps({ ports: scanPorts, discover: ownProcesses(editors), remembered: rememberedApps() })
       .then((apps) => {
-        lastScan = { at: Date.now(), apps }
+        lastScan = { at: Date.now(), ports: new Set(scanPorts), apps }
         return apps
       })
       .finally(() => {
@@ -451,6 +508,11 @@ export async function createStartScreen({
      * so opening the root of the app picked looked like a different app.
      */
     const remembered = lastPage({ port: appPort, projectRoot })
+    // A folder of pages is found again by its page alone (`recallPages` in
+    // local-apps.mjs), so the page asked for is filed now. The editor files a
+    // page only once the person has used it, and an app the person started
+    // and stopped unused would drop off the list.
+    if (appPath && isPlainHtmlProject(projectRoot, manifest)) rememberPage({ port: appPort, projectRoot, page: appPath })
 
     /*
      * One app, one editor. A second press for an app already starting or
@@ -563,24 +625,33 @@ export async function createStartScreen({
      */
     "GET /api/apps": async (_req, res) => {
       const apps = await scanApps()
-      let registry = []
-      try {
-        registry = listEditors()
-      } catch {
-        // A registry that cannot be read costs rows their editor, never the list.
-      }
-      sendJson(res, 200, { apps: apps.map((app) => ({ ...app, editor: editorForApp(app, registry) })) })
+      const registry = readRegistry()
+      sendJson(res, 200, {
+        apps: apps.map((raw) => {
+          const app = projectFromEditor(raw, registry)
+          return { ...app, editor: editorForApp(app, registry) }
+        }),
+      })
     },
     /*
-     * The folder behind a typed address. The scan answers for every app it
-     * listed; an address it did not list is asked of the process on that port.
-     * `project` is null when neither knows, which the page says out loud.
+     * The folder behind a typed address. An address that names a page is
+     * first matched to the file that page was served from, which is the only
+     * way a static server says where its folder is, and one server can serve
+     * several. Then the scan answers for every app it listed, and an address
+     * it did not list is asked of the process on that port. `project` is null
+     * when none of them knows, which the page says out loud.
+     *
+     * `running` says whether anything answers on that port, so the page does
+     * not ask for a dev script to start an app that is already up.
      */
     "GET /api/app-folder": async (_req, res, url) => {
-      const { appPort } = parseAppUrl(url.searchParams.get("url") ?? "")
+      const { appPort, appPath } = parseAppUrl(url.searchParams.get("url") ?? "")
+      const byPage = /^\/[^?#]/.test(appPath) ? projectRootForPage(appPort, appPath) : null
       const listed = (await scanApps()).find((app) => app.port === appPort)
-      const root = listed ? listed.projectRoot : await projectRootForPort(appPort)
-      sendJson(res, 200, { project: root ? describeProject(root) : null })
+      const root = (await byPage) ?? (listed ? listed.projectRoot : await projectRootForPort(appPort))
+      const running =
+        Boolean(listed) || (await Promise.all(LOOPBACK_ADDRESSES.map((host) => probePort(host, appPort)))).some(Boolean)
+      sendJson(res, 200, { project: root ? describeProject(root) : null, running })
     },
     "GET /api/project": (_req, res, url) => {
       const dir = pastedPath(url.searchParams.get("path") ?? "")

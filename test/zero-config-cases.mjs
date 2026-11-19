@@ -174,11 +174,16 @@ console.log("\nWhat kind of host is this")
     assert.equal(detectDevServer(root), "next")
   })
 
-  check("a project with no package.json at all is still startable", () => {
+  check("a folder of pages with no package.json is still startable, as plain HTML", () => {
     const root = project({ "index.html": "<html></html>" })
     const config = resolveConfig({}, { cwd: root })
-    assert.equal(config.host.framework, "react")
+    assert.equal(config.host.framework, "html")
     assert.equal(config.app.devPort, 3000)
+  })
+
+  check("a folder with neither a package.json nor a page keeps the React fallback", () => {
+    const root = project({ "notes.txt": "nothing to serve" })
+    assert.equal(resolveConfig({}, { cwd: root }).host.framework, "react")
   })
 }
 
@@ -525,7 +530,7 @@ console.log("\nLoopback has two addresses and the app may be on either")
 }
 
 /* ---------------------------------------------------------------------- */
-console.log("\nThe start screen opens both frameworks")
+console.log("\nThe start screen opens each kind of project")
 
 {
   const { createStartScreen } = await import("../runtime/start-screen.mjs")
@@ -557,6 +562,8 @@ console.log("\nThe start screen opens both frameworks")
   const neither = project({
     "package.json": manifest({ name: "svelte-app", dependencies: { svelte: "^5.0.0" } }),
   })
+  // A folder of pages a static server serves: no package.json, nothing to run.
+  const pages = project({ "index.html": "<!doctype html><title>Prototype</title>" })
 
   /*
    * One screen per case. The first accepted Start latches the supervisor —
@@ -597,6 +604,19 @@ console.log("\nThe start screen opens both frameworks")
     })
   )
 
+  await checkAsync("a folder of pages with no package.json is accepted, with no script to run", () =>
+    onFreshScreen(async (screen) => {
+      // No page in the address: a page would be filed under the real HOME
+      // these cases run with. test/html-host-cases.mjs covers that filing.
+      const answer = await pressStart(screen, {
+        url: "http://127.0.0.1:4099/",
+        projectRoot: pages,
+        devScript: null,
+      })
+      assert.notEqual(answer.status, 400, `refused: ${answer.body?.error}`)
+    })
+  )
+
   await checkAsync("a project of neither kind is refused, and says so", () =>
     onFreshScreen(async (screen) => {
       const answer = await pressStart(screen, {
@@ -605,7 +625,7 @@ console.log("\nThe start screen opens both frameworks")
         devScript: null,
       })
       assert.equal(answer.status, 400)
-      assert.match(answer.body.error, /does not use React or Angular/)
+      assert.match(answer.body.error, /is not a React, Angular or plain HTML project/)
     })
   )
 }

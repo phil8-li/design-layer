@@ -96,14 +96,20 @@ function withKeepAlive(options) {
  * upstream connections, whichever of its factory names the caller uses.
  * Reached through the vendor's own resolution, so the module patched is the
  * module the vendor imports.
+ *
+ * `changeOrigin` asks the upstream for pages under its own address rather than
+ * the editor's. A static server that guards against DNS rebinding answers only
+ * to the host and port it listens on, and refused every page of a plain HTML
+ * host with a 421.
  */
-export function patchProxyRetries(httpProxy, options) {
+export function patchProxyRetries(httpProxy, { changeOrigin = false, ...options } = {}) {
   if (!httpProxy || httpProxy.designlayerRetries) return
   for (const name of ["createProxyServer", "createServer", "createProxy"]) {
     const create = httpProxy[name]
     if (typeof create !== "function") continue
     httpProxy[name] = function createRetryingProxy(proxyOptions, ...rest) {
-      return withRetries(create.call(this, withKeepAlive(proxyOptions), ...rest), options)
+      const upstream = changeOrigin ? { ...proxyOptions, changeOrigin: true } : proxyOptions
+      return withRetries(create.call(this, withKeepAlive(upstream), ...rest), options)
     }
   }
   httpProxy.designlayerRetries = true

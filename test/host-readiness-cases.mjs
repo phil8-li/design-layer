@@ -150,4 +150,32 @@ assert.equal(
   assert.equal(readiness.hasServerMarkup(), false, "<noscript> text read as server markup")
 }
 
-console.log("13 passed, 0 failed")
+/*
+ * A plain HTML page has no framework to wait for. Asked React's question, the
+ * boot waited out the whole timeout on every load of a static page. It mounts
+ * once the document is parsed, and polls no frames. A second bundle, because
+ * the host is read from the config when the module loads.
+ */
+{
+  globalThis.__DESIGNLAYER_CONFIG__ = { host: { framework: "html" } }
+  const page = new JSDOM("<!doctype html><html><body><main><h1>Static</h1></main></body></html>", {
+    pretendToBeVisual: true,
+  }).window
+  for (const key of ["window", "document", "Element", "MutationObserver"]) {
+    Object.defineProperty(globalThis, key, { value: page[key], configurable: true, writable: true })
+  }
+  let frames = 0
+  globalThis.requestAnimationFrame = () => ++frames
+  const html = await import(
+    `data:text/javascript;base64,${Buffer.from(`${bundled.outputFiles[0].text}\n// plain HTML host\n`).toString("base64")}`
+  )
+  const mounted = await Promise.race([
+    html.whenHostHydrated(1_000).then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 200)),
+  ])
+  assert.equal(mounted, true, "a plain HTML page waited for a framework that never claims it")
+  assert.equal(frames, 0, "a plain HTML page polled frames while it loaded")
+  delete globalThis.__DESIGNLAYER_CONFIG__
+}
+
+console.log("14 passed, 0 failed")

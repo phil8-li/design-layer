@@ -7,6 +7,9 @@
   screen and `--dev` both run it for you; with neither, start the dev server
   yourself first). Which one it is is detected from the host's `package.json` —
   see [Angular hosts](angular.md).
+- Or a folder of plain HTML pages, served by any static server you started
+  yourself. It needs no `package.json`; see
+  [Plain HTML pages](#plain-html-pages).
 - App Router and Pages Router are both supported, and neither requires a
   `next.config` file. The overlay can inspect and edit any Next app. Every edit
   becomes a note; on a Tailwind host the brief also names the Tailwind class to
@@ -137,6 +140,25 @@ found, and a broken render is exactly when you want the overlay in front of it.
 That is the whole flow, so nothing about your project has to change first. There
 is no config file to write, no script to add, and no dependency to install into
 the app you are editing.
+
+### Plain HTML pages
+
+A folder with an HTML page at its top level, and neither React nor Angular in a
+`package.json`, opens as plain HTML. Start its static server yourself, such as
+`python3 -m http.server` or `npx serve`, because there is no dev script to run.
+
+- A server that serves the folder at `/` is listed with the other apps. One on
+  a port the system picked (32768 and up) is not, because programs start such
+  servers for their own use; paste its address instead.
+- A server that answers `/` with something other than a page, or mounts
+  folders under a prefix such as `/p/<folder>/`, cannot be listed from its
+  port alone. Paste the page's address once. The start screen finds the folder
+  by matching the page to the file on disk it came from, and lists the app
+  from then on while its server runs.
+
+The editor works as it does on any host. The Code tab shows HTML, and each note
+names the `class` attribute. No component names are known, because no framework
+renders the page.
 
 ## Getting the editor out of the way
 

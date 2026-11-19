@@ -52,7 +52,7 @@ function describeSelection(request, framework) {
   // Named as the host's own source names it. Telling an agent the `className`
   // of an element whose template says `class` is a small lie that sends it
   // looking for a JSX attribute in a `.html` file.
-  const classAttribute = framework === "angular" ? "class" : "className"
+  const classAttribute = framework === "react" ? "className" : "class"
   const lines = [
     `- Tag: <${selection.tagName}>`,
     `- Component: ${selection.componentName || "unknown"}`,

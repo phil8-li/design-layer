@@ -238,6 +238,32 @@ await check("an app on a port off the fixed list is found by its project", async
   }
 })
 
+/*
+ * Newer macOS releases withhold the kernel TCP socket list from unprivileged
+ * callers: `netstat -anv -p tcp` exits 0 with zero socket rows, and older
+ * releases print `LISTEN` rows with no `name:pid` field. Neither is an empty
+ * machine — both mean `netstat` could not say, so `lsof` takes over.
+ */
+await check("discovery falls back to lsof when netstat exits cleanly with no listener pids", async () => {
+  const react = await childServer(reactProject(), "Unlisted Prototype")
+  try {
+    if ((await projectRootForPort(react.port)) === null) {
+      console.log("       skip (this machine will not name another process's folder)")
+      return
+    }
+    const emptyTcp = () => Promise.resolve("Active Multipath Internet connections\nProto/ID  Flags      Local Address          Foreign Address        (state)\n")
+    const pidlessTcp = () => Promise.resolve(`tcp4  0  0  127.0.0.1.${react.port}  *.*  LISTEN\n`)
+    for (const netstat of [emptyTcp, pidlessTcp]) {
+      const found = await scanLocalApps({ ports: [], discover: { pids: [], ports: [] }, netstat })
+      const row = found.find((app) => app.port === react.port)
+      assert.ok(row, "the unlisted prototype was missed when netstat named no pids")
+      assert.equal(row.title, "Unlisted Prototype")
+    }
+  } finally {
+    react.close()
+  }
+})
+
 await check("a project describes itself completely", () => {
   const dir = reactProject()
   fs.writeFileSync(path.join(dir, "next.config.mjs"), "export default {}\n")
@@ -249,6 +275,7 @@ await check("a project describes itself completely", () => {
   assert.equal(project.hasReact, true)
   assert.ok(project.devScripts.includes("dev"))
   assert.equal(project.framework, "nextjs")
+  assert.equal(project.hostFramework, "react")
 })
 
 await check("a directory that is not there still answers every field", () => {
@@ -263,6 +290,7 @@ await check("a directory that is not there still answers every field", () => {
     "hasReact",
     "devScripts",
     "framework",
+    "hostFramework",
   ]) {
     assert.ok(key in project, `missing ${key}`)
   }
@@ -292,6 +320,35 @@ await check("it reports what is running", async () => {
   const { status, body } = await json(`${screen.url}/api/apps`)
   assert.equal(status, 200)
   assert.ok(Array.isArray(body.apps))
+})
+
+await check("an app already being edited on an unlisted port is listed even when its folder cannot be discovered", async () => {
+  // Runs in a child outside any React project, so `discover` never picks it up
+  // from `lsof` — the same position a prototype is in when macOS refuses `-d cwd`.
+  const custom = await childServer(fixture("not-a-project"), "Custom Port Prototype")
+  const dir = reactProject({ name: "custom-port-proto" })
+  const isolated = await createStartScreen({ host: "127.0.0.1", port: 0, log: () => {} })
+  try {
+    const started = await json(`${isolated.url}/api/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: isolated.url },
+      body: JSON.stringify({ url: `http://127.0.0.1:${custom.port}`, projectRoot: dir }),
+    })
+    assert.equal(started.status, 200)
+    await isolated.nextChoice()
+    isolated.reportReady("http://127.0.0.1:4998", null, started.body.id)
+
+    const { status, body } = await json(`${isolated.url}/api/apps`)
+    assert.equal(status, 200)
+    const row = body.apps.find((entry) => entry.port === custom.port)
+    assert.ok(row, "running prototype with an active editor was omitted from /api/apps")
+    assert.equal(row.projectRoot, dir)
+    assert.equal(row.packageName, "custom-port-proto")
+    assert.deepEqual(row.editor, { id: started.body.id, url: "http://localhost:4998" })
+  } finally {
+    isolated.close()
+    custom.close()
+  }
 })
 
 await check("it describes a folder", async () => {
@@ -705,7 +762,7 @@ await check("the card names the app being edited by its folder, and the pick is 
                 { port: 3041, url: "http://127.0.0.1:3041", title: "Studio", projectRoot: "/work/pinned", packageName: "studio", editor: { id: "e1", url: editor.url } },
               ],
             }
-          : { project: { path: url.searchParams.get("path"), name: path.basename(url.searchParams.get("path")), exists: true, isDirectory: true, hasPackageJson: true, packageName: "studio", hasReact: true, devScripts: ["dev"], framework: "vite" } }
+          : { project: { path: url.searchParams.get("path"), name: path.basename(url.searchParams.get("path")), exists: true, isDirectory: true, hasPackageJson: true, packageName: "studio", hasReact: true, devScripts: ["dev"], framework: "vite", hostFramework: "react" } }
     return { ok: true, status: 200, json: async () => body }
   }
   try {
@@ -951,6 +1008,7 @@ const projectSaid = (dir) => ({
   hasReact: true,
   devScripts: ["dev"],
   framework: "nextjs",
+  hostFramework: "react",
 })
 
 const KNOWN = "/Users/someone/Projects/host app"
@@ -1907,7 +1965,7 @@ const brokenProject = (dir, over) => ({ ...projectSaid(dir), ...over })
 await check("a folder with no package.json is told so, not told about its scripts", async () => {
   const dir = "/Users/someone/Projects"
   const dom = await mountPage([], {
-    [dir]: brokenProject(dir, { hasPackageJson: false, devScripts: [], hasReact: false }),
+    [dir]: brokenProject(dir, { hasPackageJson: false, devScripts: [], hasReact: false, framework: null, hostFramework: null }),
   })
   try {
     const $ = (id) => dom.window.document.getElementById(id)
@@ -1920,9 +1978,89 @@ await check("a folder with no package.json is told so, not told about its script
      * It used to say "That folder has no dev script in its package.json." for
      * this, which is a dead end AND untrue in the commonest case: pointing at a
      * parent folder reported a missing script in a file that does not exist.
+     * It names both things a project folder holds, since a folder of pages
+     * has no package.json and is still a project.
      */
-    assert.match($("hint").textContent, /no package\.json/i)
-    assert.match($("hint").textContent, /node_modules/, "the sentence names nothing to look for")
+    assert.match($("hint").textContent, /no package\.json or HTML page/i, "the sentence names nothing to look for")
+  } finally {
+    dom.window.close()
+  }
+})
+
+await check("a folder of pages with no package.json is a project, and asks for nothing", async () => {
+  const dir = "/Users/someone/Projects/one-pager"
+  const dom = await mountPage([], {
+    [dir]: brokenProject(dir, { hasPackageJson: false, devScripts: [], hasReact: false, framework: "html", hostFramework: "html" }),
+  })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    $("url").value = "http://127.0.0.1:3000"
+    $("url").dispatchEvent(new dom.window.Event("input", { bubbles: true }))
+    $("folder-path").value = dir
+    $("folder-path").dispatchEvent(new dom.window.Event("input", { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    // No server is known on that port, so starting one is the only open question.
+    assert.match($("hint").textContent, /no dev script/i)
+    assert.doesNotMatch($("hint").textContent, /package\.json or HTML page|React, Angular/)
+  } finally {
+    dom.window.close()
+  }
+})
+
+await check("a pasted page of a static server finds its folder, and starts with no script to run", async () => {
+  // The server is up but off the list: its root is plain text, and it mounts
+  // folders under a prefix, so only the page says which folder this is.
+  const dir = "/Users/someone/Projects/Command Center/one-pager"
+  const asked = []
+  const dom = await mountPage(ROWS, { [KNOWN]: projectSaid(KNOWN) }, {}, {
+    "/api/app-folder": (url) => {
+      asked.push(url.searchParams.get("url"))
+      return {
+        project: brokenProject(dir, { hasPackageJson: false, packageName: null, devScripts: [], hasReact: false, framework: "html", hostFramework: "html" }),
+        running: true,
+      }
+    },
+    "/api/start": () => ({ ok: true, id: "e9", existing: false, replaced: null, url: null }),
+  })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    const address = "http://localhost:4099/p/Command%20Center/one-pager/index.html#connect"
+    $("url").value = address
+    $("url").dispatchEvent(new dom.window.Event("input", { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    assert.deepEqual(asked, [address])
+    assert.equal($("folder-path").value, dir)
+    assert.equal($("hint").textContent, "", "an app that is already up was asked for a dev script")
+    $("form").dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }))
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    const start = dom.requests.find((request) => request.path === "/api/start")
+    assert.ok(start, `the press was refused: ${$("submit-error").textContent}`)
+    assert.deepEqual(start.body, { url: address, projectRoot: dir, devScript: null })
+  } finally {
+    dom.window.close()
+  }
+})
+
+await check("a page address on a listed port is looked up by its page, not by the row", async () => {
+  // One static server can serve several folders on one port.
+  const other = "/Users/someone/Projects/another-site"
+  const dom = await mountPage(ROWS, { [KNOWN]: projectSaid(KNOWN) }, {}, {
+    "/api/app-folder": () => ({
+      project: brokenProject(other, { hasPackageJson: false, packageName: null, devScripts: [], hasReact: false, framework: "html", hostFramework: "html" }),
+      running: true,
+    }),
+  })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    $("url").value = "http://127.0.0.1:3000/p/another-site/"
+    $("url").dispatchEvent(new dom.window.Event("input", { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    assert.equal($("folder-path").value, other)
+    // A route of the app itself keeps the row's folder.
+    $("url").value = "http://127.0.0.1:3000/settings"
+    $("url").dispatchEvent(new dom.window.Event("input", { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    assert.equal($("folder-path").value, KNOWN)
   } finally {
     dom.window.close()
   }
@@ -1931,7 +2069,7 @@ await check("a folder with no package.json is told so, not told about its script
 await check("a project the editor cannot edit says so before the press, not after", async () => {
   const dir = "/Users/someone/Projects/svelte-thing"
   const dom = await mountPage([], {
-    [dir]: brokenProject(dir, { hasReact: false, framework: "vite" }),
+    [dir]: brokenProject(dir, { hasReact: false, framework: "vite", hostFramework: null }),
   })
   try {
     const $ = (id) => dom.window.document.getElementById(id)
@@ -1942,7 +2080,7 @@ await check("a project the editor cannot edit says so before the press, not afte
     await new Promise((resolve) => setTimeout(resolve, 400))
     // Both facts arrive with the folder, a full round-trip before the press
     // that used to be the first place either of them was mentioned.
-    assert.match($("hint").textContent, /does not use React or Angular/i)
+    assert.match($("hint").textContent, /is not a React, Angular or plain HTML project/i)
   } finally {
     dom.window.close()
   }

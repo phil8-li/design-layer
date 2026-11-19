@@ -107,6 +107,7 @@ const PROJECT = {
   hasReact: true,
   devScripts: ["dev"],
   framework: "nextjs",
+  hostFramework: "react",
 }
 
 /**

@@ -202,6 +202,45 @@ await check("a proxy built without an agent reuses upstream sockets; one with an
   }
 })
 
+await check("a plain HTML host is asked for pages under its own address, and no other host is", async () => {
+  // A static server that guards against DNS rebinding answers only to the
+  // host and port it listens on, as html-links-style servers do.
+  let upstreamPort = 0
+  const upstream = http.createServer((req, res) => {
+    const own = req.headers.host === `127.0.0.1:${upstreamPort}`
+    res.writeHead(own ? 200 : 421, { "content-type": "text/plain" })
+    res.end(own ? "page" : "Misdirected request")
+  })
+  upstreamPort = await listen(upstream)
+  const statusThrough = async (changeOrigin) => {
+    const fake = { createProxyServer: (options) => httpProxy.createProxyServer(options) }
+    patchProxyRetries(fake, changeOrigin ? { changeOrigin } : undefined)
+    const proxy = fake.createProxyServer({ target: `http://127.0.0.1:${upstreamPort}` })
+    const server = http.createServer((req, res) => proxy.web(req, res))
+    const port = await listen(server)
+    try {
+      return await new Promise((resolve, reject) => {
+        http
+          .get({ host: "127.0.0.1", port, path: "/index.html", agent: false, headers: { host: `localhost:${port}` } }, (res) => {
+            res.resume()
+            res.on("end", () => resolve(res.statusCode))
+          })
+          .on("error", reject)
+      })
+    } finally {
+      await close(server)
+    }
+  }
+  try {
+    assert.equal(await statusThrough(true), 200, "the upstream was asked under the editor's address")
+    // Every other host keeps the browser's Host, which a dev server may build URLs from.
+    assert.equal(await statusThrough(false), 421)
+  } finally {
+    sharedKeepAliveAgent().destroy()
+    await close(upstream)
+  }
+})
+
 await check("the vendor imports the same http-proxy the launcher patches", async () => {
   const fs = await import("node:fs")
   const inject = path.join(path.dirname(vendorRequire.resolve("./inject.js")), "inject.js")

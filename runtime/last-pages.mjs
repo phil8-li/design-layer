@@ -132,6 +132,34 @@ export function lastPage({ port, projectRoot }) {
   return isPage(legacy) ? legacy : null
 }
 
+/**
+ * Every remembered app, `[{ port, projectRoot, page }]`, the most recently used
+ * first. The start screen asks for these pages to list an app whose server it
+ * cannot otherwise recognise (runtime/local-apps.mjs `recallPages`).
+ */
+export function rememberedPages() {
+  let names
+  try {
+    names = fs.readdirSync(pagesDir()).filter((name) => name.endsWith(".json"))
+  } catch {
+    return []
+  }
+  const entries = []
+  for (const name of names) {
+    const file = path.join(pagesDir(), name)
+    try {
+      const { key, page } = JSON.parse(fs.readFileSync(file, "utf8"))
+      const cut = typeof key === "string" ? key.lastIndexOf("|") : -1
+      const port = Number(key?.slice(cut + 1))
+      if (cut <= 0 || !Number.isInteger(port) || port <= 0 || !isPage(page)) continue
+      entries.push({ port, projectRoot: key.slice(0, cut), page, at: fs.statSync(file).mtimeMs })
+    } catch {
+      // Unreadable or half-written: one app fewer to recall.
+    }
+  }
+  return entries.sort((a, b) => b.at - a.at).map(({ at, ...entry }) => entry)
+}
+
 // The page in one key's file; undefined when there is no file for it.
 function readPage(key) {
   try {

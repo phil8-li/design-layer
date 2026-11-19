@@ -157,8 +157,9 @@ function displayName(raw: string | null | undefined): string | null {
   return name || null
 }
 
-/** The component whose template authored this element, on either host. */
+/** The component whose template authored this element, on either host. A plain HTML page has none. */
 function componentNameOf(element: Element): string | null {
+  if (config.host.framework === "html") return null
   if (config.host.framework === "angular") return displayName(owningComponentName(element))
   return displayName(reactInfo(element)?.componentName)
 }
@@ -174,6 +175,7 @@ function componentNameOf(element: Element): string | null {
  * name where the eye lands first.
  */
 function componentStack(element: Element): string[] {
+  if (config.host.framework === "html") return []
   return config.host.framework === "angular" ? angularStack(element) : reactStack(element)
 }
 

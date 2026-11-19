@@ -275,6 +275,13 @@ check("Angular draws the same sections, none missing", () => {
   }
 })
 
+await checkAsync("a plain HTML page draws the same sections, none missing", async () => {
+  const htmlPanel = await panelFor({ framework: "html", tailwind: false }, "text")
+  for (const name of ALWAYS) {
+    assert.ok(htmlPanel.sections.includes(name), `a plain HTML page is missing the ${name} section`)
+  }
+})
+
 check("the Design tab offers no second way to message the agent", () => {
   for (const panel of [reactPanel, angularPanel]) {
     assert.ok(!panel.sections.includes("Ask AI"), "the Ask AI section is back in the Design tab")
@@ -373,6 +380,12 @@ await checkAsync("Angular is offered HTML first, and no JSX at all", async () =>
   assert.ok(!CODE_VIEWS.some((v) => v.id === "jsx"), "JSX offered for an Angular element")
 })
 
+await checkAsync("a plain HTML page is offered HTML first, and no JSX at all", async () => {
+  const { CODE_VIEWS } = await editorFor({ framework: "html", tailwind: false })
+  assert.deepEqual(CODE_VIEWS.map((v) => v.id), ["html", "classes"])
+  assert.equal(CODE_VIEWS[1].label, "Classes")
+})
+
 await checkAsync("the class list is not called Tailwind where there is none", async () => {
   const { CODE_VIEWS } = await editorFor(REACT_NO_TW)
   assert.equal(CODE_VIEWS[2].label, "Classes")
@@ -453,6 +466,7 @@ console.log("\nThe handover is written in the host's own vocabulary")
 
   const react = await handoffFor("react")
   const angular = await handoffFor("angular")
+  const html = await handoffFor("html")
 
   check("React is told className, Angular is told class", () => {
     assert.match(react.body, /- className: btn btn--outlined/)
@@ -463,9 +477,15 @@ console.log("\nThe handover is written in the host's own vocabulary")
     )
   })
 
+  check("a plain HTML page is told class too", () => {
+    assert.match(html.body, /- class: btn btn--outlined/)
+    assert.ok(!/- className:/.test(html.body), "a static page has no className")
+  })
+
   check("the queue entry names the host too, so a waiting agent knows before it reads", () => {
     assert.equal(react.queued.framework, "react")
     assert.equal(angular.queued.framework, "angular")
+    assert.equal(html.queued.framework, "html")
   })
 
   check("the durable record carries the brief on both hosts", () => {

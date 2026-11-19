@@ -22,7 +22,7 @@ them, and your coding agent makes every change in code over MCP.
 
 ## Quick start
 
-Requires Node 20.9+ and a React (Next.js or Vite) or Angular app with a dev script.
+Requires Node 20.9+ and a React (Next.js or Vite) or Angular app with a dev script, or a folder of plain HTML pages on a static server.
 
 ```sh
 git clone https://github.com/phil8-li/design-layer.git

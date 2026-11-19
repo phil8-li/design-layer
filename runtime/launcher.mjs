@@ -202,7 +202,7 @@ export function readOverlaySource(config) {
  * and the overlay's hit-testing is `elementsFromPoint`. They are a one-time
  * check the vendor performs on a project it assumes it owns.
  *
- * Two hosts trip them:
+ * Three hosts trip them:
  *
  *   - A stock create-next-app project, which needs no `next.config` file. Only
  *     the second gate applies; the dependency is really there.
@@ -210,6 +210,9 @@ export function readOverlaySource(config) {
  *     are fictions — but fictions confined to the vendor's own synchronous
  *     detection pass, which runs entirely inside `program.parse()` before the
  *     dynamic import below resolves.
+ *   - A plain HTML folder, which often has no package.json at all. The vendor
+ *     checks that the file exists before anything else, so the manifest itself
+ *     is answered for, along with the same two gates as Angular.
  *
  * So this returns the shims that pass, and the caller installs them for exactly
  * that window. Nothing is written into the host project, every other filesystem
@@ -218,14 +221,24 @@ export function readOverlaySource(config) {
  */
 export function vendorDetectionShims(config) {
   const manifestPath = path.join(config.projectRoot, "package.json")
-  let manifest
+  let manifest = null
   try {
     manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
   } catch {
-    return null
+    // Absent or unreadable: only a plain HTML host goes on without one.
   }
   const dependencies = manifestDependencies(manifest)
   const has = (names) => hasRootFile(config.projectRoot, names)
+
+  if (config.host?.framework === "html") {
+    return {
+      manifestPath,
+      virtualManifest: manifest === null,
+      declareReact: !dependencies.react,
+      virtualConfig: has(VITE_CONFIG_FILES) ? null : path.join(config.projectRoot, "vite.config.ts"),
+    }
+  }
+  if (manifest === null) return null
 
   if (config.host?.framework === "angular") {
     return {
@@ -777,14 +790,22 @@ export async function launch(config, { appPort, host, open, verbose = false, onR
   if (currentDirectory() === null) process.cwd = () => config.projectRoot
 
   const shims = vendorDetectionShims(config)
-  const virtualConfig = shims?.virtualConfig ?? null
-  if (virtualConfig) {
-    fs.existsSync = function existsWithConfig(filePath) {
-      return path.resolve(String(filePath)) === virtualConfig || originalExistsSync.call(this, filePath)
+  const virtualFiles = new Set(
+    [shims?.virtualConfig, shims?.virtualManifest ? shims.manifestPath : null].filter(Boolean)
+  )
+  if (virtualFiles.size > 0) {
+    fs.existsSync = function existsWithShims(filePath) {
+      return virtualFiles.has(path.resolve(String(filePath))) || originalExistsSync.call(this, filePath)
     }
   }
   if (shims?.declareReact) {
     fs.readFileSync = function readManifestWithReact(filePath, ...args) {
+      // A plain HTML folder with no package.json gets one that says only this.
+      if (shims.virtualManifest && path.resolve(String(filePath)) === shims.manifestPath) {
+        const text = JSON.stringify({ private: true, devDependencies: { react: "0.0.0-designlayer-host-shim" } })
+        const encoding = typeof args[0] === "string" ? args[0] : args[0]?.encoding
+        return encoding ? text : Buffer.from(text)
+      }
       const contents = originalReadFileSync.call(this, filePath, ...args)
       if (typeof contents !== "string") return contents
       if (path.resolve(String(filePath)) !== shims.manifestPath) return contents
@@ -803,7 +824,7 @@ export async function launch(config, { appPort, host, open, verbose = false, onR
       }
     }
   }
-  if (virtualConfig || shims?.declareReact) syncBuiltinESMExports()
+  if (virtualFiles.size > 0 || shims?.declareReact) syncBuiltinESMExports()
 
   process.argv = [
     process.argv[0],
@@ -824,7 +845,9 @@ export async function launch(config, { appPort, host, open, verbose = false, onR
   // proxy-retry.mjs. Resolved the way the vendor resolves it, so the module
   // patched is the one it imports; without it, the vendor's behavior stands.
   try {
-    patchProxyRetries(createRequire(vendor.entry)("http-proxy"))
+    patchProxyRetries(createRequire(vendor.entry)("http-proxy"), {
+      changeOrigin: config.host?.framework === "html",
+    })
   } catch {
     // No `http-proxy` where the vendor looks: nothing to make more patient.
   }
@@ -834,7 +857,7 @@ export async function launch(config, { appPort, host, open, verbose = false, onR
   } finally {
     // Every vendor module is loaded by now; the stand-in it needed is in place.
     releaseTransformHook()
-    if (virtualConfig || shims?.declareReact) {
+    if (virtualFiles.size > 0 || shims?.declareReact) {
       fs.existsSync = originalExistsSync
       fs.readFileSync = originalReadFileSync
       syncBuiltinESMExports()

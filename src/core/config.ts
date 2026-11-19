@@ -195,12 +195,15 @@ interface AppConfig {
  * rather than being sniffed here: at the moment this bundle loads, an Angular
  * app has not bootstrapped and `window.ng` does not exist yet.
  *
+ * `html` is a page no framework renders, such as a static prototype: nothing
+ * claims its DOM and no resolver can name a component for it.
+ *
  * `tailwind` is separate because it is a separate fact: a React app without
  * Tailwind and an Angular app with it both exist, and it is this — not the
  * framework — that decides whether a utility class is worth offering.
  */
 interface HostConfig {
-  framework: "react" | "angular"
+  framework: "react" | "angular" | "html"
   tailwind: boolean
 }
 
@@ -412,7 +415,7 @@ function readIconSet(value: unknown): IconSetConfig {
 function readHost(value: unknown): HostConfig {
   if (!isRecord(value)) return FALLBACK.host
   return {
-    framework: value.framework === "angular" ? "angular" : "react",
+    framework: value.framework === "angular" || value.framework === "html" ? value.framework : "react",
     // Only an explicit `false` turns it off. An older launcher that predates
     // this key sends nothing, and every host it could be serving was assumed to
     // have Tailwind before now.
