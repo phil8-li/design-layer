@@ -840,11 +840,35 @@ export function shellPage({ repoRoot, version = null }) {
   //            empty until it is selected, so it takes no socket unasked
   //
   //   new     --the list names its editor-->                   live
+  //   new     --two lists that arrived, and 5 s since its frame
+  //             loaded, without its editor-->                   stopped
   //   live    --its editor leaves the list-->                  stopped
   //   stopped --its editor is back, tab in the background-->   stale
   //   stopped --its editor is back, tab in front-->            live   (loads once)
+  //   stopped --the desk started its editor, tab in front-->   new    (loads once, in a new frame)
+  //   stopped --the desk started its editor, which another
+  //             tab already shows-->                            closed (that tab is shown)
   //   stale   --selected-->                                    live   (loads)
   //   any     --a page handed over, or a go, onto it-->        live or new (loads)
+  //
+  // A stopped tab whose app is known asks the desk to start its editor when the
+  // person acts on it: selects it, reloads it, or moves it here in front (a
+  // revival, below). Coming to the front because a neighbour closed is not
+  // one: after Stop on Home, closing Home would start the editor just
+  // stopped. Nor is its editor leaving the list while it is in front.
+  //
+  // A new tab the lists keep not naming is a stopped tab: its editor ended
+  // before any list named it (stopped right after the desk started it, or
+  // gone while the window was closed). Left new, it was never drawn stopped,
+  // and Reload only reloaded its frame onto the dead port. It takes a key no
+  // editor has ("url#pid" always has a #), so it is drawn and saved stopped.
+  // Like an editor that leaves the list, it starts nothing by itself, which
+  // also keeps an editor that dies as it starts from being started in a loop.
+  // The grace starts over whenever the tab's frame is pointed at a page.
+  const NEW_GRACE_MS = 5000, NEW_GRACE_LISTS = 2, NEVER_NAMED = "never-named"
+  // Tab id -> { at, lists }: when its frame last loaded, and the lists since.
+  const unnamedSince = new Map()
+  const restartGrace = (t) => { if (t.kind === "editor") unnamedSince.set(t.id, { at: Date.now(), lists: 0 }) }
   function tabStatus(t) {
     if (t.kind === "home") return "home"
     if (t.key === null || t.key === undefined) return "new"
@@ -856,6 +880,7 @@ export function shellPage({ repoRoot, version = null }) {
   // "key", when given, is the editor the tab now follows.
   function loadTab(t, url, opts) {
     showingIn.delete(t.id)
+    restartGrace(t)
     if (url !== undefined) t.src = url
     if (t.kind === "editor") t.stale = false
     if (opts && "key" in opts) t.key = opts.key
@@ -871,7 +896,142 @@ export function shellPage({ repoRoot, version = null }) {
     if (f) f.src = "about:blank"
   }
 
+  // ---- Starting a stopped tab's editor again ----
+  //
+  // The tab knows its app ("<project folder>|<app port>"), and the start
+  // screen starts an app's editor once, on the app's remembered ports. The
+  // desk asks it for this page (POST /api/editors/start): the start screen is
+  // another origin. Only the tab in front has a revival, and it is this
+  // page's alone, never saved:
+  //
+  //   asking    a start ask is out, or the desk could not ask yet     "Starting…"; asked again each poll
+  //   starting  the editor is starting (its start-screen id)          "Starting…"; asked again with the id each poll
+  //   waiting   its app is not running, or another app has its port   says so; asked again each poll
+  //   failed    the editor did not start                              says so; asked again only by Reload or coming to the front
+  //
+  //   none     --Reload, a select, moved here in front, or the first list
+  //              after the window opened or the desk came back, with it in front-->  asking
+  //   any      --the desk says it is up-->        none   (the tab loads once, in a new frame;
+  //                                                       or the tab already on that editor
+  //                                                       is shown, and this one closes)
+  //   any      --the list names its editor-->     none   (applyEditors loads it)
+  //   any      --the tab leaves the front-->      none   (nothing more is asked)
+  //
+  // One ask at a time per tab. An answer for a revival that has ended, or for
+  // an older one of the same tab, is dropped: one revival loads the tab once.
+  // A tab under a revival gets no frame until it ends: the frame could only
+  // show the refused connection, and the revival's load is its only load.
+  // Waiting costs nothing: the desk probes the app's port and starts nothing
+  // while nobody answers there.
+  let revival = null, revivalGeneration = 0
+  // Tab id -> the generation of the revival whose ask is out for it.
+  const asksOut = new Map()
+  const portOfApp = (app) => String(app).slice(String(app).lastIndexOf("|") + 1)
+  // Only once a list has arrived: before, every tab looks stopped.
+  const revivable = (t) => Boolean(t && t.kind === "editor" && t.app && listedBefore && !deskDown && tabStatus(t) === "stopped")
+  function revive(t) {
+    revival = { id: t.id, generation: ++revivalGeneration, state: "asking", startId: null, kind: null, address: null, message: null, again: false }
+    askRevival()
+  }
+  function askRevival() {
+    const r = revival
+    const t = r && r.state !== "failed" && tabs.find((x) => x.id === r.id)
+    if (!t) return
+    if (asksOut.has(t.id)) {
+      // An older revival's ask is still out: this one asks once it is back.
+      if (asksOut.get(t.id) !== r.generation) r.again = true
+      return
+    }
+    asksOut.set(t.id, r.generation)
+    const body = r.startId ? { app: t.app, id: r.startId } : { app: t.app }
+    // The desk waits up to 8 s for the editor, after asking the start screen
+    // twice; a desk that hangs past that is given up, and asked again.
+    const ask = new AbortController(), timer = setTimeout(() => ask.abort(), 20000)
+    fetch("/api/editors/start", { method: "POST", body: JSON.stringify(body), signal: ask.signal })
+      .then((x) => x.json())
+      .catch(() => null)
+      .then((answer) => {
+        clearTimeout(timer)
+        asksOut.delete(t.id)
+        if (revival === r) return settleRevival(r, answer)
+        if (revival && revival.id === t.id && revival.again) { revival.again = false; askRevival() }
+      })
+  }
+  function settleRevival(r, answer) {
+    const state = answer && answer.state
+    // By id: a restore can replace the tab objects while an ask is out.
+    const t = tabs.find((x) => x.id === r.id)
+    if (!t || t.id !== active || tabStatus(t) !== "stopped") revival = null
+    else if (state === "ready" && typeof answer.url === "string" && localOrigin(answer.url)) {
+      revival = null
+      return loadRevived(t, onLocalhost(answer.url))
+    } else if (state === "starting" && typeof answer.id === "string") Object.assign(r, { state: "starting", startId: answer.id })
+    else if (state === "not-running" || state === "other-app") {
+      Object.assign(r, { state: "waiting", kind: state, startId: null, address: typeof answer.address === "string" ? answer.address : null })
+    } else if (state === "failed") Object.assign(r, { state: "failed", message: typeof answer.message === "string" && answer.message ? answer.message : null })
+    // Anything else (no start screen, no answer, an error) is asked again on the next poll.
+    render()
+  }
+  // In a new frame, as Reload loads: a src that differs only after the # is a
+  // same-document navigation and loads nothing. An editor back on the tab's
+  // port keeps the tab's page; one on another port moves the tab there. The
+  // key is the next list's to fill in, as after a go.
+  //
+  // An editor on another port can already have a tab, opened from Home after
+  // the port moved, with edits in it. That tab is the one shown, here or in
+  // the window that has it, as a go shows it; this one is the duplicate and
+  // closes. Moving this one there closed the other, edits and all.
+  function loadRevived(t, url) {
+    const origin = originOf(url)
+    if (origin !== t.url) {
+      const shown = tabs.find((x) => x !== t && x.kind === "editor" && x.url === origin)
+      if (shown) {
+        removeTabs((x) => x === t, { successor: shown.id })
+        if (shown.stale) loadTab(shown)
+        return render()
+      }
+      const elsewhere = editorPeer(origin)
+      if (elsewhere) {
+        post({ t: "reveal", to: elsewhere, url })
+        const e = editors.find((x) => x.url === origin)
+        toast((e ? labelOf({ kind: "editor", ...e }) : labelOf(t)) + " is open in another window")
+        removeTabs((x) => x === t)
+        return render()
+      }
+      t.url = origin
+      t.src = url
+    } else if (!t.src) t.src = url
+    t.key = null
+    t.stale = false
+    showingIn.delete(t.id)
+    restartGrace(t)
+    frameOf(t.id)?.remove()
+    render()
+  }
+  // What the poll does for the revival: ends it once the list named the
+  // editor or the tab left the front, else asks again unless it failed. The
+  // window's first list starts one for a stopped tab already in front (the
+  // window reloaded, or the app reopened), and so does the first list after
+  // the desk was down: a select made meanwhile could not ask.
+  function tendRevival(firstList) {
+    const r = revival
+    if (r) {
+      const t = tabs.find((x) => x.id === r.id)
+      if (!t || t.id !== active || tabStatus(t) !== "stopped") revival = null
+      else if (!deskDown) askRevival()
+      return
+    }
+    const cur = tabs.find((x) => x.id === active)
+    if (firstList && revivable(cur)) revive(cur)
+  }
+  // Every change of the tab in front passes here (render). A revival is the
+  // tab in front's alone: one whose tab left the front ends, asking nothing more.
+  function followFront() {
+    if (revival && revival.id !== active) revival = null
+  }
+
   function syncFrames() {
+    followFront()
     const live = new Set(tabs.map((t) => t.id))
     for (const f of framesEl.querySelectorAll("iframe")) if (!live.has(f.dataset.id)) f.remove()
     for (const t of tabs) {
@@ -881,7 +1041,7 @@ export function shellPage({ repoRoot, version = null }) {
       // window opening on "/" would otherwise load the main window's editors
       // and take their sockets.
       const url = !identified() || (t.kind === "editor" && !listed) ? null : t.stale ? "about:blank" : tabUrl(t)
-      if (!f && url) {
+      if (!f && url && !(revival && revival.id === t.id)) {
         f = document.createElement("iframe")
         f.dataset.id = t.id
         // The editor inside reads its window.name to know it is in the app, and
@@ -895,7 +1055,7 @@ export function shellPage({ repoRoot, version = null }) {
       if (f) f.hidden = t.id !== active
     }
     const cur = tabs.find((t) => t.id === active)
-    applyBoot(bootState(cur))
+    applyBoot(bootState(cur), cur)
     document.title = cur && cur.kind === "editor" ? (labelOf(cur) || "Editor") + " — DesignLayer" : "DesignLayer"
   }
 
@@ -908,25 +1068,40 @@ export function shellPage({ repoRoot, version = null }) {
   //   listing      an editor tab waiting for the first editor list (1.5 s at most)
   //   starting     a Home tab, and the start screen is not answering yet
   //   restarting   a Home tab, and the start screen stopped and waits to be started again
+  //   reviving     a stopped tab asked for its editor, and it is not up yet: "Starting…"
+  //   not-running  a stopped tab's app answers on no port: start it, and the tab loads it
+  //   other-app    another folder's app has the stopped tab's port: nothing is taken over
+  //   failed       the stopped tab's editor did not start: the start screen's sentence, or Reload
   //   ready        nothing covers the tab
   //
   // The restart reason and log path stay in the desk log (and --status); the
-  // window only says what is happening.
+  // window only says what is happening. A sheet with a sentence has no
+  // spinner: nothing is under way that the person is not told to do.
   function bootState(cur) {
     if (!cur || !identified()) return "identifying"
     if (deskDown) return "deskDown"
     if (cur.kind === "editor" && !listed) return "listing"
     if (cur.kind === "home" && !homeUrl) return health?.startScreen?.state === "backoff" ? "restarting" : "starting"
+    if (revival && revival.id === cur.id) return revival.state === "waiting" ? revival.kind : revival.state === "failed" ? "failed" : "reviving"
     return "ready"
   }
-  function applyBoot(state) {
+  function applyBoot(state, cur) {
     $("boot").hidden = state === "ready"
     if (state === "ready") return
-    const down = state === "deskDown"
-    $("bootSpin").hidden = down
-    $("bootTitle").textContent = down ? "Can’t connect" : state === "restarting" ? "Restarting…" : "Starting…"
-    $("bootText").hidden = !down
-    $("bootCmd").hidden = !down
+    const name = cur ? labelOf(cur) : ""
+    const address = (revival && revival.address) || (cur && cur.app ? "localhost:" + portOfApp(cur.app) : "")
+    const [title, text] = {
+      deskDown: ["Can’t connect", "Run this in Terminal:"],
+      restarting: ["Restarting…"],
+      "not-running": [name + " is not running", "Start the app on " + address + ", and this tab loads it."],
+      "other-app": ["Another app is on " + address, "Choose it on Home, or start " + name + " there instead."],
+      failed: ["The editor for " + name + " did not start", (revival && revival.message) || "Reload this tab to try again."],
+    }[state] || ["Starting…"]
+    $("bootSpin").hidden = Boolean(text)
+    $("bootTitle").textContent = title
+    $("bootText").hidden = !text
+    if (text) $("bootText").textContent = text
+    $("bootCmd").hidden = state !== "deskDown"
   }
 
   // ---- The tab list ----
@@ -969,10 +1144,14 @@ export function shellPage({ repoRoot, version = null }) {
     return t
   }
 
+  // A stopped tab the person picks, in front already or not, starts its
+  // editor again. A stale one is not loaded first: that load could only show
+  // the refused connection, and the revival's load is its only one.
   function select(id) {
     active = id
     const t = tabs.find((x) => x.id === id)
-    if (t?.stale) loadTab(t)
+    if (revivable(t)) revive(t)
+    else if (t?.stale) loadTab(t)
     render()
   }
   function newHome() { insertTab({ id: uid(), kind: "home" }); render() }
@@ -1104,8 +1283,11 @@ export function shellPage({ repoRoot, version = null }) {
     else t = insertTab({ id: uid(), kind: "editor", url: e ? e.url : origin, name: e ? e.name : new URL(href).host, key: e ? editorKey(e) : null })
     // Loaded again even when this frame already shows the editor: the browser
     // tab took the editor's one socket from it, and only a fresh load takes it
-    // back. A new tab's frame is made by render, on this page.
-    loadTab(t, href)
+    // back. A new tab's frame is made by render, on this page. The tab follows
+    // the listed editor, or none until the next list names it, as after a go:
+    // left on a stopped editor's key, it would also start that editor again
+    // as it came to the front, and load twice.
+    loadTab(t, href, { key: e ? editorKey(e) : null })
     render()
     toast("Opened " + labelOf(t) + " from the browser")
     window.focus()
@@ -1141,6 +1323,7 @@ export function shellPage({ repoRoot, version = null }) {
   async function pollOnce(generation) {
     await identifying
     const current = () => generation === pollGeneration
+    const downBefore = deskDown
     try {
       const [h, list] = await Promise.all([
         fetch("/api/health", { cache: "no-store" }).then((r) => r.json()),
@@ -1167,10 +1350,12 @@ export function shellPage({ repoRoot, version = null }) {
       if (persistence === "restoring" && hasTabs(saved)) setPersistence("mirroring")
     }
     applyHealth()
+    const firstList = !listedBefore
     applyEditors()
     // A desk that refused the connection is one that does not answer: the
     // tabs load their saved pages now, and the first list to arrive moves them.
     listed = true
+    tendRevival(firstList || (downBefore && !deskDown))
     render()
   }
 
@@ -1321,7 +1506,11 @@ export function shellPage({ repoRoot, version = null }) {
     // (or agent) is using that editor now. Home lists every running editor.
     for (const t of tabs) {
       const e = t.kind === "editor" && editors.find((x) => x.url === t.url)
-      if (!e) continue
+      if (!e) {
+        if (t.kind === "editor" && !deskDown) countUnnamed(t)
+        continue
+      }
+      unnamedSince.delete(t.id)
       const key = editorKey(e)
       // A new editor on this tab's port is the app restarted, or another app
       // given the port after this one's editor stopped. A tab in the background
@@ -1357,6 +1546,19 @@ export function shellPage({ repoRoot, version = null }) {
     }
   }
 
+  // One more list that arrived without a new tab's editor (see NEW_GRACE_MS).
+  // A tab with no grace yet (its frame was made as the window opened) starts
+  // one now.
+  function countUnnamed(t) {
+    if (tabStatus(t) !== "new") return unnamedSince.delete(t.id)
+    let grace = unnamedSince.get(t.id)
+    if (!grace) unnamedSince.set(t.id, (grace = { at: Date.now(), lists: 0 }))
+    grace.lists += 1
+    if (grace.lists < NEW_GRACE_LISTS || Date.now() - grace.at < NEW_GRACE_MS) return
+    unnamedSince.delete(t.id)
+    t.key = NEVER_NAMED
+  }
+
   // ⌘1–9, ⌘T, ⌘W reach this page when focus is on the strip or the page itself.
   // A cross-origin frame keeps its own keystrokes, and Chrome may reserve ⌘T/⌘W.
   addEventListener("keydown", (ev) => {
@@ -1388,11 +1590,15 @@ export function shellPage({ repoRoot, version = null }) {
   // page only after the # is a same-document navigation: the button did
   // nothing. A new iframe always loads the page in full. The page is the one
   // the editor last reported (DESK_SHOWING_MESSAGE), so the reload stays on it.
+  // A stopped tab that knows its app asks for its editor instead: its frame
+  // would only reach the dead port again. It loads once the editor is up.
   $("reload").onclick = () => {
     const t = tabs.find((x) => x.id === active)
+    if (revivable(t)) { revive(t); render(); return }
     const f = frameOf(active)
     if (!t || !f) return
     t.stale = false
+    restartGrace(t)
     f.remove()
     syncFrames()
   }
@@ -1541,6 +1747,8 @@ export function shellPage({ repoRoot, version = null }) {
     incoming = null
     // One editor, one tab: insertTab drops this window's own tab on it.
     insertTab(t, index)
+    // The person moved it here, in front: an act on it, as a select is.
+    if (revivable(t)) revive(t)
     post({ t: "adopted", to: m.from, req: m.req })
     render()
     window.focus()

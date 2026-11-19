@@ -23,6 +23,7 @@ import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
+import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -632,6 +633,392 @@ await check("health relays the start screen's update status, and the commit the 
   }
 })
 
+console.log("starting a stopped tab's editor")
+
+/**
+ * A desk whose start screen is a fake on an ephemeral port, for
+ * POST /api/editors/start. The fake answers the supervisor's probe (so the
+ * desk takes it for someone else's start screen and spawns none) and records
+ * every other request. `folder` is its /api/app-folder answer, `start(body)`
+ * its /api/start answer as [status, body], `status(id, n)` its answer to the
+ * n-th /api/status?id= ask, `running` its list of editors, and `hang(path)`
+ * picks the requests it takes and never answers. The desk gives each of its
+ * requests to the start screen 150 ms. The desk runs from an empty folder, so
+ * a supervisor that did try to spawn a start screen would find no cli.mjs.
+ */
+async function editorStartRig({ folder = { project: null }, start = () => [200, { ok: true, id: null, existing: true, url: "http://localhost:3460/" }], status = () => ({ ready: false, editing: null, stopped: null }), running = [], hang = () => false } = {}) {
+  const calls = []
+  const asked = new Map()
+  const screen = http.createServer(async (req, res) => {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    const url = new URL(req.url, "http://127.0.0.1")
+    const answer = (code, body) => {
+      res.writeHead(code, { "content-type": "application/json" })
+      res.end(JSON.stringify(body))
+    }
+    if (url.pathname === "/api/update") return answer(200, { state: "off" })
+    if (url.pathname === "/api/status" && !url.searchParams.has("id")) return answer(200, { ready: false, url: null, editing: null, stopped: null, editors: running })
+    const text = Buffer.concat(chunks).toString("utf8")
+    calls.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), headers: req.headers, body: text ? JSON.parse(text) : null })
+    if (hang(url.pathname)) return
+    if (url.pathname === "/api/app-folder") return answer(200, typeof folder === "function" ? folder(url.searchParams.get("url")) : folder)
+    if (url.pathname === "/api/start" && req.method === "POST") return answer(...start(text ? JSON.parse(text) : null))
+    if (url.pathname === "/api/status") {
+      const id = url.searchParams.get("id")
+      asked.set(id, (asked.get(id) ?? 0) + 1)
+      return answer(200, status(id, asked.get(id)))
+    }
+    answer(404, { error: "No start screen route" })
+  })
+  await new Promise((resolve) => screen.listen(0, "127.0.0.1", resolve))
+  const desk = await createDeskServer({
+    port: 0,
+    startScreenPort: screen.address().port,
+    repoRoot: fs.mkdtempSync(path.join(tempHome, "no-checkout-")),
+    logDir: path.join(tempHome, "logs"),
+    stateDir: path.join(tempHome, "rig-state"),
+    log: () => {},
+    activate: () => true,
+    editorStartWait: { totalMs: 300, stepMs: 20 },
+    editorStartTimeoutMs: 150,
+  })
+  return {
+    desk,
+    calls,
+    // What the desk asked the start screen for an editor, without its own probes.
+    asks: () => calls.map((c) => `${c.method} ${c.path}`),
+    ask: (body, headers = {}) =>
+      request(desk.port, { method: "POST", pathname: "/api/editors/start", headers, body: typeof body === "string" ? body : JSON.stringify(body) }),
+    async close() {
+      await desk.close()
+      screen.closeAllConnections()
+      await new Promise((resolve) => screen.close(resolve))
+    },
+  }
+}
+
+/** A port an app answers on, as a dev server would. */
+async function appListening() {
+  const app = net.createServer((socket) => socket.end())
+  await new Promise((resolve) => app.listen(0, "127.0.0.1", resolve))
+  return { port: app.address().port, close: () => new Promise((resolve) => app.close(resolve)) }
+}
+
+await check("starting an editor is refused for a foreign origin and for an editor origin, before the start screen is asked", async () => {
+  const rig = await editorStartRig()
+  const app = await appListening()
+  try {
+    const body = { app: `/p/shop|${app.port}` }
+    const foreign = await rig.ask(body, { origin: "http://evil.example" })
+    assert.equal(foreign.status, 403)
+    const editor = await rig.ask(body, { origin: "http://127.0.0.1:3466" })
+    assert.equal(editor.status, 403)
+    assert.deepEqual(editor.json, { error: "Only the desk page starts editors" })
+    assert.deepEqual(rig.asks(), [], "the start screen was asked")
+    assert.equal((await request(rig.desk.port, { pathname: "/api/editors/start" })).status, 405)
+  } finally {
+    await app.close()
+    await rig.close()
+  }
+})
+
+await check("starting an editor for an app that is not a folder and a port is refused in a sentence", async () => {
+  const rig = await editorStartRig()
+  try {
+    for (const app of [undefined, "", "/p/shop", "p/shop|3000", "/p/shop|0", "/p/shop|70000", "/p/shop|30a0", "/p/shop|"]) {
+      const res = await rig.ask(app === undefined ? {} : { app })
+      assert.equal(res.status, 400, `${JSON.stringify(app)} was taken`)
+      assert.match(res.json.error, /^[A-Z].*\.$/, "the refusal is not one plain sentence")
+    }
+    assert.deepEqual(rig.asks(), [])
+  } finally {
+    await rig.close()
+  }
+})
+
+await check("an app that is not running starts no editor and says where to start it", async () => {
+  const rig = await editorStartRig()
+  try {
+    const free = await freePort()
+    // A folder name that holds the separator: the port is after the last one.
+    const res = await rig.ask({ app: `/p/a|b|${free}` })
+    assert.equal(res.status, 200)
+    assert.deepEqual(res.json, { state: "not-running", address: `localhost:${free}` })
+    assert.equal(rig.asks().includes("POST /api/start"), false, "an editor was started against a dead port")
+  } finally {
+    await rig.close()
+  }
+})
+
+await check("an app on the port from another folder is named, and its port is not taken over", async () => {
+  const rig = await editorStartRig({ folder: { project: { path: "/p/other-copy" } } })
+  const app = await appListening()
+  try {
+    const res = await rig.ask({ app: `/p/shop|${app.port}` })
+    assert.deepEqual(res.json, { state: "other-app", address: `localhost:${app.port}` })
+    assert.deepEqual(rig.asks(), ["GET /api/app-folder"])
+    assert.equal(rig.calls[0].query.url, `http://127.0.0.1:${app.port}`)
+  } finally {
+    await app.close()
+    await rig.close()
+  }
+})
+
+/*
+ * The start screen replaces an editor on the same port from another folder
+ * (startChoice in runtime/start-screen.mjs). When it cannot tell whose app
+ * answers on the port, the folder check above passes, and starting the tab's
+ * editor would stop the live one under whoever edits there.
+ */
+await check("a live editor on the port for another folder is never stopped by a tab asking for its own", async () => {
+  const app = await appListening()
+  const registry = path.join(tempHome, ".local", "state", "designlayer", "editors")
+  fs.mkdirSync(registry, { recursive: true })
+  const entry = path.join(registry, "4490.json")
+  try {
+    // From the registry: an editor started elsewhere, the folder unknown to the start screen.
+    fs.writeFileSync(entry, JSON.stringify({ proxyPort: 4490, appPort: app.port, projectRoot: "/p/other-copy", url: "http://127.0.0.1:4490", pid: process.pid, startedAt: 3 }))
+    const listed = await editorStartRig()
+    try {
+      assert.deepEqual((await listed.ask({ app: `/p/shop|${app.port}` })).json, { state: "other-app", address: `localhost:${app.port}` })
+      assert.equal(listed.asks().includes("POST /api/start"), false, "the start screen was asked to replace a live editor")
+    } finally {
+      await listed.close()
+    }
+    fs.rmSync(entry)
+    // From the start screen's own list: still starting, so not in the registry yet.
+    const starting = await editorStartRig({ running: [{ id: "2", state: "starting", name: "other-copy", appPort: app.port, projectRoot: "/p/other-copy", url: null }] })
+    try {
+      assert.deepEqual((await starting.ask({ app: `/p/shop|${app.port}` })).json, { state: "other-app", address: `localhost:${app.port}` })
+      assert.equal(starting.asks().includes("POST /api/start"), false, "the start screen was asked to replace a starting editor")
+    } finally {
+      await starting.close()
+    }
+    // The same folder's editor is the one the start screen answers with.
+    fs.writeFileSync(entry, JSON.stringify({ proxyPort: 4490, appPort: app.port, projectRoot: "/p/shop", url: "http://127.0.0.1:4490", pid: process.pid, startedAt: 3 }))
+    const same = await editorStartRig({
+      running: [{ id: "5", state: "ready", name: "shop", appPort: app.port, projectRoot: "/p/shop", url: "http://localhost:4491/" }],
+      start: () => [200, { ok: true, id: "5", existing: true, replaced: null, url: "http://localhost:4491/" }],
+    })
+    try {
+      assert.deepEqual((await same.ask({ app: `/p/shop|${app.port}` })).json, { state: "ready", url: "http://localhost:4491/" })
+      assert.equal(same.asks().includes("POST /api/start"), true)
+    } finally {
+      await same.close()
+    }
+  } finally {
+    fs.rmSync(entry, { force: true })
+    await app.close()
+  }
+})
+
+await check("the start screen is asked for the tab's folder in JSON, and an editor already up is ready at once", async () => {
+  // The tab's folder through a symlink (/var is /private/var on a Mac): the
+  // same folder the start screen names by its real path.
+  const real = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "desk-app-")))
+  const linked = path.join(tempHome, "linked-app")
+  fs.symlinkSync(real, linked)
+  for (const folder of [{ project: null }, { project: { path: real } }]) {
+    const rig = await editorStartRig({ folder, start: () => [200, { ok: true, id: "4", existing: true, replaced: null, url: "http://localhost:3460/#/cart" }] })
+    const app = await appListening()
+    try {
+      const res = await rig.ask({ app: `${linked}|${app.port}` })
+      assert.deepEqual(res.json, { state: "ready", url: "http://localhost:3460/#/cart" }, `with ${JSON.stringify(folder)}`)
+      const post = rig.calls.find((c) => c.path === "/api/start")
+      assert.ok(post, "the start screen was never asked to start it")
+      assert.equal(post.headers["content-type"], "application/json")
+      assert.deepEqual(post.body, { url: `http://127.0.0.1:${app.port}`, projectRoot: linked })
+    } finally {
+      await app.close()
+      await rig.close()
+    }
+  }
+  fs.rmSync(real, { recursive: true, force: true })
+})
+
+await check("an editor still starting is followed by its id until it is ready", async () => {
+  let up = false
+  const app = await appListening()
+  // A ready editor's status names what it edits, as the start screen's does.
+  const editing = (port) => ({ appUrl: `http://127.0.0.1:${port}`, projectRoot: "/p/shop", name: "shop" })
+  const rig = await editorStartRig({
+    start: () => [200, { ok: true, id: "7", existing: false, replaced: null, url: null }],
+    status: (id) => (up && id === "7" ? { ready: true, url: "http://localhost:3461/", editing: editing(app.port), stopped: null } : { ready: false, editing: null, stopped: null }),
+  })
+  try {
+    const first = await rig.ask({ app: `/p/shop|${app.port}` })
+    assert.deepEqual(first.json, { state: "starting", id: "7" })
+    assert.ok(rig.calls.filter((c) => c.path === "/api/status").length > 1, "the desk did not wait a little for the editor")
+    up = true
+    const before = rig.asks().length
+    const second = await rig.ask({ app: `/p/shop|${app.port}`, id: "7" })
+    assert.deepEqual(second.json, { state: "ready", url: "http://localhost:3461/" })
+    assert.deepEqual(rig.asks().slice(before), ["GET /api/status"], "an ask with an id started or probed again")
+    assert.equal(rig.calls.at(-1).query.id, "7")
+  } finally {
+    await app.close()
+    await rig.close()
+  }
+  // Ready within the desk's short wait: one answer, no second ask.
+  const other = await appListening()
+  const quick = await editorStartRig({
+    start: () => [200, { ok: true, id: "8", existing: false, replaced: null, url: null }],
+    status: (_id, n) => (n >= 2 ? { ready: true, url: "http://localhost:3462/a", editing: editing(other.port), stopped: null } : { ready: false, editing: null, stopped: null }),
+  })
+  try {
+    assert.deepEqual((await quick.ask({ app: `/p/shop|${other.port}` })).json, { state: "ready", url: "http://localhost:3462/a" })
+  } finally {
+    await other.close()
+    await quick.close()
+  }
+})
+
+await check("a start the start screen refuses fails with its sentence, and an editor that stops while starting fails without one", async () => {
+  const refused = await editorStartRig({ start: () => [400, { error: "There is no folder at /p/gone." }] })
+  const app = await appListening()
+  try {
+    assert.deepEqual((await refused.ask({ app: `/p/gone|${app.port}` })).json, { state: "failed", message: "There is no folder at /p/gone." })
+  } finally {
+    await refused.close()
+  }
+  const stopped = await editorStartRig({
+    start: () => [200, { ok: true, id: "9", existing: false, replaced: null, url: null }],
+    status: () => ({ ready: false, editing: null, stopped: "The editor stopped. See the terminal below." }),
+  })
+  try {
+    const res = await stopped.ask({ app: `/p/shop|${app.port}` })
+    assert.deepEqual(res.json, { state: "failed" }, "the start screen's sentence about the terminal reached the window")
+    assert.deepEqual((await stopped.ask({ app: `/p/shop|${app.port}`, id: "9" })).json, { state: "failed" })
+  } finally {
+    await app.close()
+    await stopped.close()
+  }
+})
+
+/*
+ * Start-screen ids start at 1 again when the start screen restarts, so an id
+ * the window sends back can name another app's editor by then. Its "ready"
+ * would move the tab onto that app.
+ */
+await check("an id that now names another app's editor is not taken: the app's own editor is asked for", async () => {
+  const app = await appListening()
+  const rig = await editorStartRig({
+    start: () => [200, { ok: true, id: "3", existing: true, replaced: null, url: "http://localhost:3463/" }],
+    status: (id) =>
+      id === "2"
+        ? { ready: true, url: "http://localhost:4200/", editing: { appUrl: "http://127.0.0.1:9999", projectRoot: "/p/other", name: "other" }, stopped: null }
+        : { ready: false, editing: null, stopped: null },
+  })
+  try {
+    const res = await rig.ask({ app: `/p/shop|${app.port}`, id: "2" })
+    assert.deepEqual(res.json, { state: "ready", url: "http://localhost:3463/" }, "the tab was sent to another app's editor")
+    assert.deepEqual(rig.asks(), ["GET /api/status", "GET /api/app-folder", "POST /api/start"])
+    // The same app on the same port from another folder is not this app either.
+    const twin = await editorStartRig({
+      start: () => [200, { ok: true, id: "4", existing: true, replaced: null, url: "http://localhost:3464/" }],
+      status: () => ({ ready: true, url: "http://localhost:4201/", editing: { appUrl: `http://127.0.0.1:${app.port}`, projectRoot: "/p/shop-copy" }, stopped: null }),
+    })
+    try {
+      assert.deepEqual((await twin.ask({ app: `/p/shop|${app.port}`, id: "2" })).json, { state: "ready", url: "http://localhost:3464/" })
+    } finally {
+      await twin.close()
+    }
+    // Its own editor, named by its app, is taken.
+    const own = await editorStartRig({
+      status: () => ({ ready: true, url: "http://localhost:4202/", editing: { appUrl: `http://localhost:${app.port}`, projectRoot: "/p/shop" }, stopped: null }),
+    })
+    try {
+      assert.deepEqual((await own.ask({ app: `/p/shop|${app.port}`, id: "2" })).json, { state: "ready", url: "http://localhost:4202/" })
+      assert.deepEqual(own.asks(), ["GET /api/status"])
+    } finally {
+      await own.close()
+    }
+  } finally {
+    await app.close()
+    await rig.close()
+  }
+})
+
+/*
+ * /api/app-folder names the folder its scan found (the nearest package.json
+ * to the app's process). An editor started from a folder above or below it,
+ * a monorepo root above apps/web say, is the same project, not another app.
+ */
+await check("a folder the start screen finds above or below the tab's is the same project, and a sibling is another app", async () => {
+  const app = await appListening()
+  try {
+    for (const [tab, scanned] of [["/p/mono", "/p/mono/apps/web"], ["/p/mono/apps/web", "/p/mono"]]) {
+      const rig = await editorStartRig({ folder: { project: { path: scanned } } })
+      try {
+        assert.deepEqual((await rig.ask({ app: `${tab}|${app.port}` })).json, { state: "ready", url: "http://localhost:3460/" }, `${tab} against ${scanned}`)
+        assert.equal(rig.calls.find((c) => c.path === "/api/start")?.body.projectRoot, tab, "the start was not asked with the tab's folder")
+      } finally {
+        await rig.close()
+      }
+    }
+    const sibling = await editorStartRig({ folder: { project: { path: "/p/app2" } } })
+    try {
+      assert.deepEqual((await sibling.ask({ app: `/p/app|${app.port}` })).json, { state: "other-app", address: `localhost:${app.port}` })
+      assert.equal(sibling.asks().includes("POST /api/start"), false)
+    } finally {
+      await sibling.close()
+    }
+  } finally {
+    await app.close()
+  }
+})
+
+await check("a start screen that takes a request and never answers cannot hang the ask", async () => {
+  const app = await appListening()
+  try {
+    for (const [hung, expected] of [["/api/app-folder", null], ["/api/start", { state: "unavailable" }]]) {
+      const rig = await editorStartRig({ hang: (p) => p === hung })
+      try {
+        const at = Date.now()
+        const res = await rig.ask({ app: `/p/shop|${app.port}` })
+        assert.ok(Date.now() - at < 2000, `the ask took ${Date.now() - at} ms with ${hung} hung`)
+        // An app-folder ask that never answers is an unknown folder: the start goes on.
+        if (expected) assert.deepEqual(res.json, expected)
+        else assert.deepEqual(res.json, { state: "ready", url: "http://localhost:3460/" })
+      } finally {
+        await rig.close()
+      }
+    }
+    const following = await editorStartRig({ start: () => [200, { ok: true, id: "6", existing: false, replaced: null, url: null }], hang: (p) => p === "/api/status" })
+    try {
+      const at = Date.now()
+      assert.deepEqual((await following.ask({ app: `/p/shop|${app.port}` })).json, { state: "starting", id: "6" })
+      assert.ok(Date.now() - at < 2000, `the ask took ${Date.now() - at} ms`)
+    } finally {
+      await following.close()
+    }
+  } finally {
+    await app.close()
+  }
+})
+
+await check("with no start screen answering, starting an editor is unavailable and nothing is asked", async () => {
+  const lone = await createDeskServer({
+    port: 0,
+    supervise: false,
+    startScreenPort: await freePort(),
+    repoRoot: fs.mkdtempSync(path.join(tempHome, "no-checkout-")),
+    logDir: path.join(tempHome, "logs"),
+    stateDir: path.join(tempHome, "lone-state"),
+    log: () => {},
+  })
+  const app = await appListening()
+  try {
+    const res = await request(lone.port, { method: "POST", pathname: "/api/editors/start", body: JSON.stringify({ app: `/p/shop|${app.port}` }) })
+    assert.equal(res.status, 503)
+    assert.deepEqual(res.json, { state: "unavailable" })
+  } finally {
+    await app.close()
+    await lone.close()
+  }
+})
+
 console.log("start screen supervisor")
 
 /** A port nothing listens on, for a start screen the desk will start. */
@@ -1158,17 +1545,23 @@ await check("a tab is named by the app its frame says it shows", async () => {
  * health, list and saved-tabs answer by that many ms; `putStatus` is the HTTP status the
  * desk answers a PUT of the tabs with; `routes(url, init)` answers any other
  * request first, when it returns something. `gets` counts the page's asks
- * for its own window's tabs.
+ * for its own window's tabs, and `errors` holds anything the page threw.
  */
 async function multiDesk({ tabs, active, lists, remote, url: pageUrl = "http://127.0.0.1:3454/", setup, version = null, health = () => ({}), slow = 0, putStatus = 200, routes }) {
   const { JSDOM, VirtualConsole } = await import("jsdom")
   const { shellPage } = await import("../shell-page.mjs")
   // jsdom cannot navigate, and says so: each reload the page asks for lands here.
   const navigations = []
+  // Anything else the page threw, so a case can say it threw nothing.
+  const errors = []
   const virtualConsole = new VirtualConsole()
   virtualConsole.on("jsdomError", (error) => {
     if (error.type === "not-implemented" && /navigation/i.test(error.message)) navigations.push(error.message)
-    else console.error(error.message)
+    else if (error.type === "not-implemented" && /focus/i.test(error.message)) console.error(error.message)
+    else {
+      errors.push(error.message)
+      console.error(error.message)
+    }
   })
   let polls = 0
   let poller = null
@@ -1230,6 +1623,7 @@ async function multiDesk({ tabs, active, lists, remote, url: pageUrl = "http://1
     doc,
     frame,
     navigations,
+    errors,
     srcs: () => Object.fromEntries([...doc.querySelectorAll("iframe")].map((f) => [f.dataset.id, f.src])),
     labels: () => [...doc.querySelectorAll(".tab[data-id] .label")].map((node) => node.textContent),
     selected: () => doc.querySelector('.tab[aria-selected="true"] .label').textContent,
@@ -1906,6 +2300,648 @@ await check("the reload button loads the active tab's page in a new frame and le
 })
 
 /*
+ * Phil, 2026-11-11: the app's dev server went away, its editor ended, and the
+ * tab stayed. He started the dev server again and pressed Reload: "refused to
+ * connect", because Reload only reloaded the frame at the dead editor's port.
+ * "If I refresh and the tab uses the same port, it should just load the
+ * prototype that was restarted." A stopped tab that knows its app asks the
+ * desk to start that app's editor when it comes to the front or is reloaded
+ * (POST /api/editors/start), and loads it once it is up.
+ */
+const SHOP_APP = "/p/shop|5173"
+const startRoute = (answers) => {
+  const asks = []
+  const pending = []
+  const route = (url, init) => {
+    if (!url.includes("/api/editors/start")) return undefined
+    asks.push(JSON.parse(init.body))
+    const next = typeof answers === "function" ? answers(asks.length) : answers
+    const reply = (body) => ({ ok: true, status: 200, json: async () => body })
+    if (next === "defer") return new Promise((resolve) => pending.push((body) => resolve(reply(body))))
+    return reply(next)
+  }
+  return { asks, route, answer: (body) => pending.shift()(body) }
+}
+const sheet = (d) => ({
+  shown: d.booting(),
+  title: d.doc.getElementById("bootTitle").textContent,
+  text: d.doc.getElementById("bootText").hidden ? null : d.doc.getElementById("bootText").textContent,
+  spinner: !d.doc.getElementById("bootSpin").hidden,
+  command: !d.doc.getElementById("bootCmd").hidden,
+})
+const STARTING = { shown: true, title: "Starting…", text: null, spinner: true, command: false }
+/** Records every load of a frame: a src given to it. */
+const watchLoads = (d, frame) => {
+  const loads = []
+  const src = Object.getOwnPropertyDescriptor(d.win.HTMLIFrameElement.prototype, "src")
+  Object.defineProperty(frame, "src", { configurable: true, get: src.get, set(value) { loads.push(value); src.set.call(this, value) } })
+  return loads
+}
+
+await check("a tab whose editor leaves the list while it is in front asks for nothing", async () => {
+  const start = startRoute({ state: "starting", id: "1" })
+  const d = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP })], active: "a", lists: [[SHOP], [], []], url: "http://localhost:3454/", routes: start.route })
+  try {
+    await d.poll()
+    await d.poll()
+    assert.equal(d.doc.querySelector('.tab[data-id="a"]').classList.contains("dead"), true)
+    assert.deepEqual(start.asks, [], "a Stop pressed elsewhere was fought by starting the editor again")
+    assert.equal(d.booting(), false)
+  } finally {
+    d.close()
+  }
+})
+
+await check("Reload on a stopped tab asks the desk for its app's editor, says Starting…, and loads it in a new frame once", async () => {
+  const start = startRoute("defer")
+  const back = { ...SHOP, pid: 9 }
+  const d = await multiDesk({
+    tabs: [tabOn("a", SHOP, { app: SHOP_APP, src: "http://localhost:4101/#/checkout" }), tabOn("b", DOCS)],
+    active: "a",
+    lists: [[SHOP, DOCS], [DOCS], [DOCS], [back, DOCS]],
+    url: "http://localhost:3454/",
+    routes: start.route,
+  })
+  try {
+    await d.poll()
+    const old = d.frame("a"), other = d.frame("b")
+    d.doc.getElementById("reload").click()
+    assert.deepEqual(start.asks, [{ app: SHOP_APP }])
+    assert.deepEqual(sheet(d), STARTING)
+    assert.equal(d.frame("a"), old, "the frame was reloaded onto the dead port before the editor was up")
+    // A poll while the ask is out asks nothing more.
+    await d.poll()
+    assert.equal(start.asks.length, 1, "a second ask went out while one was out")
+    start.answer({ state: "ready", url: "http://localhost:4101/#/home" })
+    await sleep(10)
+    const fresh = d.frame("a")
+    assert.notEqual(fresh, old, "the editor loaded in the frame that showed the refused connection")
+    assert.equal(old.isConnected, false)
+    assert.equal(fresh.src, "http://localhost:4101/#/checkout", "the tab left the page it was on")
+    assert.equal(d.booting(), false)
+    assert.equal(d.frame("b"), other, "another tab was reloaded")
+    const loads = watchLoads(d, fresh)
+    await d.poll()
+    assert.deepEqual(loads, [], "the next list naming the editor loaded the tab again")
+    assert.equal(d.frame("a"), fresh)
+    assert.equal(d.doc.querySelector('.tab[data-id="a"]').classList.contains("dead"), false)
+    assert.equal(start.asks.length, 1)
+  } finally {
+    d.close()
+  }
+})
+
+await check("an editor the list names before the desk answers loads the tab once, and the late answer loads nothing", async () => {
+  const start = startRoute("defer")
+  const back = { ...SHOP, pid: 9 }
+  const d = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP })], active: "a", lists: [[SHOP], [], [back]], url: "http://localhost:3454/", routes: start.route })
+  try {
+    await d.poll()
+    d.doc.getElementById("reload").click()
+    assert.equal(start.asks.length, 1)
+    const frame = d.frame("a")
+    const loads = watchLoads(d, frame)
+    await d.poll()
+    assert.equal(loads.length, 1, "the editor that came back was not loaded")
+    assert.equal(d.booting(), false)
+    start.answer({ state: "ready", url: "http://localhost:4101/" })
+    await sleep(10)
+    assert.equal(d.frame("a"), frame, "the late answer loaded the tab a second time")
+    assert.equal(loads.length, 1, "the late answer loaded the tab a second time")
+    await d.poll()
+    assert.equal(start.asks.length, 1)
+  } finally {
+    d.close()
+  }
+})
+
+await check("selecting a stopped tab asks for its editor, and the first list with a stopped tab in front asks too", async () => {
+  const start = startRoute({ state: "starting", id: "3" })
+  const d = await multiDesk({ tabs: [{ id: "h1", kind: "home" }, tabOn("a", SHOP, { app: SHOP_APP })], active: "h1", lists: [[]], url: "http://localhost:3454/", routes: start.route })
+  try {
+    assert.deepEqual(start.asks, [], "a tab in the background asked")
+    d.doc.querySelectorAll(".tab")[1].click()
+    assert.deepEqual(start.asks, [{ app: SHOP_APP }])
+    await sleep(10)
+    assert.deepEqual(sheet(d), STARTING)
+    // Asked again with the id on each poll, until it settles.
+    await d.poll()
+    assert.deepEqual(start.asks.at(-1), { app: SHOP_APP, id: "3" })
+  } finally {
+    d.close()
+  }
+  const front = startRoute({ state: "starting", id: "4" })
+  const opened = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP })], active: "a", lists: [[DOCS]], url: "http://localhost:3454/", routes: front.route })
+  try {
+    assert.deepEqual(front.asks, [{ app: SHOP_APP }], "the window opened on a stopped tab and asked nothing, or asked twice")
+    assert.deepEqual(sheet(opened), STARTING)
+  } finally {
+    opened.close()
+  }
+})
+
+await check("an app that is not running says so, is asked about on every poll, and loads once the desk says it is up", async () => {
+  let answer = { state: "not-running", address: "localhost:5173" }
+  const start = startRoute(() => answer)
+  const d = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP })], active: "a", lists: [[]], url: "http://localhost:3454/", routes: start.route })
+  try {
+    await sleep(10)
+    assert.deepEqual(sheet(d), { shown: true, title: "shop is not running", text: "Start the app on localhost:5173, and this tab loads it.", spinner: false, command: false })
+    assert.equal(d.doc.querySelector('.tab[data-id="a"]').classList.contains("dead"), true, "the strip stopped drawing the tab stopped")
+    await d.poll()
+    await d.poll()
+    assert.equal(start.asks.length, 3, "a poll did not ask again")
+    assert.deepEqual(start.asks.at(-1), { app: SHOP_APP })
+    const old = d.frame("a")
+    answer = { state: "ready", url: "http://localhost:4101/" }
+    await d.poll()
+    assert.notEqual(d.frame("a"), old)
+    assert.equal(d.frame("a").src, "http://localhost:4101/")
+    assert.equal(d.booting(), false)
+    await d.poll()
+    assert.equal(start.asks.length, 4, "a tab that loaded asked again")
+  } finally {
+    d.close()
+  }
+})
+
+await check("leaving a stopped tab stops its asks", async () => {
+  const start = startRoute({ state: "not-running", address: "localhost:5173" })
+  const d = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP }), { id: "h1", kind: "home" }], active: "a", lists: [[]], url: "http://localhost:3454/", routes: start.route })
+  try {
+    assert.equal(start.asks.length, 1)
+    d.doc.querySelectorAll(".tab")[1].click()
+    await d.poll()
+    await d.poll()
+    assert.equal(start.asks.length, 1, "a tab in the background was still asked about")
+    assert.equal(d.booting(), false, "Home was covered by the stopped tab's sheet")
+  } finally {
+    d.close()
+  }
+})
+
+await check("another app on the port and an editor that did not start say so, and only Reload asks again after a failure", async () => {
+  const other = startRoute({ state: "other-app" })
+  const d = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP })], active: "a", lists: [[]], url: "http://localhost:3454/", routes: other.route })
+  try {
+    await sleep(10)
+    // No address in the answer: the port the tab's app was on.
+    assert.deepEqual(sheet(d), { shown: true, title: "Another app is on localhost:5173", text: "Choose it on Home, or start shop there instead.", spinner: false, command: false })
+    await d.poll()
+    assert.equal(other.asks.length, 2, "a poll did not ask again while another app had the port")
+  } finally {
+    d.close()
+  }
+  let failure = { state: "failed", message: "There is no folder at /p/shop." }
+  const failed = startRoute(() => failure)
+  const f = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP })], active: "a", lists: [[]], url: "http://localhost:3454/", routes: failed.route })
+  try {
+    await sleep(10)
+    assert.deepEqual(sheet(f), { shown: true, title: "The editor for shop did not start", text: "There is no folder at /p/shop.", spinner: false, command: false })
+    await f.poll()
+    await f.poll()
+    assert.equal(failed.asks.length, 1, "a poll asked again after a failure")
+    failure = { state: "failed" }
+    f.doc.getElementById("reload").click()
+    await sleep(10)
+    assert.equal(failed.asks.length, 2, "Reload did not ask again")
+    assert.deepEqual(sheet(f), { shown: true, title: "The editor for shop did not start", text: "Reload this tab to try again.", spinner: false, command: false })
+  } finally {
+    f.close()
+  }
+})
+
+await check("a stopped tab that does not know its app reloads its frame as before and asks for nothing", async () => {
+  const start = startRoute({ state: "starting", id: "1" })
+  const d = await multiDesk({ tabs: [tabOn("a", SHOP, { src: "http://localhost:4101/#/cart" })], active: "a", lists: [[]], url: "http://localhost:3454/", routes: start.route })
+  try {
+    const old = d.frame("a")
+    d.doc.getElementById("reload").click()
+    assert.notEqual(d.frame("a"), old)
+    assert.equal(d.frame("a").src, "http://localhost:4101/#/cart")
+    assert.equal(d.booting(), false)
+    assert.deepEqual(start.asks, [])
+  } finally {
+    d.close()
+  }
+})
+
+await check("an editor that comes back on another port moves the tab there, in the saved copy too", async () => {
+  const start = startRoute({ state: "ready", url: "http://localhost:4109/#/cart" })
+  const d = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP, src: "http://localhost:4101/#/old" })], active: "a", lists: [[]], url: "http://localhost:3454/", routes: start.route })
+  try {
+    await sleep(10)
+    assert.equal(d.frame("a").src, "http://localhost:4109/#/cart")
+    const saved = d.saved().tabs[0]
+    assert.equal(saved.url, "http://localhost:4109")
+    assert.equal(saved.src, "http://localhost:4109/#/cart")
+    assert.equal(saved.key, null, "the tab kept the stopped editor's key")
+    assert.equal(saved.app, SHOP_APP)
+  } finally {
+    d.close()
+  }
+})
+
+/** Moves the page's clock: the grace a new tab gets is counted on Date.now. */
+const skewClock = (d) => {
+  const real = d.win.Date.now.bind(d.win.Date)
+  let skew = 0
+  d.win.Date.now = () => real() + skew
+  return (ms) => (skew += ms)
+}
+const dead = (d, id) => d.doc.querySelector(`.tab[data-id="${id}"]`).classList.contains("dead")
+
+/*
+ * Found in a real browser: a revived tab (key null, "new" until a list names
+ * its editor) whose editor stopped again before any list named it stayed new
+ * for good. It was never drawn stopped, and Reload reloaded the frame onto
+ * the dead port: the original bug again. Two lists that arrived and 5 s
+ * since its frame loaded without its editor make it a stopped tab.
+ */
+await check("a revived tab whose editor no list names is stopped after its grace, and Reload asks for its editor again", async () => {
+  const start = startRoute({ state: "ready", url: "http://localhost:4101/" })
+  const d = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP })], active: "a", lists: [[]], url: "http://localhost:3454/", routes: start.route })
+  try {
+    const later = skewClock(d)
+    assert.equal(start.asks.length, 1)
+    assert.equal(dead(d, "a"), false, "the tab the desk just loaded is drawn stopped")
+    // Two lists, under 5 s.
+    await d.poll()
+    await d.poll()
+    assert.equal(dead(d, "a"), false, "a tab two quick lists did not name was taken for stopped")
+    later(6000)
+    await d.poll()
+    assert.equal(dead(d, "a"), true, "a tab no list names stayed new for good")
+    assert.notEqual(d.saved().tabs[0].key, null, "the tab is saved as new, and would be new again when the window reopens")
+    await d.poll()
+    assert.equal(start.asks.length, 1, "a tab that stopped by itself in front started its editor again")
+    assert.equal(d.booting(), false)
+
+    // Reload starts it, and the grace starts over: 5 s, but one list, is not enough.
+    d.doc.getElementById("reload").click()
+    await sleep(10)
+    assert.equal(start.asks.length, 2, "Reload on the stopped tab did not ask for its editor")
+    assert.equal(dead(d, "a"), false)
+    later(6000)
+    await d.poll()
+    assert.equal(dead(d, "a"), false, "one list was enough")
+    await d.poll()
+    assert.equal(dead(d, "a"), true)
+  } finally {
+    d.close()
+  }
+})
+
+await check("a tab saved before its editor was named, whose editor is gone, is stopped the same way", async () => {
+  const start = startRoute({ state: "not-running", address: "localhost:5173" })
+  const d = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP, key: null })], active: "a", lists: [[DOCS]], url: "http://localhost:3454/", routes: start.route })
+  try {
+    const later = skewClock(d)
+    assert.equal(dead(d, "a"), false)
+    await d.poll()
+    later(6000)
+    await d.poll()
+    assert.equal(dead(d, "a"), true)
+    assert.deepEqual(start.asks, [], "a tab that stopped by itself asked for its editor")
+    d.doc.getElementById("reload").click()
+    await sleep(10)
+    assert.deepEqual(start.asks, [{ app: SHOP_APP }])
+    assert.equal(sheet(d).title, "shop is not running")
+  } finally {
+    d.close()
+  }
+})
+
+await check("a new tab that the next list names is live, and never stopped or loaded again", async () => {
+  const d = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP, key: null })], active: "a", lists: [[], [SHOP]], url: "http://localhost:3454/" })
+  try {
+    const later = skewClock(d)
+    const frame = d.frame("a")
+    const loads = watchLoads(d, frame)
+    later(6000)
+    await d.poll()
+    await d.poll()
+    later(6000)
+    await d.poll()
+    assert.equal(dead(d, "a"), false)
+    assert.equal(d.saved().tabs[0].key, `${SHOP.url}#${SHOP.pid}`)
+    assert.equal(d.frame("a"), frame)
+    assert.deepEqual(loads, [])
+  } finally {
+    d.close()
+  }
+})
+
+/*
+ * "Open in Mac app" onto a stopped tab kept its old key: the tab was still
+ * stopped until the next list, so coming to the front also started a
+ * revival, and the tab loaded twice.
+ */
+await check("a page handed over onto a stopped tab loads once and asks the desk nothing", async () => {
+  const start = startRoute({ state: "ready", url: "http://localhost:4101/" })
+  const d = await multiDesk({
+    tabs: [{ id: "h1", kind: "home" }, tabOn("a", SHOP, { app: SHOP_APP })],
+    active: "h1",
+    lists: [[DOCS], [{ ...SHOP, pid: 9 }, DOCS]],
+    url: "http://localhost:3454/",
+    routes: start.route,
+  })
+  try {
+    const frame = d.frame("a")
+    const loads = watchLoads(d, frame)
+    d.hand("http://127.0.0.1:4101/cart")
+    await sleep(10)
+    assert.equal(d.selected(), "shop")
+    assert.equal(d.frame("a"), frame, "the tab was loaded again in a new frame")
+    assert.deepEqual(loads, ["http://localhost:4101/cart"])
+    assert.deepEqual(start.asks, [], "the handed page also started a revival")
+    await d.poll()
+    assert.equal(dead(d, "a"), false)
+    assert.equal(d.frame("a"), frame)
+    assert.deepEqual(loads, ["http://localhost:4101/cart"], "the next list loaded the tab again")
+    assert.deepEqual(start.asks, [])
+  } finally {
+    d.close()
+  }
+})
+
+/*
+ * Found in review: an editor back on another port that a live tab already
+ * showed (opened from Home after the port moved) had that tab closed under
+ * it, with its unsent edits, here and in other windows. The tab on the
+ * running editor is the one to show; the stopped tab is the duplicate.
+ */
+const SHOP_MOVED = { name: "shop", url: "http://localhost:4109", pid: 5, projectRoot: "/p/shop" }
+await check("a revival whose editor another tab here shows selects that tab untouched and closes the stopped one", async () => {
+  const start = startRoute("defer")
+  const d = await multiDesk({
+    tabs: [tabOn("a", SHOP, { app: SHOP_APP }), tabOn("b", SHOP_MOVED, { app: SHOP_APP, src: "http://localhost:4109/#/edits" }), { id: "h1", kind: "home" }],
+    active: "a",
+    lists: [[SHOP_MOVED]],
+    url: "http://localhost:3454/",
+    routes: start.route,
+  })
+  try {
+    assert.equal(start.asks.length, 1)
+    const b = d.frame("b"), home = d.frame("h1")
+    const loads = watchLoads(d, b)
+    start.answer({ state: "ready", url: "http://localhost:4109/#/home" })
+    await sleep(10)
+    assert.deepEqual(d.labels(), ["shop", "Home"])
+    assert.equal(d.doc.querySelector('.tab[aria-selected="true"]').dataset.id, "b")
+    assert.equal(d.frame("b"), b, "the live tab was loaded again in a new frame")
+    assert.deepEqual(loads, [], "the live tab was loaded again")
+    assert.equal(d.frame("h1"), home)
+    assert.equal(d.frame("a"), null)
+    assert.equal(d.booting(), false)
+    await d.poll()
+    assert.equal(start.asks.length, 1)
+    assert.deepEqual(d.errors, [])
+  } finally {
+    d.close()
+  }
+})
+
+await check("a revival whose editor another window shows has that window show it and closes the stopped tab here", async () => {
+  const start = startRoute({ state: "ready", url: "http://localhost:4109/#/home" })
+  const app = fakeApp({ lists: [[SHOP_MOVED]], routes: start.route })
+  try {
+    const other = await app.open({ tabs: { tabs: [{ id: "h2", kind: "home" }, tabOn("b", SHOP_MOVED, { app: SHOP_APP })], active: "h2" } })
+    app.desk.storage.set("designlayer.desk.tabs.v1:wstop", JSON.stringify({ tabs: [tabOn("a", SHOP, { app: SHOP_APP }), { id: "h1", kind: "home" }], active: "h1", savedAt: 1 }))
+    const here = await app.open({ url: "http://localhost:3454/?window=wstop", focused: false })
+    await sleep(1100)
+    const shown = other.doc.querySelector('iframe[data-id="b"]')
+    assert.deepEqual(start.asks, [])
+    here.tab("shop").click()
+    assert.equal(start.asks.length, 1)
+    await until(() => other.selected() === "shop").catch(() => {})
+    assert.equal(other.selected(), "shop", "the window showing the editor was not asked to show it")
+    assert.equal(other.doc.querySelector('iframe[data-id="b"]'), shown, "the other window's tab was loaded again")
+    assert.deepEqual(other.labels(), ["Home", "shop"])
+    assert.deepEqual(here.labels(), ["Home"])
+    assert.equal(here.frames().some((src) => src.startsWith("http://localhost:4109")), false, "the editor was loaded here too")
+    assert.equal(here.doc.getElementById("toast").textContent, "shop is open in another window")
+  } finally {
+    app.closeAll()
+  }
+})
+
+/*
+ * Phil, on review: only an act on the tab starts its editor again. Pressing
+ * Stop on Home and then closing Home put the stopped tab in front, and the
+ * editor just stopped was started again.
+ */
+await check("a stopped tab that comes to the front because another tab closed asks for nothing, and a click on it asks", async () => {
+  const start = startRoute({ state: "not-running", address: "localhost:5173" })
+  const d = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP }), { id: "h1", kind: "home" }], active: "h1", lists: [[SHOP], []], url: "http://localhost:3454/", routes: start.route })
+  try {
+    // Stop on Home: the editor leaves the list while its tab is in the background.
+    await d.poll()
+    assert.equal(dead(d, "a"), true)
+    const frame = d.frame("a")
+    const loads = watchLoads(d, frame)
+    d.press({ key: "w" })
+    assert.equal(d.selected(), "shop")
+    await d.poll()
+    assert.deepEqual(start.asks, [], "the editor just stopped on Home was started again")
+    assert.equal(d.frame("a"), frame)
+    assert.deepEqual(loads, [])
+    assert.equal(d.booting(), false)
+    // A click on the tab in front is an act on it.
+    d.doc.querySelector('.tab[data-id="a"]').click()
+    await sleep(10)
+    assert.deepEqual(start.asks, [{ app: SHOP_APP }])
+    assert.equal(sheet(d).title, "shop is not running")
+  } finally {
+    d.close()
+  }
+})
+
+await check("a stopped tab emptied in the background loads once when selected: the revival's load only", async () => {
+  const start = startRoute({ state: "ready", url: "http://localhost:4101/#/home" })
+  const d = await multiDesk({
+    tabs: [tabOn("a", SHOP, { app: SHOP_APP, src: "http://localhost:4101/#/cart" }), { id: "h1", kind: "home" }],
+    active: "h1",
+    // Restarted in the background (emptied, stale, to load its app's page), then stopped.
+    lists: [[SHOP], [{ ...SHOP, pid: 9, page: "/#/cart" }], []],
+    url: "http://localhost:3454/",
+    routes: start.route,
+  })
+  try {
+    await d.poll()
+    await d.poll()
+    const blank = d.frame("a")
+    assert.equal(blank.src, "about:blank")
+    const loads = watchLoads(d, blank)
+    d.doc.querySelector('.tab[data-id="a"]').click()
+    await sleep(10)
+    assert.deepEqual(loads, [], "the dead page loaded before the revival")
+    assert.equal(start.asks.length, 1)
+    const fresh = d.frame("a")
+    assert.notEqual(fresh, blank)
+    assert.equal(fresh.src, "http://localhost:4101/#/cart")
+    const after = watchLoads(d, fresh)
+    await d.poll()
+    assert.deepEqual(after, [])
+  } finally {
+    d.close()
+  }
+})
+
+await check("a stopped tab selected while the desk is down asks once the desk answers again", async () => {
+  const start = startRoute({ state: "not-running", address: "localhost:5173" })
+  const d = await multiDesk({ tabs: [{ id: "h1", kind: "home" }, tabOn("a", SHOP, { app: SHOP_APP })], active: "h1", lists: [[], null, null, []], url: "http://localhost:3454/", routes: start.route })
+  try {
+    await d.poll()
+    d.doc.querySelector('.tab[data-id="a"]').click()
+    await d.poll()
+    assert.deepEqual(start.asks, [], "the window asked a desk that is down")
+    await d.poll()
+    assert.deepEqual(start.asks, [{ app: SHOP_APP }], "the click made while the desk was down was lost")
+    assert.equal(sheet(d).title, "shop is not running")
+  } finally {
+    d.close()
+  }
+})
+
+await check("an answer for a tab that left the front, or was closed, loads nothing and shows nothing", async () => {
+  const start = startRoute("defer")
+  const d = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP }), tabOn("b", DOCS), { id: "h1", kind: "home" }], active: "a", lists: [[DOCS]], url: "http://localhost:3454/", routes: start.route })
+  try {
+    assert.equal(start.asks.length, 1)
+    assert.equal(d.frame("a"), null, "a tab under a revival was given a frame on the refused connection")
+    d.doc.querySelector('.tab[data-id="h1"]').click()
+    // Back in the background, the tab has its frame again.
+    const frame = d.frame("a")
+    const loads = watchLoads(d, frame)
+    start.answer({ state: "ready", url: "http://localhost:4101/" })
+    await sleep(10)
+    assert.equal(d.frame("a"), frame, "a tab in the background was loaded")
+    assert.deepEqual(loads, [], "a tab in the background was loaded")
+    assert.equal(d.selected(), "Home")
+    assert.equal(d.booting(), false)
+    d.doc.querySelector('.tab[data-id="a"]').click()
+    assert.equal(start.asks.length, 2)
+    d.press({ key: "w" })
+    assert.deepEqual(d.labels(), ["docs", "Home"])
+    start.answer({ state: "ready", url: "http://localhost:4101/" })
+    await sleep(10)
+    assert.deepEqual(d.labels(), ["docs", "Home"])
+    assert.equal(d.booting(), false)
+    assert.deepEqual(d.errors, [])
+  } finally {
+    d.close()
+  }
+})
+
+await check("Reload pressed twice while an ask is out sends one ask at a time and loads once", async () => {
+  const start = startRoute("defer")
+  const d = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP })], active: "a", lists: [[]], url: "http://localhost:3454/", routes: start.route })
+  try {
+    assert.equal(start.asks.length, 1)
+    const frame = d.frame("a")
+    d.doc.getElementById("reload").click()
+    d.doc.getElementById("reload").click()
+    assert.equal(start.asks.length, 1, "a second ask went out beside the first")
+    // The first answer is the older revival's: dropped, and the newer one asks.
+    start.answer({ state: "ready", url: "http://localhost:4101/" })
+    await sleep(10)
+    assert.equal(d.frame("a"), frame, "an older revival's answer loaded the tab")
+    assert.equal(start.asks.length, 2)
+    start.answer({ state: "ready", url: "http://localhost:4101/" })
+    await sleep(10)
+    const fresh = d.frame("a")
+    assert.notEqual(fresh, frame)
+    const loads = watchLoads(d, fresh)
+    await d.poll()
+    assert.deepEqual(loads, [])
+    assert.equal(d.frame("a"), fresh)
+    assert.equal(start.asks.length, 2)
+  } finally {
+    d.close()
+  }
+})
+
+await check("a tab whose editor did not start asks again when it is selected again", async () => {
+  const start = startRoute({ state: "failed" })
+  const d = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP }), { id: "h1", kind: "home" }], active: "a", lists: [[]], url: "http://localhost:3454/", routes: start.route })
+  try {
+    assert.equal(start.asks.length, 1)
+    await d.poll()
+    assert.equal(start.asks.length, 1)
+    d.doc.querySelector('.tab[data-id="h1"]').click()
+    d.doc.querySelector('.tab[data-id="a"]').click()
+    await sleep(10)
+    assert.equal(start.asks.length, 2)
+    assert.equal(sheet(d).title, "The editor for shop did not start")
+  } finally {
+    d.close()
+  }
+})
+
+await check("a desk that cannot ask yet, or does not answer, is asked again on the next poll, under Starting…", async () => {
+  for (const [label, reply] of [
+    ["unavailable", () => ({ ok: false, status: 503, json: async () => ({ state: "unavailable" }) })],
+    ["a fetch that throws", () => Promise.reject(new TypeError("Failed to fetch"))],
+  ]) {
+    const asks = []
+    const routes = (url, init) => {
+      if (!url.includes("/api/editors/start")) return undefined
+      asks.push(JSON.parse(init.body))
+      return reply()
+    }
+    const d = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP })], active: "a", lists: [[]], url: "http://localhost:3454/", routes })
+    try {
+      await sleep(10)
+      assert.equal(asks.length, 1, label)
+      assert.deepEqual(sheet(d), STARTING, label)
+      await d.poll()
+      assert.equal(asks.length, 2, `${label} was not asked again`)
+      assert.deepEqual(asks[1], { app: SHOP_APP })
+      assert.deepEqual(sheet(d), STARTING, label)
+      assert.deepEqual(d.errors, [])
+    } finally {
+      d.close()
+    }
+  }
+})
+
+await check("the desk-down sheet says Can’t connect with the command, also after a stopped tab's sheet", async () => {
+  const start = startRoute({ state: "not-running", address: "localhost:5173" })
+  const d = await multiDesk({ tabs: [tabOn("a", SHOP, { app: SHOP_APP })], active: "a", lists: [[], null], url: "http://localhost:3454/", routes: start.route })
+  try {
+    await sleep(10)
+    assert.equal(sheet(d).title, "shop is not running")
+    await d.poll()
+    assert.deepEqual(sheet(d), { shown: true, title: "Can’t connect", text: "Run this in Terminal:", spinner: false, command: true })
+    assert.ok(d.doc.getElementById("bootCmd").textContent.trim().length > 0, "no command to run")
+  } finally {
+    d.close()
+  }
+})
+
+await check("a stopped tab moved in front from another window asks for its editor", async () => {
+  const start = startRoute({ state: "not-running", address: "localhost:5173" })
+  const app = fakeApp({ lists: [[DOCS]], routes: start.route })
+  try {
+    const a = await app.open({ tabs: { tabs: [tabOn("a", SHOP, { app: SHOP_APP }), { id: "h1", kind: "home" }], active: "h1" } })
+    const b = await app.open({ url: "http://localhost:3454/?window=wother", at: { x: 1100, y: 0 } })
+    await sleep(1100)
+    assert.deepEqual(start.asks, [])
+    a.tab("shop").dispatchEvent(new a.win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 30 }))
+    const move = [...a.doc.querySelectorAll("#menu button")].find((item) => item.textContent === "Move to window with Home")
+    move.click()
+    await until(() => b.labels().includes("shop")).catch(() => {})
+    assert.equal(b.selected(), "shop")
+    await until(() => start.asks.length > 0).catch(() => {})
+    assert.deepEqual(start.asks, [{ app: SHOP_APP }])
+    assert.equal(b.doc.getElementById("bootTitle").textContent, "shop is not running")
+  } finally {
+    app.closeAll()
+  }
+})
+
+/*
  * The editor is a cross-origin frame in the app, so a key typed while focus is
  * in the shell — on the strip after a click on a tab, or after the frame
  * reloaded — never reaches it. ⌘. is how a hidden editor comes back, and it
@@ -1981,7 +3017,7 @@ console.log("several windows")
  * the strip is the top 38px of a 1024x768 window whose top left corner is at
  * `at` on screen.
  */
-function fakeApp({ lists = [[SHOP, DOCS, STUDIO]], windows = {}, openOk = true, tabWidth = () => 100, measure = false } = {}) {
+function fakeApp({ lists = [[SHOP, DOCS, STUDIO]], windows = {}, openOk = true, tabWidth = () => 100, measure = false, routes } = {}) {
   const channels = new Set()
   const desk = { windows: structuredClone(windows), opened: [], puts: [], storage: new Map(), names: {} }
   const opened = []
@@ -2060,6 +3096,8 @@ function fakeApp({ lists = [[SHOP, DOCS, STUDIO]], windows = {}, openOk = true, 
           window.fetch = async (u, init = {}) => {
             const req = new URL(String(u), "http://localhost:3454")
             const answer = (body) => ({ ok: true, json: async () => body })
+            const routed = routes?.(req.href, init)
+            if (routed !== undefined) return routed
             if (req.pathname === "/api/tabs") {
               if (init.method === "PUT") {
                 const body = JSON.parse(init.body)

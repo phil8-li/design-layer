@@ -42,6 +42,7 @@ import {
   shimInstalled,
   shimOpenArgs,
 } from "./chrome-pipe.mjs"
+import { startEditor } from "./editor-start.mjs"
 import { TAB_FIELDS, offlinePage, shellPage } from "./shell-page.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -694,6 +695,10 @@ export async function createDeskServer({
   appChromeCommand = () => (shimInstalled() ? profileChromeCommand(chromeProfileDir()) : null),
   relaunch = relaunchApp,
   openWindow = openAppWindow,
+  // How long one ask to start a tab's editor waits for it, and for each
+  // answer from the start screen (editor-start.mjs); shortened in tests.
+  editorStartWait = { totalMs: 8000, stepMs: 250 },
+  editorStartTimeoutMs = 3000,
 } = {}) {
   const supervisor = createSupervisor({ repoRoot, port: startScreenPort, logDir, enabled: supervise, log })
   const openQueue = createOpenQueue()
@@ -823,6 +828,33 @@ export async function createDeskServer({
       const result = await openWindow(`${origin()}/?window=${id}`)
       log(`[desk] open window ${id}: ${result?.ok ? "ok" : result?.error ?? "failed"}`)
       sendJson(res, result?.ok ? 200 : 500, result?.ok ? { ok: true } : { ok: false, error: result?.error ?? "Could not open a window" })
+    },
+    // A stopped tab asking for its app's editor again (editor-start.mjs). The
+    // start screen is another origin and takes only JSON, so the desk asks it
+    // for the page. Only the desk page may: an editor or an app on loopback
+    // has no business starting editors.
+    "POST /api/editors/start": async (req, res) => {
+      if (!fromDeskPage(req)) return sendJson(res, 403, { error: "Only the desk page starts editors" })
+      const body = await readBody(req)
+      // Asked fresh, as health is: a start screen that came up since the last
+      // tick answers this ask, and an editor started on Home a moment ago is
+      // in its list (a starting one is not in the registry yet).
+      await supervisor.refresh()
+      const screen = supervisor.snapshot()
+      let registry = []
+      try {
+        registry = listEditors()
+      } catch {
+        // An unreadable registry leaves the start screen's list.
+      }
+      const liveEditors = [
+        ...registry,
+        ...(screen.editors || []).filter((e) => e && (e.state === "starting" || e.state === "ready")),
+      ]
+      const answer = await startEditor(body, { screenUrl: screen.ready ? screen.url : null, liveEditors, wait: editorStartWait, timeoutMs: editorStartTimeoutMs })
+      // Only what settles an ask: a window asks every 2 s while an app is down.
+      if (answer.body.state === "ready" || answer.body.state === "failed") log(`[desk] start editor ${body?.app}: ${answer.body.state}${answer.body.message ? ` (${answer.body.message})` : ""}`)
+      sendJson(res, answer.status, answer.body)
     },
     // A native dialog: only the desk page may raise it, not any loopback page.
     "POST /api/pick-folder": async (req, res) => {
