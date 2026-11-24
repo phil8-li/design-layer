@@ -1430,10 +1430,15 @@ await check("the last request made mid-transition runs when it lands", async () 
 // The toaster, the tooltip card and the shortcuts sheet mount on <body>, outside
 // `.de-root`. Left in the root snapshot they would shrink into the frame with
 // the page, so each gets a name of its own and stays still, and so do the
-// companions and the host's dev chrome through the per-transition rule.
+// companions and the host's dev chrome through the per-transition rule. While
+// the app has a modal open they sit in `.de-top-layer` instead, which takes no
+// name of its own (core/top-layer.ts).
 await check("no editor surface travels with the page in the view transition", () => {
   const css = editor.boardCss
-  assert.match(css, /html\.de-vt body > \[data-designlayer\]:not\(\.de-root\):not\(\.de-board\) \{\s*view-transition-name: match-element;\s*view-transition-class: dl-ui;/)
+  assert.match(
+    css,
+    /html\.de-vt body > \[data-designlayer\]:not\(\.de-root\):not\(\.de-board\):not\(\.de-top-layer\),\s*html\.de-vt \.de-top-layer > \[data-designlayer\]:not\(\.de-root\):not\(\.de-board\) \{\s*view-transition-name: match-element;\s*view-transition-class: dl-ui;/
+  )
   assert.match(css, /::view-transition-old\(\*\.dl-ui\) \{ display: none; \}/)
   assert.match(css, /::view-transition-group\(\*\.dl-ui\) \{ animation: none; \}/)
   assert.equal(editor.boardTrustedVtCss(""), "")

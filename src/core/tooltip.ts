@@ -88,6 +88,7 @@
 import { TIP_CLOSE_MS, TIP_TRAVEL_MS, TIP_WRAP_WIDTH } from "./css/tooltip"
 import { el } from "./dom"
 import { prefersReducedMotion } from "./motion"
+import { mountChrome } from "./top-layer"
 import { tokens as t } from "./tokens"
 
 // ─────────────────────────────────────────────────────── the contract ──────
@@ -408,7 +409,7 @@ function ensureCard(): Card {
       ruler: el("div", { class: "de-tip-ruler de-tip-face" }),
     }
   }
-  document.body.append(card.root, card.ruler)
+  mountChrome(card.root, card.ruler)
   return card
 }
 

@@ -187,6 +187,7 @@ src/core/angular.ts         the Angular half of "where is this element written"
 src/core/element-target.ts  how the browser describes an element to the server
 src/core/element-code.ts    a selected element written out as JSX or HTML, for Copy as code
 src/core/sizing.ts          a length the layout honors, for the canvas handles and the W/H fields alike
+src/core/top-layer.ts       keeps the chrome above the app's modal dialogs and popovers (the top layer)
 src/shell/                  toolbar, panel rail, launcher button, desk bridge
 src/shell/resize.ts         the panel rail: motion-panels' core wired to plain DOM
 src/shell/drag.ts           the floating-chrome drag gesture

@@ -88,6 +88,7 @@
 
 import { TOAST_FALLBACK_ATTR, TOAST_FALLBACK_CARD_ATTR, toasterCss } from "./css/toast"
 import { CHROME_ATTR } from "./dom"
+import { mountChrome } from "./top-layer"
 
 type View = typeof import("./toaster-view")
 
@@ -328,7 +329,7 @@ function createMount(generation: number): Mount {
   style.textContent = toasterCss
   const mountPoint = document.createElement("div")
   shadow.append(style, mountPoint)
-  document.body.append(host)
+  mountChrome(host)
   return { host, mountPoint, generation }
 }
 

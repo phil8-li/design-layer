@@ -319,8 +319,12 @@ html.de-vt::view-transition-group(dl-chrome) { animation: none; }
  * a name of its own, and the class lets one rule keep them all still.
  * Companions and the host's dev chrome join them through the per-transition
  * style (see \`boardTrustedVtCss\`), since their selectors come from config.
+ * While the app has a modal open the same surfaces sit in \`.de-top-layer\`
+ * (\`core/top-layer.ts\`); the box itself takes no name, or the whole chrome
+ * would travel as one picture.
  */
-html.de-vt body > [data-designlayer]:not(.de-root):not(.de-board) {
+html.de-vt body > [data-designlayer]:not(.de-root):not(.de-board):not(.de-top-layer),
+html.de-vt .de-top-layer > [data-designlayer]:not(.de-root):not(.de-board) {
   view-transition-name: match-element;
   view-transition-class: dl-ui;
 }

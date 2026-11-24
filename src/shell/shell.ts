@@ -12,6 +12,7 @@ import { shellCss } from "../core/css"
 import { CHROME_ATTR, el } from "../core/dom"
 import { focusControl, installFocusModality } from "../core/focus"
 import type { EditorSlots } from "../core/context"
+import { keepChromeOnTop } from "../core/top-layer"
 import {
   editorOwnsInput,
   editorStandDownChanged,
@@ -376,6 +377,8 @@ export function mountShell(): Shell {
   root.style.display = "none"
   document.body.append(root)
   document.documentElement.classList.add("designlayer-active")
+  // Above an app's modal or popover, which no z-index reaches; see `core/top-layer`.
+  const releaseTopLayer = keepChromeOnTop()
   requestAnimationFrame(() =>
     setTimeout(() => {
       root.style.removeProperty("display")
@@ -549,6 +552,7 @@ export function mountShell(): Shell {
       releaseFocusModality()
       resize.destroy()
       launcher.destroy()
+      releaseTopLayer()
       root.remove()
       document.documentElement.classList.remove("designlayer-active")
       document.documentElement.classList.remove("designlayer-inspecting")

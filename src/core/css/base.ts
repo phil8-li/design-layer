@@ -832,6 +832,41 @@ html.designlayer-inspecting svg {
 .de-root > * { pointer-events: auto; }
 
 /*
+ * THE BOX THE CHROME'S ROOTS MOVE INTO while the app has a modal or a popover
+ * in the top layer. \`core/top-layer.ts\` argues the move.
+ *
+ * A point with no size, so it never takes the pointer and its roots, all
+ * \`position: fixed\`, lay out against the viewport as they do on \`<body>\`.
+ * The rest undoes what the UA gives a popover (an inset, a border, padding, a
+ * Canvas fill) and keeps the app's dialog from handing down what it set for
+ * its own content: centred or heavier text, a cursor, or the \`visibility\`
+ * the canvas view hides the app with. The z-index is for an engine without
+ * popovers, where the box is a plain child of the dialog.
+ */
+.de-top-layer {
+  position: fixed;
+  inset: 0 auto auto 0;
+  width: 0;
+  height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: visible;
+  background: none;
+  z-index: 2147483647;
+  visibility: visible;
+  pointer-events: auto;
+  cursor: auto;
+  font-style: normal;
+  font-weight: normal;
+  letter-spacing: normal;
+  text-align: start;
+  text-indent: 0;
+  text-transform: none;
+  white-space: normal;
+}
+
+/*
  * THE ESCAPE STOP: clipped until it is focused, then a real control.
  *
  * The keyboard's way back OUT of the chrome — \`shell/shell.ts\` argues why it is

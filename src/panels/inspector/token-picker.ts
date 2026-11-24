@@ -18,6 +18,7 @@ import { focusControl } from "../../core/focus"
 import { subscribe } from "../../core/store"
 import { icon } from "../../core/icons"
 import { tokens } from "../../core/tokens"
+import { mountChrome } from "../../core/top-layer"
 
 /** What the leading 16px slot draws. `none` keeps the name column aligned. */
 export type TokenPreview =
@@ -516,7 +517,7 @@ function openPicker(field: HTMLElement, options: TokenListOptions, anchor: HTMLE
     commitCustom()
   })
 
-  document.body.append(popover)
+  mountChrome(popover)
   field.setAttribute("aria-expanded", "true")
   render("")
   place(anchor, popover)
