@@ -19,7 +19,7 @@ below.
 | [motion-dom](https://github.com/motiondivision/motion) | 14.0.0 | MIT | bundled into `dist/designlayer.js` |
 | [motion-panels](https://github.com/letstri/motion-panels) | 0.6.1 | MIT | bundled into `dist/designlayer.js` |
 | [motion-utils](https://github.com/motiondivision/motion) | 14.0.0 | MIT | bundled into `dist/designlayer.js` |
-| [react](https://github.com/react/react) | 19.3.0 | MIT | bundled into `dist/toaster.js` |
+| [react](https://github.com/react/react) | 19.3.1 | MIT | bundled into `dist/toaster.js` |
 | [react-dom](https://github.com/react/react) | 19.3.0 | MIT | bundled into `dist/toaster.js` |
 | [react-rewrite-cli](https://github.com/donghaxkim/react-rewrite) | 0.1.1 | MIT | installed from npm and pinned exactly: the dev proxy, source mapping and write-back engine. `runtime/vendor-patch.mjs` quotes short fragments of its bundle to patch the installed copy in memory |
 | [scheduler](https://github.com/react/react) | 0.28.0 | MIT | bundled into `dist/toaster.js` |
@@ -174,7 +174,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### react 19.3.0
+### react 19.3.1
 
 ```
 MIT License
