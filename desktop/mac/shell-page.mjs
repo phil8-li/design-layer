@@ -777,6 +777,28 @@ export function shellPage({ repoRoot, version = null }) {
   // (runtime/launcher.mjs, BROWSER_HOST), whatever host the registry says.
   const hostOf = (url) => { try { const u = new URL(url); return "localhost" + (u.port ? ":" + u.port : "") } catch { return null } }
   const appAddress = (e) => (e && e.appUrl ? hostOf(e.appUrl) : null)
+  // What "Copy address" copies: the page the tab shows, at the address the
+  // tip names, so it opens the app itself rather than its editor. The editor
+  // serves the app's pages at the same paths. A stopped tab that knows its app
+  // still has its address; Home has the start screen's.
+  function addressOf(t) {
+    if (!t) return null
+    if (t.kind === "home") { try { return new URL(homeUrl).href } catch { return null } }
+    const e = editors.find((x) => x.url === t.url)
+    let origin = null
+    try { if (e && e.appUrl) origin = new URL(e.appUrl).protocol + "//" + hostOf(e.appUrl) } catch {}
+    if (!origin && t.app) origin = "http://localhost:" + portOfApp(t.app)
+    if (!origin) return null
+    let page = "/"
+    try { const u = new URL(t.src); if (u.origin === originOf(t.url)) page = u.pathname + u.search + u.hash } catch {}
+    return origin + page
+  }
+  async function copyAddress(id) {
+    const address = addressOf(tabs.find((x) => x.id === id))
+    if (!address) return
+    try { await navigator.clipboard.writeText(address); toast("Copied " + address) }
+    catch { toast("Could not copy " + address, 8000) }
+  }
   function tipData(el, id, name, address) {
     el.dataset.tipId = id
     el.dataset.tipName = name
@@ -2058,11 +2080,13 @@ export function shellPage({ repoRoot, version = null }) {
       b.onclick = () => { closeMenu(); run() }
       menuEl.append(b)
     }
+    // First on every tab, so it is always in the same place.
+    item("Copy address", () => copyAddress(id), !addressOf(t))
     if (t.kind === "editor") {
       item("Rename tab…", () => startRename(id))
       if (customName(t)) item("Use folder name", () => { setName(t, ""); render() })
-      menuEl.append(document.createElement("hr"))
     }
+    menuEl.append(document.createElement("hr"))
     item("Move to new window", () => tearOut(id), tabs.length < 2)
     for (const [peer, p] of peers) item("Move to window with " + p.title, () => moveToWindow(id, peer))
     menuEl.append(document.createElement("hr"))

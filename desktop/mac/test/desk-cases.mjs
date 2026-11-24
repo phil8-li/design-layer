@@ -3510,23 +3510,74 @@ await check("a tab's menu moves it to a new window or into another window", asyn
       a.tab(label).dispatchEvent(new a.win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 30 }))
       return [...a.doc.querySelectorAll("#menu button")]
     }
+    const pick = (items, label) => items.find((i) => i.textContent === label)
     let items = menu("docs")
-    assert.deepEqual(items.map((i) => i.textContent), ["Rename tab…", "Move to new window", "Move to window with Home", "Close tab"])
-    items = items.slice(1)
-    items[1].click()
+    assert.deepEqual(items.map((i) => i.textContent), ["Copy address", "Rename tab…", "Move to new window", "Move to window with Home", "Close tab"])
+    pick(items, "Move to window with Home").click()
     await until(() => a.labels().length === 2).catch(() => {})
     assert.deepEqual(a.labels(), ["shop", "Home"])
     assert.deepEqual(b.labels(), ["Home", "docs"])
     assert.ok(a.doc.getElementById("menu").hidden)
-    items = menu("shop").slice(1)
-    items[0].click()
+    pick(menu("shop"), "Move to new window").click()
     assert.deepEqual(a.labels(), ["Home"])
     assert.equal(a.popups.length, 1)
     assert.match(a.popups[0].features, /^popup,left=40,top=40,/, "a moved tab opens beside the window")
     // A window's only tab cannot leave by its menu for a new window, or be closed.
     items = menu("Home")
-    assert.equal(items[0].disabled, true)
+    assert.equal(pick(items, "Move to new window").disabled, true)
     assert.equal(items.at(-1).disabled, true)
+  } finally {
+    app.closeAll()
+  }
+})
+
+/*
+ * Phil: right-clicking a tab should offer to copy its address, port included.
+ * It copies the page the tab shows at the app's own address, the one the tip
+ * names, so the copy opens the app rather than its editor.
+ */
+await check("a tab's menu copies the address of the page it shows, on its app's port", async () => {
+  const WEB = { ...SHOP, appUrl: "http://127.0.0.1:3041" }
+  const app = fakeApp({ lists: [[WEB, DOCS]] })
+  try {
+    // A stopped tab whose app is known: its editor is gone from the list.
+    const stopped = { id: "s", kind: "editor", url: "http://localhost:4199", name: "old", key: "http://localhost:4199#9", app: "/p/old|5199", src: "http://localhost:4199/settings?tab=2" }
+    const a = await app.open({
+      tabs: { tabs: [tabOn("a", WEB, { src: "http://localhost:4101/p/page/index.html?tune#films" }), tabOn("b", DOCS), stopped, { id: "h1", kind: "home" }], active: "a" },
+    })
+    await sleep(100)
+    const copied = []
+    let refuse = false
+    Object.defineProperty(a.win.navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (text) => { if (refuse) throw new Error("denied"); copied.push(text) } },
+    })
+    const menu = (label) => {
+      a.tab(label).dispatchEvent(new a.win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 30 }))
+      return [...a.doc.querySelectorAll("#menu button")]
+    }
+    const toast = () => a.doc.getElementById("toast").textContent
+    const copy = async (label) => {
+      const item = menu(label)[0]
+      assert.equal(item.textContent, "Copy address", `${label}'s menu does not start with Copy address`)
+      const before = copied.length
+      item.click()
+      await until(() => copied.length > before)
+      return copied.at(-1)
+    }
+    assert.equal(await copy("shop"), "http://localhost:3041/p/page/index.html?tune#films")
+    assert.equal(toast(), "Copied http://localhost:3041/p/page/index.html?tune#films")
+    assert.ok(a.doc.getElementById("menu").hidden, "the menu stayed open after the copy")
+    assert.equal(await copy("old"), "http://localhost:5199/settings?tab=2")
+    assert.equal(await copy("Home"), "http://localhost:3455/")
+    // An app the desk cannot name has no address to copy; the item keeps its place.
+    const docs = menu("docs")
+    assert.deepEqual(docs.slice(0, 2).map((i) => [i.textContent, i.disabled]), [["Copy address", true], ["Rename tab…", false]])
+    // A clipboard that refuses: the toast says so, and shows the address.
+    refuse = true
+    menu("shop")[0].click()
+    await until(() => toast().startsWith("Could not copy"))
+    assert.equal(toast(), "Could not copy http://localhost:3041/p/page/index.html?tune#films")
   } finally {
     app.closeAll()
   }
@@ -3566,21 +3617,21 @@ await check("a tab renamed by a double-click, F2 or its menu keeps the name for 
       a.tab(label).dispatchEvent(new a.win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 30 }))
       return [...a.doc.querySelectorAll("#menu button")]
     }
-    assert.equal(menu("Home")[0].textContent, "Move to new window")
+    assert.deepEqual(menu("Home").slice(0, 2).map((i) => i.textContent), ["Copy address", "Move to new window"])
     let items = menu("Checkout")
-    assert.deepEqual(items.slice(0, 2).map((i) => i.textContent), ["Rename tab…", "Use folder name"])
-    items[1].click()
+    assert.deepEqual(items.slice(0, 3).map((i) => i.textContent), ["Copy address", "Rename tab…", "Use folder name"])
+    items[2].click()
     assert.deepEqual(a.labels(), ["shop", "docs", "shop", "Home"])
     assert.deepEqual(app.desk.names, {})
     // An empty name is the folder's name too.
-    menu("shop")[0].click()
+    menu("shop")[1].click()
     field().value = "Cart"
     key(field(), "Enter")
     key(a.tab("Cart"), "F2")
     field().value = ""
     key(field(), "Enter")
     assert.deepEqual(a.labels(), ["shop", "docs", "shop", "Home"])
-    menu("shop")[0].click()
+    menu("shop")[1].click()
     field().value = "Cart"
     key(field(), "Enter")
     // Another window, with nothing of this origin's copy, takes the desk's names.
