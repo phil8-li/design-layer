@@ -280,6 +280,7 @@ function filePageOf(value) {
  * fallback chain (packageName, then title, then url) and would lose a rung.
  */
 function appName(app) {
+  if (app.givenName) return app.givenName
   const folder = folderOf(app)
   if (folder) return folder
   const address = app.url.replace(/^https?:\\/\\//, "")
@@ -290,6 +291,11 @@ function appName(app) {
  * The project folder names a row before its page title does, by the rule every
  * surface uses (runtime/app-name.mjs). Copies of one template share a title, so
  * four rows read "Studio" and only the port told them apart.
+ *
+ * A name the person gave the app in the Mac app's tabs (givenName, keyed by
+ * folder and port) comes before the folder, because copies of one repository
+ * share a folder name too: four worktrees served from their "ui" folder read
+ * "ui" four times. The row says what the tab says.
  */
 const folderOf = (app) => (app.projectRoot ? app.projectRoot.split(/[\\\\/]+/).filter(Boolean).pop() ?? null : null)
 
@@ -311,6 +317,7 @@ const folderOf = (app) => (app.projectRoot ? app.projectRoot.split(/[\\\\/]+/).f
  * its title, unchanged.
  */
 function appLabel(app) {
+  if (app.givenName) return app.givenName
   if (folderOf(app)) return folderOf(app)
   return app.title && app.title !== app.url.replace(/^https?:\\/\\//, "")
     ? app.title
@@ -767,13 +774,13 @@ function editorEntry(editor, named) {
   const item = document.createElement("li")
   item.className = "editor"
   item.dataset.id = editor.id ?? ""
-  const label = editor.name || "this app"
+  const label = editor.givenName || editor.name || "this app"
   const text = document.createElement("div")
   text.className = "editor-text"
   if (named) {
     const name = document.createElement("span")
     name.className = "editor-name"
-    name.textContent = editor.name || "Untitled app"
+    name.textContent = editor.givenName || editor.name || "Untitled app"
     name.title = name.textContent
     text.append(name)
   }
@@ -830,8 +837,8 @@ function editorEntry(editor, named) {
 function showCurrent(status) {
   const editors = editorsOf(status)
   const one = editors.length === 1
-  el.currentName.textContent =
-    one && editors[0].name ? "Continue editing " + editors[0].name + "?" : "Continue editing?"
+  const only = one ? editors[0].givenName || editors[0].name : null
+  el.currentName.textContent = only ? "Continue editing " + only + "?" : "Continue editing?"
   const focused = document.activeElement
   const keep = el.editors.contains(focused)
     ? { id: focused.closest("li").dataset.id, action: focused.dataset.action }

@@ -351,6 +351,39 @@ await check("an app already being edited on an unlisted port is listed even when
   }
 })
 
+await check("a row and its editor carry the name the Mac app's tabs gave that folder and port", async () => {
+  const custom = await childServer(fixture("not-a-project"), "Named Prototype")
+  const dir = reactProject({ name: "named-proto" })
+  const named = await createStartScreen({
+    host: "127.0.0.1",
+    port: 0,
+    log: () => {},
+    deskNames: () => ({ [`${dir}|${custom.port}`]: "Proto · main", [`${dir}|1`]: "Another port" }),
+  })
+  try {
+    const started = await json(`${named.url}/api/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: named.url },
+      body: JSON.stringify({ url: `http://127.0.0.1:${custom.port}`, projectRoot: dir }),
+    })
+    assert.equal(started.status, 200)
+    await named.nextChoice()
+    named.reportReady("http://127.0.0.1:4997", null, started.body.id)
+
+    const { body } = await json(`${named.url}/api/apps`)
+    const row = body.apps.find((entry) => entry.port === custom.port)
+    assert.equal(row.givenName, "Proto · main")
+    // Keyed by folder AND port: the same folder on another port is another app.
+    assert.ok(body.apps.filter((entry) => entry !== row).every((entry) => entry.givenName === null))
+    const status = await json(`${named.url}/api/status`)
+    const editor = status.body.editors.find((entry) => entry.id === started.body.id)
+    assert.equal(editor.givenName, "Proto · main")
+  } finally {
+    named.close()
+    custom.close()
+  }
+})
+
 await check("it describes a folder", async () => {
   const { status, body } = await json(
     `${screen.url}/api/project?path=${encodeURIComponent(project)}`
@@ -1920,6 +1953,27 @@ await check("a choice made for you is said out loud, not only tinted", async () 
     // The non-color half, which is the one that survives forced-colors.
     const chosen = $("apps").querySelector('[aria-checked="true"]')
     assert.ok(chosen.querySelector(".app-check"), "nothing marks the chosen row but its fill")
+  } finally {
+    dom.window.close()
+  }
+})
+
+/*
+ * Worktrees of one repository all serve from a folder with the same name, so
+ * four rows read "ui". The name given to a tab in the Mac app is keyed by the
+ * same folder and port, and the row and the sentence say it (DESIGN.md, Tab names).
+ */
+await check("a name given to the app's tab names its row and the sentence", async () => {
+  const named = ROWS.map((row, index) => (index === 0 ? { ...row, givenName: "Host · main" } : row))
+  const dom = await mountPage(named, { [KNOWN]: projectSaid(KNOWN) })
+  try {
+    const $ = (id) => dom.window.document.getElementById(id)
+    const [first, second] = [...$("apps").children]
+    assert.equal(first.querySelector(".app-name").textContent, "Host · main")
+    assert.equal(first.querySelector(".app-name").title, "Host · main")
+    assert.match($("apps-note").textContent, /Host · main/, "the sentence names the folder, not the row's name")
+    // A row with no given name keeps its fallback.
+    assert.equal(second.querySelector(".app-name").textContent, "Untitled app")
   } finally {
     dom.window.close()
   }

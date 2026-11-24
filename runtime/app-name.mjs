@@ -9,6 +9,10 @@
  *
  * The package name is the fallback for a project with no folder to name, which
  * is a launch that never resolved one.
+ *
+ * A name the person gave the app in the Mac app's tabs comes before the folder
+ * wherever a surface can read it: the start screen does, through `givenName`
+ * (runtime/mac-desk.mjs `readDeskNames`; DESIGN.md "Tab names").
  */
 
 import path from "node:path"

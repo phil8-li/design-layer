@@ -27,6 +27,26 @@ import path from "node:path"
 export const DESK_LABEL = process.env.DESIGNLAYER_DESK_LABEL || "dev.designlayer.desk"
 export const DEFAULT_DESK_PORT = 3454
 
+/*
+ * The names a person gave apps in the desk's tab strip. desktop/mac/desk-server.mjs
+ * keeps them beside the desk's Chrome profile, keyed "projectRoot|port" (the
+ * folder and the app's port), and the start screen reads them so its rows name
+ * an app the way its tabs do (DESIGN.md, "Tab names").
+ */
+export function deskNamesPath(home = os.homedir()) {
+  return path.join(home, "Library", "Application Support", "DesignLayer", "desk-names.json")
+}
+
+/** The desk's tab names, `{ "projectRoot|port": name }`; {} when there is no file or it does not parse. */
+export function readDeskNames(file = deskNamesPath()) {
+  try {
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"))
+    return saved && saved.names && typeof saved.names === "object" ? saved.names : {}
+  } catch {
+    return {}
+  }
+}
+
 export function deskPlistPath(home = os.homedir()) {
   return path.join(home, "Library", "LaunchAgents", `${DESK_LABEL}.plist`)
 }

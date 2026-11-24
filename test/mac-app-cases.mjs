@@ -34,7 +34,8 @@ import vm from "node:vm"
 import { JSDOM } from "jsdom"
 
 import { browserPrelude, resolveConfig } from "../config.mjs"
-import { deskPlistPath, deskUrlFromHost } from "../runtime/mac-desk.mjs"
+import { chromeProfileDir } from "../desktop/mac/chrome-pipe.mjs"
+import { deskNamesPath, deskPlistPath, deskUrlFromHost, readDeskNames } from "../runtime/mac-desk.mjs"
 import { PACKAGE_DIR } from "./host.mjs"
 
 let passed = 0
@@ -427,6 +428,25 @@ await check("the launcher names the desk on localhost, the editors' own site", (
     fs.mkdirSync(path.dirname(deskPlistPath(home)), { recursive: true })
     fs.writeFileSync(deskPlistPath(home), "<plist></plist>")
     assert.equal(deskUrlFromHost({ home, platform: "darwin" }), DESK)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+// The start screen reads the tab names the desk writes. The desk keeps them
+// beside its Chrome profile (desk-server.mjs: stateDir = dirname(chromeProfileDir())),
+// so the two paths must not drift apart.
+await check("the start screen reads tab names from the file the desk writes them to", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "mac-app-home-"))
+  try {
+    const file = deskNamesPath(home)
+    assert.equal(file, path.join(path.dirname(chromeProfileDir(home)), "desk-names.json"))
+    assert.deepEqual(readDeskNames(file), {}, "no file reads as no names")
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, "{ not json")
+    assert.deepEqual(readDeskNames(file), {}, "a broken file reads as no names")
+    fs.writeFileSync(file, JSON.stringify({ names: { "/p/ui|3051": "Main" } }))
+    assert.deepEqual(readDeskNames(file), { "/p/ui|3051": "Main" })
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }

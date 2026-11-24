@@ -42,6 +42,7 @@ import {
   projectRootForPort,
   scanLocalApps,
 } from "./local-apps.mjs"
+import { readDeskNames } from "./mac-desk.mjs"
 import {
   badRequest,
   inBrowser,
@@ -230,6 +231,12 @@ export async function createStartScreen({
    */
   updater = null,
   onRestart = null,
+  /*
+   * The names a person gave apps in the Mac app's tabs, `{ "projectRoot|port": name }`
+   * (runtime/mac-desk.mjs). Read on every answer, so a rename shows on the next
+   * scan. Tests pass their own.
+   */
+  deskNames = readDeskNames,
 } = {}) {
   if (!isLoopbackHost(host)) throw new Error(`The start screen is loopback-only and cannot bind ${host}`)
 
@@ -348,11 +355,18 @@ export async function createStartScreen({
     }))
   }
 
-  function editorRow(record) {
+  /** The name the Mac app's tabs gave an app (its folder and port), or null. */
+  function givenName(names, projectRoot, port) {
+    const name = projectRoot ? names[`${projectRoot}|${port}`] : null
+    return typeof name === "string" && name ? name : null
+  }
+
+  function editorRow(record, names) {
     return {
       id: record.id,
       state: record.state,
       name: appName(record),
+      givenName: givenName(names, record.projectRoot, record.appPort),
       appUrl: record.appUrl,
       appPort: record.appPort,
       projectRoot: record.projectRoot,
@@ -626,10 +640,11 @@ export async function createStartScreen({
     "GET /api/apps": async (_req, res) => {
       const apps = await scanApps()
       const registry = readRegistry()
+      const names = deskNames()
       sendJson(res, 200, {
         apps: apps.map((raw) => {
           const app = projectFromEditor(raw, registry)
-          return { ...app, editor: editorForApp(app, registry) }
+          return { ...app, givenName: givenName(names, app.projectRoot, app.port), editor: editorForApp(app, registry) }
         }),
       })
     },
@@ -693,7 +708,8 @@ export async function createStartScreen({
         return
       }
       const status = statusOf(latest === null ? null : records.get(latest))
-      sendJson(res, 200, { ...status, editors: liveRecords().map(editorRow) })
+      const names = deskNames()
+      sendJson(res, 200, { ...status, editors: liveRecords().map((record) => editorRow(record, names)) })
     },
     "POST /api/start": async (req, res) => {
       const body = await readJsonBody(req)

@@ -936,6 +936,8 @@ await check("status lists every editor in start order, with its fields", async (
         id: a.body.id,
         state: "ready",
         name: "shop",
+        // No tab name was given to these temp folders (runtime/mac-desk.mjs readDeskNames).
+        givenName: null,
         appUrl: "http://127.0.0.1:4101",
         appPort: 4101,
         projectRoot: shop,
@@ -946,6 +948,7 @@ await check("status lists every editor in start order, with its fields", async (
         id: b.body.id,
         state: "starting",
         name: "docs",
+        givenName: null,
         appUrl: "http://127.0.0.1:4102",
         appPort: 4102,
         projectRoot: docs,
