@@ -222,13 +222,20 @@ into it on its own, and two more things are made to agree with it:
   layout it would wear in a 940px window — measured on a real prototype, down to
   the pixel. Close the inspector and the app crosses its own breakpoints as it
   widens.
+- **Fixed layers.** A drawer, a toast or a floating panel placed with
+  `position: fixed` is laid out against the window, so a drawer at `right: 0`
+  used to open underneath the inspector. Its offsets and percentage widths are
+  measured from the canvas edges instead, and a modal `<dialog>` centres between
+  the panels. A menu or hover card your JavaScript placed under its button was
+  placed from measured positions, so it is already right and is left alone.
 
-Four things stay on the window, because nothing here can honestly move them:
-`position: fixed` chrome (inherent to insetting without a transform, and the
-alternative would break shared-element morphs), stylesheets served from another
-origin, `vw` written into an inline `style` attribute, and `matchMedia` in your
-app's own JavaScript. If one part of a layout ignores the panels, it is almost
-always one of those four.
+Three things stay on the window, because nothing here can honestly move them:
+stylesheets served from another origin, anything written into an inline `style`
+attribute (a `vw`, a fixed element's offsets), and `matchMedia` in your app's
+own JavaScript. One thing moves too far: a fixed element inside a transformed
+or filtered ancestor is laid out against that ancestor, which is already in the
+canvas. If one part of a layout ignores the panels, it is almost always one of
+these.
 
 ## Every page at once: canvas view
 

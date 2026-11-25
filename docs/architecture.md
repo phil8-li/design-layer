@@ -192,6 +192,7 @@ src/shell/                  toolbar, panel rail, launcher button, desk bridge
 src/shell/resize.ts         the panel rail: motion-panels' core wired to plain DOM
 src/shell/drag.ts           the floating-chrome drag gesture
 src/shell/insets.ts         the panel inset readers
+src/shell/app-viewport.ts   the canvas as the app's viewport: vw, width breakpoints, fixed layers
 src/canvas/                 selection, handles, measuring, text editing on the page
 src/canvas/gesture.ts       the one pointer-gesture tracker: capture, threshold, every cancel
 src/canvas/modifiers.ts     the shared Alt/Shift tracker

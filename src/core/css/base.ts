@@ -279,13 +279,50 @@ export const baseCss = `${paletteCss}
  * Padding inside a border-box root shrinks the containing block instead.
  *
  * Not a transform — a transformed ancestor would break the app's own layoutId
- * shared-element morphs (docs/agent-rules/card-reader-morph.md). The tradeoff
- * is that the app's own \`position: fixed\` chrome is viewport-anchored and does
- * not move with the inset; that is inherent to any non-transform inset.
+ * shared-element morphs (docs/agent-rules/card-reader-morph.md). Padding does
+ * not reach the app's own \`position: fixed\` layers, which are laid out against
+ * the window; \`shell/app-viewport.ts\` moves those by rewriting their offsets.
  */
 html.designlayer-active {
   box-sizing: border-box;
   padding: var(--de-top) var(--de-right) 0 var(--de-left);
+}
+
+/*
+ * FIXED LAYERS: the part \`shell/app-viewport.ts\` cannot write into the app's
+ * sheets. It gives every rule that declares \`position\` the three
+ * \`--de-fixed-*\` companions; these rules set them where no app rule can say
+ * the right thing.
+ *
+ * The app's top layer (a \`showModal()\` dialog, an open popover) is laid out
+ * against the window whatever its \`position\` says, and its \`fixed\` usually
+ * comes from the browser's own sheet, which no rewrite reaches. So its offsets
+ * always move, and the browser's centring of a modal dialog (insets of zero
+ * with auto margins) is redone between the panels. That second rule has no
+ * specificity, so any inset or width the app gives its dialog wins, and is
+ * moved like any other fixed layer's.
+ *
+ * Two boxes must stay on the window. The root, because its padding IS the
+ * inset (Angular CDK makes \`<html>\` fixed while a scroll-blocking overlay is
+ * open). And CDK's overlay containers: each is a coordinate space whose menus
+ * are placed in window coordinates, and moving the container moved every menu
+ * by the panel's width.
+ */
+html.designlayer-active :where(dialog:modal:not([data-designlayer]), :popover-open:not([data-designlayer])) {
+  --de-fixed-left: var(--de-left) !important;
+  --de-fixed-right: var(--de-right) !important;
+  --de-fixed-held: calc((var(--de-left) + var(--de-right)) / 100) !important;
+}
+:where(html.designlayer-active dialog:modal:not([data-designlayer])) {
+  inset-inline-start: var(--de-left);
+  inset-inline-end: var(--de-right);
+  max-width: calc(100% - var(--de-left) - var(--de-right) - 6px - 2em);
+}
+html.designlayer-active,
+html.designlayer-active :is(.cdk-overlay-container, .cdk-overlay-popover) {
+  --de-fixed-left: 0px !important;
+  --de-fixed-right: 0px !important;
+  --de-fixed-held: 0px !important;
 }
 
 /*

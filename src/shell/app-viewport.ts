@@ -23,6 +23,29 @@
  * CANVAS is under 1024, which is when the window is under 1024 plus whatever
  * the panels are holding.
  *
+ * FIXED LAYERS are the third half-truth. Padding on `<html>` narrows the
+ * containing block of everything in flow, but a `position: fixed` element is
+ * laid out against the window, so the app's drawers, toasts and floating
+ * panels kept the window's edges. Measured on two prototypes: a drawer at
+ * `right: 0` ran 260px under the inspector, and a tuner at
+ * `inset-inline-start: 16px` sat under the layers panel.
+ *
+ * So every rule that declares `position` gets three companions beside it: how
+ * far the element's left edge moves, how far its right edge moves, and one
+ * percent of what the panels hold. A `fixed` value sets them from the insets;
+ * any other value sets them to zero. Because they sit in the same rule, the
+ * cascade that picks an element's `position` picks its companions too, and a
+ * `fixed md:static` element moves at one width and not at the other. Every
+ * `left`, `right` and `inset-inline-*` then adds its side's companion, and a
+ * percentage in an offset or a width gives up its share of the panels, so a
+ * fixed layer's `50%` is half the canvas, not half the window.
+ *
+ * The companions are registered as NON-INHERITING. Inherited, a drawer's
+ * children would take its values: every `100%` inside it would shrink and
+ * every `right: 0` would move a second time. A browser that cannot register
+ * them gets no fixed-layer rewrite at all, which is what every fixed layer
+ * had before.
+ *
  * ## What this does not reach
  *
  * Inline `style` attributes, stylesheets from another origin (their rules are
@@ -32,6 +55,15 @@
  * would need its listeners re-fired to say anything else. Each of those is a
  * layout the editor leaves as the window drew it, which is what it did for
  * everything before this file existed.
+ *
+ * Fixed layers have three more. An offset in an inline `style` stays on the
+ * window ON PURPOSE: a menu or a hover card a script placed under its button
+ * was placed from measured window coordinates, and is already in the right
+ * place. A fixed element inside an ancestor that captures fixed descendants
+ * (a transform, a filter, containment) is laid out against that ancestor,
+ * which already sits in the canvas, so the shift moves it twice. And logical
+ * offsets are read left to right. Angular CDK's overlay container is excluded
+ * by name, with the app's own top layer handled in `css/base.ts`.
  *
  * ## Why the CSSOM rather than the source
  *
@@ -119,12 +151,165 @@ const RANGE_AFTER =
 const RANGE_BEFORE =
   /(-?\d*\.?\d+)(px|rem|em|ch|ex|pt|pc|in|cm|mm|q)?(\s*(?:<=|>=|<|>|=)\s*)(width)(?![-\w])/gi
 
-/**
- * A declaration we rewrote, and what it said before we did. `sheet` is the
- * document-level sheet it came from, so a patch can be dropped once an HMR
- * update has replaced that sheet and the declaration is garbage.
+/*
+ * The companions a fixed layer reads. Each says how far this element moves,
+ * so each is zero on every element whose winning `position` is not `fixed`.
  */
-interface UnitPatch {
+const FIXED_LEFT = "--de-fixed-left"
+const FIXED_RIGHT = "--de-fixed-right"
+/** One percent of what the panels hold, both sides together. */
+const FIXED_HELD = "--de-fixed-held"
+
+const COMPANIONS_FIXED: ReadonlyArray<readonly [string, string]> = [
+  [FIXED_LEFT, "var(--de-left, 0px)"],
+  [FIXED_RIGHT, "var(--de-right, 0px)"],
+  [FIXED_HELD, "calc((var(--de-left, 0px) + var(--de-right, 0px)) / 100)"],
+]
+const COMPANIONS_NOT_FIXED: ReadonlyArray<readonly [string, string]> = [
+  [FIXED_LEFT, "0px"],
+  [FIXED_RIGHT, "0px"],
+  [FIXED_HELD, "0px"],
+]
+
+/** The offsets a fixed layer is moved by, and the side each one measures from. */
+const FIXED_OFFSETS: ReadonlyArray<readonly [string, "left" | "right"]> = [
+  ["left", "left"],
+  ["right", "right"],
+  ["inset-inline-start", "left"],
+  ["inset-inline-end", "right"],
+]
+
+/** The sizes whose percentages are of the containing block's width. */
+const FIXED_WIDTHS = ["width", "min-width", "max-width", "inline-size", "min-inline-size", "max-inline-size"]
+
+/** The shorthands the offsets can hide in, and which of their parts is each side. */
+const FIXED_SHORTHANDS: ReadonlyArray<{
+  shorthand: string
+  left: string
+  right: string
+  sides: (parts: string[]) => [string, string]
+}> = [
+  {
+    // Top, right, bottom, left, with the CSS fallbacks for one to three parts.
+    shorthand: "inset",
+    left: "left",
+    right: "right",
+    sides: (parts) => [parts[3] ?? parts[1] ?? parts[0], parts[1] ?? parts[0]],
+  },
+  {
+    shorthand: "inset-inline",
+    left: "inset-inline-start",
+    right: "inset-inline-end",
+    sides: (parts) => [parts[0], parts[1] ?? parts[0]],
+  },
+]
+
+/** A rule that may hold one of the above. `border-left` and `--left` do not match. */
+const FIXED_PROPERTY =
+  /(?:^|[;\s])(?:position|left|right|inset-inline[a-z-]*|inset|(?:min-|max-)?(?:width|inline-size))\s*:/i
+
+/** Functions a length may be written with that are still a length inside `calc()`. */
+const LENGTH_FUNCTIONS = new Set(["calc", "min", "max", "clamp", "var", "env", "round", "mod", "rem", "abs", "sign"])
+
+/**
+ * Whether `value` is a length this file may add to.
+ *
+ * Not a keyword: `auto` is the element's static position, which the padding
+ * already put in the canvas. Not `anchor()` or any other function that is not
+ * a length: an anchored offset already measures from the right box, and
+ * `fit-content(50%)` inside a `calc()` is invalid. And not a value that names
+ * the editor's own variables: a companion that docks itself with
+ * `--de-bar-right`, or a host that reads the docked-panel offset, has made
+ * room once already. That last test is also what keeps a second pass from
+ * wrapping its own output.
+ */
+function movable(value: string): boolean {
+  const text = value.trim()
+  if (!text || /^[a-z-]+$/i.test(text)) return false
+  if (/--de-|--designlayer-/i.test(text)) return false
+  for (const [, name] of text.matchAll(/([\w-]+)\(/g)) {
+    if (!LENGTH_FUNCTIONS.has(name.toLowerCase())) return false
+  }
+  return true
+}
+
+/** A percentage, with the character before it captured rather than looked behind (see `RANGE_AFTER`). */
+const PERCENTAGE = /(^|[^\w.%-])(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)%/gi
+
+/**
+ * Every percentage in `value` taken of the canvas, as a fixed layer reads it.
+ *
+ * A fixed element's `50%` is half its containing block, the window less any
+ * scrollbar. Taking 50 of `--de-fixed-held` away leaves half of what the
+ * panels leave, whatever the scrollbar is. On any other element the companion
+ * is zero and the percentage is the author's.
+ */
+function ofCanvas(value: string): string {
+  return value.replace(
+    PERCENTAGE,
+    (_, lead: string, size: string) => `${lead}(${size}% - var(${FIXED_HELD}, 0px) * ${size})`
+  )
+}
+
+/** A fixed layer's offset, measured from the canvas edge on `side`. Null when there is no length to move. Test seam. */
+export function rewriteFixedOffset(value: string, side: "left" | "right"): string | null {
+  if (!movable(value)) return null
+  return `calc(${ofCanvas(value)} + var(${side === "left" ? FIXED_LEFT : FIXED_RIGHT}, 0px))`
+}
+
+/** A fixed layer's width, with each percentage taken of the canvas. Null when it holds none. Test seam. */
+export function rewriteFixedWidth(value: string): string | null {
+  if (!value.includes("%") || !movable(value)) return null
+  return `calc(${ofCanvas(value)})`
+}
+
+/** `value` split at top-level spaces, so `calc(var(--spacing) * 2) 0px` is two parts. */
+function topLevelParts(value: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let part = ""
+  for (const char of value.trim()) {
+    if (char === "(") depth += 1
+    else if (char === ")") depth -= 1
+    if (depth === 0 && /\s/.test(char)) {
+      if (part) parts.push(part)
+      part = ""
+    } else {
+      part += char
+    }
+  }
+  if (part) parts.push(part)
+  return parts
+}
+
+/**
+ * Registers the companions, and says whether fixed layers can be moved here.
+ *
+ * `false` turns the whole fixed-layer rewrite off; see the note at the top on
+ * why an inheriting companion is worse than none. A registration that already
+ * exists is this editor's own, from an earlier mount on the same document.
+ */
+function registerFixedCompanions(): boolean {
+  const css = (globalThis as { CSS?: { registerProperty?: (definition: PropertyDefinition) => void } }).CSS
+  if (typeof css?.registerProperty !== "function") return false
+  for (const name of [FIXED_LEFT, FIXED_RIGHT, FIXED_HELD]) {
+    try {
+      css.registerProperty({ name, syntax: "<length>", inherits: false, initialValue: "0px" })
+    } catch (error) {
+      if ((error as Error | null)?.name !== "InvalidModificationError") return false
+    }
+  }
+  return true
+}
+
+/**
+ * A declaration we rewrote or added, and what it said before we did. An empty
+ * `value` is a declaration we added: `setProperty` with an empty value removes
+ * it. `sheet` is the document-level sheet it came from, so a patch can be
+ * dropped once an HMR update has replaced that sheet and the declaration is
+ * garbage.
+ */
+interface DeclarationPatch {
   sheet: CSSStyleSheet
   style: CSSStyleDeclaration
   property: string
@@ -189,8 +374,9 @@ function appRules(sheet: CSSStyleSheet): CSSRuleList | null {
 }
 
 export function installAppViewport(): AppViewport {
-  const units: UnitPatch[] = [];
+  const declarations: DeclarationPatch[] = []
   const queries: QueryPatch[] = []
+  const fixedLayers = registerFixedCompanions()
   /*
    * Which media rules have been collected already.
    *
@@ -243,8 +429,76 @@ export function installAppViewport(): AppViewport {
       style.setProperty(property, next, priority)
       // Recorded even if the engine refused the new value: restoring a
       // declaration to what it already says costs nothing and cannot be wrong.
-      units.push({ sheet, style, property, value, priority })
+      declarations.push({ sheet, style, property, value, priority })
     }
+  }
+
+  const write = (style: CSSStyleDeclaration, property: string, next: string | null): void => {
+    if (next === null) return
+    const value = style.getPropertyValue(property)
+    const priority = style.getPropertyPriority(property)
+    style.setProperty(property, next, priority)
+    declarations.push({ sheet, style, property, value, priority })
+  }
+
+  const rewriteFixed = (style: CSSStyleDeclaration, keyframe: boolean): void => {
+    /*
+     * The companions, beside the `position` they describe and at its priority,
+     * so whichever rule wins `position` wins them too. Never in a keyframe: a
+     * registered property there would animate, and `position` itself does not.
+     * A `var()` could resolve to either, so it gets none.
+     */
+    const position = style.getPropertyValue("position").trim().toLowerCase()
+    if (!keyframe && position && !position.includes("var(") && !style.getPropertyValue(FIXED_LEFT)) {
+      const priority = style.getPropertyPriority("position")
+      for (const [name, value] of position === "fixed" ? COMPANIONS_FIXED : COMPANIONS_NOT_FIXED) {
+        style.setProperty(name, value, priority)
+        declarations.push({ sheet, style, property: name, value: "", priority: "" })
+      }
+    }
+
+    /*
+     * A shorthand holding a `var()` hides its sides: Tailwind 4 writes
+     * `inset: calc(var(--spacing) * 0)`, and its `left` reads back empty until
+     * the variable resolves. Read every shorthand before any side is written,
+     * because writing a side changes what its shorthand reads back as.
+     */
+    const hidden = FIXED_SHORTHANDS.map(({ shorthand, left, right }) =>
+      style.getPropertyValue(left) || style.getPropertyValue(right) ? "" : style.getPropertyValue(shorthand)
+    )
+
+    for (const [property, side] of FIXED_OFFSETS) {
+      const value = style.getPropertyValue(property)
+      if (value) write(style, property, rewriteFixedOffset(value, side))
+    }
+    for (const property of FIXED_WIDTHS) {
+      const value = style.getPropertyValue(property)
+      if (value) write(style, property, rewriteFixedWidth(value))
+    }
+
+    FIXED_SHORTHANDS.forEach(({ shorthand, left, right, sides }, index) => {
+      const value = hidden[index]
+      const parts = topLevelParts(value)
+      // A bare `var()` may stand for several sides, and which is unknowable here.
+      if (!parts.length || parts.length > 4 || parts.some((part) => /^var\(/i.test(part))) return
+      const [start, end] = sides(parts)
+      const nextLeft = rewriteFixedOffset(start, "left")
+      const nextRight = rewriteFixedOffset(end, "right")
+      if (!nextLeft && !nextRight) return
+      const priority = style.getPropertyPriority(shorthand)
+      /*
+       * Unwound in reverse: the written sides are removed first, then the
+       * shorthand is put back, which restores every side. Removing the sides
+       * by hand is for engines in which setting a shorthand leaves a side
+       * written beside it alone (jsdom does).
+       */
+      declarations.push({ sheet, style, property: shorthand, value, priority })
+      for (const [property, next] of [[left, nextLeft], [right, nextRight]] as const) {
+        if (!next) continue
+        style.setProperty(property, next, priority)
+        declarations.push({ sheet, style, property, value: "", priority: "" })
+      }
+    })
   }
 
   const walk = (rules: CSSRuleList): void => {
@@ -253,7 +507,18 @@ export function installAppViewport(): AppViewport {
       // `cssText` first: one string test answers for the whole rule, and most
       // rules hold no width unit at all, so the per-declaration loop is skipped.
       const style = (rule as CSSStyleRule).style as CSSStyleDeclaration | undefined
-      if (style && HAS_WIDTH_UNIT.test(style.cssText)) rewriteUnits(style)
+      if (style) {
+        const text = style.cssText
+        /*
+         * The fixed pass before the unit pass. A fixed `left: 10vw` has to be
+         * moved as well as re-measured, and once the unit pass has written
+         * `--de-vw` into it, the value names an editor variable and `movable`
+         * leaves it alone. The unit pass does not mind the other order: it
+         * skips only values that already hold `--de-vw`.
+         */
+        if (fixedLayers && FIXED_PROPERTY.test(text)) rewriteFixed(style, "keyText" in rule)
+        if (HAS_WIDTH_UNIT.test(text)) rewriteUnits(style)
+      }
 
       const media = (rule as CSSMediaRule).media as MediaList | undefined
       if (media && !seen.has(rule) && /width/i.test(media.mediaText)) {
@@ -316,7 +581,7 @@ export function installAppViewport(): AppViewport {
       for (const patch of list) if (!isDetached(patch.sheet)) list[kept++] = patch
       list.length = kept
     }
-    live(units)
+    live(declarations)
     live(queries)
   }
 
@@ -471,15 +736,16 @@ export function installAppViewport(): AppViewport {
       }
       queries.length = 0
       // Last written wins, so unwinding in reverse restores the earliest value
-      // for a declaration this rewrote more than once.
-      for (const patch of units.reverse()) {
+      // for a declaration this rewrote more than once. A companion this added
+      // has an empty `value`, and an empty `setProperty` removes it.
+      for (const patch of declarations.reverse()) {
         try {
           patch.style.setProperty(patch.property, patch.value, patch.priority)
         } catch {
           // Same: a rule whose sheet has been replaced has nothing to restore.
         }
       }
-      units.length = 0
+      declarations.length = 0
       shifted = 0
     },
   }

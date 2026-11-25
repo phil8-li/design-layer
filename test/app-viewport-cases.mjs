@@ -99,7 +99,13 @@ const { build } = await import("esbuild")
 const bundled = await build({
   stdin: {
     contents: `
-      export { installAppViewport, rewriteWidthUnits, shiftCondition } from "./src/shell/app-viewport"
+      export {
+        installAppViewport,
+        rewriteFixedOffset,
+        rewriteFixedWidth,
+        rewriteWidthUnits,
+        shiftCondition,
+      } from "./src/shell/app-viewport"
       export { mountShell } from "./src/shell/shell"
       export { setState } from "./src/core/store"
       export { shellCss } from "./src/core/css"
@@ -469,6 +475,244 @@ await check("the canvas unit is declared, and reads the insets the shell writes"
   assert.match(rule[1], /100vw/)
   assert.match(rule[1], /var\(--de-left\)/)
   assert.match(rule[1], /var\(--de-right\)/)
+})
+
+// ──────────────────────────────────────────── fixed layers follow the canvas ───
+
+/*
+ * jsdom has no `CSS.registerProperty`, and the fixed-layer rewrite refuses to
+ * run without it. This stands in for a browser that has it, and records what
+ * was registered.
+ */
+const registered = []
+const supportRegistration = () => {
+  Object.defineProperty(globalThis, "CSS", {
+    value: { registerProperty: (definition) => registered.push(definition) },
+    configurable: true,
+    writable: true,
+  })
+}
+supportRegistration()
+
+await check("a fixed layer's offset is measured from the canvas edge on its side", () => {
+  assert.equal(editor.rewriteFixedOffset("0px", "right"), "calc(0px + var(--de-fixed-right, 0px))")
+  assert.equal(editor.rewriteFixedOffset("16px", "left"), "calc(16px + var(--de-fixed-left, 0px))")
+  assert.equal(
+    editor.rewriteFixedOffset("50%", "left"),
+    "calc((50% - var(--de-fixed-held, 0px) * 50) + var(--de-fixed-left, 0px))"
+  )
+  assert.equal(
+    editor.rewriteFixedOffset("calc(50% - 10px)", "left"),
+    "calc(calc((50% - var(--de-fixed-held, 0px) * 50) - 10px) + var(--de-fixed-left, 0px))"
+  )
+})
+
+await check("a fixed layer's percentage width is of the canvas", () => {
+  assert.equal(editor.rewriteFixedWidth("100%"), "calc((100% - var(--de-fixed-held, 0px) * 100))")
+  assert.equal(
+    editor.rewriteFixedWidth("min(288px, calc(100% - 32px))"),
+    "calc(min(288px, calc((100% - var(--de-fixed-held, 0px) * 100) - 32px)))"
+  )
+  assert.equal(editor.rewriteFixedWidth("288px"), null)
+})
+
+/*
+ * `auto` is the static position, which the padding already put in the canvas;
+ * `anchor()` already measures from the right box; and a value that names the
+ * editor's own insets has made room once. Moving any of them puts the layer a
+ * panel's width from where it belongs.
+ */
+await check("auto, anchor() and a value that already reads the editor's insets are left alone", () => {
+  for (const value of [
+    "auto",
+    "inherit",
+    "anchor(--trigger right)",
+    "calc(var(--de-bar-right) + 16px)",
+    "calc(var(--designlayer-docked-panel-offset, 0px) + 1rem)",
+  ]) {
+    assert.equal(editor.rewriteFixedOffset(value, "right"), null, value)
+  }
+  assert.equal(editor.rewriteFixedWidth("fit-content(50%)"), null)
+  const once = editor.rewriteFixedOffset("0px", "right")
+  assert.equal(editor.rewriteFixedOffset(once, "right"), null, "a second pass wrapped its own output")
+})
+
+await check("the companions are registered as lengths that do not inherit", () => {
+  reset()
+  registered.length = 0
+  const viewport = editor.installAppViewport()
+  assert.deepEqual(registered.map(({ name }) => name).sort(), ["--de-fixed-held", "--de-fixed-left", "--de-fixed-right"])
+  for (const definition of registered) {
+    assert.equal(definition.inherits, false, `${definition.name} inherits, so a drawer's children move with it`)
+    assert.equal(definition.syntax, "<length>")
+    assert.equal(definition.initialValue, "0px")
+  }
+  viewport.destroy()
+})
+
+/*
+ * The ACC Extensions drawer, as Tailwind writes it: `position` in one rule, the
+ * offset in another, the width in a third. Measured before this: the drawer's
+ * right edge at the window's, 260px under the inspector. An absolutely
+ * positioned box reads zero from its own rule and keeps its author's values.
+ */
+await check("a fixed drawer's right: 0 is measured from the inspector, and absolute boxes keep theirs", () => {
+  reset()
+  addSheet(
+    ".fixed { position: fixed; } .absolute { position: absolute; } .right-0 { right: 0px; } .w-full { width: 100%; }"
+  )
+  const viewport = editor.installAppViewport()
+  const fixed = ruleFor(".fixed").style
+  assert.equal(fixed.getPropertyValue("--de-fixed-left"), "var(--de-left, 0px)")
+  assert.equal(fixed.getPropertyValue("--de-fixed-right"), "var(--de-right, 0px)")
+  assert.equal(
+    fixed.getPropertyValue("--de-fixed-held"),
+    "calc((var(--de-left, 0px) + var(--de-right, 0px)) / 100)"
+  )
+  const absolute = ruleFor(".absolute").style
+  for (const name of ["--de-fixed-left", "--de-fixed-right", "--de-fixed-held"]) {
+    assert.equal(absolute.getPropertyValue(name), "0px", name)
+  }
+  assert.equal(ruleFor(".right-0").style.getPropertyValue("right"), "calc(0px + var(--de-fixed-right, 0px))")
+  assert.equal(ruleFor(".w-full").style.getPropertyValue("width"), "calc((100% - var(--de-fixed-held, 0px) * 100))")
+
+  viewport.destroy()
+  assert.equal(fixed.getPropertyValue("--de-fixed-left"), "", "a companion outlived the editor")
+  assert.equal(absolute.getPropertyValue("--de-fixed-held"), "")
+  assert.equal(ruleFor(".right-0").style.getPropertyValue("right"), "0px")
+  assert.equal(ruleFor(".w-full").style.getPropertyValue("width"), "100%")
+})
+
+/* The skills library's sky tuner, which sat under the layers panel. */
+await check("a tuner at inset-inline-start: 16px moves out from under the layers panel", () => {
+  reset()
+  addSheet(".hst, .hst-open { position: fixed; inset-inline-start: 16px; bottom: 16px; }")
+  const viewport = editor.installAppViewport()
+  const tuner = ruleFor(".hst, .hst-open").style
+  assert.equal(tuner.getPropertyValue("inset-inline-start"), "calc(16px + var(--de-fixed-left, 0px))")
+  assert.equal(tuner.getPropertyValue("bottom"), "16px", "the panels hold no height")
+  assert.equal(tuner.getPropertyValue("--de-fixed-left"), "var(--de-left, 0px)")
+  viewport.destroy()
+  assert.equal(tuner.getPropertyValue("inset-inline-start"), "16px")
+})
+
+/*
+ * The companions take `position`'s priority, so an `!important` position and
+ * its companions win together. A keyframe's offsets move with the layer, but a
+ * keyframe gets no companions: a registered length there would animate.
+ */
+await check("companions keep position's priority, and a keyframe gets offsets but no companions", () => {
+  reset()
+  addSheet(
+    ".pin { position: fixed !important; right: 0px !important; }" +
+      "@keyframes slide { from { position: fixed; right: -100%; } to { right: 0px; } }"
+  )
+  const viewport = editor.installAppViewport()
+  const pin = ruleFor(".pin").style
+  assert.equal(pin.getPropertyPriority("--de-fixed-right"), "important")
+  const slide = [...window.document.styleSheets[0].cssRules].find((rule) => rule.name === "slide")
+  const from = slide.cssRules[0].style
+  assert.equal(
+    from.getPropertyValue("right"),
+    "calc((-100% - var(--de-fixed-held, 0px) * -100) + var(--de-fixed-right, 0px))"
+  )
+  assert.equal(from.getPropertyValue("--de-fixed-right"), "")
+  /*
+   * jsdom drops `!important` from any value holding a `var()`, so the moved
+   * `right` cannot be asked here; the restored one can, and it is the same
+   * recorded priority that the write used.
+   */
+  viewport.destroy()
+  assert.equal(pin.getPropertyValue("right"), "0px")
+  assert.equal(pin.getPropertyPriority("right"), "important")
+})
+
+await check("a fixed layer placed in vw is moved and re-measured both, and put back", () => {
+  reset()
+  addSheet(".bar { position: fixed; left: 10vw; }")
+  const viewport = editor.installAppViewport()
+  assert.equal(
+    ruleFor(".bar").style.getPropertyValue("left"),
+    "calc(calc(var(--de-vw, 1vw) * 10) + var(--de-fixed-left, 0px))"
+  )
+  viewport.destroy()
+  assert.equal(ruleFor(".bar").style.getPropertyValue("left"), "10vw")
+})
+
+await check("a sheet walked again does not wrap a fixed layer twice", () => {
+  reset()
+  const style = addSheet(".fixed { position: fixed; } .right-0 { right: 0px; }")
+  const viewport = editor.installAppViewport()
+  // A new rule moves the count, so the next pass walks the whole sheet again.
+  style.sheet.insertRule(".late { right: 8px; }", 2)
+  viewport.rescan()
+  assert.equal(ruleFor(".right-0").style.getPropertyValue("right"), "calc(0px + var(--de-fixed-right, 0px))")
+  assert.equal(ruleFor(".late").style.getPropertyValue("right"), "calc(8px + var(--de-fixed-right, 0px))")
+  viewport.destroy()
+  assert.equal(ruleFor(".right-0").style.getPropertyValue("right"), "0px")
+  assert.equal(ruleFor(".fixed").style.getPropertyValue("--de-fixed-right"), "")
+})
+
+/*
+ * Tailwind 4 writes `inset: calc(var(--spacing) * 0)`. A shorthand holding a
+ * `var()` reads its sides back as empty, so they are taken from the shorthand
+ * and written one by one. A bare `var()` may stand for several sides at once,
+ * so it is not split.
+ */
+await check("a var() shorthand's sides are moved, and come back whole", () => {
+  reset()
+  addSheet(
+    ".inset-0 { inset: calc(var(--spacing) * 0); }" +
+      ".inset-x-2 { inset-inline: calc(var(--spacing) * 2); }" +
+      ".boxed { inset: var(--box); }"
+  )
+  const viewport = editor.installAppViewport()
+  const inset = ruleFor(".inset-0").style
+  assert.equal(inset.getPropertyValue("left"), "calc(calc(var(--spacing) * 0) + var(--de-fixed-left, 0px))")
+  assert.equal(inset.getPropertyValue("right"), "calc(calc(var(--spacing) * 0) + var(--de-fixed-right, 0px))")
+  assert.equal(
+    ruleFor(".inset-x-2").style.getPropertyValue("inset-inline-end"),
+    "calc(calc(var(--spacing) * 2) + var(--de-fixed-right, 0px))"
+  )
+  assert.equal(ruleFor(".boxed").style.getPropertyValue("left"), "")
+  viewport.destroy()
+  assert.equal(inset.getPropertyValue("left"), "")
+  assert.equal(inset.getPropertyValue("inset"), "calc(var(--spacing) * 0)")
+})
+
+/*
+ * Inherited, the companions would reach a drawer's children, and every `100%`
+ * inside it would shrink with it. No fixed-layer rewrite is better than that.
+ */
+await check("a browser that cannot register the companions gets no fixed-layer rewrite", () => {
+  reset()
+  Object.defineProperty(globalThis, "CSS", { value: undefined, configurable: true, writable: true })
+  addSheet(".fixed { position: fixed; } .right-0 { right: 0px; } .app { width: 100vw; }")
+  const viewport = editor.installAppViewport()
+  assert.equal(ruleFor(".fixed").style.getPropertyValue("--de-fixed-left"), "")
+  assert.equal(ruleFor(".right-0").style.getPropertyValue("right"), "0px")
+  assert.equal(ruleFor(".app").style.getPropertyValue("width"), "calc(var(--de-vw, 1vw) * 100)")
+  viewport.destroy()
+  supportRegistration()
+})
+
+/*
+ * The half no app rule can say. The app's top layer is laid out against the
+ * window whatever its `position`, and CDK's overlay containers are coordinate
+ * spaces for menus placed in window coordinates, as is the root, whose padding
+ * is the inset. See `css/base.ts`.
+ */
+await check("the app's top layer always moves, and CDK's coordinate spaces and the root never do", () => {
+  const css = editor.shellCss.replace(/\s+/g, " ")
+  assert.match(
+    css,
+    /:where\(dialog:modal:not\(\[data-designlayer\]\), :popover-open:not\(\[data-designlayer\]\)\) \{ --de-fixed-left: var\(--de-left\) !important;/
+  )
+  assert.match(css, /dialog:modal:not\(\[data-designlayer\]\)\) \{ inset-inline-start: var\(--de-left\); inset-inline-end: var\(--de-right\);/)
+  assert.match(
+    css,
+    /html\.designlayer-active, html\.designlayer-active :is\(\.cdk-overlay-container, \.cdk-overlay-popover\) \{ --de-fixed-left: 0px !important;/
+  )
 })
 
 reset()
