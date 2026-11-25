@@ -26,7 +26,7 @@ npm run build        # rebuild dist/ after any change under src/
 npm test             # full suite, no host app needed; a bare clone is green
 node test/run.mjs mcp board --skip library-signin-live   # filter by substring
 node test/mcp-handoff-cases.mjs                          # one suite alone
-npm run verify       # generated files are fresh + vendor patch still applies
+npm run verify       # generated files are fresh + vendor patch still applies + registry serves the lockfile
 npx tsc --noEmit     # typecheck src/
 ```
 
@@ -55,7 +55,7 @@ browser tab before you say it works.
 | `server/` | loopback HTTP routes (`routes.mjs`), MCP server (`mcp.mjs`, queue in `handoff.mjs`), the `/agent` handoff, library readers, source lookups for React and Angular |
 | `src/` | the editor UI (TypeScript, plain DOM, bundled to an IIFE) |
 | `test/` | one `*-cases.mjs` file per area; `test/run.mjs` runs them; `test/host.mjs` locates the optional host app |
-| `tools/` | generators (`build-icons`, `build-notices`, `build-sonner-css`), build plugins, the motion budget and contrast sweep used by tests, perf and e2e harnesses |
+| `tools/` | generators (`build-icons`, `build-notices`, `build-sonner-css`), build plugins, the registry check, the motion budget and contrast sweep used by tests, perf and e2e harnesses |
 | `desktop/mac/` | the Mac Dock app (LaunchAgent + Chrome web app) |
 | `launch/` | double-click launcher for a remote dev box |
 | `docs/` | user documentation |
@@ -78,6 +78,11 @@ File list (`src/` by folder): [docs/architecture.md](docs/architecture.md#layout
 - **New dependencies** must be MIT, ISC, BSD, Apache-2.0 or similar. No GPL,
   AGPL, PolyForm, or unlicensed code. Run `node tools/build-notices.mjs` after
   any dependency change.
+- **Pin only versions your npm registry serves.** A company mirror can lag a
+  release by weeks, and a lockfile it cannot serve fails `npm ci` and every
+  update there. `npm run verify` checks each changed lockfile entry against
+  the registry npm uses; when one is missing, pin the newest version it has.
+  Keep lockfile URLs on registry.npmjs.org.
 - **`runtime/vendor-patch.mjs`** splices a minified bundle at pinned anchors. Do
   not bump `react-rewrite-cli` unless the task is to redo those patches.
 - **UI copy is asserted by tests and tools.** Changing a label or message means

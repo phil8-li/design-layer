@@ -53,7 +53,7 @@
   "scripts": {
     "build": "node build.mjs",
     "prepare": "node build.mjs",
-    "verify": "node tools/build-icons.mjs --check && node tools/build-sonner-css.mjs --check && node tools/build-notices.mjs --check && node build.mjs --check && node cli.mjs --verify",
+    "verify": "node tools/build-icons.mjs --check && node tools/build-sonner-css.mjs --check && node tools/build-notices.mjs --check && node build.mjs --check && node cli.mjs --verify && node tools/check-registry.mjs",
     "test": "node test/run.mjs",
     "test:standalone-next": "node test/standalone-next-cases.mjs"
   },

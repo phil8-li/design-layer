@@ -51,7 +51,8 @@ npm run build
 
 `npm run verify` checks that the generated files and the built bundle match
 their sources and that the vendor patch still applies. It is the fastest way to find out you
-forgot to rebuild.
+forgot to rebuild. It also asks the registry npm installs from for every package
+the lockfile changed since `origin/main`, and fails if one is missing there.
 
 ## Running the tests
 
