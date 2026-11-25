@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
- * Real-browser check that ⌘. hides and shows the editor wherever focus is.
+ * Real-browser check that ⌘. hides and shows the editor wherever focus is, and
+ * that the editor's keys and the tab keys work in the Mac app's shell wherever
+ * focus is there.
  *
  *   node tools/shortcut-e2e.mjs --app 3000 --root ~/Projects/my-app
  *   node tools/shortcut-e2e.mjs --app 3000 --root ~/Projects/my-app --host localhost
@@ -35,12 +37,26 @@
  *                 the frame from finishing its load, so ⌘. is pressed in a
  *                 frame the editor can only have noticed by losing focus.
  *   desk-strip    the Mac app's shell (desktop/mac/shell-page.mjs, the real
- *                 page) with focus on its tab strip, as after clicking a tab.
- *                 The editor is a cross-origin frame there and never sees a key
- *                 typed in the shell.
+ *                 page) with focus on its tab strip, on a tab the keyboard is
+ *                 on. The editor is a cross-origin frame there and never sees
+ *                 a key typed in the shell, which hands it over. A and C are
+ *                 pressed there too.
  *   desk-field    the Mac app, focus in a text field of the app.
  *   desk-reload   the Mac app, focus in the editor, then the editor's frame
  *                 reloads, as on a full reload from the app's dev server.
+ *
+ * The rest press the editor's letters in the Mac app instead: A toggles
+ * Inspect and back, C toggles Notes and back. Focus stayed in the shell in
+ * each of these, so the letters did nothing until the editor was clicked:
+ *
+ *   desk-open      the window as it opens, nothing clicked.
+ *   desk-tab-click a click on the Home tab, then on the editor's tab.
+ *   desk-reload-button the strip's Reload, which replaces the editor's frame.
+ *   desk-tab-keys  focus in the editor: ⌘1 selects the Home tab and ⌘2 the
+ *                  editor again, whose letters then work. A key typed in the
+ *                  editor's frame never reaches the shell; the editor hands
+ *                  the tab keys over. Needs a private editor (`--app`), which
+ *                  is told where the stand-in desk is.
  *
  * A cross-origin frame inside the app (an embed, a sandboxed preview) keeps its
  * keys and nothing on the page can hear them, so it is not a scenario here.
@@ -71,6 +87,10 @@ const SCENARIOS = [
   "desk-strip",
   "desk-field",
   "desk-reload",
+  "desk-open",
+  "desk-tab-click",
+  "desk-reload-button",
+  "desk-tab-keys",
 ]
 const READY_LINE = "[designlayer] Figma-style overlay ready"
 const HIDDEN_CLASS = "designlayer-chrome-hidden"
@@ -151,10 +171,22 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, async () => { await cleanup(); process.exit(130) })
 }
 
-/** A private editor on free ports, so no editor already running is touched. */
-async function startEditor() {
+/**
+ * A private editor on free ports, so no editor already running is touched.
+ *
+ * Under a HOME of its own, whose desk plist names the stand-in desk's port: an
+ * editor reads where the desk is from there, and hands the tab keys only to
+ * that origin. It also keeps the editor's state out of the real state folder.
+ */
+async function startEditor(deskPort) {
   const ports = { proxy: await freePort(), ws: await freePort(), mcp: await freePort() }
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "designlayer-shortcut-e2e-"))
+  const home = path.join(tmpDir, "home")
+  fs.mkdirSync(path.join(home, "Library", "LaunchAgents"), { recursive: true })
+  fs.writeFileSync(
+    path.join(home, "Library", "LaunchAgents", "dev.designlayer.desk.plist"),
+    `<plist><dict><key>EnvironmentVariables</key><dict><key>DESIGNLAYER_DESK_PORT</key><string>${deskPort}</string></dict></dict></plist>\n`
+  )
   const config = path.join(tmpDir, "designlayer.config.mjs")
   fs.writeFileSync(config, `export default {
   projectRoot: ${JSON.stringify(path.resolve(projectRoot ?? "."))},
@@ -165,6 +197,7 @@ async function startEditor() {
   const child = spawn(process.execPath, ["cli.mjs", "--config", config, "--no-start", "--no-open", String(appPort)], {
     cwd: ROOT,
     detached: true,
+    env: { ...process.env, HOME: home, DESIGNLAYER_DESK_LABEL: "" },
     stdio: ["ignore", "pipe", "pipe"],
   })
   child.log = ""
@@ -178,8 +211,10 @@ async function startEditor() {
 /**
  * The Mac app's shell, served the way the desk serves it, with the desk's API
  * answered by stubs: one running editor, which the stored tabs already show.
+ * Started before the editor, which is told its port; `editor()` names the
+ * editor once it is up.
  */
-async function startDesk(editorUrl) {
+async function startDesk(editor) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://desk")
     const json = (body) => {
@@ -192,7 +227,7 @@ async function startDesk(editorUrl) {
     } else if (url.pathname === "/api/health") {
       json({ ok: true, startScreen: { ready: true, url: `http://127.0.0.1:${server.address().port}/home` } })
     } else if (url.pathname === "/api/editors") {
-      json({ editors: [{ name: "e2e", url: editorUrl, pid: 1, projectRoot: projectRoot ?? "." }] })
+      json({ editors: [{ name: "e2e", url: editor(), pid: 1, projectRoot: projectRoot ?? "." }] })
     } else if (url.pathname === "/home") {
       res.setHeader("content-type", "text/html; charset=utf-8")
       res.end("<!doctype html><title>Home</title>")
@@ -341,6 +376,54 @@ async function editorReady(frame, page) {
   await sleep(1000)
 }
 
+/** Which of the three modes the toolbar shows. */
+const mode = (frame) =>
+  frame.evaluate(() => {
+    const pressed = (selector) => document.querySelector(selector)?.getAttribute("aria-pressed") === "true"
+    if (pressed('[data-designlayer] button[aria-label="Notes"]')) return "annotating"
+    return pressed("[data-designlayer] .de-button--mode") ? "inspecting" : "interactive"
+  })
+
+async function until(read, want, timeout = 1500) {
+  const start = Date.now()
+  while (Date.now() - start < timeout) {
+    if ((await read()) === want) return true
+    await sleep(50)
+  }
+  return false
+}
+
+/** ⌘. twice: the editor hides and comes back. */
+async function wayBack(page, frame, before, placed) {
+  await page.keyboard.press("Meta+Period")
+  if (!(await settle(frame, true))) throw new Fail(`⌘. did not hide the editor. Focus: ${before} (${placed})`)
+  const between = await describeFocus(page, frame)
+  await page.keyboard.press("Meta+Period")
+  if (!(await settle(frame, false))) throw new Fail(`⌘. hid the editor but did not bring it back. Focus: ${between}`)
+}
+
+/** A twice and C twice: Inspect off and on again, then Notes on and off. */
+async function letters(page, frame, before, placed) {
+  const start = await mode(frame)
+  const other = start === "inspecting" ? "interactive" : "inspecting"
+  for (const [key, want] of [["a", other], ["a", start], ["c", "annotating"], ["c", "interactive"]]) {
+    await page.keyboard.press(key)
+    if (!(await until(() => mode(frame), want))) {
+      throw new Fail(`${key.toUpperCase()} did not change the mode to ${want}. Focus: ${before} (${placed})`)
+    }
+  }
+}
+
+/** ⌘1 and ⌘2 from inside the editor, then its letters, where focus came back. */
+async function tabKeys(page, frame, before, placed) {
+  const selected = () => page.evaluate(() => document.querySelector('.tab[aria-selected="true"]')?.dataset.id)
+  await page.keyboard.press("Meta+1")
+  if (!(await until(selected, "home"))) throw new Fail(`⌘1 did not select the Home tab. Focus: ${before} (${placed})`)
+  await page.keyboard.press("Meta+2")
+  if (!(await until(selected, "editor"))) throw new Fail(`⌘2 did not select the editor's tab. Focus: ${await describeFocus(page, frame)}`)
+  await letters(page, frame, await describeFocus(page, frame), "the editor, back in front after ⌘2")
+}
+
 async function runScenario(scenario, editorUrl, deskUrl) {
   const framed = scenario.startsWith("desk-")
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
@@ -372,6 +455,7 @@ async function runScenario(scenario, editorUrl, deskUrl) {
     if (await hidden(frame)) throw new Fail("the editor started hidden")
 
     let placed
+    let keys = wayBack
     if (scenario === "page") {
       await frame.evaluate(() => document.activeElement?.blur?.())
       placed = "nothing focused"
@@ -384,8 +468,15 @@ async function runScenario(scenario, editorUrl, deskUrl) {
     } else if (scenario === "hidden-frame") {
       placed = await focusHiddenFrame(frame, `${deskUrl}hang`)
     } else if (scenario === "desk-strip") {
-      await page.locator('.tab[aria-selected="true"]').click()
-      placed = "the shell's tab strip, after a click on the tab"
+      // A key first, so Chrome counts the focus as the keyboard's, and the
+      // shell leaves it on the strip.
+      await page.keyboard.press("Shift")
+      await page.locator('.tab[aria-selected="true"]').focus()
+      placed = "the shell's tab strip, on a tab the keyboard is on"
+      keys = async (...args) => {
+        await wayBack(...args)
+        await letters(...args)
+      }
     } else if (scenario === "desk-reload") {
       placed = `${await focusAppField(frame)}, then the frame reloaded`
       // The reload is the page's own, as a dev server's full reload is. The
@@ -400,23 +491,36 @@ async function runScenario(scenario, editorUrl, deskUrl) {
         .then(() => true, () => false)
       if (!back) throw new Fail("the editor did not come back after its frame reloaded itself")
       await sleep(2000)
+    } else if (scenario === "desk-open") {
+      placed = "nothing clicked since the window opened"
+      keys = letters
+    } else if (scenario === "desk-tab-click") {
+      await page.locator('.tab[data-id="home"]').click()
+      await page.locator('.tab[data-id="editor"]').click()
+      placed = "a click on the Home tab, then on the editor's"
+      keys = letters
+    } else if (scenario === "desk-reload-button") {
+      await page.locator("#reload").click()
+      frame = await (await page.waitForSelector('iframe[data-id="editor"]')).contentFrame()
+      await editorReady(frame, page)
+      placed = "the strip's Reload"
+      keys = letters
+    } else if (scenario === "desk-tab-keys") {
+      if (attachTo) throw new Skip("needs a private editor (--app), which is told where this desk is")
+      placed = "the editor, where the shell put focus"
+      keys = tabKeys
     }
     const before = await describeFocus(page, frame)
+    await keys(page, frame, before, placed)
 
-    await page.keyboard.press("Meta+Period")
-    if (!(await settle(frame, true))) throw new Fail(`⌘. did not hide the editor. Focus: ${before} (${placed})`)
-    const between = await describeFocus(page, frame)
-    await page.keyboard.press("Meta+Period")
-    if (!(await settle(frame, false))) throw new Fail(`⌘. hid the editor but did not bring it back. Focus: ${between}`)
-
-    console.log(`  ok   ${scenario.padEnd(13)} ${placed}; focus ${before}`)
+    console.log(`  ok   ${scenario.padEnd(18)} ${placed}; focus ${before}`)
     return true
   } catch (error) {
     if (error instanceof Skip) {
-      console.log(`  skip ${scenario.padEnd(13)} ${error.message}`)
+      console.log(`  skip ${scenario.padEnd(18)} ${error.message}`)
       return null
     }
-    console.log(`  FAIL ${scenario.padEnd(13)} ${error instanceof Fail ? error.message : error.stack.split("\n").slice(0, 3).join(" | ")}`)
+    console.log(`  FAIL ${scenario.padEnd(18)} ${error instanceof Fail ? error.message : error.stack.split("\n").slice(0, 3).join(" | ")}`)
     fs.mkdirSync(SHOTS, { recursive: true })
     await page.screenshot({ path: path.join(SHOTS, `fail-${scenario}.png`) }).catch(() => {})
     return false
@@ -426,15 +530,16 @@ async function runScenario(scenario, editorUrl, deskUrl) {
 }
 
 async function main() {
-  const editorUrl = attachTo ?? (await startEditor())
-  const deskUrl = await startDesk(editorUrl)
+  let editorUrl = attachTo
+  const deskUrl = await startDesk(() => editorUrl)
+  editorUrl ??= await startEditor(new URL(deskUrl).port)
   console.log(`editor ${editorUrl} (${attachTo ? `socket :${attachWs} mocked` : "private"}), shell ${deskUrl}`)
   browser = await chromium.launch({ headless: true })
   const results = []
   for (const scenario of only ? [only] : SCENARIOS) results.push(await runScenario(scenario, editorUrl, deskUrl))
   const ran = results.filter((result) => result !== null)
   const failed = ran.filter((result) => !result).length
-  console.log(`\n${ran.length - failed}/${ran.length} places answered ⌘.`)
+  console.log(`\n${ran.length - failed}/${ran.length} places answered their keys`)
   return failed ? 1 : 0
 }
 

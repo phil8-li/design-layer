@@ -51,6 +51,8 @@
  * ⌘. is the other exception. `shell/way-back.ts` answers it, because it has to
  * be heard in places `shell/shortcuts.ts` deliberately is not: inside a text
  * field, inside a frame, from the Mac app's tab strip. See `everywhereShortcut`.
+ * The same file answers the keys the Mac app's shell hands over when focus is
+ * on its strip, through `shortcutFor` like a key typed here.
  */
 
 import { isChrome } from "./dom"

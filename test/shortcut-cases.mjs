@@ -86,7 +86,15 @@ for (const key of [
   Object.defineProperty(globalThis, key, { value: window[key], configurable: true, writable: true })
 }
 
-/** One bundle: the command registry is module state every lane has to share. */
+/**
+ * One bundle: the command registry is module state every lane has to share.
+ *
+ * Built on a Mac with the app installed, as the launcher's prelude says, so the
+ * editor knows the desk it hands the tab keys to. Outside the desk's frame
+ * nothing reads it.
+ */
+const DESK = "http://localhost:3454"
+globalThis.__DESIGNLAYER_CONFIG__ = { deskUrl: DESK }
 const { build } = await import("esbuild")
 const bundled = await build({
   stdin: {
@@ -95,7 +103,7 @@ const bundled = await build({
       export { installToolbar } from "./src/shell/toolbar"
       export { installShortcuts } from "./src/shell/shortcuts"
       export { installWayBack } from "./src/shell/way-back"
-      export { DESK_KEY_MESSAGE } from "./src/shell/desk"
+      export { DESK_KEY_MESSAGE, DESK_TAB_KEY_MESSAGE, DESK_FRAME_PREFIX } from "./src/shell/desk"
       export { installCanvas } from "./src/canvas/index"
       export * as keymap from "./src/core/keymap"
       export * as commands from "./src/core/commands"
@@ -660,29 +668,47 @@ check("⌘. typed in a frame on the page reaches the editor once the frame has l
   }
 })
 
-/*
- * THE MAC APP'S SHELL HANDS OVER WHAT IT HEARS. The editor is a cross-origin
- * frame there, so ⌘. typed on the tab strip, or after the frame reloaded and
- * left focus in the shell, never arrived. desktop/mac/test/desk-cases.mjs holds
- * the other half: what the shell sends.
- */
-check("⌘. handed over by the Mac app's shell toggles the editor, and nothing else does", () => {
-  context.setChromeHidden(false)
+/** The editor as one of the Mac app's tabs: framed by the desk, under the desk's frame name. */
+function inDesk() {
   const shell = window.document.createElement("iframe")
   window.document.body.append(shell)
   const parent = Object.getOwnPropertyDescriptor(window, "parent")
   Object.defineProperty(window, "parent", { get: () => shell.contentWindow, configurable: true })
-  const hand = (data, { origin = "http://127.0.0.1:3454", source = shell.contentWindow } = {}) =>
+  const name = window.name
+  window.name = `${editor.DESK_FRAME_PREFIX}t1`
+  return {
+    shell,
+    leave() {
+      window.name = name
+      Object.defineProperty(window, "parent", parent)
+      shell.remove()
+    },
+  }
+}
+
+/*
+ * THE MAC APP'S SHELL HANDS OVER WHAT IT HEARS. The editor is a cross-origin
+ * frame there, so a key typed while focus was in the shell never arrived: ⌘.
+ * typed on the tab strip, and A, C and the rest before the editor had been
+ * clicked once. desktop/mac/test/desk-cases.mjs holds the other half: what the
+ * shell sends.
+ */
+check("keys handed over by the Mac app's shell run the keymap, under the same gates", () => {
+  context.setChromeHidden(false)
+  context.setMode("inspecting")
+  const desk = inDesk()
+  const hand = (data, { origin = "http://127.0.0.1:3454", source = desk.shell.contentWindow } = {}) =>
     window.dispatchEvent(new window.MessageEvent("message", { data, origin, source }))
-  const dot = {
+  const key = (init) => ({
     type: editor.DESK_KEY_MESSAGE,
-    key: ".",
-    code: "Period",
-    metaKey: true,
+    code: "",
+    metaKey: false,
     ctrlKey: false,
     shiftKey: false,
     altKey: false,
-  }
+    ...init,
+  })
+  const dot = key({ key: ".", code: "Period", metaKey: true })
   try {
     hand(dot)
     assert.equal(context.getState().chromeHidden, true, "the shell's ⌘. did not reach the editor")
@@ -694,15 +720,90 @@ check("⌘. handed over by the Mac app's shell toggles the editor, and nothing e
     assert.equal(context.getState().chromeHidden, false, "a window that does not frame the editor drove it")
     hand({ ...dot, type: "something-else" })
     assert.equal(context.getState().chromeHidden, false)
-    // Only the keys answered from anywhere. ⇧⌘\ is a real command, and the
-    // shell must not become a second keyboard for it.
+
+    // The rows, as a key typed here: A and C toggle their modes, ⇧⌘\ the left panel.
+    hand(key({ key: "a", code: "KeyA" }))
+    assert.equal(store.editorMode(), "interactive", "the shell's A did not reach the editor")
+    hand(key({ key: "c", code: "KeyC" }))
+    assert.equal(store.editorMode(), "annotating", "the shell's C did not reach the editor")
+    hand(key({ key: "c", code: "KeyC" }))
+    assert.equal(store.editorMode(), "interactive")
     const layers = context.getState().layersOpen
-    hand({ ...dot, key: "|", code: "Backslash", shiftKey: true })
-    assert.equal(context.getState().layersOpen, layers, "the shell ran a key that is not the way back")
+    hand(key({ key: "|", code: "Backslash", metaKey: true, shiftKey: true }))
+    assert.equal(context.getState().layersOpen, !layers, "the shell's ⇧⌘\\ did not reach the editor")
+    hand(key({ key: "|", code: "Backslash", metaKey: true, shiftKey: true }))
+
+    // A collapsed editor answers only the way back, as when the key is typed here.
+    context.setChromeHidden(true)
+    hand(key({ key: "v", code: "KeyV" }))
+    assert.equal(store.editorMode(), "interactive", "a collapsed editor took a bare key from the shell")
+    hand(dot)
+    assert.equal(context.getState().chromeHidden, false)
+
+    // Escape is the strip's there: it does not deselect or collapse the editor.
+    hand(key({ key: "Escape", code: "Escape" }))
+    assert.equal(context.getState().chromeHidden, false, "Escape on the strip collapsed the editor")
   } finally {
-    Object.defineProperty(window, "parent", parent)
-    shell.remove()
+    desk.leave()
+    context.setMode("inspecting")
   }
+})
+
+/*
+ * THE OTHER DIRECTION. The shell puts focus in the editor's frame, and a key
+ * typed in a cross-origin frame never reaches the page around it, so ⌘1–9, ⌘T
+ * and ⌘W, the app's tab keys, would stop working wherever the editor had
+ * focus. The editor hands them to the shell.
+ */
+check("⌘1–9, ⌘T and ⌘W typed in the editor inside the Mac app go to the desk, and nothing else answers them", () => {
+  const desk = inDesk()
+  const posted = []
+  desk.shell.contentWindow.postMessage = (message, origin) => posted.push([{ ...message }, origin])
+  let later = 0
+  const count = () => (later += 1)
+  window.addEventListener("keydown", count, true)
+  const typed = (init, target = window.document.getElementById("cta")) => {
+    const view = target.ownerDocument.defaultView
+    const event = new view.KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init })
+    target.dispatchEvent(event)
+    return event
+  }
+  try {
+    const two = typed({ key: "2", code: "Digit2", metaKey: true })
+    assert.equal(two.defaultPrevented, true, "⌘2 was left for the page, and Chrome")
+    assert.deepEqual(posted, [
+      [
+        { type: editor.DESK_TAB_KEY_MESSAGE, key: "2", metaKey: true, ctrlKey: false, shiftKey: false, altKey: false },
+        DESK,
+      ],
+    ])
+    assert.equal(later, 0, "a listener after the hand-over answered the key as well")
+    typed({ key: "t", code: "KeyT", metaKey: true }, window.document.getElementById("field"))
+    const { frame, field } = frameWithField()
+    try {
+      typed({ key: "w", code: "KeyW", metaKey: true }, field)
+    } finally {
+      frame.remove()
+    }
+    assert.deepEqual(posted.map(([message]) => message.key), ["2", "t", "w"], "from a field, or a frame on the page, too")
+
+    posted.length = 0
+    for (const init of [
+      { key: "t", code: "KeyT", ctrlKey: true },
+      { key: "1", code: "Digit1", metaKey: true, altKey: true },
+      { key: "0", code: "Digit0", metaKey: true },
+      { key: "t", code: "KeyT" },
+    ]) {
+      assert.equal(typed(init).defaultPrevented, false, `${JSON.stringify(init)} was taken from the page`)
+    }
+    assert.deepEqual(posted, [], "a key that is not a tab key went to the desk")
+  } finally {
+    window.removeEventListener("keydown", count, true)
+    desk.leave()
+  }
+  // Outside the app the keys are the browser's.
+  const event = typed({ key: "w", code: "KeyW", metaKey: true })
+  assert.equal(event.defaultPrevented, false, "⌘W was taken from a browser tab")
 })
 
 check("\\ hides the editor, and does nothing once it is hidden", () => {

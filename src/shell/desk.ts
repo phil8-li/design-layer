@@ -29,11 +29,33 @@ export const DESK_FRAME_PREFIX = "designlayer-desk:"
  * The `type` of the message the desk posts with a key typed on its tab strip.
  *
  * The editor is a cross-origin frame in the app, so a key pressed while focus
- * is in the shell never reaches it. The shell posts the accelerators it does
- * not use itself, and `shell/way-back.ts` answers the ones meant to work from
- * anywhere. desktop/mac/shell-page.mjs spells the same string.
+ * is in the shell never reaches it. The shell posts every key it does not use
+ * itself, and `shell/way-back.ts` answers the editor's keys among them.
+ * desktop/mac/shell-page.mjs spells the same string.
  */
 export const DESK_KEY_MESSAGE = "designlayer-desk:key"
+
+/**
+ * The `type` of the message this editor posts with one of the desk's tab keys
+ * typed in it: ⌘1–9, ⌘T and ⌘W.
+ *
+ * They are the desk's keys, as Chrome's tab keys are Chrome's, and Chrome's
+ * work wherever focus is. Inside the app focus is in this frame nearly always,
+ * because the desk puts it here, and a key typed in a cross-origin frame never
+ * reaches the page around it. desktop/mac/shell-page.mjs spells the same
+ * string.
+ */
+export const DESK_TAB_KEY_MESSAGE = "designlayer-desk:tab-key"
+
+/**
+ * Whether a press is one of the desk's tab keys. The shell matches the same
+ * keys (`tabKey` in desktop/mac/shell-page.mjs), with ⌃ as well as ⌘; only ⌘
+ * is taken here, because ⌃T transposes two letters in a Mac text field.
+ */
+export function isDeskTabKey(event: KeyboardEvent): boolean {
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return false
+  return /^[1-9tw]$/i.test(event.key)
+}
 
 /**
  * The `type` of the message this editor posts to the desk: which app the frame
@@ -125,6 +147,28 @@ export function tellDesk(name: string | null, page: string, win: Window = window
   const target = deskOrigin(win)
   if (!target) return
   win.parent.postMessage({ type: DESK_SHOWING_MESSAGE, name, page }, target)
+}
+
+/**
+ * Hands one of the desk's tab keys to the desk. False when the press is not
+ * one, or this is not one of the app's tabs, and the key stays with the page.
+ */
+export function handToDesk(event: KeyboardEvent, win: Window = window): boolean {
+  if (!isDeskTabKey(event)) return false
+  const target = deskOrigin(win)
+  if (!target) return false
+  win.parent.postMessage(
+    {
+      type: DESK_TAB_KEY_MESSAGE,
+      key: event.key,
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey,
+      shiftKey: event.shiftKey,
+      altKey: event.altKey,
+    },
+    target
+  )
+  return true
 }
 
 /**

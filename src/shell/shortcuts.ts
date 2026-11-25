@@ -21,7 +21,9 @@
  * The single exception is ⌘., which is how the editor comes back; a platform
  * accelerator with a period on it is not a key a prototype reasonably claims.
  * It is not answered here at all but in `shell/way-back.ts`, which hears it
- * from text fields and frames this listener rightly ignores.
+ * from text fields and frames this listener rightly ignores. A key typed on
+ * the Mac app's tab strip never reaches this window either; the shell hands it
+ * over, and `shell/way-back.ts` answers it through the same `shortcutFor`.
  *
  * ## Capture, and why the swallow is conditional
  *

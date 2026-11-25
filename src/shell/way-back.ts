@@ -1,5 +1,5 @@
 /**
- * ⌘. from wherever focus is.
+ * ⌘. from wherever focus is, and the Mac app's keys in both directions.
  *
  * ⌘. is the way back to a collapsed editor. `shell/shortcuts.ts` hears only
  * what reaches this window outside a text field, which is right for every
@@ -15,21 +15,26 @@
  *     into a page nobody can see, until the designer happens to click
  *     somewhere. Every same-origin frame gets this listener as it loads.
  *   - **The Mac app's shell.** The editor is a cross-origin frame in it, so a
- *     key typed on the tab strip never arrives here. The shell posts the
- *     accelerators it does not use itself (desktop/mac/shell-page.mjs) and this
- *     answers the ones `everywhereShortcut` takes.
+ *     key typed on the tab strip never arrives here. The shell posts every key
+ *     it does not use itself (desktop/mac/shell-page.mjs), and this answers
+ *     the editor's keys among them, ⌘. and the keymap's rows alike.
  *   - **A listener of the app's that swallows the key.** `index.ts` installs
  *     this at module scope, while the overlay script is still evaluating and
  *     before the app's own modules run, so it is the first keydown listener on
  *     the window and an app's `stopImmediatePropagation()` comes after it.
+ *
+ * The shell's own keys go the other way. ⌘1–9, ⌘T and ⌘W are the app's tab
+ * keys, and the shell puts focus in this frame, where it never hears them, so
+ * this hands them to it (`handToDesk`) from wherever focus is in the page.
  *
  * A cross-origin frame inside the app keeps its keys. Nothing on this page can
  * hear them.
  */
 
 import { runCommand } from "../core/commands"
-import { everywhereShortcut } from "../core/keymap"
-import { DESK_KEY_MESSAGE, isDeskOrigin } from "./desk"
+import { everywhereShortcut, shortcutFor } from "../core/keymap"
+import { getState } from "../core/store"
+import { DESK_KEY_MESSAGE, handToDesk, isDeskOrigin } from "./desk"
 
 /**
  * One function for every window it listens in, which is what keeps a window
@@ -38,8 +43,16 @@ import { DESK_KEY_MESSAGE, isDeskOrigin } from "./desk"
  *
  * Before `boot` has registered the command, `runCommand` finds nothing to run
  * and the key is left to the page.
+ *
+ * A tab key handed to the desk is the desk's alone: nothing after this on the
+ * window may answer it as well, the editor's keymap included.
  */
 function answer(event: KeyboardEvent): void {
+  if (handToDesk(event)) {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    return
+  }
   const shortcut = everywhereShortcut(event)
   if (!shortcut || !runCommand(shortcut.command)) return
   event.preventDefault()
@@ -103,7 +116,10 @@ function listen(win: Window): void {
  *
  * Only from the window this one is framed in, and only from the desk's origin
  * (`isDeskOrigin`). The press is rebuilt as an event so the keymap matches it
- * exactly as it would a key typed here.
+ * exactly as it would a key typed here, under the same gates: ⌘. from
+ * anywhere, every other row only while the editor is shown. Rows the canvas
+ * owns (Escape, Enter, Tab, Delete, the arrows) are not answered: on the strip
+ * those keys are the strip's.
  */
 function onMessage(event: MessageEvent): void {
   if (window.parent === window || event.source !== window.parent) return
@@ -120,7 +136,7 @@ function onMessage(event: MessageEvent): void {
     shiftKey: key.shiftKey === true,
     altKey: key.altKey === true,
   })
-  const shortcut = everywhereShortcut(press)
+  const shortcut = everywhereShortcut(press) ?? shortcutFor(press, getState().chromeHidden)
   if (shortcut) runCommand(shortcut.command)
 }
 

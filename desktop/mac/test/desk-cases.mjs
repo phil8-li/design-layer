@@ -2941,27 +2941,21 @@ await check("a stopped tab moved in front from another window asks for its edito
   }
 })
 
-/*
- * The editor is a cross-origin frame in the app, so a key typed while focus is
- * in the shell — on the strip after a click on a tab, or after the frame
- * reloaded — never reaches it. ⌘. is how a hidden editor comes back, and it
- * did nothing until the page was clicked. test/shortcut-cases.mjs holds the
- * other half: what the editor does with the message.
+/**
+ * One window with a Home tab and shop-web's editor in front, for the keyboard
+ * cases. jsdom moves no focus on a click and takes none from a hidden frame,
+ * and every focused element matches :focus-visible there, so these cases
+ * check where the shell PUTS focus; tools/shortcut-e2e.mjs checks the rest in
+ * Chrome.
  */
-await check("⌘. typed in the shell is handed to the editor in the active tab, and the shell's own keys are not", async () => {
+async function keyDesk(tabs = [{ id: "h1", kind: "home" }, { id: "e1", kind: "editor", url: "http://127.0.0.1:4100", name: "shop-web" }]) {
   const { JSDOM } = await import("jsdom")
   const { shellPage } = await import("../shell-page.mjs")
   const dom = new JSDOM(shellPage({ repoRoot: "/r" }), {
     url: "http://127.0.0.1:3454/",
     runScripts: "dangerously",
     beforeParse(window) {
-      window.localStorage.setItem(
-        "designlayer.desk.tabs.v1",
-        JSON.stringify({
-          tabs: [{ id: "h1", kind: "home" }, { id: "e1", kind: "editor", url: "http://127.0.0.1:4100", name: "shop-web" }],
-          active: "e1",
-        })
-      )
+      window.localStorage.setItem("designlayer.desk.tabs.v1", JSON.stringify({ tabs, active: "e1" }))
       window.fetch = async (url) => ({
         json: async () =>
           String(url).includes("/api/editors")
@@ -2974,20 +2968,52 @@ await check("⌘. typed in the shell is handed to the editor in the active tab, 
       }
     },
   })
+  const win = dom.window
+  await sleep(30)
+  const doc = win.document
+  return {
+    win,
+    doc,
+    frame: (id) => doc.querySelector(`iframe[data-id="${id}"]`),
+    tab: (id) => doc.querySelector(`.tab[data-id="${id}"]`),
+    selected: () => doc.querySelector('.tab[aria-selected="true"]').dataset.id,
+    press: (init, target = win) => {
+      const event = new win.KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init })
+      target.dispatchEvent(event)
+      return event
+    },
+    say: (id, data, origin = "http://localhost:4100") =>
+      win.dispatchEvent(new win.MessageEvent("message", { data, origin, source: doc.querySelector(`iframe[data-id="${id}"]`).contentWindow })),
+    close: () => win.close(),
+  }
+}
+
+/*
+ * The editor is a cross-origin frame in the app, so a key typed while focus is
+ * in the shell — on a tab the keyboard is on, or before the frame took focus —
+ * never reaches it. ⌘. is how a hidden editor comes back, and A, C and the
+ * editor's other keys did nothing until the editor was clicked.
+ * test/shortcut-cases.mjs holds the other half: what the editor does with the
+ * message.
+ */
+await check("a key typed in the shell is handed to the editor in the active tab, and the shell's own keys are not", async () => {
+  const d = await keyDesk()
   try {
-    const win = dom.window
-    await sleep(30)
-    const frame = win.document.querySelector('iframe[data-id="e1"]')
+    const frame = d.frame("e1")
     assert.ok(frame, "the editor tab has no frame")
     const posted = []
     // Copied out of the page's realm, so a strict comparison sees plain objects.
     frame.contentWindow.postMessage = (message, origin) => posted.push([JSON.parse(JSON.stringify(message)), origin])
-    const press = (init) => win.dispatchEvent(new win.KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }))
 
-    press({ key: ".", code: "Period", metaKey: true })
+    d.press({ key: ".", code: "Period", metaKey: true })
+    d.press({ key: "a", code: "KeyA" }, d.tab("e1"))
     assert.deepEqual(posted, [
       [
         { type: "designlayer-desk:key", key: ".", code: "Period", metaKey: true, ctrlKey: false, shiftKey: false, altKey: false },
+        "http://localhost:4100",
+      ],
+      [
+        { type: "designlayer-desk:key", key: "a", code: "KeyA", metaKey: false, ctrlKey: false, shiftKey: false, altKey: false },
         "http://localhost:4100",
       ],
     ])
@@ -2995,15 +3021,116 @@ await check("⌘. typed in the shell is handed to the editor in the active tab, 
     assert.match(editorSide, /DESK_KEY_MESSAGE = "designlayer-desk:key"/, "the editor listens for another message type")
 
     posted.length = 0
-    press({ key: "." })
-    assert.deepEqual(posted, [], "a bare key is not the editor's to be handed")
-    press({ key: "1", code: "Digit1", metaKey: true })
+    d.press({ key: "Tab", code: "Tab" })
+    assert.deepEqual(posted, [], "Tab moves focus through the shell and was handed over")
+    d.press({ key: "ArrowRight" }, d.tab("e1"))
+    assert.equal(d.selected(), "h1", "the arrows on a tab move between tabs")
+    assert.deepEqual(posted, [], "an arrow the strip took was handed over too")
+    d.press({ key: "2", code: "Digit2", metaKey: true })
+    assert.equal(d.selected(), "e1")
+    d.tab("e1").dispatchEvent(new d.win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 30 }))
+    d.press({ key: "c", code: "KeyC" })
+    assert.deepEqual(posted, [], "a key typed while the tab menu is open was handed over")
+    d.press({ key: "Escape" })
+    d.press({ key: "1", code: "Digit1", metaKey: true })
     assert.deepEqual(posted, [], "⌘1 is the shell's own key and went to the editor too")
-    assert.equal(win.document.querySelector('.tab[aria-selected="true"] .label').textContent, "Home")
-    press({ key: ".", code: "Period", metaKey: true })
+    assert.equal(d.selected(), "h1")
+    d.press({ key: ".", code: "Period", metaKey: true })
+    d.press({ key: "a", code: "KeyA" })
     assert.deepEqual(posted, [], "the Home tab is not an editor, and was handed a key")
   } finally {
-    dom.window.close()
+    d.close()
+  }
+})
+
+/*
+ * The shell puts focus in the editor's frame, and a key typed in a
+ * cross-origin frame never reaches the page around it. So the editor hands
+ * the tab keys over (src/shell/desk.ts, DESK_TAB_KEY_MESSAGE).
+ */
+await check("the tab keys typed in the editor in front run in the shell, and come from nowhere else", async () => {
+  const d = await keyDesk([
+    { id: "h1", kind: "home" },
+    { id: "e1", kind: "editor", url: "http://127.0.0.1:4100", name: "shop-web" },
+    { id: "e2", kind: "editor", url: "http://127.0.0.1:4200", name: "docs" },
+  ])
+  try {
+    const key = (k, extra = {}) => ({ type: "designlayer-desk:tab-key", key: k, metaKey: true, ctrlKey: false, shiftKey: false, altKey: false, ...extra })
+    const editorSide = fs.readFileSync(path.join(MAC, "..", "..", "src", "shell", "desk.ts"), "utf8")
+    assert.match(editorSide, /DESK_TAB_KEY_MESSAGE = "designlayer-desk:tab-key"/, "the editor posts another message type")
+
+    d.say("e2", key("1"))
+    assert.equal(d.selected(), "e1", "a frame in the background selected a tab")
+    d.say("e1", key("1"), "http://localhost:9999")
+    assert.equal(d.selected(), "e1", "a page on another origin selected a tab")
+    d.say("e1", key("1", { altKey: true }))
+    assert.equal(d.selected(), "e1", "⌥⌘1 is not a tab key")
+
+    d.say("e1", key("3"))
+    assert.equal(d.selected(), "e2")
+    d.say("e2", key("1"), "http://localhost:4200")
+    assert.equal(d.selected(), "h1")
+    d.press({ key: "2", code: "Digit2", metaKey: true })
+    d.say("e1", key("t"))
+    assert.equal(d.doc.querySelectorAll(".tab[data-id]").length, 4, "⌘T opened no Home tab")
+    d.press({ key: "2", code: "Digit2", metaKey: true })
+    d.say("e1", key("w"))
+    assert.deepEqual([...d.doc.querySelectorAll(".tab[data-id]")].map((t) => t.dataset.id).slice(0, 2), ["h1", "e2"], "⌘W did not close the tab in front")
+  } finally {
+    d.close()
+  }
+})
+
+/*
+ * Keys go to the editor in front, as keys go to the page in front in Chrome.
+ * Focus stayed in the shell when the window opened, so A did nothing until the
+ * editor was clicked, the first time and after every click on a tab.
+ */
+await check("the editor in front holds focus: when the window opens, after a tab is selected, after one closes", async () => {
+  const d = await keyDesk([
+    { id: "h1", kind: "home" },
+    { id: "e1", kind: "editor", url: "http://127.0.0.1:4100", name: "shop-web" },
+    { id: "e2", kind: "editor", url: "http://127.0.0.1:4200", name: "docs" },
+  ])
+  try {
+    assert.equal(d.doc.activeElement, d.frame("e1"), "the window opened with focus in the shell")
+    d.tab("e2").click()
+    assert.equal(d.doc.activeElement, d.frame("e2"), "a click on a tab left focus off its editor")
+    d.tab("h1").click()
+    d.doc.activeElement.blur()
+    d.tab("e1").click()
+    assert.equal(d.doc.activeElement, d.frame("e1"), "focus stayed in the shell after a Home tab")
+    d.tab("e1").querySelector(".close").click()
+    assert.equal(d.doc.activeElement, d.frame("e2"), "closing a tab left focus off the next editor")
+
+    // The rename field and the tab menu keep the keys while they are open.
+    d.tab("e2").querySelector(".label").dispatchEvent(new d.win.MouseEvent("dblclick", { bubbles: true }))
+    const field = d.doc.querySelector("input.rename")
+    assert.equal(d.doc.activeElement, field, "the rename field lost focus")
+    d.press({ key: "Escape" }, field)
+    // A tab the keyboard is on keeps focus, through a rebuild of the strip too.
+    // jsdom tracks no input modality, so the tab is marked focus-visible here
+    // the way Chrome marks it after a key.
+    const matches = d.win.Element.prototype.matches
+    d.win.Element.prototype.matches = function (selector) {
+      return selector === ":focus-visible" ? this === d.doc.activeElement : matches.call(this, selector)
+    }
+    try {
+      d.tab("e2").focus()
+      d.win.dispatchEvent(new d.win.Event("resize"))
+      assert.equal(d.doc.activeElement, d.tab("e2"), "the strip took focus from the tab the keyboard was on")
+    } finally {
+      d.win.Element.prototype.matches = matches
+    }
+    // A tab a pointer pressed gives focus to the editor at the next rebuild.
+    d.win.dispatchEvent(new d.win.Event("resize"))
+    assert.equal(d.doc.activeElement, d.frame("e2"), "a tab the pointer pressed kept focus off the editor")
+    d.doc.activeElement.blur()
+    d.tab("e2").dispatchEvent(new d.win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 30 }))
+    d.win.dispatchEvent(new d.win.Event("focus"))
+    assert.notEqual(d.doc.activeElement, d.frame("e2"), "the editor took focus from the open tab menu")
+  } finally {
+    d.close()
   }
 })
 

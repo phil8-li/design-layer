@@ -648,6 +648,10 @@ export function shellPage({ repoRoot, version = null }) {
     // A tab being renamed keeps its field, and what is typed in it, until the
     // name is saved or let go.
     if (press || drag || renaming) { syncFrames(); persist(); announce(); return }
+    // The strip is rebuilt on every poll, which used to drop focus from the tab
+    // the keyboard was on. That tab is focused again in the new strip. A tab a
+    // pointer pressed is not: its focus goes to the editor in front (focusFront).
+    const kept = keyboardTab()
     tabsEl.textContent = ""
     tabs.forEach((t, i) => {
       if (incoming && incoming.index === i) tabsEl.append(incomingTab())
@@ -688,6 +692,7 @@ export function shellPage({ repoRoot, version = null }) {
     if (incoming && incoming.index >= tabs.length) tabsEl.append(incomingTab())
     tabsEl.style.setProperty("--n", String(tabs.length + (incoming ? 1 : 0)))
     layoutTabs()
+    if (kept) focusTab(kept)
     // The tab under the pointer is a new element now: keep its tip on it.
     if (tipFor) {
       const el = [...tabsEl.children].find((c) => c.dataset.tipId === tipFor)
@@ -698,6 +703,14 @@ export function shellPage({ repoRoot, version = null }) {
     announce()
   }
   const focusTab = (id) => tabsEl.querySelector('.tab[data-id="' + id + '"]')?.focus()
+  // Whether the keyboard, not a pointer, put focus on "el". The try is for an
+  // engine that cannot parse :focus-visible.
+  const byKeyboard = (el) => { try { return el.matches(":focus-visible") } catch { return false } }
+  // The tab the keyboard is on, if any.
+  function keyboardTab() {
+    const el = document.activeElement?.closest?.(".tab[data-id]")
+    return el && byKeyboard(el) ? el.dataset.id : null
+  }
 
   // ---- Renaming a tab ----
   //
@@ -840,9 +853,7 @@ export function shellPage({ repoRoot, version = null }) {
   // A name cut short must be readable from the keyboard too.
   tabsEl.addEventListener("focusin", (ev) => {
     const el = ev.target.closest(".tab")
-    let keyboard = false
-    try { keyboard = el.matches(":focus-visible") } catch {}
-    if (el && keyboard) showTip(el)
+    if (el && byKeyboard(el)) showTip(el)
   })
   tabsEl.addEventListener("focusout", (ev) => {
     if (!tabsEl.contains(ev.relatedTarget) && !tabsEl.querySelector(".tab:hover")) hideTip()
@@ -1079,7 +1090,34 @@ export function shellPage({ repoRoot, version = null }) {
     const cur = tabs.find((t) => t.id === active)
     applyBoot(bootState(cur), cur)
     document.title = cur && cur.kind === "editor" ? (labelOf(cur) || "Editor") + " — DesignLayer" : "DesignLayer"
+    focusFront()
   }
+
+  // Keys go to the editor in front, as keys go to the page in front in Chrome.
+  // Focus stayed in this page when the window opened, after a click on a tab or
+  // a strip button, and after a tab closed or reloaded, so A, C and the
+  // editor's other keys did nothing until the editor was clicked. Now focus
+  // goes into the editor's frame then, and the strip keeps it only while it is
+  // in keyboard use: a tab reached with Tab or the arrows, the rename field,
+  // the tab menu. A Home tab keeps focus here. A frame focused before it has
+  // loaded keeps focus through the load.
+  function focusFront() {
+    const t = tabs.find((x) => x.id === active)
+    const f = t && t.kind === "editor" && frameOf(t.id)
+    if (!f || f.hidden || press || drag || renaming || !menuEl.hidden) return
+    const a = document.activeElement
+    if (a === f) return
+    // Another frame is the one leaving the front: Chrome takes focus from a
+    // frame as it is hidden, but not before this runs.
+    const idle = !a || a === document.body || a === document.documentElement || a.tagName === "IFRAME"
+    if (!idle && byKeyboard(a)) return
+    f.focus({ preventScroll: true })
+  }
+  // A frame that loads while nothing here is in use, and a pointer press here
+  // that leaves focus on a tab, a button or the page.
+  framesEl.addEventListener("load", (ev) => { if (ev.target === frameOf(active)) focusFront() }, true)
+  addEventListener("click", () => focusFront())
+  addEventListener("focus", () => focusFront())
 
   // ---- The boot sheet ----
   //
@@ -1283,7 +1321,9 @@ export function shellPage({ repoRoot, version = null }) {
     el.addEventListener("pointerleave", () => { if (closing) { clearTimeout(endClosing.t); endClosing.t = setTimeout(endClosing, 300) } })
     el.addEventListener("pointerenter", () => clearTimeout(endClosing.t))
   }
-  addEventListener("blur", () => endClosing())
+  // Not when the frame in front takes focus, which blurs this page too: closing
+  // a tab hands focus to the next one (focusFront).
+  addEventListener("blur", () => { if (document.activeElement?.tagName !== "IFRAME") endClosing() })
   addEventListener("resize", () => endClosing())
   // A window's only tab has no close button and its menu's Close tab is off;
   // ⌘W on it does nothing either. It used to swap the tab for a fresh Home tab.
@@ -1581,24 +1621,32 @@ export function shellPage({ repoRoot, version = null }) {
     t.key = NEVER_NAMED
   }
 
-  // ⌘1–9, ⌘T, ⌘W reach this page when focus is on the strip or the page itself.
-  // A cross-origin frame keeps its own keystrokes, and Chrome may reserve ⌘T/⌘W.
-  addEventListener("keydown", (ev) => {
-    if (ev.defaultPrevented || !(ev.metaKey || ev.ctrlKey) || ev.altKey) return
+  // ⌘1–9, ⌘T and ⌘W are this page's, as Chrome's tab keys are Chrome's. They
+  // reach this page when focus is on the strip or the page itself, and the
+  // editor in front hands over the ones typed in it (below), because a
+  // cross-origin frame keeps its own keystrokes. Chrome may reserve ⌘T/⌘W.
+  // Returns whether the key was one of them.
+  function tabKey(ev) {
+    if (!(ev.metaKey || ev.ctrlKey) || ev.altKey) return false
     if (/^[1-9]$/.test(ev.key)) {
       const t = ev.key === "9" ? tabs[tabs.length - 1] : tabs[Number(ev.key) - 1]
       if (t) { ev.preventDefault(); select(t.id) }
     } else if (ev.key === "t" || ev.key === "T") { ev.preventDefault(); newHome() }
     else if (ev.key === "w" || ev.key === "W") { ev.preventDefault(); close(active) }
-    else relayToEditor(ev)
-  })
-  // Any other accelerator belongs to the editor in the active tab, ⌘. above
-  // all: it is how a hidden editor comes back. Typed here, on the strip after a
-  // click on a tab or after the frame reloaded and left focus in this page, it
-  // reached no frame, and ⌘. did nothing until the page was clicked. So it is
-  // posted to the frame; the editor answers the keys it takes from anywhere
-  // (src/shell/way-back.ts) and ignores the rest.
+    else return false
+    return true
+  }
+  addEventListener("keydown", (ev) => { if (!ev.defaultPrevented && !tabKey(ev)) relayToEditor(ev) })
+  // Every other key belongs to the editor in the active tab: ⌘. above all,
+  // which is how a hidden editor comes back, and A, C and its other keys.
+  // Typed while focus is in this page, on a tab the keyboard is on or before
+  // the frame took focus, they reached no frame and did nothing until the
+  // editor was clicked. So each is posted to the frame; the editor answers its
+  // own keys (src/shell/way-back.ts) and ignores the rest. Not Tab, which moves
+  // focus through this page, and nothing while the menu or a drag has the keys.
+  // The rename field keeps its keys to itself.
   function relayToEditor(ev) {
+    if (ev.isComposing || ev.key === "Tab" || drag || !menuEl.hidden) return
     const t = tabs.find((x) => x.id === active)
     const f = t && t.kind === "editor" && frameOf(t.id)
     const origin = f && originOf(f.src)
@@ -1606,6 +1654,18 @@ export function shellPage({ repoRoot, version = null }) {
     f.contentWindow.postMessage({ type: "designlayer-desk:key", key: ev.key, code: ev.code,
       metaKey: ev.metaKey, ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, altKey: ev.altKey }, origin)
   }
+  // The tab keys typed in the editor in front (src/shell/desk.ts,
+  // DESK_TAB_KEY_MESSAGE). Only from the frame in front, on its editor's
+  // origin: a frame in the background cannot have focus.
+  addEventListener("message", (ev) => {
+    const data = ev.data
+    if (!data || data.type !== "designlayer-desk:tab-key") return
+    const t = tabOfSource(ev.source)
+    const origin = t && localOrigin(ev.origin)
+    if (!origin || t.id !== active || t.kind !== "editor" || origin !== localOrigin(t.url)) return
+    tabKey({ key: String(data.key ?? ""), metaKey: data.metaKey === true, ctrlKey: data.ctrlKey === true,
+      altKey: data.altKey === true, preventDefault() {} })
+  })
   $("newTab").onclick = newHome
   // The frame is replaced, not given its src again. Apps route by hash
   // (http://localhost:3462/#/page), and a src that differs from the frame's
