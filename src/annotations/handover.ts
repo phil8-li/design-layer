@@ -32,6 +32,7 @@
  * is what makes a stale completion harmless.
  */
 
+import { appDisplayName } from "../core/app-name"
 import { isProjectSourcePath } from "../core/bridge"
 import { COPY_REFUSED, copyText } from "../core/clipboard"
 import type { ToastMessage } from "../core/toast"
@@ -248,6 +249,7 @@ export async function handOver(options: { apiBase: string; toast: Toast }): Prom
     selection: null,
     ancestry: [],
     url: window.location.href,
+    app: appDisplayName(),
   })
   const copied = await copy
   const outcome = response.ok ? (response.outcome ?? "queued") : null

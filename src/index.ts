@@ -32,6 +32,7 @@ import { installVendorChromeSuppression } from "./shell/vendor-chrome"
 import { installToolbar } from "./shell/toolbar"
 import { installShortcuts } from "./shell/shortcuts"
 import { installWayBack } from "./shell/way-back"
+import { followDeskName } from "./shell/desk"
 import { installTooltips } from "./core/tooltip"
 import { installCanvas } from "./canvas"
 import { installAnnotations } from "./annotations/canvas"
@@ -75,6 +76,9 @@ const IN_BOARD_FRAME = isBoardFrame()
  * press finds nothing to run and is left to the page. See `shell/way-back.ts`.
  */
 if (!IN_BOARD_FRAME) installWayBack()
+// The Mac app sends the tab's name when the frame says what it shows, which can
+// be before `boot` has drawn anything, so this listens from here too.
+if (!IN_BOARD_FRAME) followDeskName()
 
 /*
  * No toaster is mounted here, though one used to be, at module scope, so the

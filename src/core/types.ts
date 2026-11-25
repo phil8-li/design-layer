@@ -151,6 +151,12 @@ export interface AgentRequest {
   sessionPrompt?: string
   /** Distinct source files the brief touches, for the agent's first read. */
   files?: string[]
+  /**
+   * What the editor calls the app: the Mac app's tab name when the person gave
+   * one, else the folder (core/app-name.ts). The change the agent receives is
+   * named by it; the server falls back to the folder when it is missing.
+   */
+  app?: string | null
 }
 
 /**

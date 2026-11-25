@@ -16,10 +16,12 @@
  * remembered list is a list of apps that have since stopped.
  */
 
+import { givenAppName } from "../runtime/app-name.mjs"
 import { chooserUrlFromEnv } from "../runtime/chooser-url.mjs"
 import { listEditors } from "../runtime/editor-registry.mjs"
 import { httpError as refusal } from "../runtime/http-error.mjs"
 import { lastPage, portOfUrl, rememberPage } from "../runtime/last-pages.mjs"
+import { readDeskNames } from "../runtime/mac-desk.mjs"
 import { isPlainObject } from "./library-common.mjs"
 
 // The chooser's own scan is the floor: it probes every candidate port
@@ -46,6 +48,8 @@ function appRow(raw) {
     title: typeof raw.title === "string" ? raw.title : "",
     projectRoot: typeof raw.projectRoot === "string" ? raw.projectRoot : null,
     packageName: typeof raw.packageName === "string" ? raw.packageName : null,
+    // The Mac app's tab name, which the start screen reads for its own rows.
+    givenName: typeof raw.givenName === "string" && raw.givenName.trim() ? raw.givenName.trim() : null,
     // Where a switch to it lands. See runtime/last-pages.mjs.
     page: lastPage({ port: raw.port, projectRoot: typeof raw.projectRoot === "string" ? raw.projectRoot : null }),
     // An app with no editor of its own can only be reached by asking the start
@@ -63,11 +67,13 @@ function appRow(raw) {
  * already has an editor, it is already up, and switching to it is following a
  * link. Nothing is started, and nothing waits.
  */
-function editorRow(entry) {
+function editorRow(entry, names = {}) {
   return {
     kind: "editor",
     port: typeof entry.appPort === "number" ? entry.appPort : null,
     url: typeof entry.appUrl === "string" ? entry.appUrl : "",
+    // The name the person gave this app in the Mac app's tabs, or null.
+    givenName: givenAppName(names, entry.projectRoot, entry.appPort),
     // Empty, and it stays empty: the registry records what an editor is pointed
     // at, not what the served page calls itself, and inventing a title from the
     // URL here would be the same string twice under two keys. The browser falls
@@ -104,6 +110,8 @@ export function createAppSwitcher({
   self = process.pid,
   /** Injectable so a suite can describe a machine rather than have to be on one. */
   editors = listEditors,
+  /** The Mac app's tab names, read on every list so a rename shows the next time the menu opens. */
+  deskNames = readDeskNames,
 } = {}) {
   /**
    * Every OTHER editor running right now, as rows.
@@ -120,9 +128,10 @@ export function createAppSwitcher({
       // A registry that cannot be read costs rows, never the request.
       return []
     }
+    const names = deskNames()
     return running
       .filter((entry) => entry && entry.pid !== self)
-      .map(editorRow)
+      .map((entry) => editorRow(entry, names))
       .filter((row) => row.target)
   }
 

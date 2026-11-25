@@ -183,7 +183,13 @@ export interface DesignLayerConfig {
  */
 interface AppConfig {
   url: string | null
+  /** The project folder: what the editor tells the Mac app it shows. */
   name: string | null
+  /**
+   * The name the person gave the app in the Mac app's tabs, or null. Shown
+   * before `name` (src/core/app-name.ts).
+   */
+  givenName: string | null
 }
 
 /**
@@ -261,7 +267,7 @@ function emptyDesignSystem(
 const FALLBACK: DesignLayerConfig = {
   apiBase: "/__designlayer",
   chooserUrl: null,
-  app: { url: null, name: null },
+  app: { url: null, name: null, givenName: null },
   chrome: {
     trustedSelector: "",
     dockedPanel: {
@@ -395,6 +401,7 @@ function readApp(value: unknown): AppConfig {
     // the one already open.
     url: readLoopbackOrigin(value.url),
     name: typeof value.name === "string" && value.name.length > 0 ? value.name : null,
+    givenName: typeof value.givenName === "string" && value.givenName.trim() ? value.givenName.trim() : null,
   }
 }
 

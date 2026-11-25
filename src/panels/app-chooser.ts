@@ -112,6 +112,7 @@
  */
 
 import { unsentEditCount } from "../annotations/journal"
+import { appDisplayName, onAppNameChange } from "../core/app-name"
 import { readStored, writeStored } from "../core/app-scope"
 import { config } from "../core/config"
 import { el } from "../core/dom"
@@ -157,6 +158,8 @@ interface RunningApp {
   title: string
   projectRoot: string | null
   packageName: string | null
+  /** The name the person gave the app in the Mac app's tabs, or null. */
+  givenName?: string | null
   /** Another editor's proxy, for a row that is reached by going there. */
   target?: string | null
   /** The page this app was last used on, from the server. */
@@ -275,9 +278,10 @@ function portOf(app: RunningApp): string {
  * word a person picked, which is more than can be said for `127.0.0.1:5173`.
  */
 function appLabel(app: RunningApp, folder: string | null): string {
-  // The folder first, by the rule every surface uses (runtime/app-name.mjs):
-  // copies of one template share a package name and a title.
-  return folder || app.packageName || app.title || app.url
+  // The Mac app's tab name, then the folder, by the rule every surface uses
+  // (runtime/app-name.mjs): copies of one template share a package name and a
+  // title.
+  return app.givenName || folder || app.packageName || app.title || app.url
 }
 
 /** The proxy an `editor` row goes to, or null for a row that is started instead. */
@@ -309,6 +313,8 @@ export function rowLabels(apps: RunningApp[]): Map<RunningApp, string> {
     apps.map((app) => {
       const folder = folderOf(app)
       const label = appLabel(app, folder)
+      // A name the person gave is kept as given, even where two rows share it.
+      if (app.givenName) return [app, label]
       return [app, folder && (folders.get(label)?.size ?? 0) > 1 ? folder : label]
     })
   )
@@ -410,8 +416,10 @@ export function installAppChooser(
   const ownPages = pages ? null : installPageReporter(context)
   const reporter = pages ?? (ownPages as PageReporter)
   const menuId = freeMenuId()
-  const current = config.app
-  const named = typeof current.name === "string" && current.name.length > 0
+  // The Mac app's tab name when the person gave one, else the folder
+  // (core/app-name.ts). A rename repaints it through `paintName` below.
+  const shownName = appDisplayName()
+  const named = typeof shownName === "string" && shownName.length > 0
 
   /*
    * The name and the ghost instruction are the same span in the same shape.
@@ -422,7 +430,7 @@ export function installAppChooser(
    * one modifier class that only changes the ink. Nothing about the box moves.
    */
   const nameNode = el("span", { class: "de-app-chooser-name" }, [
-    named ? (current.name as string) : CHOOSER.empty,
+    named ? (shownName as string) : CHOOSER.empty,
   ])
   /*
    * The one surface in this editor that shows the name in full.
@@ -440,7 +448,7 @@ export function installAppChooser(
    * alone, and the button's own label already carries the whole name, so a
    * screen reader was never the audience for this fix.
    */
-  if (named) tip(nameNode, current.name as string)
+  if (named) tip(nameNode, shownName as string)
 
   const trigger = el(
     "button",
@@ -454,11 +462,25 @@ export function installAppChooser(
       // screen reader user with no way to hear which app they are editing, and
       // the name alone would read as a heading rather than as a control.
       "aria-label": named
-        ? `Editing ${current.name}. Choose a different app`
+        ? `Editing ${shownName}. Choose a different app`
         : CHOOSER.empty,
     },
     [nameNode, icon("ChevronDown", tokens.icon.marker)]
   )
+
+  /*
+   * A tab renamed in the Mac app renames the app here too, without a reload.
+   * The name, its tip and the button's accessible name are one fact, so one
+   * function writes all three.
+   */
+  const paintName = (): void => {
+    const name = appDisplayName()
+    nameNode.textContent = name ?? CHOOSER.empty
+    trigger.classList.toggle("de-app-chooser--empty", !name)
+    trigger.setAttribute("aria-label", name ? `Editing ${name}. Choose a different app` : CHOOSER.empty)
+    if (name) tip(nameNode, name)
+  }
+  const stopFollowingName = onAppNameChange(paintName)
 
   const menu = el("div", {
     class: "de-app-menu",
@@ -1793,6 +1815,7 @@ export function installAppChooser(
       window.removeEventListener("blur", onBlur)
       ownPages?.destroy()
       stopWatchingChrome()
+      stopFollowingName()
       menu.remove()
     },
   }

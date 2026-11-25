@@ -769,6 +769,35 @@ await check("an app is named by its folder, everywhere", async () => {
   const prelude = browserPrelude(resolveConfig({ projectRoot: dir }), { proxyPort: 4567, appPort: 3041 })
   const payload = JSON.parse(prelude.slice(prelude.indexOf("=") + 1, prelude.indexOf(";window.") > 0 ? prelude.indexOf(";window.") : prelude.lastIndexOf(";")))
   assert.equal(payload.app.name, path.basename(dir), "the editor's own chooser named the package")
+  assert.equal(payload.app.givenName, null, "a tab nobody renamed gave the editor a name")
+})
+
+/*
+ * A tab renamed in the Mac app names the app in the editor too. The prelude
+ * carries the tab name beside the folder; the folder stays `name`, because it
+ * is what the editor tells the desk it shows.
+ */
+await check("the editor is handed the tab's name beside its folder name, looked up by folder and port", async () => {
+  const { givenAppName } = await import("../runtime/app-name.mjs")
+  const names = { "/work/acc/ui|3052": "  ACC · eval redesign ", "/work/acc/ui|3053": "   " }
+  assert.equal(givenAppName(names, "/work/acc/ui", 3052), "ACC · eval redesign")
+  assert.equal(givenAppName(names, "/work/acc/ui", 3053), null, "a blank name named the app")
+  assert.equal(givenAppName(names, "/work/acc/ui", 3054), null, "another port of the folder took the name")
+  assert.equal(givenAppName(names, "/work/acc/ui", null), null)
+  assert.equal(givenAppName(names, null, 3052), null)
+
+  const { browserPrelude, resolveConfig } = await import("../config.mjs")
+  const dir = reactProject({ name: "studio" })
+  const read = (runtime) => {
+    const prelude = browserPrelude(resolveConfig({ projectRoot: dir }), runtime)
+    return JSON.parse(prelude.slice(prelude.indexOf("=") + 1, prelude.indexOf(";window.") > 0 ? prelude.indexOf(";window.") : prelude.lastIndexOf(";"))).app
+  }
+  let given = "Studio · main"
+  // The launcher's runtime reads it per request, as a getter.
+  const runtime = { proxyPort: 4567, appPort: 3041, get givenName() { return given } }
+  assert.deepEqual(read(runtime), { url: "http://127.0.0.1:3041", name: path.basename(dir), givenName: "Studio · main" })
+  given = "Studio · checkout"
+  assert.equal(read(runtime).givenName, "Studio · checkout", "a rename waited for the editor to restart")
 })
 
 await check("the card names the app being edited by its folder, and the pick is the app not open yet", async () => {

@@ -306,6 +306,36 @@ await check("a handoff request lands in the queue with its brief intact", async 
   shared.clear()
 })
 
+/*
+ * A tab renamed in the Mac app renames the app for the agent too: the editor
+ * sends the name it shows, and the server keeps the folder only as a fallback.
+ */
+await check("the agent is told the app by the name the editor shows, on one line", async () => {
+  const os = await import("node:os")
+  const fsp = await import("node:fs/promises")
+  const nodePath = await import("node:path")
+  const { createAgent } = await import("../server/agent.mjs")
+  const { handoffQueue } = await import("../server/handoff.mjs")
+
+  const root = await fsp.mkdtemp(nodePath.join(os.tmpdir(), "de-handoff-named-"))
+  const shared = handoffQueue()
+  shared.clear()
+  const agent = createAgent({ projectRoot: root, stateDir: nodePath.join(root, ".local", "designlayer") })
+  const send = (app) =>
+    agent.runAgent({ prompt: "1 note from DesignLayer", origin: "prompts", brief: "### a.tsx", app, selection: null, ancestry: [] })
+  try {
+    const named = shared.get((await send("ACC ·\n eval  redesign")).changeId)
+    assert.equal(named.app, "ACC · eval redesign", "the tab's name did not reach the agent")
+    for (const missing of [undefined, "", "   ", 42]) {
+      const fallback = shared.get((await send(missing)).changeId)
+      assert.equal(fallback.app, nodePath.basename(root), `${JSON.stringify(missing)} replaced the folder name`)
+    }
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true })
+    shared.clear()
+  }
+})
+
 await check("a path the browser names is a label, never something the server opens", async () => {
   /*
    * The route used to read the file named in `selection.source` and upload it,

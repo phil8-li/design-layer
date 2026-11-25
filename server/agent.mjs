@@ -146,7 +146,9 @@ async function writeHandoff(config, prompt, request) {
     // An agent may hear from several editors through one endpoint, so each
     // change says which repo it is for; the paths above are relative to it.
     projectRoot: path.resolve(config.projectRoot),
-    app: appName({ projectRoot: config.projectRoot }),
+    // The name the editor shows, which is the Mac app's tab name when the
+    // person gave one (src/core/app-name.ts), else the folder.
+    app: sentAppName(request) ?? appName({ projectRoot: config.projectRoot }),
   })
 
   return {
@@ -200,6 +202,12 @@ function handoffMessage({ outcome, cause, newSession }) {
   return newSession
     ? "Queued for your coding agent. It starts a new session for this the next time the agent calls wait_for_change."
     : "Queued for your coding agent. It picks this up the next time it calls wait_for_change."
+}
+
+/** The app's name as the editor sent it, on one line and at most 80 characters, or null. */
+function sentAppName(request) {
+  const name = typeof request?.app === "string" ? request.app.replace(/\s+/g, " ").trim().slice(0, 80) : ""
+  return name || null
 }
 
 /** Every distinct source file this request touches, for the agent's first read. */

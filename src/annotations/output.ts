@@ -31,6 +31,7 @@ import {
   type RewriteElementInfo,
   type RewriteStack,
 } from "../core/bridge"
+import { appDisplayName } from "../core/app-name"
 import { config } from "../core/config"
 import { nthOfType } from "../core/element-target"
 import { getState } from "../core/store"
@@ -712,12 +713,15 @@ function appHost(): string {
 /**
  * Which app, in the words the Agentation companion uses for the same page.
  *
- * Both tools read `config.app.name` and fall back to the port, so a note from
- * either one names the app identically. Escaped because it is a package name
- * printed inside markdown, and `my_app` is otherwise an italic.
+ * The name the editor shows: the Mac app's tab name when the person gave one,
+ * else the folder, and the port when there is neither. The companion reads
+ * `config.app.name`, the folder, so the two tools name the app the same way
+ * except in a renamed tab, where the agent is told the name the person chose.
+ * Escaped because it is a package name printed inside markdown, and `my_app`
+ * is otherwise an italic.
  */
 function appLabel(): string {
-  const name = (config.app.name ?? "").replace(/[\r\n\t]+/g, " ").trim()
+  const name = (appDisplayName() ?? "").replace(/[\r\n\t]+/g, " ").trim()
   const label = name || `app on ${appHost()}`
   return label.replace(/[\\`*_[\]<>]/g, "\\$&")
 }

@@ -383,6 +383,10 @@ async function laneFor(app, chooserUrl, marker, extra = {}) {
         export { clearEdits, edits, markEditsSent, recordEdit, removeEdit } from "./src/annotations/journal"
         export { createWriter } from "./src/core/writer"
         export { undo } from "./src/core/history"
+        export { appDisplayName } from "./src/core/app-name"
+        export { DESK_NAME_MESSAGE, followDeskName } from "./src/shell/desk"
+        export { buildAnnotationBrief } from "./src/annotations/output"
+        export { handOver } from "./src/annotations/handover"
       `,
       resolveDir: PACKAGE_DIR,
       loader: "ts",
@@ -409,6 +413,8 @@ const inDesk = await laneFor({ url: CURRENT, name: "shop-web" }, CHOOSER, "in-de
 /** The same, with the prelude naming the desk where it now lives. */
 const NEW_DESK = "http://localhost:3454"
 const inNewDesk = await laneFor({ url: CURRENT, name: "shop-web" }, CHOOSER, "in-new-desk", { deskUrl: NEW_DESK })
+/** The same tab, after the person renamed it in the Mac app. */
+const renamed = await laneFor({ url: CURRENT, name: "shop-web", givenName: "Shop · main" }, CHOOSER, "renamed", { deskUrl: DESK })
 
 // ── Mounting one chooser ───────────────────────────────────────────────────
 
@@ -770,6 +776,84 @@ await check("rows that share a name are told apart by their folders", () => {
   ]
   const labels = named.rowLabels(rows)
   assert.deepEqual(rows.map((row) => labels.get(row)), ["studio", "studio-pinned", "docs", "docs"])
+})
+
+/*
+ * A TAB RENAMED IN THE MAC APP RENAMES THE APP EVERYWHERE THE EDITOR NAMES IT:
+ * the menu's rows, the header, the brief's App line and the app the agent is
+ * told. The prototype's own files are never touched; the folder stays the
+ * name the editor reports to the desk, so "Use folder name" can go back to it.
+ */
+await check("a row is named by the name its tab was given in the Mac app, and keeps it as given", () => {
+  const rows = [
+    { port: 3051, url: "http://127.0.0.1:3051", title: "", projectRoot: "/acc/main/ui", packageName: "ui", givenName: "ACC · main" },
+    { port: 3052, url: "http://127.0.0.1:3052", title: "", projectRoot: "/acc/eval/ui", packageName: "ui", givenName: "ACC · main" },
+    { port: 3053, url: "http://127.0.0.1:3053", title: "", projectRoot: "/acc/nov19/ui", packageName: "ui", givenName: null },
+    { port: 3054, url: "http://127.0.0.1:3054", title: "", projectRoot: "/acc/sdk/ui", packageName: "ui" },
+  ]
+  const labels = named.rowLabels(rows)
+  assert.deepEqual(rows.map((row) => labels.get(row)), ["ACC · main", "ACC · main", "ui", "ui"])
+})
+
+await check("an editor row carries its tab name from the Mac app's names, read on every list", async () => {
+  const entry = (pid, appPort, projectRoot) =>
+    ({ pid, appPort, appUrl: `http://127.0.0.1:${appPort}`, projectRoot, url: `http://127.0.0.1:${appPort + 400}`, packageName: "ui" })
+  let names = { "/acc/eval/ui|3052": "ACC · eval redesign" }
+  const apps = createAppSwitcher({
+    chooserUrl: null,
+    self: 1,
+    editors: () => [entry(2, 3052, "/acc/eval/ui"), entry(3, 3053, "/acc/nov19/ui")],
+    deskNames: () => names,
+  })
+  assert.deepEqual((await apps.list()).apps.map((row) => row.givenName), ["ACC · eval redesign", null])
+  names = { "/acc/eval/ui|3052": "ACC · eval", "/acc/nov19/ui|3053": "ACC · Nov 19" }
+  assert.deepEqual((await apps.list()).apps.map((row) => row.givenName), ["ACC · eval", "ACC · Nov 19"], "a rename waited for a restart")
+})
+
+await check("the brief and the agent are told the app by its tab name", async () => {
+  server.reset()
+  renamed.clearEdits()
+  renamed.recordEdit({ property: "padding-left", from: "16px", to: "24px", element: null })
+  try {
+    assert.match(renamed.buildAnnotationBrief(), /^\*\*App:\*\* Shop · main$/m)
+    await renamed.handOver({ apiBase: API, toast() {} })
+    const sent = server.calls.find((call) => call.method === "POST" && call.url === `${API}/agent`)
+    assert.ok(sent, "nothing was sent to the agent")
+    assert.equal(sent.body.app, "Shop · main", "the agent was told the folder, not the tab's name")
+  } finally {
+    renamed.clearEdits()
+  }
+})
+
+await check("the header names the app by its tab name, and follows a rename made in the Mac app", () => {
+  const ui = mount(renamed)
+  assert.equal(ui.name(), "Shop · main")
+  assert.equal(ui.trigger.getAttribute("aria-label"), "Editing Shop · main. Choose a different app")
+  assert.equal(renamed.config.app.name, "shop-web", "the folder name, which the desk is told, changed")
+
+  // Framed by the desk, which posts the tab's name after each rename.
+  const shell = window.document.createElement("iframe")
+  window.document.body.append(shell)
+  const parent = Object.getOwnPropertyDescriptor(window, "parent")
+  Object.defineProperty(window, "parent", { get: () => shell.contentWindow, configurable: true })
+  const say = (name, { origin = DESK, source = shell.contentWindow } = {}) =>
+    window.dispatchEvent(new window.MessageEvent("message", { data: { type: renamed.DESK_NAME_MESSAGE, name }, origin, source }))
+  try {
+    renamed.followDeskName()
+    say("Shop · checkout")
+    assert.equal(ui.name(), "Shop · checkout", "a rename in the Mac app did not reach the header")
+    assert.equal(ui.trigger.getAttribute("aria-label"), "Editing Shop · checkout. Choose a different app")
+    assert.equal(renamed.appDisplayName(), "Shop · checkout")
+    say("Not the desk", { origin: "http://localhost:9999" })
+    say("Not the parent", { source: window })
+    assert.equal(ui.name(), "Shop · checkout", "a page that is not the desk renamed the app")
+    say(null)
+    assert.equal(ui.name(), "shop-web", "Use folder name in the Mac app left the old name here")
+  } finally {
+    say("Shop · main")
+    Object.defineProperty(window, "parent", parent)
+    shell.remove()
+  }
 })
 
 await check("another editor is opened on localhost", () => {
@@ -1869,7 +1953,9 @@ await check("one editor and no start screen is an empty list, not a missing choo
  * Seven now rather than five. `kind` and `target` arrived with the registry —
  * a row is either an app needing an editor started for it or an editor already
  * running, and the second carries the URL the browser navigates to. Both are
- * built here for exactly the reason the other five are.
+ * built here for exactly the reason the other five are. `givenName` is the
+ * Mac app's tab name, which the start screen reads for its own rows, and is
+ * checked as a string here like the rest.
  */
 await check("a listed app is cut down to the keys the contract promises", async () => {
   server.reset()
@@ -1884,6 +1970,7 @@ await check("a listed app is cut down to the keys the contract promises", async 
           title: "Shop",
           projectRoot: "/work/shop",
           packageName: "shop-web",
+          givenName: " Shop · main ",
           // What the start screen knows and the browser has no business seeing.
           pid: 48213,
         },
@@ -1899,6 +1986,7 @@ await check("a listed app is cut down to the keys the contract promises", async 
   }).list()
   assert.equal(apps.length, 1, "a row that is not an object became one")
   assert.deepEqual(Object.keys(apps[0]).sort(), [
+    "givenName",
     "kind",
     "packageName",
     // Where a switch to it lands; filled by this side, not the start screen.
@@ -1914,6 +2002,7 @@ await check("a listed app is cut down to the keys the contract promises", async 
   assert.equal(apps[0].kind, "app")
   assert.equal(apps[0].target, null)
   assert.equal("pid" in apps[0], false, "a key the start screen invented reached the browser")
+  assert.equal(apps[0].givenName, "Shop · main", "the tab name the start screen read did not reach the menu")
   assert.equal(server.calls[0].url, `${CHOOSER}api/apps`)
 })
 

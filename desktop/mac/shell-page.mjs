@@ -289,6 +289,8 @@ export function shellPage({ repoRoot, version = null }) {
   // Tab id -> the editor origin its frame said it shows ("designlayer-desk:showing"),
   // since the frame last loaded. Not saved: it is about the frame in this window.
   const showingIn = new Map()
+  // Tab id -> the name last sent to its frame (tellName).
+  const toldName = new Map()
 
   function uid() { return Math.random().toString(36).slice(2, 9) }
   const readLocal = (k) => { try { return JSON.parse(localStorage.getItem(k)) } catch { return null } }
@@ -332,6 +334,19 @@ export function shellPage({ repoRoot, version = null }) {
     try { localStorage.setItem(NAMES_KEY, JSON.stringify(names)) } catch {}
     return !same
   }
+  // The editor in a tab names its app the way the tab does (src/shell/desk.ts,
+  // DESK_NAME_MESSAGE): its header, the brief's App line and the app the agent
+  // is told. Posted when the name changes, and again after the frame says what
+  // it shows, which it does on every load. Null means the folder's name.
+  function tellName(t) {
+    const f = t.kind === "editor" ? frameOf(t.id) : null
+    const origin = frameOrigin(f)
+    if (!origin) return
+    const name = customName(t)
+    if (toldName.has(t.id) && toldName.get(t.id) === name) return
+    toldName.set(t.id, name)
+    f.contentWindow.postMessage({ type: "designlayer-desk:name", name }, origin)
+  }
   // The desk's names, with the renames it has not taken yet laid over them.
   function takeDeskNames(desk) {
     if (!desk || typeof desk !== "object") return false
@@ -364,6 +379,10 @@ export function shellPage({ repoRoot, version = null }) {
   // it to load, when one was asked for — "Open in Mac app" hands over a path.
   const tabUrl = (t) => (t.kind === "home" ? homeUrl : t.src || t.url)
   const originOf = (u) => { try { return new URL(u).origin } catch { return null } }
+  // Where a message to a tab's frame is addressed, or null while the frame shows
+  // no page of its own: about:blank's origin is "null", and postMessage throws
+  // on that.
+  const frameOrigin = (f) => (f && /^https?:/.test(f.src) ? originOf(f.src) : null)
   // Every editor is framed on localhost, the host name apps treat as their dev
   // host (runtime/launcher.mjs, BROWSER_HOST). Older registry entries, saved
   // tabs and handed pages may say 127.0.0.1; they are the same editor.
@@ -1087,6 +1106,7 @@ export function shellPage({ repoRoot, version = null }) {
       }
       if (f) f.hidden = t.id !== active
     }
+    for (const t of tabs) tellName(t)
     const cur = tabs.find((t) => t.id === active)
     applyBoot(bootState(cur), cur)
     document.title = cur && cur.kind === "editor" ? (labelOf(cur) || "Editor") + " — DesignLayer" : "DesignLayer"
@@ -1495,6 +1515,8 @@ export function shellPage({ repoRoot, version = null }) {
     // same editor could only ever show it disconnected.
     removeTabs((x) => x !== t && x.kind === "editor" && x.url === origin, { successor: t.id })
     showingIn.set(t.id, origin)
+    // A new document in the frame: it hears its tab's name again.
+    toldName.delete(t.id)
     // Other windows drop their tab on it too.
     post({ t: "claimed", url: origin })
     render()
@@ -1649,7 +1671,7 @@ export function shellPage({ repoRoot, version = null }) {
     if (ev.isComposing || ev.key === "Tab" || drag || !menuEl.hidden) return
     const t = tabs.find((x) => x.id === active)
     const f = t && t.kind === "editor" && frameOf(t.id)
-    const origin = f && originOf(f.src)
+    const origin = frameOrigin(f)
     if (!origin) return
     f.contentWindow.postMessage({ type: "designlayer-desk:key", key: ev.key, code: ev.code,
       metaKey: ev.metaKey, ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, altKey: ev.altKey }, origin)

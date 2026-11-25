@@ -3134,6 +3134,39 @@ await check("the editor in front holds focus: when the window opens, after a tab
   }
 })
 
+/*
+ * A tab's name is the app's name in its editor too: the header, the brief and
+ * what the agent is told. The desk posts it to the frame; src/shell/desk.ts
+ * (`followDeskName`) is the other half, checked in test/app-chooser-cases.mjs.
+ */
+await check("a tab's name goes to its editor after a rename, when the frame loads again, and after Use folder name", async () => {
+  const d = await keyDesk()
+  try {
+    const posted = []
+    d.frame("e1").contentWindow.postMessage = (message, origin) => posted.push([JSON.parse(JSON.stringify(message)), origin])
+    const told = () => posted.filter(([message]) => message.type === "designlayer-desk:name").map(([message, origin]) => [message.name, origin])
+    const editorSide = fs.readFileSync(path.join(MAC, "..", "..", "src", "shell", "desk.ts"), "utf8")
+    assert.match(editorSide, /DESK_NAME_MESSAGE = "designlayer-desk:name"/, "the editor listens for another message type")
+
+    d.tab("e1").querySelector(".label").dispatchEvent(new d.win.MouseEvent("dblclick", { bubbles: true }))
+    const field = d.doc.querySelector("input.rename")
+    field.value = "Shop · main"
+    d.press({ key: "Enter" }, field)
+    assert.deepEqual(told(), [["Shop · main", "http://localhost:4100"]], "a rename did not reach the editor")
+    d.win.dispatchEvent(new d.win.Event("resize"))
+    assert.equal(told().length, 1, "an unchanged name was posted again on a redraw")
+
+    d.say("e1", { type: "designlayer-desk:showing", name: "shop-web", page: "/" })
+    assert.deepEqual(told().slice(1), [["Shop · main", "http://localhost:4100"]], "a frame that loaded again did not hear its name")
+
+    d.tab("e1").dispatchEvent(new d.win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 30 }))
+    ;[...d.doc.querySelectorAll("#menu button")].find((item) => item.textContent === "Use folder name").click()
+    assert.deepEqual(told().slice(2), [[null, "http://localhost:4100"]], "Use folder name left the old name in the editor")
+  } finally {
+    d.close()
+  }
+})
+
 console.log("several windows")
 
 /**

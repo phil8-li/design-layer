@@ -13,6 +13,7 @@
  * script opened.
  */
 
+import { setGivenAppName } from "../core/app-name"
 import { config, readLoopbackOrigin } from "../core/config"
 
 /**
@@ -34,6 +35,15 @@ export const DESK_FRAME_PREFIX = "designlayer-desk:"
  * desktop/mac/shell-page.mjs spells the same string.
  */
 export const DESK_KEY_MESSAGE = "designlayer-desk:key"
+
+/**
+ * The `type` of the message the desk posts with this tab's name: the one the
+ * person gave it, or null for the folder's. Sent when the frame says what it
+ * shows and again after each rename, so the editor names the app the way its
+ * tab does (`followDeskName`). desktop/mac/shell-page.mjs spells the same
+ * string.
+ */
+export const DESK_NAME_MESSAGE = "designlayer-desk:name"
 
 /**
  * The `type` of the message this editor posts with one of the desk's tab keys
@@ -147,6 +157,22 @@ export function tellDesk(name: string | null, page: string, win: Window = window
   const target = deskOrigin(win)
   if (!target) return
   win.parent.postMessage({ type: DESK_SHOWING_MESSAGE, name, page }, target)
+}
+
+/**
+ * Takes the tab name the desk sends (`DESK_NAME_MESSAGE`). Only from the
+ * window this one is framed in, and only from the desk's origin: the same
+ * rule as the keys the desk hands over (`shell/way-back.ts`).
+ */
+export function followDeskName(win: Window = window): void {
+  win.addEventListener("message", (event: MessageEvent) => {
+    if (win.parent === win || event.source !== win.parent || !isDeskOrigin(event.origin)) return
+    const data: unknown = event.data
+    if (typeof data !== "object" || data === null) return
+    const message = data as Record<string, unknown>
+    if (message.type !== DESK_NAME_MESSAGE) return
+    setGivenAppName(typeof message.name === "string" ? message.name.slice(0, 80) : null)
+  })
 }
 
 /**

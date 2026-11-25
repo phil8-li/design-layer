@@ -669,6 +669,10 @@ export function browserPrelude(config, runtime = {}) {
       // The launcher reads it once into `runtime`; a caller without one
       // (tests, tools) gets it read from disk.
       name: runtime.appName !== undefined ? runtime.appName : hostAppName(config.projectRoot),
+      // The name the person gave the app in the Mac app's tabs, or null. The
+      // chrome shows it before `name`, which stays the folder: it is what the
+      // editor tells the desk it shows (runtime/app-name.mjs).
+      givenName: typeof runtime.givenName === "string" && runtime.givenName ? runtime.givenName : null,
     },
   }
 

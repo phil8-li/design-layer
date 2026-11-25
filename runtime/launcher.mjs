@@ -28,13 +28,13 @@ import {
   stripFrameBlockingResponseHeaders,
   rewriteOverlayInjection,
 } from "./board-frame.mjs"
-import { appName } from "./app-name.mjs"
+import { appName, givenAppName } from "./app-name.mjs"
 import { ensureCurrentChromeBundle } from "./bundle-stamp.mjs"
 import { chooserUrlFromEnv, isLoopbackOrigin } from "./chooser-url.mjs"
 import { probePort, urlHost } from "./dev-server.mjs"
 import { publishEditor, withdrawEditor } from "./editor-registry.mjs"
 import { onExit } from "./exit-hooks.mjs"
-import { deskUrlFromHost } from "./mac-desk.mjs"
+import { deskUrlFromHost, readDeskNames } from "./mac-desk.mjs"
 import { openBrowser } from "./open-browser.mjs"
 import { createOverlayResponder } from "./overlay-responder.mjs"
 import {
@@ -541,6 +541,11 @@ export async function launch(config, { appPort, host, open, verbose = false, onR
     // response, and the registry entry carries the package name.
     packageName,
     appName: appName({ projectRoot: config.projectRoot, packageName }),
+    // The one value read per request: a tab renamed in the Mac app names the
+    // app on the next page load, and the prelude is part of the cache key.
+    get givenName() {
+      return givenAppName(readDeskNames(), config.projectRoot, this.appPort)
+    },
   }
   // The package stays immutable on disk: the pinned bundle is patched in memory
   // and served by the routed handler below, so the vendor's own overlay branch

@@ -30,7 +30,7 @@
 import { createRequire } from "node:module"
 import path from "node:path"
 
-import { appName } from "./app-name.mjs"
+import { appName, givenAppName } from "./app-name.mjs"
 import { LOOPBACK_ADDRESSES, probePort } from "./dev-server.mjs"
 import { listEditors } from "./editor-registry.mjs"
 import { lastPage, rememberedPages, rememberPage } from "./last-pages.mjs"
@@ -355,18 +355,12 @@ export async function createStartScreen({
     }))
   }
 
-  /** The name the Mac app's tabs gave an app (its folder and port), or null. */
-  function givenName(names, projectRoot, port) {
-    const name = projectRoot ? names[`${projectRoot}|${port}`] : null
-    return typeof name === "string" && name ? name : null
-  }
-
   function editorRow(record, names) {
     return {
       id: record.id,
       state: record.state,
       name: appName(record),
-      givenName: givenName(names, record.projectRoot, record.appPort),
+      givenName: givenAppName(names, record.projectRoot, record.appPort),
       appUrl: record.appUrl,
       appPort: record.appPort,
       projectRoot: record.projectRoot,
@@ -644,7 +638,7 @@ export async function createStartScreen({
       sendJson(res, 200, {
         apps: apps.map((raw) => {
           const app = projectFromEditor(raw, registry)
-          return { ...app, givenName: givenName(names, app.projectRoot, app.port), editor: editorForApp(app, registry) }
+          return { ...app, givenName: givenAppName(names, app.projectRoot, app.port), editor: editorForApp(app, registry) }
         }),
       })
     },
